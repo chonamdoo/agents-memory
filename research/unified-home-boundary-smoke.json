@@ -1,0 +1,8 @@
+{
+  "scenario": "Company HOME process tests access to other HOME-owned 0600 synthetic marker, both directories0700, same OS UID",
+  "crossHomeFileReadable": true,
+  "exitCode": 0,
+  "realCredentialsRead": false,
+  "conclusion": "Separate HOME prevents configuration mixing, not same-UID filesystem isolation; stronger boundary requires OS identity/sandbox/VM/managed credential isolation",
+  "limits": "Not a product exploit, not tested across different OS users, no policy or egress enforcement tested"
+}

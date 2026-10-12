@@ -1,0 +1,23 @@
+{
+  "repository": "chonamdoo/agent-memory-mcp",
+  "repositoryVisibility": "private",
+  "issueNumber": 1,
+  "issueUrl": "https://github.com/chonamdoo/agent-memory-mcp/issues/1",
+  "title": "독립 OSS 메모리 파이프라인: 회사 로컬·개인 클라우드 공통 설계 및 병렬 적대적 리뷰",
+  "state": "open",
+  "author": "chonamdoo",
+  "createdAt": "2026-10-11T12:10:53Z",
+  "readbackVerifiedAt": "2026-10-11T12:11:29.395Z",
+  "publicationFile": "research/agent-memory-mcp-issue.ko.md",
+  "bodyBytes": 39075,
+  "bodySha256": "0179af6f5d8fdfdc014b4d7073630a26ac1ffe8d68842df7742723bf37a84826",
+  "readbackSha256": "0179af6f5d8fdfdc014b4d7073630a26ac1ffe8d68842df7742723bf37a84826",
+  "exactTitleMatch": true,
+  "exactBodyMatch": true,
+  "originalAnalysisComment": "https://github.com/chonamdoo/agent-flow/issues/316#issuecomment-6106087372",
+  "crossRepositoryReferencesQualified": true,
+  "originalCommentChanged": false,
+  "repositoryVisibilityChanged": false,
+  "nativeReviewsRerun": false,
+  "memoryProductImplemented": false
+}

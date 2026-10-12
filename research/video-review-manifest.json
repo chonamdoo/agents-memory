@@ -1,0 +1,70 @@
+{
+  "createdAt": "2026-10-11T12:55:55.963Z",
+  "inputFile": "research/video-review-input.ko.md",
+  "inputBytes": 205168,
+  "inputSha256": "c046de5447908e18d0762a533058d49fe8df4699bff90ac3bdc78a9fb0b5db3b",
+  "sources": [
+    {
+      "path": "research/video-adversarial-contract.ko.md",
+      "bytes": 9173,
+      "sha256": "4013fce007f910c74e0a02ba15061d5771c1ae210237958a2365db5f00c677b3"
+    },
+    {
+      "path": "research/video-mAKUL12h1n8-reanalysis.ko.md",
+      "bytes": 20755,
+      "sha256": "66c1d0b2eee4057b15cfdcbc4319ec454bd83f53c0655bed50883fec2f81e80c"
+    },
+    {
+      "path": "research/video-mAKUL12h1n8-tools.ko.md",
+      "bytes": 40971,
+      "sha256": "bc423b7eee8f1ff922d0994f12f7f342981eb2a1e2d3fdaf3ea5b0997fca1edf"
+    },
+    {
+      "path": "research/video-mAKUL12h1n8-portable.ko.md",
+      "bytes": 42217,
+      "sha256": "04168e788353b7dc373c3fd89d24a8fc2ff9ecaae1efd4d6f9cf71e3fd323998"
+    },
+    {
+      "path": "research/video-mAKUL12h1n8-primary-checks.ko.md",
+      "bytes": 3745,
+      "sha256": "d6617f2d047eb87d4838b6d3fceab27c6178ccbe853469991ff40949cbb96e3d"
+    },
+    {
+      "path": "research/video-mAKUL12h1n8-source-provenance.json",
+      "bytes": 2394,
+      "sha256": "e81fd9018c7b05d0d8f0eb3ab588cfb39707be97daf6b91f59a0c8f883d0e59e"
+    },
+    {
+      "path": "research/video-mAKUL12h1n8-claims-check.json",
+      "bytes": 9303,
+      "sha256": "7b08120dbcef5bda15fbe5df58e7ba95189b5f3b3bfed6c3a301f0af28d599a1"
+    },
+    {
+      "path": "research/video-mAKUL12h1n8-transcript.timed.en.txt",
+      "bytes": 75951,
+      "sha256": "397c61174f4105278c8de5027927d574df3b40a0f8148bef4e7a71796afb6b98"
+    }
+  ],
+  "wholeOriginalTranscriptIncluded": true,
+  "sourceClip": "mAKUL12h1n8",
+  "rawCaptionSha256": "a12be7a5b4cd8916e14ab0d027515e2f51ee915a5370b19f45c75edc8553b734",
+  "originalLocatorClaimsIncluded": [
+    "citation",
+    "cost",
+    "threeTypes",
+    "threeTypesDetail",
+    "query",
+    "queryCapture",
+    "health",
+    "staleIdea",
+    "fourthInput"
+  ],
+  "reviewerIndependence": {
+    "sameExactFullInput": true,
+    "priorNativeVerdictsIncluded": false,
+    "otherNewReviewerResultIncluded": false,
+    "toolsDisabledByContract": true
+  },
+  "excluded": "Specific-app codegraph/SQLite/FTS5 application plan; old model review conclusions. Supplied Korean reports are not all copied verbatim; generic claims are reevaluated against the full original transcript and fresh primary docs.",
+  "sourceScope": "Full fresh automatic transcript + exact nine locator excerpt checks + two primary-source research packets + parent source analysis/qualification + provenance + unchanged ten review axes; no product runtime/benchmark claims."
+}

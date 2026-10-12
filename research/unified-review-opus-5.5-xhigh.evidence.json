@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "finalReview": true,
+  "superseded": false,
+  "nativeReview": {
+    "success": true,
+    "requestedModel": "claude-opus-5-5",
+    "canonicalModelUsageConfirmed": true,
+    "canonicalModelEvidence": "Native JSON response modelUsage key claude-opus-5-5; response type=result subtype=success is_error=false. This is response-level identification, not independent provider attestation.",
+    "configuredEffort": "xhigh",
+    "observedEffort": null,
+    "serverResolvedEffort": "unknown",
+    "effortEvidence": "Exact native CLI --effort xhigh; native result did not return explicit server-resolved effort."
+  },
+  "execution": {
+    "binary": "claude",
+    "binaryVersion": "2.1.296",
+    "binaryVersionEvidence": "Parent-confirmed observed native version; not rechecked by executor",
+    "sanitizedArgv": [
+      "claude",
+      "-p",
+      "--model",
+      "claude-opus-5-5",
+      "--effort",
+      "xhigh",
+      "--safe-mode",
+      "--tools",
+      "",
+      "--permission-mode",
+      "dontAsk",
+      "--strict-mcp-config",
+      "--mcp-config",
+      "{\"mcpServers\":{}}",
+      "--disable-slash-commands",
+      "--no-session-persistence",
+      "--output-format",
+      "json"
+    ],
+    "startedAtUtc": "2026-10-11T15:13:32.601388+00:00",
+    "endedAtUtc": "2026-10-11T15:23:45.538936+00:00",
+    "durationSeconds": 612.924,
+    "exitCode": 0,
+    "deadlineSeconds": 1800,
+    "timedOut": false,
+    "concurrentDrain": "subprocess.Popen.communicate",
+    "stdin": "Complete verified bytes, unchanged, without prefix/suffix; fresh process"
+  },
+  "input": {
+    "file": "research/unified-review-input-v2.ko.md",
+    "bytes": 529500,
+    "sha256": "e2f36bcaa958e6af9d0854c0498afe890da49483c043845ef6ef62e23a4a0de9",
+    "verifiedImmediatelyBeforeInvocation": true,
+    "priorNativeVerdictsIncluded": false,
+    "otherReviewerOutputIncluded": false
+  },
+  "output": {
+    "bytes": 29225,
+    "sha256": "c474fe256769d5715589fbbfc4c6d2981c088aca0a7e32ab0b9a274c70c52c66",
+    "serialization": "Exact original native result string encoded UTF-8, no added heading or newline"
+  },
+  "isolation": {
+    "cwd": "Initially empty unique temporary directory, removed in finally",
+    "homeAndAuth": "Original HOME and auth environment preserved; credentials not read into transcript or artifacts",
+    "flags": "safe-mode, tools empty, dontAsk, strict empty MCP, slash commands disabled, session persistence disabled",
+    "limits": "Native CLI can update HOME/config metadata; flags do not attest full configuration immutability or provider-side behavior",
+    "fallbackOrSubstitution": false,
+    "independentToolsUsed": false,
+    "productOrHostSettingsChangedByExecutor": false
+  },
+  "observations": {
+    "responseType": "result",
+    "responseSubtype": "success",
+    "isError": false,
+    "modelUsageKeys": [
+      "claude-opus-5-5"
+    ],
+    "numTurns": 1,
+    "permissionDenialCount": 0,
+    "stderrBytes": 0,
+    "stderrToolCommandMarkers": 0,
+    "actualToolInvocationEvidence": "Native result JSON contains no tool_use events; num_turns=1, stderr empty, no reported permission denials. JSON result-only surface is not a full tool-event trace; no tools observed, not hidden behavior attestation. Packet echoes excluded."
+  },
+  "failure": null
+}

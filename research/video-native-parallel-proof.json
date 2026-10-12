@@ -1,0 +1,70 @@
+{
+  "verifiedAt": "2026-10-11T13:14:12.436Z",
+  "purpose": "New full original video analysis, separate from prior native reviews",
+  "sameInput": {
+    "path": "research/video-review-input.ko.md",
+    "bytes": 205168,
+    "sha256": "c046de5447908e18d0762a533058d49fe8df4699bff90ac3bdc78a9fb0b5db3b",
+    "sources": [
+      "research/video-adversarial-contract.ko.md",
+      "research/video-mAKUL12h1n8-reanalysis.ko.md",
+      "research/video-mAKUL12h1n8-tools.ko.md",
+      "research/video-mAKUL12h1n8-portable.ko.md",
+      "research/video-mAKUL12h1n8-primary-checks.ko.md",
+      "research/video-mAKUL12h1n8-source-provenance.json",
+      "research/video-mAKUL12h1n8-claims-check.json",
+      "research/video-mAKUL12h1n8-transcript.timed.en.txt"
+    ]
+  },
+  "checks": {
+    "inputUnchanged": true,
+    "inputBytes": 205168,
+    "opusInputMatches": true,
+    "solInputMatches": true,
+    "opusNativeSuccess": true,
+    "opusCanonicalModelPresent": true,
+    "opusConfiguredXhigh": true,
+    "opusRawHashMatches": true,
+    "opusResultExactlyNativeJsonResult": true,
+    "opusResultHashMatches": true,
+    "solNativeSuccess": true,
+    "solObservedBannerModel": true,
+    "solObservedXhigh": true,
+    "solResultHashMatches": true,
+    "actualSuccessfulOverlap": true
+  },
+  "runs": [
+    {
+      "reviewer": "Opus 5.5",
+      "canonicalModelEvidence": "Native result JSON modelUsage claude-opus-5-5",
+      "configuredEffort": "xhigh",
+      "serverResolvedEffort": "unknown",
+      "startUtc": "2026-10-11T12:59:38.388347Z",
+      "endUtc": "2026-10-11T13:11:18.131229Z",
+      "durationSeconds": 699.762,
+      "exitCode": 0,
+      "outputPath": "research/video-review-opus-5.5-xhigh.ko.md",
+      "outputBytes": 44020,
+      "outputSha256": "c21be59dbd61809d8455582f87e01ff9ca34da0d076d80461d3a2b45b7c71f66"
+    },
+    {
+      "reviewer": "Codex 6.1 Sol",
+      "canonicalModelEvidence": "Native runtime banner gpt-6.1-sol/provider openai, not independent provider attestation",
+      "configuredEffort": "xhigh",
+      "nativeBannerEffort": "xhigh",
+      "startUtc": "2026-10-11T12:59:44.836342+00:00",
+      "endUtc": "2026-10-11T13:07:24.671981+00:00",
+      "durationSeconds": 459.848141542,
+      "exitCode": 0,
+      "outputPath": "research/video-review-codex-6.1-sol-xhigh.ko.md",
+      "outputBytes": 26732,
+      "outputSha256": "67bed62334d1931a092ade70d36bd70ca898da2cb7db2c8a370bf32721af2edd"
+    }
+  ],
+  "successfulOverlapSeconds": 459.835,
+  "overlapPrecision": "UTC timestamps parsed to milliseconds",
+  "independentReviews": true,
+  "otherReviewerOutputsOrPriorVerdictsIncluded": false,
+  "toolObservationLimit": "Opus final metadata and configured empty tool/MCP allowlists, Codex prompt-excluded stderr markers; not provider-internal complete audit",
+  "productRuntimeOrQualityRecoveryValidation": false
+}

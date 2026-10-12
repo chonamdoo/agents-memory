@@ -1,0 +1,63 @@
+{
+  "round": 1,
+  "argv": [
+    "/Users/namdoo/.nvm/versions/node/v24.14.1/bin/codex",
+    "exec",
+    "--model",
+    "gpt-6.1-sol",
+    "-c",
+    "model_reasoning_effort=\"xhigh\"",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--ephemeral",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "-"
+  ],
+  "input": {
+    "path": "research/local-first-design-round1-v2-input.ko.md",
+    "bytes": 90057,
+    "sha256": "4bfcddf22a42ce9ff8976dc1b0ef05747bb2e9f0c100af20e2ebdb2756eb27bc"
+  },
+  "output": {
+    "path": "research/local-first-codex-round1.ko.md",
+    "bytes": 29253,
+    "sha256": "5001008d4bd58536c093c93d097392e07beff93627cb2c80fd8d4c9d2956144b"
+  },
+  "process_start_utc": "2026-10-11T16:31:36.100Z",
+  "process_end_utc": "2026-10-11T16:40:46.854Z",
+  "exit_code": 0,
+  "signal": null,
+  "observed_banner": {
+    "model": "gpt-6.1-sol",
+    "provider": "openai",
+    "reasoning_effort": "xhigh"
+  },
+  "configured_reasoning_effort": "xhigh",
+  "actual_server_reasoning_effort": "unknown",
+  "provider_attestation": "CLI banner only; not cryptographic provider attestation",
+  "tool_call_markers_excluding_input": [],
+  "tool_call_verification": "No CLI execution/tool markers observed after excluding the source packet",
+  "security": {
+    "fresh_empty_cwd": true,
+    "private_directories_mode": "0700",
+    "auth_copy_mode": "0600",
+    "auth_only": true,
+    "environment_allowlist": [
+      "HOME",
+      "CODEX_HOME",
+      "PATH",
+      "XDG_CONFIG_HOME",
+      "XDG_CACHE_HOME",
+      "XDG_STATE_HOME",
+      "TMPDIR",
+      "LANG",
+      "TZ"
+    ],
+    "sandbox": "read-only",
+    "ignore_user_config": true,
+    "ignore_rules": true,
+    "ephemeral": true
+  }
+}

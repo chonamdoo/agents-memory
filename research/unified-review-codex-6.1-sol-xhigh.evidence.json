@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "purpose": "Final v2 independent native complete-conversation adversarial review; runner authored no substantive findings",
+  "argv": [
+    "codex",
+    "exec",
+    "--model",
+    "gpt-6.1-sol",
+    "-c",
+    "model_reasoning_effort=\"xhigh\"",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--ephemeral",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "-"
+  ],
+  "binary": {
+    "requested_absolute_binary_used": true,
+    "name": "codex",
+    "version_observed_in_runtime_banner": "OpenAI Codex v0.162.1"
+  },
+  "input": {
+    "path": "research/unified-review-input-v2.ko.md",
+    "bytes": 529500,
+    "sha256": "e2f36bcaa958e6af9d0854c0498afe890da49483c043845ef6ef62e23a4a0de9",
+    "expected_bytes": 529500,
+    "expected_sha256": "e2f36bcaa958e6af9d0854c0498afe890da49483c043845ef6ef62e23a4a0de9",
+    "verified_immediately_before_execution": true,
+    "transport": "Complete unchanged bytes via stdin; no prefix/suffix/summary",
+    "communicate_completed_with_full_input": true,
+    "final_packet_version": 2
+  },
+  "output": {
+    "path": "research/unified-review-codex-6.1-sol-xhigh.ko.md",
+    "bytes": 35588,
+    "sha256": "a741efd3fee1b2f632a3dd678918388f7ec9ae39939adc62f6e3d825ffed9968",
+    "source": "Native stdout unchanged"
+  },
+  "execution": {
+    "start_utc": "2026-10-11T15:13:44.311097+00:00",
+    "end_utc": "2026-10-11T15:26:25.869902+00:00",
+    "duration_seconds": 761.5809052920001,
+    "deadline_seconds": 1800,
+    "exit_code": 0,
+    "timed_out": false,
+    "safe_error": null,
+    "native_success": true
+  },
+  "isolation": {
+    "cwd_initially_empty": true,
+    "private_workspace_mode": "0700",
+    "auth_copy_mode": "0600",
+    "auth_copy_only": true,
+    "existing_config_rules_sessions_memory_plugins_mcp_copied": false,
+    "environment_allowlist": [
+      "CODEX_HOME",
+      "HOME",
+      "LANG",
+      "PATH",
+      "TMPDIR",
+      "TZ",
+      "XDG_CACHE_HOME",
+      "XDG_CONFIG_HOME",
+      "XDG_DATA_HOME",
+      "XDG_STATE_HOME"
+    ],
+    "inherited_model_provider_mcp_variables": false,
+    "separate_home_codex_home_xdg_tmp": true,
+    "temporary_workspace_and_auth_deleted": true,
+    "original_auth_config_modified": false,
+    "source_packet_product_code_modified": false,
+    "fallback_or_substitution": false,
+    "v1_review_entered_v2_prompt_or_context": false
+  },
+  "native_identity_and_effort": {
+    "source": "Native stderr runtime banner",
+    "observed": {
+      "model": "gpt-6.1-sol",
+      "provider": "openai",
+      "reasoning_effort": "xhigh"
+    },
+    "requested_model": "gpt-6.1-sol",
+    "requested_reasoning_effort": "xhigh",
+    "banner_matches_request": true,
+    "canonical_provider_model_source_proof_available": false,
+    "provider_internal_identity_or_effort_attestation": false,
+    "limitations": "CLI runtime banner is not independent cryptographic/provider-side identity or hidden-effort attestation"
+  },
+  "stderr_observations": {
+    "raw_stderr_retained_or_published": false,
+    "account_session_ids_or_workdir_published": false,
+    "exact_input_echo_removed_before_scanning": true,
+    "input_echo_occurrences_removed": 1,
+    "structural_marker_counts": {
+      "mcp_starting": 0,
+      "mcp_ready": 0,
+      "mcp_failed": 0,
+      "command_exec": 0,
+      "command_result": 0,
+      "external_tool": 0
+    },
+    "external_command_or_tool_calls_observed": false,
+    "observation_scope": "Prompt-excluded native stderr structural markers only; not a complete provider-side audit"
+  },
+  "rubric_observations": {
+    "substantive_korean_review": true,
+    "finding_ids": [
+      "F1",
+      "F2",
+      "F3",
+      "F4",
+      "F5",
+      "F6",
+      "F7",
+      "F8"
+    ],
+    "required_sections_present": 5
+  },
+  "superseded_v1": {
+    "receipt": {
+      "exit_code": 0,
+      "input_bytes": 523943,
+      "input_sha256": "ae2689ce9d9d4eb162739bb77a939f95f8204f16bda5435aff3c0df55b914adf",
+      "stdout_bytes": 34281,
+      "stdout_sha256": "c4d7917a0d2e0e50a89087230395e39d20357b2605f08164d49f2ba7c34c7428",
+      "start_utc": "2026-10-11T15:03:25.835361+00:00",
+      "end_utc": "2026-10-11T15:13:19.796695+00:00",
+      "superseded": true
+    },
+    "counts_as_final": false,
+    "raw_text_available": false,
+    "reason": "Discarded before distinct superseded file authorization; not reconstructed"
+  }
+}

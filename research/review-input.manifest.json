@@ -1,0 +1,24 @@
+{
+  "sha256": "0735cfb4c2fd2f2251acab3373f862d0e5c2d99e0191526edd5fa1def22f51d3",
+  "bytes": 183259,
+  "characters": 128983,
+  "files": [
+    "research/adversarial-review-contract.ko.md",
+    "research/provided-materials.ko.md",
+    "research/design-contract.ko.md",
+    "research/impact-comparison.ko.md",
+    "research/papers.ko.md",
+    "research/github-memory.ko.md",
+    "research/cloud-mcp-security.ko.md"
+  ],
+  "requestedReviewers": [
+    {
+      "model": "claude-opus-5-5",
+      "effort": "xhigh"
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "effort": "xhigh"
+    }
+  ]
+}

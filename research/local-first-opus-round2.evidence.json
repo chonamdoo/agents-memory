@@ -1,0 +1,69 @@
+{
+  "round": 2,
+  "argv": [
+    "/Users/namdoo/.local/bin/claude",
+    "-p",
+    "--model",
+    "claude-opus-5-5",
+    "--effort",
+    "xhigh",
+    "--safe-mode",
+    "--tools",
+    "",
+    "--permission-mode",
+    "dontAsk",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "{\"mcpServers\":{}}",
+    "--disable-slash-commands",
+    "--no-session-persistence",
+    "--output-format",
+    "json"
+  ],
+  "input": {
+    "path": "/Users/namdoo/Developer/Aiproject/agent-memory-mcp/research/local-first-design-round2-input.ko.md",
+    "bytes": 213872,
+    "sha256": "514b2db6201d030637fbd8676c7d9f8c641ea5b25628c4791706036ae58d9fb7"
+  },
+  "output": {
+    "path": "research/local-first-opus-round2.ko.md",
+    "bytes": 29385,
+    "sha256": "f7146c8b25fc340b14fc2518849050f9441d78a700f2dc41ffe84564f908f029"
+  },
+  "process": {
+    "startUTC": "2026-10-11T16:53:39.518Z",
+    "endUTC": "2026-10-11T17:03:04.112Z",
+    "exitCode": 0
+  },
+  "observed": {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "canonicalModelUsageKeys": [
+      "claude-opus-5-5"
+    ],
+    "canonicalModel": "claude-opus-5-5",
+    "provider": "firstParty",
+    "configuredEffort": "xhigh",
+    "actualServerEffort": "unknown; no explicit server effort attestation",
+    "numTurns": 1,
+    "stderrBytes": 0,
+    "permissionDenialsCount": 0,
+    "subagentsSpawned": 0,
+    "webSearchRequests": 0,
+    "safetyStops": 0
+  },
+  "toolUse": {
+    "enabledTools": [],
+    "mcpServers": {},
+    "evidence": "CLI --tools empty, --safe-mode, --strict-mcp-config empty MCP, --disable-slash-commands; one turn, zero subagents, zero web-search requests, zero permission denials",
+    "limitation": "Final-result JSON does not independently enumerate API tool-use blocks"
+  },
+  "isolation": {
+    "freshEmptyCwd": true,
+    "noSessionPersistence": true,
+    "originalHOMEAuthPreserved": true,
+    "homeUsageMetadataMayChange": true,
+    "temporaryCwdRemoved": true
+  }
+}

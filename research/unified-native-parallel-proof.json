@@ -1,0 +1,48 @@
+{
+  "finalPacketVersion": 2,
+  "inputBytes": 529500,
+  "inputSha256": "e2f36bcaa958e6af9d0854c0498afe890da49483c043845ef6ef62e23a4a0de9",
+  "identicalInputVerified": true,
+  "parentRecomputedAllOutputHashes": true,
+  "successfulNativeProcessesOverlapSeconds": 601.227,
+  "overlapPrecision": "UTC interval comparison at JavaScript millisecond precision; process concurrency, not provider GPU scheduling attestation",
+  "nativeReviews": [
+    {
+      "model": "gpt-6.1-sol",
+      "provider": "openai",
+      "configuredEffort": "xhigh",
+      "observedEffort": "xhigh in native CLI banner",
+      "providerResolvedEffortAttested": false,
+      "exitCode": 0,
+      "startedAtUtc": "2026-10-11T15:13:44.311097+00:00",
+      "endedAtUtc": "2026-10-11T15:26:25.869902+00:00",
+      "outputBytes": 35588,
+      "outputSha256": "a741efd3fee1b2f632a3dd678918388f7ec9ae39939adc62f6e3d825ffed9968",
+      "evidence": "research/unified-review-codex-6.1-sol-xhigh.evidence.json"
+    },
+    {
+      "model": "claude-opus-5-5",
+      "configuredEffort": "xhigh",
+      "canonicalModelUsageKeys": [
+        "claude-opus-5-5"
+      ],
+      "providerResolvedEffortAttested": false,
+      "observedEffort": "No explicit returned effort field",
+      "exitCode": 0,
+      "startedAtUtc": "2026-10-11T15:13:32.601388+00:00",
+      "endedAtUtc": "2026-10-11T15:23:45.538936+00:00",
+      "outputBytes": 29225,
+      "outputSha256": "c474fe256769d5715589fbbfc4c6d2981c088aca0a7e32ab0b9a274c70c52c66",
+      "evidence": "research/unified-review-opus-5.5-xhigh.evidence.json"
+    }
+  ],
+  "supersededV1DoesNotCount": true,
+  "otherReviewerOutputOrV1OutputEnteredFinalPrompts": false,
+  "limits": [
+    "Two independent native reviews of the same frozen design/source packet, not live product security tests",
+    "Original auth required to invoke requested native models; no account credentials in packet/artifacts",
+    "Opus CLI can modify HOME metadata; cannot attest configuration immutability",
+    "No hidden model/provider effort or no-tools cryptographic attestation",
+    "No product token/cost/quality or company-account-policy validation"
+  ]
+}

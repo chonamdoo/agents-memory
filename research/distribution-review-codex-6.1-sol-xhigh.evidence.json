@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "purpose": "Independent native Codex adversarial review; not runner-sealed Agent Flow approval or gate evidence.",
+  "argv": [
+    "/Users/namdoo/.nvm/versions/node/v24.14.1/bin/codex",
+    "exec",
+    "--model",
+    "gpt-6.1-sol",
+    "-c",
+    "model_reasoning_effort=\"xhigh\"",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--ephemeral",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "-"
+  ],
+  "cli_version": "codex-cli 0.162.1",
+  "cli_version_exit_code": 0,
+  "input": {
+    "path": "research/distribution-review-input.ko.md",
+    "bytes": 180322,
+    "sha256": "36d909bc0a8a024b958b76edb23bf7d62c77b1c780e99216a0835aa4d24455a5",
+    "expected_bytes": 180322,
+    "expected_sha256": "36d909bc0a8a024b958b76edb23bf7d62c77b1c780e99216a0835aa4d24455a5",
+    "verified_before_execution": true,
+    "transport": "stdin only; unchanged frozen UTF-8 bytes; no prefix, suffix, added system prompt, or summary"
+  },
+  "output": {
+    "path": "research/distribution-review-codex-6.1-sol-xhigh.ko.md",
+    "bytes": 23230,
+    "sha256": "44328e620c5fef598c5205cb51a48aa5aab6685626e3d5853134d3b78a097b39",
+    "source": "native CLI stdout, unmodified"
+  },
+  "execution": {
+    "start_utc": "2026-10-11T05:43:47.290554+00:00",
+    "end_utc": "2026-10-11T05:49:22.900235+00:00",
+    "duration_seconds": 335.607159,
+    "deadline_seconds": 2700,
+    "exit_code": 0,
+    "timed_out": false,
+    "safe_error": null,
+    "native_success": true
+  },
+  "isolation": {
+    "cwd_initially_empty": true,
+    "separate_codex_home_mode": "0700",
+    "auth_copy_mode": "0600",
+    "auth_copy_only": true,
+    "existing_config_rules_sessions_memory_plugins_copied": false,
+    "isolated_os_home_and_xdg_paths": true,
+    "inherited_codex_openai_anthropic_mcp_environment_removed": true,
+    "temporary_cwd_home_and_auth_copy_deleted": true,
+    "input_or_project_code_modified": false,
+    "fallback_or_substitution": false
+  },
+  "native_identity_and_effort": {
+    "source": "native stderr runtime banner only",
+    "observed": {
+      "model": "gpt-6.1-sol",
+      "provider": "openai",
+      "reasoning_effort": "xhigh"
+    },
+    "requested_model": "gpt-6.1-sol",
+    "requested_provider": "openai",
+    "requested_reasoning_effort": "xhigh",
+    "banner_matches_request": true,
+    "provider_internal_identity_or_effort_attestation": false,
+    "attestation_limitation": "Runtime banner observation is not hidden provider-side identity or reasoning-effort attestation."
+  },
+  "stderr_observations": {
+    "full_stderr_retained_or_published": false,
+    "input_echo_removed_before_scanning": true,
+    "trace_scan_reliable": true,
+    "mcp_startup": "not_observed",
+    "mcp_lifecycle_marker_counts": {
+      "starting": 0,
+      "ready": 0,
+      "failed": 0
+    },
+    "command_exec_marker_count": 0,
+    "command_result_line_count": 0,
+    "external_tool_marker_count": 0,
+    "external_command_or_tool_calls_observed": false,
+    "observation_scope": "Native stderr structural markers only; not a complete provider-side audit; command/tool text and session IDs omitted."
+  }
+}

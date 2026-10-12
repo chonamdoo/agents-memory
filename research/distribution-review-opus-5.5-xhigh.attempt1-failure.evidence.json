@@ -1,0 +1,106 @@
+{
+  "runner": "native Claude CLI invocation; not Agent Flow runner-sealed approval/gate evidence",
+  "argv": [
+    "/Users/namdoo/.local/bin/claude",
+    "-p",
+    "--model",
+    "claude-opus-5-5",
+    "--effort",
+    "xhigh",
+    "--safe-mode",
+    "--tools",
+    "",
+    "--permission-mode",
+    "dontAsk",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "{\"mcpServers\":{}}",
+    "--disable-slash-commands",
+    "--no-session-persistence",
+    "--output-format",
+    "json"
+  ],
+  "cli_version": "2.1.296 (Claude Code)",
+  "requested_model": "claude-opus-5-5",
+  "requested_effort": "xhigh",
+  "effort_attestation": "server resolved effort는 JSON으로 반환되지 않아 attestation 불가",
+  "input": {
+    "path": "research/distribution-review-input.ko.md",
+    "bytes": 180322,
+    "sha256": "36d909bc0a8a024b958b76edb23bf7d62c77b1c780e99216a0835aa4d24455a5",
+    "delivery": "Exact full UTF-8 bytes via stdin only, with no prefix, suffix, or added prompt."
+  },
+  "start": "2026-10-11T05:44:04.316885+00:00",
+  "end": "2026-10-11T05:44:05.209150+00:00",
+  "duration_seconds": 0.891977,
+  "deadline_seconds": 2700,
+  "exit_code": 1,
+  "timed_out": false,
+  "launch_error_type": null,
+  "stdout_json_parse_error_type": null,
+  "native_subtype": "success",
+  "native_is_error": true,
+  "native_success_field": null,
+  "native_success": false,
+  "result_present": true,
+  "accepted_success": false,
+  "native_model_usage_keys": [],
+  "requested_model_identity_attested": false,
+  "usage": {
+    "input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 0,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": ""
+  },
+  "modelUsage": {},
+  "output": {
+    "raw": {
+      "path": "research/distribution-review-opus-5.5-xhigh.raw.json",
+      "bytes": 1213,
+      "sha256": "e9472515a99c4b35e6dcaf87a1eecf14335b0f2d6a032f47ba8f9ed793ccf0b4"
+    },
+    "result": {
+      "path": "research/distribution-review-opus-5.5-xhigh.ko.md",
+      "bytes": 34,
+      "sha256": "ddcf5c1f4a3b398837003d800ea793d0a3ebb7ec0a1304b3186393460a7d5bd6",
+      "native_text_unmodified": true
+    }
+  },
+  "stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "contents_retained": false
+  },
+  "isolation": {
+    "cwd_initially_empty": true,
+    "temporary_home": true,
+    "inherited_auth_environment": true,
+    "auth_files_copied_without_inspection": [
+      "home_config"
+    ],
+    "tools": [],
+    "mcp_servers": {},
+    "safe_mode": true,
+    "slash_commands_disabled": true,
+    "session_persistence_disabled": true,
+    "temporary_execution_files_removed": true,
+    "original_auth_and_config_not_modified_by_runner": true
+  },
+  "privacy": {
+    "session_uuid_excluded": true,
+    "account_credentials_excluded": true,
+    "native_raw_json_not_for_direct_issue_publication": true
+  },
+  "failure_category": "authentication_unavailable_in_isolated_home",
+  "missing_prerequisite": "Current Claude authentication usable from the isolated HOME without reading or modifying original credentials."
+}

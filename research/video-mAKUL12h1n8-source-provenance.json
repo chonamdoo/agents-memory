@@ -1,0 +1,60 @@
+{
+  "fetchedAt": "2026-10-11T12:37:28.153Z",
+  "videoId": "mAKUL12h1n8",
+  "title": "Why AI Coding Agents Need a Memory Pipeline",
+  "channel": "Boundary",
+  "uploadDate": "20261009",
+  "durationSeconds": 3214,
+  "requestedUrl": "https://www.youtube.com/watch?v=mAKUL12h1n8&t=500s",
+  "source": "Fresh yt-dlp download of YouTube automatic en-orig JSON3, no cookies or login; read metadata fallback had no captions, downloader succeeded",
+  "captionFile": "research/video-mAKUL12h1n8-refetch.en-orig.json3",
+  "captionBytes": 1102804,
+  "captionSha256": "a12be7a5b4cd8916e14ab0d027515e2f51ee915a5370b19f45c75edc8553b734",
+  "textCueCount": 1511,
+  "firstCueMs": 160,
+  "lastCueMs": 3213599,
+  "plainTranscriptFile": "research/video-mAKUL12h1n8-transcript.en.txt",
+  "timedTranscriptFile": "research/video-mAKUL12h1n8-transcript.timed.en.txt",
+  "normalizedFreshVsSuppliedRawEqual": true,
+  "normalizedFreshVsSuppliedPlainEqual": false,
+  "fullTranscriptIncluded": true,
+  "manualTranscription": false,
+  "allVideoFramesValidated": false,
+  "normalizedFreshVsSuppliedPlainBodyEqual": true,
+  "suppliedPlainMetadataHeaderExcludedLines": 6,
+  "inspectedCachedVideo": {
+    "container": {
+      "durationSeconds": 3213.914,
+      "bytes": 286685607,
+      "codec": "av1",
+      "audio": "opus",
+      "resolution": "1920x1080",
+      "fps": "24/1"
+    },
+    "origin": "User-supplied cached MP4; ffprobe run and two frames freshly decoded, not a new video download",
+    "frames": [
+      {
+        "seconds": 500,
+        "file": "research/video-mAKUL12h1n8-08m20s.png",
+        "observed": "Memory bench UI; CLAUDE.md and region-scoped Where to look / Rules / Language facts with session and people citation counts. Corpus header: 1,040 sessions, 30,963 messages, 9 people, Feb 18 to Jun 18 2026."
+      },
+      {
+        "seconds": 2325,
+        "file": "research/video-mAKUL12h1n8-38m45s.png",
+        "observed": "Memory bench pipeline with Jev filter/classify/pre-screen, GPT-6 Sol Find facts/Group facts, Opus 5.5 Find rules; baml query invocations in terminal. This is display labeling, not independently attested API model resolution."
+      }
+    ]
+  },
+  "analysisRead": {
+    "wholeTranscript": true,
+    "lines": 1515,
+    "ranges": [
+      "1-450",
+      "451-900",
+      "901-1350",
+      "1351-1515"
+    ],
+    "wordLevelManualAlignment": false,
+    "allFramesDecoded": false
+  }
+}

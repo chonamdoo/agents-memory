@@ -1,0 +1,22 @@
+{
+  "verifiedAt": "2026-10-11T13:25:47.653Z",
+  "issueUrl": "https://github.com/chonamdoo/agent-memory-mcp/issues/1",
+  "repository": "https://api.github.com/repos/chonamdoo/agent-memory-mcp",
+  "number": 1,
+  "title": "독립 OSS 메모리 파이프라인: 회사 로컬·개인 클라우드 공통 설계 및 병렬 적대적 리뷰",
+  "state": "open",
+  "updatedAt": "2026-10-11T13:25:10Z",
+  "method": "PATCH existing issue body then independent GET exact body/sha256 comparison",
+  "bodyUtf8Bytes": 69471,
+  "bodyCharacters": 47172,
+  "bodySha256": "443a97f709aad6e8ba0bf59835705d19407e3dd438f8769a344de903238b8dcc",
+  "bodyExactlyMatchesLocal": true,
+  "titleUnchanged": true,
+  "newSourceSectionPresent": true,
+  "newNativeReviewSectionPresent": true,
+  "unrelatedProjectApplicationExcluded": true,
+  "nativeReviewInputSha256": "c046de5447908e18d0762a533058d49fe8df4699bff90ac3bdc78a9fb0b5db3b",
+  "nativeParallelProof": "research/video-native-parallel-proof.json",
+  "productRuntimeValidated": false,
+  "codeChangesOrRepositoryVisibilityChanges": false
+}

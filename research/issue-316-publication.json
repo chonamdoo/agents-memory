@@ -1,0 +1,15 @@
+{
+  "issue": "chonamdoo/agent-flow#316",
+  "commentId": 6105788769,
+  "url": "https://github.com/chonamdoo/agent-flow/issues/316#issuecomment-6105788769",
+  "author": "chonamdoo",
+  "createdAt": "2026-10-11T05:21:26Z",
+  "updatedAt": "2026-10-11T05:21:26Z",
+  "sourceFile": "research/issue-316-cloud-memory.ko.md",
+  "sha256Local": "d126cbff96f16dfc4c050dd815607e844f1dea262340c34f6883946744d20494",
+  "sha256Published": "d126cbff96f16dfc4c050dd815607e844f1dea262340c34f6883946744d20494",
+  "exactBodyMatch": true,
+  "characters": 45139,
+  "utf8Bytes": 65128,
+  "verification": "GitHub REST comment read-back; exact UTF-8 body digest comparison"
+}
