@@ -8,13 +8,14 @@ import pytest
 
 from agents_memory.config import ModelConfig
 from agents_memory.domain import (
+    Claim,
     ClaimDraft,
     DomainError,
+    EvidenceSpan,
     Quote,
-    ReflectionDraft,
 )
 from agents_memory.models import _LLAMA_REVISION, _PINS, LocalSemanticRuntime
-from agents_memory.semantic_contract import GeneratedExtraction
+from agents_memory.semantic_contract import GeneratedExtraction, GeneratedReflection
 
 
 @pytest.fixture
@@ -105,10 +106,11 @@ def test_incomplete_generated_inventory_is_not_silently_an_empty_extraction(mode
 
 def test_missing_reflection_limitations_are_rejected_before_default(model_config, monkeypatch):
     runtime = runtime_without_artifact_io(model_config, monkeypatch)
-    generated_response(runtime, monkeypatch, {"sentences": [{"text": "JSON is the format.",
-                                                           "claim_ids": ["claim_a"]}]})
+    generated_response(runtime, monkeypatch, {"answer": {"kind": "assertions", "sentences": [
+        {"text": "JSON is the format.", "claim_ids": ["claim_a"]},
+    ]}})
     with pytest.raises(DomainError) as rejected:
-        runtime._generate(ReflectionDraft, "reflect", "claim data")
+        runtime._generate(GeneratedReflection, "reflect", "claim data")
     assert rejected.value.code == "MODEL_OUTPUT_INVALID"
 
 
@@ -235,10 +237,16 @@ def test_comment_only_semantic_touch_does_not_block_live_approval(model_config, 
     assert model_config.revision() == previous
 
 
-def test_live_changed_prompt_cannot_relabel_loaded_inference(model_config, isolated_semantic_sources):
+@pytest.mark.parametrize(("filename", "change"), [
+    ("prompts.py", 'SYSTEM_INSTRUCTION += "Changed inference instruction."'),
+    ("models.py", "LocalSemanticRuntime._claims_payload = lambda self, claims: []"),
+])
+def test_live_changed_inference_cannot_relabel_loaded_approval(model_config, isolated_semantic_sources, filename, change):
     runtime = LocalSemanticRuntime(model_config)
-    path = isolated_semantic_sources / "prompts.py"
-    path.write_text(path.read_text() + '\nSYSTEM_INSTRUCTION += "Changed inference instruction."\n')
+    vector_revision = model_config.vector_revision()
+    path = isolated_semantic_sources / filename
+    path.write_text(path.read_text() + "\n" + change + "\n")
+    assert model_config.vector_revision() == vector_revision
     with pytest.raises(DomainError) as caught:
         model_config.revision()
     assert caught.value.code == "MODEL_ROUTE_BLOCKED"
@@ -361,3 +369,26 @@ async def test_response_budget_abort_cannot_attest_generation_completion(model_c
         with pytest.raises(DomainError) as caught:
             await runtime.close()
         assert caught.value.code == "MODEL_PROVIDER_COMPLETION_UNKNOWN"
+
+
+@pytest.mark.parametrize(("purpose", "span_fields", "identified"), [
+    ("consolidation", {"source_id", "source_revision", "source_speaker", "source_event_time",
+                       "source_recorded_at", "byte_start", "byte_end", "quote"}, True),
+    ("rerank", {"source_speaker", "source_event_time", "source_recorded_at", "quote"}, False),
+    ("reflection", {"source_speaker", "quote"}, True),
+])
+def test_model_input_projection_is_purpose_bounded(model_config, monkeypatch, purpose, span_fields, identified):
+    from datetime import UTC, datetime
+
+    runtime = runtime_without_artifact_io(model_config, monkeypatch)
+    clock = datetime(2026, 1, 1, tzinfo=UTC)
+    draft = ClaimDraft(statement="JSON is the format.", kind="fact", subject="format", predicate="is", object="JSON",
+        polarity="positive", modality="asserted", evidence=(Quote(source_id="source_a", quote="JSON"),))
+    span = EvidenceSpan(source_id="source_a", source_revision=1, source_speaker="human", source_event_time=None,
+        source_recorded_at=clock, byte_start=0, byte_end=4, quote="JSON")
+    claim = Claim(id="claim_a", binding_id="binding_a", draft=draft, evidence=(span,),
+        input_source_ids=("source_a",), snapshot=None, created_at=clock)
+    [item] = runtime._claims_payload([claim], purpose=purpose)
+    assert set(item["evidence"][0]) == span_fields
+    assert "evidence" not in item["draft"] and "binding_id" not in item and "created_at" not in item
+    assert {"id", "snapshot"} <= set(item) if identified else set(item) == {"draft", "evidence"}

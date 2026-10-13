@@ -39,6 +39,7 @@ def claim(identifier="claim-001", *, polarity="negative"):
             evidence=(Quote(source_id="source-001", quote=quote, byte_start=0),),
         ),
         evidence=(EvidenceSpan(source_id="source-001", source_revision=2, source_speaker="human",
+            source_event_time=None, source_recorded_at=datetime(2026, 10, 10, tzinfo=UTC),
             byte_start=0, byte_end=len(quote.encode("utf-8")), quote=quote),),
         input_source_ids=("source-001",), snapshot="snapshot-001",
         created_at=datetime(2026, 10, 11, tzinfo=UTC),
@@ -105,6 +106,7 @@ def test_original_qualification_is_not_lost_when_model_classification_is_incompl
     original_scope = "이 금지 규칙은 회사 프로젝트에 적용하며 익명화된 합성 데이터는 예외다."
     qualifier = EvidenceSpan(
         source_id="source-001", source_revision=2, source_speaker="human",
+        source_event_time=None, source_recorded_at=selected.evidence[0].source_recorded_at,
         byte_start=selected.evidence[0].byte_end + 1,
         byte_end=selected.evidence[0].byte_end + 1 + len(original_scope.encode()),
         quote=original_scope,
@@ -128,6 +130,7 @@ def test_candidate_cannot_fit_by_discarding_original_qualifying_evidence():
     selected = selected.model_copy(update={
         "evidence": (EvidenceSpan(
             source_id="source-001", source_revision=2, source_speaker="human", byte_start=0,
+            source_event_time=None, source_recorded_at=selected.evidence[0].source_recorded_at,
             byte_end=len(long_qualification.encode()), quote=long_qualification,
         ),),
     })

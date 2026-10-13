@@ -20,6 +20,7 @@ from .domain import (
     ActiveRule,
     Admission,
     Binding,
+    BindingRelocation,
     CaptureCommand,
     Claim,
     ClaimDraft,
@@ -302,6 +303,28 @@ class Store:
             await self._save_receipt(connection, current, "realm", "register_binding", key, digest, value.id)
             return value
 
+    async def relocate_binding(self, actor: Principal, command: BindingRelocation) -> Binding:
+        digest = canonical_digest(command.model_dump(mode="json"))
+        async with self._tx() as (connection, _):
+            current = await self._actor(connection, actor, command.binding_id, roles=(Role.OPERATOR,))
+            row = await connection.fetchrow("SELECT * FROM am_bindings WHERE id=$1 AND realm=$2 AND owner_id=$3", command.binding_id, current.realm, current.id)
+            if row is None:
+                raise _denied()
+            receipt = await self._receipt(connection, current, command.binding_id, "relocate_binding", command.idempotency_key, digest)
+            if receipt:
+                result = json.loads(receipt["result"]) if isinstance(receipt["result"], str) else receipt["result"]
+                committed = Binding.model_validate(result)
+                if row["locator"] != committed.locator or row["revision"] != committed.revision:
+                    raise DomainError("BINDING_RELOCATION_CONFLICT", "The committed relocation was superseded", effect=EffectState.COMMITTED)
+                return committed
+            if row["revision"] != command.expected_revision or row["locator"] != command.expected_locator:
+                raise DomainError("BINDING_RELOCATION_CONFLICT", "The project locator or revision changed")
+            updated = await connection.fetchrow("UPDATE am_bindings SET locator=$2,revision=revision+1 WHERE id=$1 RETURNING *", command.binding_id, command.locator)
+            value = self._binding(updated)
+            await self._tick(connection)
+            await self._save_receipt(connection, current, command.binding_id, "relocate_binding", command.idempotency_key, digest, value.id, value.model_dump(mode="json"))
+            return value
+
     async def list_bindings(self, actor: Principal) -> list[Binding]:
         async with self._tx() as (connection, _):
             current = await self._actor(connection, actor)
@@ -555,10 +578,11 @@ class Store:
         return row
 
     async def _claim(self, connection, row) -> Claim:
-        spans = await connection.fetch("""SELECT span.*,source.speaker AS source_speaker FROM am_spans span
+        spans = await connection.fetch("""SELECT span.*,source.speaker AS source_speaker,
+            source.event_time AS source_event_time,source.recorded_at AS source_recorded_at FROM am_spans span
             JOIN am_sources source ON source.id=span.source_id WHERE span.claim_id=$1 ORDER BY span.ordinal""", row["id"])
         inputs = await connection.fetch("SELECT source_id FROM am_claim_sources WHERE claim_id=$1 ORDER BY source_id", row["id"])
-        evidence = tuple(EvidenceSpan(source_id=span["source_id"], source_revision=span["source_revision"], source_speaker=span["source_speaker"], byte_start=span["byte_start"], byte_end=span["byte_end"], quote=span["quote"]) for span in spans)
+        evidence = tuple(EvidenceSpan(source_id=span["source_id"], source_revision=span["source_revision"], source_speaker=span["source_speaker"], source_event_time=span["source_event_time"], source_recorded_at=span["source_recorded_at"], byte_start=span["byte_start"], byte_end=span["byte_end"], quote=span["quote"]) for span in spans)
         draft = dict(_decode(row["draft"]))
         draft["evidence"] = [Quote(source_id=span.source_id, quote=span.quote, byte_start=span.byte_start) for span in evidence]
         return Claim(id=row["id"], binding_id=row["binding_id"], draft=ClaimDraft.model_validate(draft), evidence=evidence, input_source_ids=tuple(item["source_id"] for item in inputs), snapshot=row["snapshot"], created_at=row["created_at"], state=row["state"])
@@ -640,17 +664,42 @@ class Store:
                 manifest = await connection.fetch("SELECT claim_id FROM am_reflection_claims WHERE reflection_id=$1 ORDER BY claim_id", ref)
                 if not manifest:
                     raise DomainError("INPUT_INELIGIBLE", "The reflection input manifest is unavailable")
-                for item in manifest:
-                    await self._claim_row(connection, binding_id, item["claim_id"], snapshot)
+                claims = {
+                    item["claim_id"]: await self._claim(
+                        connection, await self._claim_row(connection, binding_id, item["claim_id"], snapshot),
+                    )
+                    for item in manifest
+                }
                 draft = ReflectionDraft.model_validate(_decode(row["draft"]))
-                sentences = []
-                size = 0
-                for sentence in draft.sentences:
-                    size += len(sentence.text.encode())
-                    if size > 4096:
+                limitations = []
+                size = len(json.dumps({"sentences": [], "limitations": []}).encode("utf-8"))
+                for limitation in draft.limitations:
+                    added = len(json.dumps(limitation, ensure_ascii=False).encode("utf-8")) + 2 * bool(limitations)
+                    if size + added > 4096:
                         break
-                    sentences.append(sentence.model_dump(mode="json"))
-                result.update(sentences=sentences, partial=len(sentences) < len(draft.sentences), candidate=True)
+                    size += added
+                    limitations.append(limitation)
+                sentences = []
+                for sentence in draft.sentences if len(limitations) == len(draft.limitations) else ():
+                    provenance = {
+                        (span.source_id, span.source_revision): span.model_dump(mode="json", exclude={
+                            "quote", "byte_start", "byte_end",
+                        })
+                        for claim_id in sentence.claim_ids for span in claims[claim_id].evidence
+                    }
+                    item = {
+                        **sentence.model_dump(mode="json"),
+                        "source_provenance": list(provenance.values()),
+                    }
+                    added = len(json.dumps(item, ensure_ascii=False).encode("utf-8")) + 2 * bool(sentences)
+                    if size + added > 4096:
+                        break
+                    size += added
+                    sentences.append(item)
+                result.update(
+                    sentences=sentences, limitations=limitations, candidate=True,
+                    partial=len(sentences) < len(draft.sentences) or len(limitations) < len(draft.limitations),
+                )
             elif kind == "relation":
                 relation = await self._relation_row(connection, binding_id, ref, snapshot)
                 result.update(left_id=relation["left_id"], right_id=relation["right_id"], relation_kind=relation["kind"], reason=relation["reason"])
@@ -1084,6 +1133,11 @@ class Store:
         async with self._tx() as (connection, _):
             await self._actor(connection, actor, roles=(Role.OPERATOR,))
             epoch = await self._tick(connection)
+            if enabled:
+                await connection.execute(
+                    "UPDATE am_routes SET enabled=false,epoch=$1 WHERE purpose<>ALL($2::text[]) AND enabled",
+                    epoch, list(self.settings.allowed_model_purposes),
+                )
             for purpose in purposes:
                 await connection.execute("""INSERT INTO am_routes(purpose,revision,enabled,epoch) VALUES($1,$2,$3,$4)
                     ON CONFLICT(purpose) DO UPDATE SET revision=EXCLUDED.revision,enabled=EXCLUDED.enabled,epoch=EXCLUDED.epoch""", purpose, revision, enabled, epoch)
@@ -1304,7 +1358,7 @@ class Store:
                 body[:end].decode("utf-8")
             except UnicodeDecodeError:
                 raise DomainError("EVIDENCE_INVALID", "Evidence offsets must align to UTF-8 boundaries") from None
-            result.append(EvidenceSpan(source_id=source.id, source_revision=source.revision, source_speaker=source.speaker, byte_start=start, byte_end=end, quote=evidence.quote))
+            result.append(EvidenceSpan(source_id=source.id, source_revision=source.revision, source_speaker=source.speaker, source_event_time=source.event_time, source_recorded_at=source.recorded_at, byte_start=start, byte_end=end, quote=evidence.quote))
         return tuple(result)
 
     async def publish_reindex(self, lease: JobLease, admission: Admission, vectors: list[list[float]], lexical_rows: list[list[str]]) -> Operation:

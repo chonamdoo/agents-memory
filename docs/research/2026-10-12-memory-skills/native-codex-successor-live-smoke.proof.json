@@ -1,0 +1,70 @@
+{
+  "host": "codex",
+  "exit_code": 0,
+  "duration_seconds": 29.553,
+  "requested_model": "gpt-6.1-sol",
+  "requested_effort": "xhigh",
+  "served_model_ids_observed": [],
+  "stdin_sha256": "e166a6a07e119dc19c7b6fdaafc9b29ea7d6d4da4eb36c9c7cf259816391518e",
+  "cwd": "/Users/namdoo/Developer/Aiproject/agent-memory-mcp",
+  "calls": [
+    {
+      "name": "memory_context",
+      "server": "agents-memory",
+      "input": {
+        "mode": "recall",
+        "query": "ChronicleR21OLD ChronicleR21NULL source temporal provenance",
+        "binding_id": "binding_5a89f574d8444043a01f7c3115f5c160",
+        "max_bytes": 2400,
+        "limit": 3
+      }
+    },
+    {
+      "name": "memory_inspect",
+      "server": "agents-memory",
+      "input": {
+        "ref": "claim_3fee42a858d945f39005f3c32635f11a",
+        "binding_id": "binding_5a89f574d8444043a01f7c3115f5c160"
+      }
+    },
+    {
+      "name": "memory_inspect",
+      "server": "agents-memory",
+      "input": {
+        "ref": "claim_a6a8112db2a84e53aab8be32e019f330",
+        "binding_id": "binding_5a89f574d8444043a01f7c3115f5c160"
+      }
+    }
+  ],
+  "completions": [
+    {
+      "name": "memory_context",
+      "status": "completed",
+      "error": null
+    },
+    {
+      "name": "memory_inspect",
+      "status": "completed",
+      "error": null
+    },
+    {
+      "name": "memory_inspect",
+      "status": "completed",
+      "error": null
+    }
+  ],
+  "finals": [
+    {
+      "result": "지정한 `memory_context` 조회 후 두 claim을 `memory_inspect`로 확인하겠습니다.\n"
+    },
+    {
+      "result": "{\"OLD\":{\"source_event_time\":\"2020-01-02T00:00:00Z\",\"source_recorded_at\":\"2026-10-12T12:38:27.518664Z\",\"source_speaker\":\"human\"},\"NULL\":{\"source_event_time\":null,\"source_recorded_at\":\"2026-10-12T12:39:06.324532Z\",\"source_speaker\":\"human\"}}"
+    }
+  ],
+  "stderr_present": false,
+  "limits": [
+    "Actual CLI/tool trace, not final subsequent provider-input attestation or compliance.",
+    "Input/output token totals are not memory-only overhead.",
+    "Explicit per-invocation Codex selected-tool approval is not permanent native hook/workspace trust."
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "scope": "final added-code-comment pass only",
+  "observation_origin": "Actual checker execution earlier in this host session; transient stdout was not retained after eval kernel reset.",
+  "checker_sha256": "0eb61a66acdd1ec4031c4cb8aedf78aced785f0b69c46e50a0234241adbd3f5f",
+  "checker_asset": "/Users/namdoo/.local/share/agent-flow/checkouts/agents-memory-5b92996a/scripts/hooks/comment-checker.py",
+  "configured_asset_checksum_matches": true,
+  "runner": "python -I",
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": "",
+  "comments": [
+    {
+      "file": "tests/test_store_authority.py",
+      "text": "# Explicit fixture clocks distinguish provenance from extraction without\n# depending on wall-clock timing or interpreting the ambiguous body.",
+      "reason": "Deterministic fixture clocks establish original provenance independently of ambiguous body text and wall-clock timing."
+    }
+  ],
+  "limitations": ["Canonical checksum-equivalent checker execution is not permanent native hook trust."]
+}

@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import NoReturn, TypeVar
+from typing import Literal, NoReturn, TypeVar
 
 from pydantic import ValidationError
 
@@ -38,11 +38,12 @@ from .prompts import (
 from .semantic import (
     original_spans,
     resolve_extraction,
+    resolve_reflection,
     validate_consolidation,
-    validate_reflection,
 )
 from .semantic_contract import (
     GeneratedExtraction,
+    GeneratedReflection,
     explicit_generation_schema,
     require_generated_fields,
     route_revision,
@@ -87,6 +88,24 @@ _ORIGINAL_SHA256 = {
     },
 }
 
+
+# Model input fields are listed explicitly: models.py is part of the semantic
+# fingerprint but domain.py is not, so new domain fields must not reach a model silently.
+_SOURCE_INPUT_FIELDS = frozenset({
+    "id", "binding_id", "realm", "revision", "speaker", "origin_key", "root_run_id", "snapshot", "state",
+})
+_DRAFT_INPUT_FIELDS = frozenset({
+    "statement", "kind", "subject", "predicate", "object", "polarity", "modality",
+    "conditions", "exceptions", "valid_from", "valid_until", "entities",
+})
+_SPAN_INPUT_FIELDS = {
+    "consolidation": frozenset({
+        "source_id", "source_revision", "source_speaker", "source_event_time", "source_recorded_at",
+        "byte_start", "byte_end", "quote",
+    }),
+    "rerank": frozenset({"source_speaker", "source_event_time", "source_recorded_at", "quote"}),
+    "reflection": frozenset({"source_speaker", "quote"}),
+}
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -422,8 +441,11 @@ class LocalSemanticRuntime:
 
     async def extract(self, source: Source) -> Extraction:
         spans = original_spans(source)
+        metadata = source.model_dump(mode="json", include=_SOURCE_INPUT_FIELDS)
+        metadata["source_event_time"] = source.event_time.isoformat() if source.event_time is not None else None
+        metadata["source_recorded_at"] = source.recorded_at.isoformat()
         data = self._bounded_payload({
-            "source": source.model_dump(mode="json", exclude={"body"}),
+            "source": metadata,
             "original_spans": [span.model_dump() for span in spans],
         })
 
@@ -494,14 +516,27 @@ class LocalSemanticRuntime:
 
         return await self._run(work)
 
-    def _claims_payload(self, claims: Sequence[Claim]) -> list[dict]:
+    def _claims_payload(self, claims: Sequence[Claim], *, purpose: Literal["consolidation", "rerank", "reflection"]) -> list[dict]:
         if len(claims) > 32 or len({claim.id for claim in claims}) != len(claims):
             raise DomainError("MODEL_INPUT_INVALID", "The supplied claim manifest is invalid or too large")
-        return [claim.model_dump(mode="json") for claim in claims]
+        span_fields = _SPAN_INPUT_FIELDS[purpose]
+        payload = []
+        for claim in claims:
+            item = {
+                "draft": claim.draft.model_dump(mode="json", include=_DRAFT_INPUT_FIELDS),
+                "evidence": [
+                    span.model_dump(mode="json", include=span_fields)
+                    for span in claim.evidence
+                ],
+            }
+            if purpose != "rerank":
+                item.update(id=claim.id, snapshot=claim.snapshot)
+            payload.append(item)
+        return payload
 
     async def consolidate(self, claims: Sequence[Claim]) -> Consolidation:
         inputs = tuple(claims)
-        data = self._bounded_payload({"claims": self._claims_payload(inputs)})
+        data = self._bounded_payload({"claims": self._claims_payload(inputs, purpose="consolidation")})
         if len(inputs) < 2:
             return Consolidation(relations=())
 
@@ -514,7 +549,8 @@ class LocalSemanticRuntime:
 
     async def rerank(self, query: str, claims: Sequence[Claim]) -> list[RankedClaim]:
         inputs = tuple(claims)
-        self._bounded_payload({"query": query, "claims": self._claims_payload(inputs)})
+        payload = self._claims_payload(inputs, purpose="rerank")
+        self._bounded_payload({"query": query, "claims": payload})
         if not query.strip():
             raise DomainError("MODEL_INPUT_INVALID", "Reranking requires a nonempty query")
         if not inputs:
@@ -533,8 +569,7 @@ class LocalSemanticRuntime:
                     activation_fn=torch.nn.Identity(), backend="torch",
                     model_kwargs={"use_safetensors": True},
                 )
-            pairs = [(query, json.dumps(claim.draft.model_dump(mode="json"), ensure_ascii=False))
-                     for claim in inputs]
+            pairs = [(query, json.dumps(claim, ensure_ascii=False)) for claim in payload]
             lengths = self._reranker.tokenizer(
                 [pair[0] for pair in pairs], text_pair=[pair[1] for pair in pairs],
                 truncation=False, return_length=True,
@@ -556,14 +591,13 @@ class LocalSemanticRuntime:
 
     async def reflect(self, query: str, claims: Sequence[Claim]) -> ReflectionDraft:
         inputs = tuple(claims)
-        data = self._bounded_payload({"query": query, "claims": self._claims_payload(inputs)})
+        data = self._bounded_payload({"query": query, "claims": self._claims_payload(inputs, purpose="reflection")})
         if not inputs or not query.strip():
             raise DomainError("MODEL_INPUT_INVALID", "Reflection requires a query and evidence manifest")
 
         def work() -> ReflectionDraft:
-            result = self._generate(ReflectionDraft, REFLECTION_INSTRUCTION, data)
-            validate_reflection(result, inputs)
-            return result
+            result = self._generate(GeneratedReflection, REFLECTION_INSTRUCTION, data)
+            return resolve_reflection(result, inputs)
 
         return await self._run(work, generation=True)
 

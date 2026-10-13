@@ -1,0 +1,284 @@
+{
+  "proof_layer": "Installed leader project (Agent Flow present): owned uninstall→reinstall of Claude/Codex/OMP from the immutable stable package, then actual native host sessions in the leader cwd calling the four MCP tools against the personal local service.",
+  "observed_utc": "2026-10-13T04:17:00Z",
+  "package": {
+    "wheel_sha256": "0086e6c930c8edc278de720e292e20c6b9e2f05311d58979ade1bc5db883e142",
+    "python": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/0086e6c930c8edc278de720e292e20c6b9e2f05311d58979ade1bc5db883e142/venv/bin/python",
+    "source_tests": "917 passed, lint pass, build pass (current worker source)"
+  },
+  "route": {
+    "approved_revision": "9e01d6468d901c3f42c0f90b21db535dee25894572450ba7e2290dadab01ef59",
+    "purposes": [
+      "extraction",
+      "embedding",
+      "consolidation",
+      "rerank",
+      "reflection"
+    ],
+    "service": "AgentsMemoryMcpStable20261013R30 pid 9379 127.0.0.1:8768"
+  },
+  "cutover": {
+    "steps": [
+      {
+        "action": "uninstall",
+        "host": "claude",
+        "exit": 0
+      },
+      {
+        "action": "uninstall",
+        "host": "codex",
+        "exit": 0
+      },
+      {
+        "action": "uninstall",
+        "host": "omp",
+        "exit": 0
+      },
+      {
+        "action": "install",
+        "host": "claude",
+        "exit": 0
+      },
+      {
+        "action": "install",
+        "host": "codex",
+        "exit": 0
+      },
+      {
+        "action": "install",
+        "host": "omp",
+        "exit": 0
+      }
+    ],
+    "preservation": {
+      "claude_settings_json_bytes_equal": true,
+      "codex_hooks_unowned_equal": true,
+      "claude_local_unowned_equal": true,
+      "codex_toml_unowned_equal": true,
+      "omp_unowned_equal": true,
+      "claude_native_other_keys_equal": true,
+      "commands_point_to_stable": {
+        "claude": true,
+        "codex": true,
+        "omp": true
+      },
+      "hook_commands_stable": true,
+      "omp_extension_stable": true,
+      "worker_path_absent": true
+    }
+  },
+  "flow": {
+    "claude_record": {
+      "host": "claude",
+      "exit": 0,
+      "seconds": 56.1,
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "tools": [
+        "mcp__agents-memory__memory_record",
+        "mcp__agents-memory__memory_context"
+      ],
+      "tool_errors": [
+        false,
+        false
+      ],
+      "hooks": [
+        {
+          "subtype": "hook_started",
+          "hook_event": "SessionStart",
+          "hook_name": "SessionStart:startup"
+        },
+        {
+          "subtype": "hook_started",
+          "hook_event": "SessionStart",
+          "hook_name": "SessionStart:startup"
+        },
+        {
+          "subtype": "hook_response",
+          "hook_event": "SessionStart",
+          "hook_name": "SessionStart:startup",
+          "exit_code": 0,
+          "outcome": "success"
+        },
+        {
+          "subtype": "hook_response",
+          "hook_event": "SessionStart",
+          "hook_name": "SessionStart:startup",
+          "exit_code": 0,
+          "outcome": "success"
+        }
+      ],
+      "stderr_present": false,
+      "operation": "operation_558537cc187e4ec59ba5bbd5a08292e0",
+      "await": "semantic_ready epoch406",
+      "stats_before": {
+        "epoch": 401,
+        "active_sources": 52,
+        "active_claims": 43,
+        "pending": 0,
+        "blocked": 0,
+        "failed": 6,
+        "dlq": 6,
+        "stale_index_claims": 0
+      },
+      "stats_after": {
+        "epoch": 406,
+        "active_sources": 53,
+        "active_claims": 44,
+        "pending": 0,
+        "blocked": 0,
+        "failed": 6,
+        "dlq": 6,
+        "stale_index_claims": 0
+      }
+    },
+    "codex_recall_inspect": {
+      "host": "codex",
+      "exit": 0,
+      "seconds": 31.8,
+      "models": [],
+      "tools": [
+        "memory_context",
+        "memory_inspect"
+      ],
+      "tool_errors": [
+        null,
+        null
+      ],
+      "hooks": [],
+      "stderr_present": false,
+      "claim": "claim_b159614a725e4aac894706c906eec5c4",
+      "speaker": "agent_note",
+      "approved_rule": false
+    },
+    "omp_recall_inspect_feedback": {
+      "host": "omp",
+      "exit": 0,
+      "seconds": 18.5,
+      "models": [
+        "gpt-6.1-sol"
+      ],
+      "tools": [
+        "mcp__agents_memory_memory_context",
+        "mcp__agents_memory_memory_inspect",
+        "mcp__agents_memory_memory_feedback"
+      ],
+      "tool_errors": [
+        false,
+        false,
+        false
+      ],
+      "hooks": [],
+      "stderr_present": false,
+      "feedback_operation": "operation_d5bcba20aa124f199a958c957770bd92",
+      "operator_view": {
+        "claim_state": "active",
+        "feedback_state": "candidate",
+        "feedback_candidate": true
+      }
+    },
+    "claude_reflect": {
+      "host": "claude",
+      "exit": 0,
+      "seconds": 12.6,
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "tools": [
+        "mcp__agents-memory__memory_context"
+      ],
+      "tool_errors": [
+        false
+      ],
+      "hooks": [
+        {
+          "subtype": "hook_started",
+          "hook_event": "SessionStart",
+          "hook_name": "SessionStart:startup"
+        },
+        {
+          "subtype": "hook_started",
+          "hook_event": "SessionStart",
+          "hook_name": "SessionStart:startup"
+        },
+        {
+          "subtype": "hook_response",
+          "hook_event": "SessionStart",
+          "hook_name": "SessionStart:startup",
+          "exit_code": 0,
+          "outcome": "success"
+        },
+        {
+          "subtype": "hook_response",
+          "hook_event": "SessionStart",
+          "hook_name": "SessionStart:startup",
+          "exit_code": 0,
+          "outcome": "success"
+        }
+      ],
+      "stderr_present": false,
+      "operation": "operation_cc2016b0bd6c456fbc529779afe4dc6b",
+      "await": "semantic_ready epoch409",
+      "reflection": "reflection_895898cdb2ba4f57b34a3f945e429cc1",
+      "reflection_state": "active",
+      "candidate": true,
+      "limitations": 2
+    },
+    "codex_reflection_read": {
+      "host": "codex",
+      "exit": 0,
+      "seconds": 18.6,
+      "models": [],
+      "tools": [
+        "memory_inspect"
+      ],
+      "tool_errors": [
+        null
+      ],
+      "hooks": [],
+      "stderr_present": false
+    }
+  },
+  "capture": {
+    "claude": {
+      "spool_pending": 0,
+      "spool_gaps": {},
+      "recent_generation_gaps": [
+        {
+          "HOST_PROMPT_ORIGIN_UNOBSERVABLE": 1
+        },
+        {
+          "HOST_PROMPT_ORIGIN_UNOBSERVABLE": 1
+        }
+      ]
+    },
+    "codex": {
+      "spool_pending": 0,
+      "spool_gaps": {},
+      "recent_generation_gaps": []
+    },
+    "omp": {
+      "spool_pending": 0,
+      "spool_gaps": {},
+      "recent_generation_gaps": [
+        {
+          "HOST_CAPTURE_DEGRADED": 1
+        },
+        {}
+      ]
+    }
+  },
+  "observations": [
+    "Extraction kept \"unless the operator changes the deployment port\" inside the statement; conditions/exceptions stayed empty. Nothing was lost, but the exception was not separated.",
+    "Claude --print sessions record HOST_PROMPT_ORIGIN_UNOBSERVABLE instead of capturing the prompt (documented gap).",
+    "Codex project config/hooks are not loaded because the leader is not a trusted Codex project; the smoke passed the installed command/args with per-invocation tool approval. Trust was not changed.",
+    "One OMP generation state recorded HOST_CAPTURE_DEGRADED at cutover time, consistent with an already running OMP session holding the old extension; running OMP sessions must restart to load the reinstalled extension."
+  ],
+  "limits": [
+    "Personal synthetic fixtures only; no company data or deployment.",
+    "Not a 1-2 week trial, not issue #3 P1-P6, not permanent native trust.",
+    "Round-3 host fixes in this package are tested (917 passed) but their fresh independent review run is still pending.",
+    "Live corpus still has failed6/DLQ6."
+  ]
+}

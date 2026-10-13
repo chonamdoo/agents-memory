@@ -204,6 +204,80 @@ journal은 archive 밖에 존재하고 body-free HMAC/fsync chain이다. 같은 
 | A15 | actual encrypted stale restore/token revoke/physical purge; bounded spool/DLQ/drain 회귀. |
 | A16 | AF native multi-review/fix/QA/handoff의 실제 runner 완료 후 별도 기록. |
 
+## AF 승계 실행의 이전 증거 — 2026-10-12
+
+공식 v0.3.15/source `5b92996a38c6411c61f36d7be10aed1dc26405e5` 프로젝트 설치와 승인된 timeout forwarding delta로 `development/20261012-113028`을 시작했다. 중단된 old run의 verdict를 새 approval로 쓰지 않는다.
+
+| 변경 경계 | 실제 관측 | 제한 |
+|---|---|---|
+| 전체 gates | 공식 local `gates --phase all`: lint/test/package 3/3, **845 passed in 101.34s**, wheel/sdist 생성 | fresh formal review·QA/handoff 완료와 별개 |
+| 기존 config 보존 | 실제 CLI의 중복 model purpose를 write 전에 거절, 기존 bytes unchanged·재로드 유효 | production config·모델 설정을 바꾸지 않은 negative smoke |
+| 원천 시간 | 실제 Qwen 추출·consolidation 뒤 OLD event `2020-01-02T00:00:00Z`, NULL event `null`; 원래 source recorded_at을 recall/inspect에 동일 전달 | claim 생성 시각과 validity를 대신하지 않음 |
+| binding 이전 | 같은 ID의 locator old worktree→stable 리더, revision 1→2·roster 2 유지·exact replay | 소유권·grant·frozen rule target 불변; 새 memory 복제 없음 |
+| deleted native cleanup | Claude/Codex/OMP owned modern receipt 정리, 삭제된 root 재생성 없음, stable 리더 설치 | 다른 native 설정·trust·private credentials/spool 보존; 미완료/legacy recovery 거절 |
+| 실제 세 native 소비 | 각 host가 context 1회·inspect 2회 성공, OLD/NULL event/recorded/speaker 값 일치 | selected tools 명시 호출; native hook 신뢰·첫 행동·모델 준수·후속 provider input 증거 아님 |
+| malformed native state | 실제 installed Claude `host-hook`가 `HOST_STATE_INVALID`, bytes unchanged·본문 offer 없음 | advisory mode warning/refusal이며 strict native denial 성공이 아님 |
+
+이 시점의 승인 route는 `38f1609ae94d2c2bacd713b5c2a012d4447e68c72ff95eb0b317b77e72431842`였다. 이 승인은 실제 추론 성공과 별개이며 기존 model artifact/purpose/CPU·timeout 설정을 바꾸지 않았다. Source time smoke의 claim은 원래 event time과 recorded_at을 분리하고 `valid_from`/`valid_until`이 null인 상태를 실제 저장 projection에서 확인했다.
+
+원래 시간 provenance reflection operation은 당시 **failed / `MODEL_OUTPUT_INVALID`**였다. 정확한 original query·admission을 이용한 별도 읽기 전용 진단은 `source_event_time of ...`/null identifier prose를 생성했고 validator가 거절했다. 이것을 원래 terminal operation의 정확한 비공개 응답 재현이라고 주장하지 않는다. 당시 timestamp annotation 방식의 실패는 보존한다. 아래 fix-loop에서 모델의 metadata 재서술을 없애고 원래 실패 owner를 명시적으로 retry한 후속 결과와 구분한다.
+
+Native 모델은 모두 요청 argv에서 xhigh다. Claude 출력은 `claude-opus-5-5`, OMP message는 `gpt-6.1-sol` model ID를 관측했다. Codex는 served model/effort를 노출하지 않아 argv 근거만 기록한다. 전체 host input token 수를 memory-only overhead로 해석하지 않는다.
+
+원문 source-time·config·locator·native state·세 host의 sanitized 실행 증거는 `docs/research/2026-10-12-memory-skills/*-live-smoke.proof.json`과 `duplicate-purpose-smoke.proof.json`에 있다. raw provider internals·credentials는 source/이슈에 포함하지 않는다. fresh formal review·QA·handoff 결과는 실제 runner 완료 후 덧붙인다.
+
+## 첫 fix-loop 실행 증거 — 2026-10-13
+
+`development/20261012-113028`의 기존 12-review 결과는 수정 전 **7 approve / 5 request-changes**, overall request-changes다. 아래 구현·실행 확인은 fresh 공식 review나 QA 승인으로 대신하지 않는다.
+
+| 경계 | 실제 관측 | 증거 층위·제한 |
+|---|---|---|
+| 전체 gates | 공식 local lint/test/package 3/3 green, **885 passed in 104.52s**, zero skips, wheel/sdist 생성 | `artifacts/gate-results.json`; 현재 코드 결과이며 formal review·QA는 별도 |
+| temporal reflection | 원래 OLD/NULL query와 source 그대로 새 reflection `reflection_9544ce2314504c8f92999afc6d75e579` active; event 2020/null·distinct recorded clocks 전달 | 실제 local service와 최신 stable package의 native MCP 결과; 모델 clock prose 예외 없음 |
+| 원래 실패 owner 복구 | `operation_c0cb8fc6edb940a7b352cccfd4ec3b8c` 명시 retry 후 semantic_ready, 새 artifact `reflection_21ea3838f4bf4fb6b256e02a6a7a5968` | 원래 실패의 삭제·재분류가 아닌 후속 attempt |
+| 일반 assertion | 실제 “Explain how extracted claims differ from approved rules.” 질문에서 `reflection_20fc50c053504b03bf7996fcfec1b5a0` 성공 | 시간 질문만 성공시키는 special case 아님; 일반 factual entailment 보장은 아님 |
+| full pipeline | synthetic FrameR26 37초 capture→extraction/consolidation→recall→reflection, 41초 trusted correction→이전 reflection 숨김→다음 recall의 새 claim | 실제 승인 route·서비스; 이후 명시 retract 완료 |
+| retract 후 native read | 최신 immutable package의 실제 Codex가 corrected source/claim inspect에서 `retracted` 및 본문·evidence 없음, temporal reflection은 active | authenticated plain stdio, worker cwd, TextContent 단일 plane; 설치된 leader receipt 경로의 증거는 아님 |
+| reranker | 실제 relevant/irrelevant pair 236/245 tokens, raw cross-encoder score 5.4071879386901855 / -10.908003807067871; synthetic long pair 9,295 tokens는 `MODEL_INPUT_TOO_LARGE` | 기존 8,192-token bound, truncation/forward 이전 거절; 확률·보정·일반 정확도 주장은 아님 |
+| host hook | 실제 filesystem self-symlink loop에서 strict body-free native deny/exit0, advisory warning/exit0; durable state unchanged | 실제 CLI/adapter, 실제 Claude interactive session이나 OS sandbox가 아님 |
+| deleted cleanup | normal/linked Git root × receipt durability/native-key publication 두 cutpoint에서 실제 child abrupt exit 후 반복 uninstall 성공 | 네 경우 모두 absent root 재생성 없음, 무관한 native 설정 보존 |
+| approval recovery | actual artifact validation + isolated PG의 publication 후 journal barrier→확정 config 보상·not_committed·무관한 queue 보존; barred pending exact retry는 unknown; 복구 후 exact retry와 새 consumer admission 성공 | live authority journal을 손상시키지 않음; flock/bytes guard는 arbitrary same-UID CAS가 아님 |
+| final comments | 추가된 fixture-clock 근거 comment 2줄, configured checksum과 같은 canonical checker SHA256 `0eb61a66acdd1ec4031c4cb8aedf78aced785f0b69c46e50a0234241adbd3f5f`, exit0·stdout/stderr empty | 최종 comment-only pass, native hook trust 승인과 별개 |
+
+현재 semantic route는 `d42da38effe7c83029ac9e691e94188cc64d6b05d5b5e936e1b1229b5b540463`, embedding geometry는 `5746aa946889325cd26d84aafb3e1ac05ae4fccba400bfc6597431b26a1ac13a`다. 실제 shaping의 `models.py`도 semantic fingerprint에 포함한다. clocks는 code-attached provenance이며 event unknown을 recording/extraction/validity/승인으로 승격하지 않는다.
+
+최신 wheel SHA256 `afd0b5ee427da2a7509ce7d191d04eb52c15cdc8501d73477c58da9bf495ec6c`를 checkout 밖 private immutable venv에 locked/offline noneditable 설치했다. `python -I`에서 CLI/hosts/models/semantic/contract/store가 모두 그 site-packages를 사용하고 worker import path가 없음을 확인했다. 실제 model artifacts도 검증했다. owned 서비스 R28은 그 interpreter로 port8768에서 실행 중이다.
+
+당시에는 세 leader host receipt의 executable이 worker venv였다. 이후 active run이 없는 상태(아래 “설치형 leader 연동”)에서 owned uninstall/reinstall로 stable package에 옮겼다. guard는 바꾸거나 우회하지 않았다.
+
+epoch343의 실제 stats는 pending0/blocked0/**failed6/DLQ6**/stale_index0이다. 이전 invalid-output probes와 추가 살아 있는 실패 row가 남아 있으며 “전역 clean” 또는 historical-only라고 하지 않는다. 실패 row/원문을 삭제하지 않았다. 원래 failed source-time proof SHA256 `0d50ab8b6c5f46d4d43416cf5b3a2e1251ad74d490e2a1c858a399e8b8ee346d`는 보존한다.
+
+현재 native/package 결과는 `docs/research/2026-10-12-memory-skills/stable-runtime-native-smoke.proof.json`, fix-loop 실행 관측은 `fix-loop-live-smoke.proof.json`에 기록한다. 이전 transient smoke stdout을 새 실행 transcript로 꾸미지 않는다. selected-tool per-invocation approval은 permanent workspace/hook trust·회사 native 무인실행/egress 승인·final provider-input attestation이 아니다. 레지스트리·원격 MCP 배포·회사 capability 구현은 하지 않았다.
+
+## Fresh native 지적 수정과 현재 재검증 — 2026-10-13
+
+공식 runner가 첫 fix-loop 수정 후 새 review를 실행했다. 실제 Codex6개는 **3 approve / 3 request-changes**이며 manifest의 각 artifact SHA256을 검증했다. Claude generalist는 **exit1 / OAuth token expired401**, 나머지5개는 skipped다. 이전 Claude 결과는 대체하지 않는다. 두 blocking 결함 종류는 아래에서 수정했고 I/O angle의 purpose narrowing needs_validation도 확인·수정했다. 이는 후속12개 리뷰 승인이나 QA 완료가 아니다.
+
+| 변경 | 실제 관측 | 제한 |
+|---|---|---|
+| reflection limitations | 실제 PG publication→Application.inspect에서 원문에 grounded된 caveat가 보존되고 candidate true/partial false | validator-checked manually supplied synthetic fixture; LLM generation 결과라고 하지 않음 |
+| 전달 budget | limitations 우선, caveat overflow 시 assertion 없음·partial true, 문장/provenance 합산과 JSON comma-space까지 포함 | 영속 publish→inspect 회귀가 4,097-byte 경계도 검사 |
+| 확정 승인 보상 | config의 확정 보상 뒤 intent unlink+directory fsync로 종료; revoke/generation 변경 후 현재 operator의 새 승인 가능 | unknown adoption·compensation intent는 자동 삭제하지 않음 |
+| crash→restore 복구 | actual artifact validation + isolated PG, 실제 CLI route commit 직후 child exit41→실제 private restore authority recovery→옛 credential 거절·route disabled→implicit replacement 거절→fresh operator의 exact-hash 새 승인·consumer claim admission 성공 | Store.recover_after_restore 경로이며 archive SQL executor smoke로 바꾸어 주장하지 않음 |
+| same-revision purpose 축소 | actual CLI에서 embedding만 승인; old-settings Store의 새 rerank/기존 rerank admission 거절, 기존 embedding admission stale, 새 embedding admission 허용 | 별도 native daemon이 아니라 실제 PG를 사용하는 이전 설정의 Store instance |
+| 전체 검증 | 공식 lint/test/package green3/3, **892 passed in 105.17s**, zero skips; 최종 comment checker exit0/empty output | reviewer fix 후 소스 결과; 전체12 native pool·QA/handoff는 아직 미완료 |
+| 최신 stable native | 최종 package의 실제 Codex MCP inspect4회 성공/exit0/no stderr; 일반 reflection의 원래 저장된 caveat4개가 이제 전달되고 temporal provenance·철회 body-free 결과도 유지 | actual TextContent payload 확인; worker plain authenticated stdio이며 installed leader receipt cutover 아님 |
+
+증거: `docs/research/2026-10-12-memory-skills/fresh-review-fix-smoke.proof.json`, `fix-loop-final-comment-checker.proof.json`. 새로운 CLI 승인 옵션과 limitations 전달 계약은 README에 반영했다. 원래 실패·첫 fix-loop proof는 보존하고 새 실행으로 덮어쓰지 않았다. Semantic route/vector geometry는 이 store/CLI 수정으로 바뀌지 않는다.
+
+README 최종 안내를 포함하여 wheel/sdist를 다시 build했고, wheel SHA256 `84ba86ade65a208e4f8390fbec59910e72fcd95e86b35b3ba7700b904e24a72e`를 immutable offline/noneditable private venv에 설치했다. isolated imports·actual model artifacts·unchanged d42 semantic/vector revisions를 확인했다. 현재 owned 서비스는 **R29 / pid41455 / port8768**이며 R28은 정상 TERM 종료했다. `final-stable-native-smoke.proof.json`은 원래 Qwen-generated ordinary reflection의 caveat4개를 실제 native read에서 관측한 증거다. 위 수동 fixture와 구분한다.
+
+Claude native auth metadata는 loggedIn true/claude.ai/firstParty였지만 실제 confined reviewer의 OAuth 만료401을 무효화하는 증거는 아니다. OAuth env override도 없고 Claude provider는 credential 복사 방식이 아니다. sandbox/credential/모델 pin을 변경하지 않았다. 사용자가 native `claude auth login`으로 재인증한 뒤 같은 공식12-pool review를 재개해야 한다. account/token 값을 공개하거나 비공식 reviewer로 대신하지 않는다.
+
+### 최신 사용자 승인: Codex 전용 fresh 공식 리뷰
+
+사용자는 “클로드 빼고 코덱스로 리뷰하고 넘어가 그냥”으로 이전12개/두 provider 조건을 명시적으로 변경했다. 이 기존 run은 지원되는 invocation-scoped `AGENT_FLOW_REVIEWERS=codex`로 **fresh Codex6개 angle**을 실행한다. gpt-6.1-sol/xhigh·같은 local architecture·독립 confined process·actual artifact SHA/verdict·QA/handoff gates는 유지한다. leader profile/runtime/pin/보호 규칙/global 설정은 변경하지 않는다. 이전 수정 전 Codex6개의 3 approve/3 RC를 새 승인으로 재사용하지 않는다. Claude 로그인 대기는 종료했으며 OAuth 문제가 해결됐다고 주장하지 않는다. 이 run의 완료 전제가 더는 Claude 재인증은 아니지만 회사 capability와 회사 native 무인실행 승인은 별도 경계다.
+
 ## 관측된 운영 한계
 
 - reads도 전역 clock lock·journal 검증·artifact pin 검사를 사용하는 보수적 구현이다. journal/corpus 증가에 대한 p50/p95나 다수 동시 workflow의 성공률·처리량을 아직 실측하지 않았다.
@@ -217,3 +291,40 @@ journal은 archive 밖에 존재하고 body-free HMAC/fsync chain이다. 같은 
 private personal/synthetic deployment부터 사용한다. actor/token/프로젝트 grant를 명시하고 회사 customer corpus와 섞지 않는다. root rulebook 대신 필요한 규칙만 승인·선택한다. `stats/doctor/inspect`로 pending/blocked/DLQ/gap를 확인한다. 실제 trial 시작 시각과 매일 correction reuse·qualification omission·false claim·false rule promotion·restore/replay·호스트 gap·wire/context bytes·latency/운영 부담을 body-free metadata로 기록한다.
 
 미승인 egress, realm 누출, 철회 부활, 무승인 rule activation, strict gap를 정상 allow로 보고, root corpus 설치 또는 중복 효과가 나오면 즉시 중단한다. 1–2주 실제 사용 이후에만 개인 cloud(TLS/OAuth audience, deploy identity, durable journal witness, network/backup)로 전환한다. 회사 자료는 이전하지 않는다.
+
+## 설치형 leader 연동 — 2026-10-13
+
+Agent Flow가 설치된 leader 프로젝트에서 실제 설치 경로로 연동을 검증했다. 진행 중이던 빈 bugfix run `20261013-040212`는 leader 보호를 우회하지 않으려고 abort했다(산출물 보존).
+
+| 단계 | 실제 관측 | 한계 |
+|---|---|---|
+| 패키지·route | 현재 worker 소스 lint/test/package 통과(**917 passed**). immutable wheel `0086e6c930c8…` 설치, route `9e01d646…` 재승인, 서비스 R30(127.0.0.1:8768) | 3차 host 수정의 fresh 독립 리뷰는 아직 남음 |
+| host cutover | Claude/Codex/OMP owned uninstall→reinstall 모두 exit0. MCP·hook 명령이 stable python을 가리키고 worker 경로가 사라짐. `.claude/settings.json` 바이트 동일, AF hook 등 비소유 항목·native 다른 키 동일 | 이미 실행 중인 OMP 세션은 재시작해야 새 extension을 쓴다 |
+| record→recall | Claude 세션 `memory_record` → operator `await` semantic_ready(+1 source/+1 claim) → Codex 세션 `memory_context`·`memory_inspect`가 같은 claim(`agent_note`, approved rule 아님)을 읽음 | 예외 구절이 statement 안에 남고 conditions/exceptions로 분리되지 않음 |
+| feedback | OMP 세션 `memory_feedback correct`는 candidate로 남고 원래 claim은 active 그대로 | 운영자 승인 경로는 별도 |
+| reflect | Claude 세션 reflect → semantic_ready reflection(근거 claim 인용, limitation 2개) → Codex 세션이 같은 reflection을 읽음 | 모델 품질 일반화 아님 |
+| capture | 세 spool pending0/gap 없음. Claude `--print`는 문서화된 `HOST_PROMPT_ORIGIN_UNOBSERVABLE` gap | Codex는 신뢰되지 않은 프로젝트라 project config·hook을 읽지 않아 설치된 command/args를 호출별 승인으로 전달. 신뢰 설정은 바꾸지 않음 |
+
+증거: `docs/research/2026-10-12-memory-skills/installed-leader-integration-r30.proof.json`. 원문 transcript는 private checkpoint에만 0600으로 둔다. live stats는 여전히 failed6/DLQ6이다.
+
+## Bugfix 이후 stable 교체·native 읽기 — R31
+
+수정된 worker 소스로 wheel `3ad2fb0a4627eee3ca62a66c5d5508d6af55470dc457192dce78e07728332172`을 빌드했다. hash별 venv에 locked/offline dependency와 wheel을 설치했고, 설치된 `agents_memory` 소스가 worker와 동일함을 확인했다. R30 대비 package 소스 변경은 `hosts.py`, `private_io.py`다. 이번 세션에서는 이전 bugfix의 테스트를 재실행하지 않았다.
+
+semantic contract digest는 두 package 모두 `9ef2866ed43795fe10b537fb5e000f7bc0357eb675aa7d87bae7c4e02062c7df`, 새 package의 route revision은 기존 승인값 `9e01d6468d901c3f42c0f90b21db535dee25894572450ba7e2290dadab01ef59`와 동일했다. 재승인 없이 R30 PID9379를 종료하고 R31 PID96967을 `/tmp`에서 시작했다. `127.0.0.1:8768` ready, doctor·stats exit0을 관측했다.
+
+Claude/Codex/OMP owned uninstall→install은 모두 성공했다. 첫 install의 기본 operator credential은 `AUTH_DENIED`, effect `not_started`였고, 복원 후 operator token을 명시해 설치했다. `.claude/settings.json`과 OMP AF extension의 바이트 hash, 기타 hook/MCP/TOML 설정, `.claude.json`의 leader 다른 키·다른 project·top-level 키 목록 등 비소유 비교 9개가 모두 일치했다. 세 host의 MCP/hook/extension 명령은 새 stable python을 가리킨다. strict·prompt-recall은 꺼져 있고 native trust는 바꾸지 않았다.
+
+현재 controller OMP pane은 유지했다. 다른 실행 중 OMP 4개는 별도 프로젝트 세션으로 확인돼 종료하지 않았다. 이전 leader OMP PID2009와 host-stdio PID2030은 후속 process inventory에 없었다. 새 leader cwd의 OMP process에서 설치된 extension을 로드해 native 읽기를 확인했다.
+
+| Host | 실제 관측 | 결과·한계 |
+|---|---|---|
+| OMP | 새 process의 `memory_context`·`memory_inspect`, exit0 | 순차 smoke에서 두 도구 오류 없음; served model `gpt-6.1-sol` |
+| Claude | `memory_context`·`memory_inspect`, exit0 | 도구 오류 없음; served model `claude-opus-5-5`; print prompt capture 보장은 아님 |
+| Codex | `memory_context`·`memory_inspect`, exit0 | 순차 smoke에서 두 도구 completed; 호출별 선택 도구 승인, permanent leader trust 아님; served model 미보고 |
+
+세 host가 synthetic R30 claim `claim_b159614a725e4aac894706c906eec5c4`를 recall하고 inspect했다. 근거 화자는 `agent_note`, `approved_rules=[]`이며 inspect에는 `approved_rule` 필드가 없다. 후보를 승인 규칙으로 승격하지 않았다. recall은 기존 live failed6/DLQ6 때문에 `partial`이고 pending0/blocked0/stale_index0이다.
+
+첫 동시 smoke에서 OMP/Codex recall은 모델 슬롯 충돌로 `MODEL_BUSY / not_started`였다. 실패 transcript를 보존하고 두 host를 순차 실행했다. 재시도 기능이나 서비스 코드는 바꾸지 않았다. 합성 개인 입력만 사용했고 회사 데이터·배포·push·commit·AF guard 변경은 없다.
+
+증거: `docs/research/2026-10-12-memory-skills/installed-leader-integration-r31.proof.json`. 원문 transcript는 private checkpoint에 0600으로 보존한다.

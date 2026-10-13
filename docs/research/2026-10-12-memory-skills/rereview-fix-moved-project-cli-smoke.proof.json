@@ -1,0 +1,143 @@
+{
+  "proof_layer": "Actual agents_memory CLI subprocesses against an isolated PostgreSQL schema (created and dropped), temp HOME/CLAUDE_CONFIG_DIR and temp projects; non-strict claude and codex.",
+  "observed_utc": "2026-10-13T02:55:58Z",
+  "hosts": {
+    "claude": {
+      "steps": {
+        "install": {
+          "exit": 0,
+          "state": "installed",
+          "code": null,
+          "project_entries": null
+        },
+        "uninstall_absent": {
+          "exit": 1,
+          "state": null,
+          "code": "HOST_PROJECT_ABSENT",
+          "project_entries": null
+        },
+        "uninstall_deleted_ack": {
+          "exit": 0,
+          "state": "native_uninstalled",
+          "code": null,
+          "project_entries": "unverified_absent"
+        },
+        "reinstall_before_cleanup": {
+          "exit": 1,
+          "state": null,
+          "code": "HOST_UNINSTALL_INCOMPLETE",
+          "project_entries": null
+        },
+        "deleted_flag_on_present_root": {
+          "exit": 1,
+          "state": null,
+          "code": "HOST_PROJECT_PRESENT",
+          "project_entries": null
+        },
+        "uninstall_reappeared": {
+          "exit": 0,
+          "state": "uninstalled",
+          "code": null,
+          "project_entries": null
+        },
+        "fresh_install": {
+          "exit": 0,
+          "state": "installed",
+          "code": null,
+          "project_entries": null
+        }
+      },
+      "project_files_after_cleanup": [],
+      "unowned_preserved": true
+    },
+    "codex": {
+      "steps": {
+        "install": {
+          "exit": 0,
+          "state": "installed",
+          "code": null,
+          "project_entries": null
+        },
+        "uninstall_absent": {
+          "exit": 1,
+          "state": null,
+          "code": "HOST_PROJECT_ABSENT",
+          "project_entries": null
+        },
+        "uninstall_deleted_ack": {
+          "exit": 0,
+          "state": "native_uninstalled",
+          "code": null,
+          "project_entries": "unverified_absent"
+        },
+        "reinstall_before_cleanup": {
+          "exit": 1,
+          "state": null,
+          "code": "HOST_UNINSTALL_INCOMPLETE",
+          "project_entries": null
+        },
+        "deleted_flag_on_present_root": {
+          "exit": 1,
+          "state": null,
+          "code": "HOST_PROJECT_PRESENT",
+          "project_entries": null
+        },
+        "uninstall_reappeared": {
+          "exit": 0,
+          "state": "uninstalled",
+          "code": null,
+          "project_entries": null
+        },
+        "fresh_install": {
+          "exit": 0,
+          "state": "installed",
+          "code": null,
+          "project_entries": null
+        }
+      },
+      "project_files_after_cleanup": [
+        ".codex/user.toml"
+      ],
+      "unowned_preserved": true
+    }
+  },
+  "gates": {
+    "lint": {
+      "exit_code": 0,
+      "passed": true
+    },
+    "test": {
+      "exit_code": 0,
+      "passed": true
+    },
+    "package": {
+      "exit_code": 0,
+      "passed": true
+    }
+  },
+  "test_summary": "910 passed in 105.41s",
+  "limits": [
+    "Not the installed leader receipts and not a real Claude/Codex session; native hook trust unchanged.",
+    "Stale-hook refusal after root reappearance is covered by tests/test_host_boundaries.py, not this CLI smoke.",
+    "Issue #3 P1-P6 (operations runbook, restart/sleep, protocol x host matrix, 1-2 week trial) not executed."
+  ],
+  "pre_fix_red": {
+    "package": "stable wheel 84ba86… (pre-fix)",
+    "host_regression": "2 failed, DID NOT RAISE",
+    "supersede_replacement": "MODEL_APPROVAL_CONFLICT instead of MODEL_APPROVAL_RECOVERY_REQUIRED",
+    "supersede_barrier": "earlier intent deleted (FileNotFoundError)"
+  },
+  "round_two": {
+    "durable_scope": "deleted cleanup intent recorded as receipt state native_removing; resume ends native_removed regardless of root presence",
+    "changed_entries": "reappeared root with changed owned hook (claude, codex) or Codex TOML refuses HOST_OWNERSHIP_DRIFT and keeps native_removed",
+    "red_on_round_one_code": "5 failed (3 DID NOT RAISE; interrupted cases lacked durable scope)",
+    "coverage": "interruption cutpoints are covered by pytest fork-crash regressions, not by this CLI smoke"
+  },
+  "round_three": {
+    "whole_hook_document_scan": "moved or copied changed hook still invoking this receipt refuses HOST_OWNERSHIP_DRIFT",
+    "older_native_only_removing": "scope recovered from validated plan; ends native_removed then project cleanup",
+    "toml_scalar": "non-table mcp_servers refuses HOST_OWNERSHIP_DRIFT",
+    "reappeared_native_key": "same owned key removed; changed key refuses drift",
+    "red_on_round_two_code": "9 failed, exit 1"
+  }
+}

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import multiprocessing
 import os
+import shlex
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -17,7 +20,16 @@ import pytest
 
 from agents_memory import hosts, private_io
 from agents_memory.config import Settings
-from agents_memory.domain import DomainError, canonical_digest
+from agents_memory.context import compose
+from agents_memory.domain import (
+    ActiveRule,
+    ContextCommand,
+    DomainError,
+    EffectState,
+    RuleScope,
+    Selector,
+    canonical_digest,
+)
 from agents_memory.spool import ProducerSpool
 
 
@@ -54,8 +66,9 @@ def installation(tmp_path, monkeypatch):
 def authority(monkeypatch):
     class Endpoint:
         required = True
-        stamp = {"epoch": 1, "rules": [["rule-one", 1, "digest-one"]]}
+        stamp = {"epoch": 1, "rules": [["rule-one", 1, hashlib.sha256(b"rule-one").hexdigest()]]}
         text = '{"approved_rules":[],"memory_candidates":[],"relations":[]}'
+        active_rules = None
         context_error = None
         capture_error = "SERVICE_UNAVAILABLE"
         calls = []
@@ -71,6 +84,18 @@ def authority(monkeypatch):
                 return {"effect": "committed", "id": "operation-one"}
             if self.context_error:
                 raise DomainError(self.context_error, "No raw rule diagnostics")
+            if self.active_rules is not None:
+                composed = compose(
+                    ContextCommand.model_validate(payload), self.active_rules, (), (),
+                    protected_action=path == "/api/required-context",
+                )
+                result = {
+                    "context": composed.text, "context_bytes": composed.byte_count,
+                    "stamp": {"epoch": 1, "rules": [list(rule) for rule in composed.rule_versions]},
+                }
+                if path == "/api/required-context":
+                    result["required"] = bool(composed.rule_versions)
+                return result
             result = {"context": self.text, "context_bytes": len(self.text.encode()), "stamp": dict(self.stamp)}
             if path == "/api/required-context":
                 result["required"] = self.required
@@ -347,7 +372,7 @@ def test_changed_authority_stamp_does_not_reuse_offered_text(installation, autho
     project, _, _, _, install = installation
     receipt = install(prompt_recall=True)
     hosts.handle_hook(receipt, native(project, prompt="prepare"))
-    authority.stamp = {"epoch": 2, "rules": [["rule-one", 2, "digest-two"]]}
+    authority.stamp = {"epoch": 2, "rules": [["rule-one", 2, hashlib.sha256(b"rule-two").hexdigest()]]}
     result = hosts.handle_hook(receipt, action(project))
     assert result["state"] == "blocked"
     assert result["code"] == "HOST_CONTEXT_STALE"
@@ -407,10 +432,260 @@ def test_overflow_is_not_truncated_into_success(installation, authority):
     assert "required rule body" not in json.dumps(result)
 
 
+@pytest.mark.parametrize("host,event_name,strict", [
+    ("claude", "PreToolUse", True), ("claude", "UserPromptSubmit", True),
+    ("claude", "", True), ("codex", "", True),
+    ("claude", "UserPromptSubmit", False), ("codex", "UserPromptSubmit", False),
+    ("omp", "before_agent_start", False),
+])
+@pytest.mark.parametrize("extra_bytes", [0, 1])
+def test_native_delivery_guard_bounds_every_supported_context_output(host, event_name, strict, extra_bytes):
+    budget = 512
+    code = "HOST_PROVIDER_INPUT_UNOBSERVABLE"
+    prefix = (code + "\n" if strict else "") + hosts.BOUNDED_CONTEXT_MARKER + "\n"
+    body_bytes = budget - len(prefix.encode())
+    body = "가" * (body_bytes // 3) + "x" * (body_bytes % 3 + extra_bytes)
+    result = hosts._native_result(host, event_name, code=code, text=body, strict=strict, max_bytes=budget)
+    assert result["exit_code"] == 0
+    output = result["stdout"]
+    if extra_bytes:
+        assert result["code"] == "REQUIRED_CONTEXT_OVERFLOW"
+        assert body not in json.dumps(result, ensure_ascii=False)
+        if strict:
+            if event_name == "PreToolUse":
+                assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+            elif host == "claude" and not event_name:
+                assert output["continue"] is False
+            else:
+                assert output["decision"] == "block"
+    else:
+        if strict:
+            delivered = output["hookSpecificOutput"]["permissionDecisionReason"] if event_name == "PreToolUse" else output["stopReason"] if host == "claude" and not event_name else output["reason"]
+        else:
+            delivered = output["additionalContext"] if host == "omp" else output["hookSpecificOutput"]["additionalContext"]
+        assert delivered == prefix + body
+        assert len(delivered.encode()) == budget
+
+
+@pytest.mark.parametrize("budget", [512, hosts.HOST_CONTEXT_BYTES])
+@pytest.mark.parametrize("stale", [False, True])
+@pytest.mark.parametrize("extra_bytes", [0, 1, 3])
+def test_strict_action_composes_complete_required_body_with_denial_prefix_budget(installation, authority, budget, stale, extra_bytes):
+    project, _, _, _, install = installation
+    receipt = install(prompt_recall=True)
+    manifest = hosts.load_receipt(receipt)
+    manifest["context_budget_bytes"] = budget
+    hosts._write_receipt(receipt, manifest)
+    rule = ActiveRule(
+        id="rule-one", revision=1, digest=hashlib.sha256(b"rule-one").hexdigest(),
+        body="", selector=Selector(), exceptions=(), required=True,
+        scope=RuleScope.LOCAL_PROJECT, target_bindings=("project-binding",), source_ids=("source-one",),
+    )
+    sizing_command = ContextCommand(
+        binding_id="project-binding", query="Protected action conventions",
+        paths=("src/example.py",), host="claude", max_bytes=6144,
+    )
+    empty_size = compose(sizing_command, (rule,), (), (), protected_action=True).byte_count
+    reserved_code = "HOST_PROVIDER_INPUT_UNOBSERVABLE"
+    body_budget = budget - len((reserved_code + "\n" + hosts.BOUNDED_CONTEXT_MARKER + "\n").encode()) - empty_size
+    body = "가" * (body_budget // 3) + "x" * (body_budget % 3 + extra_bytes)
+    rule = rule.model_copy(update={"body": body, "digest": hashlib.sha256(body.encode()).hexdigest()})
+    authority.active_rules = (rule,)
+    prepared = hosts.handle_hook(receipt, native(project, prompt="prepare complete rules"))
+    assert prepared["offered"] is True
+    if stale:
+        rule = rule.model_copy(update={"revision": 2})
+        authority.active_rules = (rule,)
+    result = hosts.handle_hook_input(receipt, json.dumps(action(project)).encode())
+    assert result["exit_code"] == 0 and result["state"] == "blocked"
+    native_output = result["stdout"]["hookSpecificOutput"]
+    assert native_output["permissionDecision"] == "deny"
+    reason = native_output["permissionDecisionReason"]
+    assert len(reason.encode()) <= budget
+    if extra_bytes:
+        assert result["code"] == "REQUIRED_CONTEXT_OVERFLOW"
+        assert reason == "REQUIRED_CONTEXT_OVERFLOW"
+        assert body not in json.dumps(result, ensure_ascii=False)
+    else:
+        assert result["code"] == ("HOST_CONTEXT_STALE" if stale else reserved_code)
+        delivered = json.loads(reason.split(hosts.BOUNDED_CONTEXT_MARKER + "\n", 1)[1])
+        assert delivered["approved_rules"][0]["body"] == body
+        assert delivered["approved_rules"][0]["revision"] == rule.revision
+        assert len(reason.encode()) == budget - (len(reserved_code) - len(result["code"]))
+
+
+def test_strict_action_rejects_service_text_that_fits_only_the_marker_budget(installation, authority):
+    project, _, _, _, install = installation
+    receipt = install()
+    hosts.handle_hook(receipt, native(project, prompt="prepare"))
+    marker_budget = hosts.HOST_CONTEXT_BYTES - len((hosts.BOUNDED_CONTEXT_MARKER + "\n").encode())
+    authority.text = "가" * (marker_budget // 3) + "x" * (marker_budget % 3)
+    result = hosts.handle_hook(receipt, action(project))
+    assert result["exit_code"] == 0 and result["state"] == "blocked"
+    output = result["stdout"]["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert output["permissionDecisionReason"] == "REQUIRED_CONTEXT_OVERFLOW"
+    assert authority.text not in json.dumps(result, ensure_ascii=False)
+    assert len(output["permissionDecisionReason"].encode()) <= hosts.HOST_CONTEXT_BYTES
+
+
+@pytest.mark.parametrize("field,value", [
+    ("generation", True), ("generation", -1), ("generation", 1.0), ("generation", 2**63),
+    ("turn", []), ("turn", ""), ("turn", 7),
+    ("offered", []), ("offered", {"rules": [], "body": "malformed-source-private"}),
+    ("offered", {"rules": [{}], "digest": "a" * 64, "generation": 1}),
+    ("offered", {"rules": [["rule-one", True, "b" * 64]], "digest": "a" * 64, "generation": 1}),
+    ("offered", {"rules": [["rule-one", 1, []]], "digest": "a" * 64, "generation": 1}),
+    ("offered", {"rules": [[[], 1, "b" * 64]], "digest": "a" * 64, "generation": 1}),
+    ("offered", {"rules": [], "digest": [], "generation": 1}),
+    ("offered", {"rules": [], "digest": "a" * 64, "generation": True}),
+    ("offered", {"rules": [], "digest": "a" * 64, "generation": 0}),
+    ("gaps", []), ("gaps", {"malformed-source-private": []}),
+    ("gaps", {"capture": True}), ("gaps", {"capture": -1}), ("gaps", {"capture": 0.0}),
+    ("gaps", {"capture": 2**63}),
+])
+@pytest.mark.parametrize("event_name", ["PreToolUse", "UserPromptSubmit"])
+def test_malformed_durable_generation_state_returns_body_free_native_refusal(installation, authority, field, value, event_name):
+    project, _, _, _, install = installation
+    receipt = install(prompt_recall=True)
+    hosts.handle_hook(receipt, native(project, prompt="prepare"))
+    runtime = Path(hosts.load_receipt(receipt)["runtime_dir"])
+    state_path = next(runtime.glob("*.json"))
+    state = json.loads(state_path.read_text())
+    state[field] = value
+    raw = json.dumps(state).encode()
+    state_path.write_bytes(raw)
+    authority.calls.clear()
+    event = action(project) if event_name == "PreToolUse" else native(project, prompt="source-private-do-not-leak")
+    result = hosts.handle_hook(receipt, event)
+    assert result["exit_code"] == 0 and result["state"] == "blocked"
+    assert result["code"] == "HOST_STATE_INVALID"
+    if event_name == "PreToolUse":
+        output = result["stdout"]["hookSpecificOutput"]
+        assert output["permissionDecision"] == "deny"
+        assert output["permissionDecisionReason"] == "HOST_STATE_INVALID"
+    else:
+        assert result["stdout"] == {"decision": "block", "reason": "HOST_STATE_INVALID"}
+    assert state_path.read_bytes() == raw
+    assert authority.calls == []
+    encoded = json.dumps(result)
+    assert "source-private" not in encoded and authority.text not in encoded
+
+
+@pytest.mark.parametrize("raw", [b"{}", b"[]", b'{"generation":0,"generation":1}', b'{"generation":'])
+def test_invalid_generation_document_is_not_silently_reset(installation, authority, raw):
+    project, _, _, _, install = installation
+    receipt = install()
+    hosts.handle_hook(receipt, native(project, prompt="prepare"))
+    state_path = next(Path(hosts.load_receipt(receipt)["runtime_dir"]).glob("*.json"))
+    state_path.write_bytes(raw)
+    result = hosts.handle_hook(receipt, action(project))
+    assert result["exit_code"] == 0 and result["code"] == "HOST_STATE_INVALID"
+    assert result["stdout"]["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert state_path.read_bytes() == raw
+
+
+def test_valid_generation_state_retains_gaps_and_invalidates_offers_on_lifecycle(installation, authority):
+    project, _, _, _, install = installation
+    receipt = install(prompt_recall=True)
+    prompt = native(project, prompt="prepare")
+    first = hosts.handle_hook(receipt, prompt)
+    repeated = hosts.handle_hook(receipt, prompt)
+    assert first["generation"] == repeated["generation"] == 1
+    assert repeated["gaps"]["HOST_PROMPT_ORIGIN_UNOBSERVABLE"] == 2
+    runtime = Path(hosts.load_receipt(receipt)["runtime_dir"])
+    state_path = next(runtime.glob("*.json"))
+    state = json.loads(state_path.read_text())
+    assert state["offered"]["generation"] == 1
+    transition = hosts.handle_hook(receipt, native(project, event="PreCompact"))
+    assert transition["generation"] == 2
+    state = json.loads(state_path.read_text())
+    assert state["turn"] is None and state["offered"] is None
+    assert state["gaps"] == repeated["gaps"]
+    refused = hosts.handle_hook(receipt, action(project))
+    assert refused["code"] == "HOST_GENERATION_UNOBSERVED"
+    assert refused["stdout"]["hookSpecificOutput"]["permissionDecision"] == "deny"
+    renewed = hosts.handle_hook(receipt, native(project, prompt_id="prompt-two", prompt="prepare renewed"))
+    assert renewed["generation"] == 3 and renewed["offered"] is True
+    assert hosts.handle_hook(receipt, action(project, prompt_id="prompt-two"))["code"] == "HOST_PROVIDER_INPUT_UNOBSERVABLE"
+
+
 def test_absent_receipt_returns_native_deny_not_fail_open_exception(tmp_path):
     result = hosts.handle_hook(tmp_path / "claude.json", {"hook_event_name": "PreToolUse"})
     assert result["stdout"]["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert result["code"] == "HOST_RECEIPT_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("location", ["tool_path", "cwd"])
+@pytest.mark.parametrize("strict", [False, True])
+def test_symlink_loop_native_input_and_cli_emit_body_free_denial_or_advisory_warning(installation, location, strict):
+    project, _, _, _, install = installation
+    receipt = install(strict=strict)
+    hosts.handle_hook(receipt, native(project, event="SessionStart"))
+    hosts.handle_hook(receipt, native(project, prompt=""))
+    loop = project / "loop"
+    loop.symlink_to("loop")
+    event = action(project)
+    if location == "tool_path":
+        event["tool_input"] = {"file_path": str(loop / "src/x.py"), "content": "private-native-body"}
+    else:
+        event["cwd"] = str(loop / "src")
+    raw = json.dumps(event).encode()
+    manifest = hosts.load_receipt(receipt)
+    runtime = Path(manifest["runtime_dir"])
+    before = {path.name: path.read_bytes() for path in runtime.glob("*.json")}
+
+    result = hosts.handle_hook_input(receipt, raw)
+    assert result["exit_code"] == 0 and result["stderr"] == ""
+    assert result["state"] == ("blocked" if strict else "degraded")
+    assert result["code"] == "HOST_ADAPTER_UNAVAILABLE"
+    process = subprocess.run(
+        [sys.executable, "-m", "agents_memory.cli", "host-hook", "--receipt", str(receipt)],
+        input=raw, capture_output=True, timeout=10,
+    )
+    assert process.returncode == 0 and process.stderr == b""
+    stdout = json.loads(process.stdout)
+    assert stdout == result["stdout"]
+    if strict:
+        assert stdout["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert stdout["hookSpecificOutput"]["permissionDecisionReason"] == "HOST_ADAPTER_UNAVAILABLE"
+    else:
+        assert stdout == {"systemMessage": "agents-memory: HOST_ADAPTER_UNAVAILABLE"}
+    assert "private-native-body" not in json.dumps(result) + process.stdout.decode()
+    assert {path.name: path.read_bytes() for path in runtime.glob("*.json")} == before
+    assert not (project / "src/x.py").exists()
+
+
+@pytest.mark.parametrize("raw", [b"{", b'{"hook_event_name":"PreToolUse"}'])
+def test_invalid_receipt_path_input_returns_native_refusal_without_exception(raw):
+    result = hosts.handle_hook_input(None, raw)
+    assert result["exit_code"] == 0 and result["stderr"] == ""
+    assert result["state"] == "blocked" and result["code"] == "HOST_RECEIPT_UNAVAILABLE"
+    if raw == b"{":
+        assert result["stdout"] == {"continue": False, "stopReason": "HOST_RECEIPT_UNAVAILABLE"}
+    else:
+        assert result["stdout"]["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_unexpected_hook_state_publication_failure_denies_without_reset_or_private_error(installation, monkeypatch):
+    project, _, _, _, install = installation
+    receipt = install()
+    event = native(project, event="SessionStart")
+    hosts.handle_hook(receipt, event)
+    manifest = hosts.load_receipt(receipt)
+    state_path = Path(manifest["runtime_dir"]) / (hosts._identity(manifest, event)["key"] + ".json")
+    before = state_path.read_bytes()
+
+    def fail_publication(*args, **kwargs):
+        raise RuntimeError("private-native-diagnostic")
+
+    monkeypatch.setattr(hosts, "private_write", fail_publication)
+    result = hosts.handle_hook_input(receipt, json.dumps(native(project, prompt="")).encode())
+    assert result["stdout"]["decision"] == "block"
+    assert result["code"] == "HOST_ADAPTER_UNAVAILABLE"
+    assert result["exit_code"] == 0 and result["stderr"] == ""
+    assert state_path.read_bytes() == before
+    assert "private-native-diagnostic" not in json.dumps(result)
 
 
 def test_claude_ambiguous_prompt_and_assistant_trace_are_not_captured(installation, authority):
@@ -664,8 +939,8 @@ def test_process_death_uninstall_resumes_removal_and_preserves_other_entries(ins
     def crash():
         unlink = hosts._unlink
 
-        def unlink_and_exit(path):
-            unlink(path)
+        def unlink_and_exit(path, **options):
+            unlink(path, **options)
             if boundary == "first_config" and path == first:
                 os._exit(41)
 
@@ -996,6 +1271,124 @@ def test_validated_legacy_receipt_uninstall_then_private_v2_reinstall(installati
     receipt = install(host, strict=False)
     assert not receipt.is_relative_to(project)
     assert hosts.load_receipt(receipt)["capabilities"]["first_action"] == "advisory_unenforced"
+
+
+@pytest.mark.parametrize("change", ["receipt_replaced", "root_moved"])
+def test_refused_legacy_cleanup_after_applied_removal_reports_unknown_effect(installation, monkeypatch, change):
+    project, settings, _, _, install = installation
+    legacy = project / ".agents-memory/hosts/codex.json"
+    with monkeypatch.context() as patch:
+        patch.setattr(hosts, "_receipt_path", lambda _settings, _root, _host: legacy)
+        install("codex", strict=False)
+    document = json.loads(legacy.read_text())
+    document.pop("ownership_digest")
+    document.pop("state")
+    document["adapter_version"] = 1
+    document["ownership_digest"] = canonical_digest(document)
+    legacy.write_text(json.dumps(document))
+    moved, resolved_legacy = project.parent / "moved-away", legacy.resolve()
+    apply, unlink = hosts._apply, hosts._unlink
+
+    def replace_legacy_after_apply(*args):
+        apply(*args)
+        legacy.unlink()
+        legacy.mkdir()
+
+    def move_root_after_legacy_cleanup(path, **options):
+        unlink(path, **options)
+        if path == resolved_legacy:
+            project.rename(moved)
+
+    if change == "receipt_replaced":
+        monkeypatch.setattr(hosts, "_apply", replace_legacy_after_apply)
+    else:
+        monkeypatch.setattr(hosts, "_unlink", move_root_after_legacy_cleanup)
+    with pytest.raises(DomainError) as refused:
+        hosts.uninstall_host(settings, project, "codex")
+    expected = "HOST_CONFIG_INVALID" if change == "receipt_replaced" else "HOST_CONFIG_DRIFT"
+    assert refused.value.code == expected and refused.value.effect == EffectState.UNKNOWN
+    assert not ((project if change == "receipt_replaced" else moved) / ".codex/hooks.json").exists()
+    receipt_path = hosts._receipt_path(settings, project, "codex")
+    assert hosts.load_receipt(receipt_path, active=False, allow_deleted_project=change == "root_moved")["state"] == "removing"
+
+
+def test_refused_rollback_after_partial_removal_reports_unknown_effect(installation, monkeypatch):
+    project, settings, _, _, install = installation
+    receipt_path = install("codex", strict=False)
+    outside = project.parent / "outside"
+    outside.write_text("unowned")
+    unlink, removed = hosts._unlink, []
+
+    def fail_second_project_removal(path, **options):
+        if options.get("directory") is None:
+            return unlink(path, **options)
+        if removed:
+            removed[0].symlink_to(outside)
+            raise OSError("injected removal failure")
+        unlink(path, **options)
+        removed.append(path)
+
+    monkeypatch.setattr(hosts, "_unlink", fail_second_project_removal)
+    with pytest.raises(DomainError) as refused:
+        hosts.uninstall_host(settings, project, "codex")
+    assert refused.value.code == "HOST_PATH_DENIED" and refused.value.effect == EffectState.UNKNOWN
+    assert hosts.load_receipt(receipt_path, active=False)["state"] == "removing"
+    assert outside.read_text() == "unowned"
+
+
+def test_native_publication_with_lost_lease_reports_unknown_effect(installation, monkeypatch):
+    project, settings, _, _, install = installation
+    receipt_path = install("claude", strict=False)
+    writer_lock = hosts._claude_writer_lock
+
+    @contextlib.contextmanager
+    def lease_lost_after_publication(path):
+        with writer_lock(path) as check:
+            calls = []
+
+            def checked():
+                calls.append(path)
+                # _claude_apply checks twice, once more before publishing, then after it.
+                if len(calls) == 4:
+                    raise DomainError("HOST_CONFIG_LOCK_LOST", "The native writer lease changed; reconcile ownership")
+                check()
+
+            yield checked
+
+    monkeypatch.setattr(hosts, "_claude_writer_lock", lease_lost_after_publication)
+    with pytest.raises(DomainError) as lost:
+        hosts.uninstall_host(settings, project, "claude")
+    assert lost.value.code == "HOST_CONFIG_LOCK_LOST" and lost.value.effect == EffectState.UNKNOWN
+    document = json.loads(hosts._claude_config_path().read_text())
+    assert hosts.SERVER_NAME not in document.get("projects", {}).get(str(project), {}).get("mcpServers", {})
+    assert hosts.load_receipt(receipt_path, active=False)["state"] == "removing"
+
+
+@pytest.mark.parametrize("operation", ["install", "uninstall"])
+def test_refused_receipt_write_after_intent_publication_reports_unknown_effect(installation, monkeypatch, operation):
+    project, settings, agent, producer, install = installation
+    receipt_path = hosts._receipt_path(settings, project.resolve(), "codex")
+    if operation == "uninstall":
+        install("codex", strict=False)
+    outside = project.parent / "outside-receipt"
+    outside.write_text("unowned")
+    writer = hosts.private_write
+
+    def replace_receipt_after_intent(path, content, **options):
+        writer(path, content, **options)
+        if path.name.startswith("ownership-"):
+            receipt_path.parent.mkdir(parents=True, exist_ok=True)
+            receipt_path.unlink(missing_ok=True)
+            receipt_path.symlink_to(outside)
+
+    monkeypatch.setattr(hosts, "private_write", replace_receipt_after_intent)
+    with pytest.raises(DomainError) as refused:
+        if operation == "install":
+            hosts.install_host(settings, project, "project-binding", "codex", agent, producer, strict=False)
+        else:
+            hosts.uninstall_host(settings, project, "codex")
+    assert refused.value.code == "PATH_DENIED" and refused.value.effect == EffectState.UNKNOWN
+    assert outside.read_text() == "unowned"
 
 
 def test_recovered_hook_backlog_converges_in_order_and_exposes_remaining_gap(installation, authority):
@@ -1602,3 +1995,701 @@ def test_historical_omp_strict_partial_install_is_reversed_not_resumed_for_execu
     assert mcp.read_bytes() == original
     assert not (project / ".omp/extensions/agents-memory.ts").exists()
     assert hosts.load_receipt(install("omp"))["strict"] is False
+
+
+@pytest.mark.parametrize("host", ["claude", "codex", "omp"])
+def test_deleted_project_owned_uninstall_and_fresh_install(installation, host):
+    import shutil
+
+    project, settings, agent, producer, install = installation
+    receipt_path = install(host)
+    runtime = Path(hosts.load_receipt(receipt_path)["runtime_dir"])
+    retained = runtime / "retain-runtime"
+    retained.write_bytes(b"retained")
+    shutil.rmtree(project)
+    result = hosts.uninstall_host(settings, project, host, project_deleted=True)
+    assert result["state"] == "native_uninstalled"
+    assert result["project_entries"] == "unverified_absent"
+    assert not project.exists()
+    assert retained.read_bytes() == b"retained"
+    assert agent.exists() and producer.exists()
+    assert hosts.load_receipt(receipt_path, active=False, allow_deleted_project=True)["state"] == "native_removed"
+    stable = project.parent / "stable"
+    stable.mkdir()
+    fresh = hosts.install_host(settings, stable, "project-binding", host, agent, producer, strict=False)
+    assert hosts.load_receipt(Path(fresh["receipt"]))["project_root"] == str(stable)
+
+
+def test_deleted_project_uninstall_preserves_changed_native_entry(installation):
+    import shutil
+
+    project, settings, _, _, install = installation
+    receipt = hosts.load_receipt(install())
+    entry = next(item for item in receipt["ownership"] if item["kind"] == "local_mcp")
+    native_path = Path(entry["path"])
+    document = json.loads(native_path.read_text())
+    document["projects"][entry["project"]]["mcpServers"][entry["key"]]["changed"] = True
+    native_path.write_text(json.dumps(document))
+    before = native_path.read_bytes()
+    shutil.rmtree(project)
+    with pytest.raises(DomainError) as drift:
+        hosts.uninstall_host(settings, project, "claude", project_deleted=True)
+    assert drift.value.code == "HOST_OWNERSHIP_DRIFT"
+    assert native_path.read_bytes() == before
+    assert not project.exists()
+
+
+def test_deleted_project_uninstall_requires_modern_private_receipt(installation):
+    import shutil
+
+    project, settings, _, _, install = installation
+    receipt_path = install("codex")
+    shutil.rmtree(project)
+    receipt_path.chmod(0o644)
+    with pytest.raises(DomainError):
+        hosts.uninstall_host(settings, project, "codex", project_deleted=True)
+    assert not project.exists()
+    receipt_path.unlink()
+    with pytest.raises(DomainError) as missing:
+        hosts.uninstall_host(settings, project, "codex", project_deleted=True)
+    assert missing.value.code == "HOST_RECEIPT_INVALID"
+    assert not project.exists()
+
+
+def test_deleted_project_uninstall_refuses_symlink_alias(installation):
+    import shutil
+
+    project, settings, _, _, install = installation
+    install("codex")
+    alias = project.parent / "alias"
+    alias.symlink_to(project)
+    shutil.rmtree(project)
+    with pytest.raises(DomainError) as denied:
+        hosts.uninstall_host(settings, alias, "codex", project_deleted=True)
+    assert denied.value.code == "HOST_PATH_DENIED"
+    assert not project.exists()
+
+
+@pytest.mark.parametrize("host", ["claude", "codex"])
+def test_absent_project_needs_explicit_deletion_and_reappeared_entries_stay_removable(installation, host):
+    project, settings, agent, producer, install = installation
+    receipt_path = install(host, strict=False)
+    moved = project.parent / "moved-away"
+    project.rename(moved)
+    with pytest.raises(DomainError) as absent:
+        hosts.uninstall_host(settings, project, host)
+    assert absent.value.code == "HOST_PROJECT_ABSENT"
+    assert hosts.load_receipt(receipt_path)["state"] == "installed"
+    result = hosts.uninstall_host(settings, project, host, project_deleted=True)
+    assert result["state"] == "native_uninstalled"
+    assert result["project_entries"] == "unverified_absent"
+    moved.rename(project)
+    with pytest.raises(DomainError) as present:
+        hosts.uninstall_host(settings, project, host, project_deleted=True)
+    assert present.value.code == "HOST_PROJECT_PRESENT"
+    hook = hosts.handle_hook(receipt_path, native(project, host))
+    assert hook["code"] == "HOST_UNINSTALL_INCOMPLETE"
+    with pytest.raises(DomainError) as incomplete:
+        install(host, strict=False)
+    assert incomplete.value.code == "HOST_UNINSTALL_INCOMPLETE"
+    assert hosts.uninstall_host(settings, project, host)["state"] == "uninstalled"
+    assert hosts.load_receipt(receipt_path, active=False)["state"] == "removed"
+    assert hosts.load_receipt(install(host, strict=False))["state"] == "installed"
+
+
+@pytest.mark.parametrize(("host", "change"), [
+    ("claude", "hook"), ("codex", "hook"), ("claude", "moved"), ("codex", "moved"),
+    ("claude", "copy"), ("codex", "copy"), ("codex", "toml"), ("codex", "toml_scalar"),
+])
+def test_reappeared_root_preserves_changed_owned_entries_as_drift(installation, host, change):
+    project, settings, _, _, install = installation
+    receipt_path = install(host, strict=False)
+    moved = project.parent / "moved-away"
+    project.rename(moved)
+    hosts.uninstall_host(settings, project, host, project_deleted=True)
+    moved.rename(project)
+    if change.startswith("toml"):
+        path = project / ".codex/config.toml"
+        text = path.read_text().replace("\ncommand = ", "\ncommand  = ", 1) if change == "toml" else "mcp_servers = 42\n"
+        path.write_text(text)
+    else:
+        path = project / (".claude/settings.local.json" if host == "claude" else ".codex/hooks.json")
+        document = json.loads(path.read_text())
+        groups = document["hooks"]["UserPromptSubmit"]
+        if change == "hook":
+            groups[0]["hooks"][0]["timeout"] = 14
+        elif change == "moved":
+            group = groups.pop(0)
+            group["hooks"][0]["timeout"] = 14
+            document["hooks"]["SessionEnd"].append(group)
+        else:
+            copy = json.loads(json.dumps(groups[0]))
+            copy["hooks"][0]["timeout"] = 14
+            groups.append(copy)
+        path.write_text(json.dumps(document))
+    before = path.read_bytes()
+    with pytest.raises(DomainError) as drift:
+        hosts.uninstall_host(settings, project, host)
+    assert drift.value.code == "HOST_OWNERSHIP_DRIFT"
+    assert path.read_bytes() == before
+    assert hosts.load_receipt(receipt_path, active=False)["state"] == "native_removed"
+
+
+@pytest.mark.parametrize("native_change", ["same", "same_without_hooks", "changed"])
+def test_reappeared_native_key_is_removed_only_when_still_owned(installation, native_change):
+    project, settings, _, _, install = installation
+    receipt_path = install("claude", strict=False)
+    owned = mcp_servers(json.loads(hosts._claude_config_path().read_text()), project)[hosts.SERVER_NAME]
+    moved = project.parent / "moved-away"
+    project.rename(moved)
+    hosts.uninstall_host(settings, project, "claude", project_deleted=True)
+    moved.rename(project)
+    if native_change == "same_without_hooks":
+        (project / ".claude" / "settings.local.json").unlink()
+    native_path = hosts._claude_config_path()
+    document = json.loads(native_path.read_text())
+    restored = dict(owned, args=[*owned["args"], "--changed"]) if native_change == "changed" else owned
+    document.setdefault("projects", {}).setdefault(str(project), {}).setdefault("mcpServers", {})[hosts.SERVER_NAME] = restored
+    native_path.write_text(json.dumps(document))
+    if native_change == "changed":
+        with pytest.raises(DomainError) as drift:
+            hosts.uninstall_host(settings, project, "claude")
+        assert drift.value.code == "HOST_OWNERSHIP_DRIFT"
+        assert hosts.load_receipt(receipt_path, active=False)["state"] == "native_removed"
+        return
+    assert hosts.uninstall_host(settings, project, "claude")["state"] == "uninstalled"
+    assert hosts.load_receipt(receipt_path, active=False)["state"] == "removed"
+    remaining = json.loads(native_path.read_text()).get("projects", {}).get(str(project), {}).get("mcpServers", {})
+    assert hosts.SERVER_NAME not in remaining
+    assert hosts.load_receipt(install("claude", strict=False))["state"] == "installed"
+
+
+@pytest.mark.parametrize("with_args", [False, True, "receipt_equals"])
+def test_reappeared_shell_quoted_codex_hook_is_drift(installation, tmp_path, with_args):
+    project, settings, agent, producer, _ = installation
+    quoted = settings.model_copy(update={"state_dir": tmp_path / "O'Brien" / "state"})
+    receipt_path = Path(hosts.install_host(quoted, project, "project-binding", "codex", agent, producer, strict=False)["receipt"])
+    hooks_path = project / ".codex/hooks.json"
+    assert str(receipt_path) not in hooks_path.read_text()
+    moved = project.parent / "moved-away"
+    project.rename(moved)
+    hosts.uninstall_host(quoted, project, "codex", project_deleted=True)
+    moved.rename(project)
+    document = json.loads(hooks_path.read_text())
+    handler = document["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+    handler["timeout"] = 14
+    if with_args is True:
+        handler["args"] = []
+    elif with_args == "receipt_equals":
+        tokens = shlex.split(handler["command"])
+        index = tokens.index("--receipt")
+        tokens[index:index + 2] = ["--receipt=" + tokens[index + 1]]
+        handler["command"] = shlex.join(tokens)
+    hooks_path.write_text(json.dumps(document))
+    with pytest.raises(DomainError) as drift:
+        hosts.uninstall_host(quoted, project, "codex")
+    assert drift.value.code == "HOST_OWNERSHIP_DRIFT"
+    assert hosts.load_receipt(receipt_path, active=False)["state"] == "native_removed"
+
+
+def test_interrupted_finishing_pass_rescans_restored_entries(installation):
+    project, settings, _, _, install = installation
+    receipt_path = install("codex", strict=False)
+    moved = project.parent / "moved-away"
+    project.rename(moved)
+    hosts.uninstall_host(settings, project, "codex", project_deleted=True)
+    moved.rename(project)
+    hooks_path = project / ".codex/hooks.json"
+    hooks_raw = hooks_path.read_bytes()
+    hooks_path.unlink()
+
+    def crash():
+        writer = hosts.private_write
+
+        def write_and_exit(path, content, *, replace=False, **options):
+            writer(path, content, replace=replace, **options)
+            if path == receipt_path and json.loads(content)["state"] == "native_finishing":
+                os._exit(41)
+
+        hosts.private_write = write_and_exit
+        hosts.uninstall_host(settings, project, "codex")
+
+    _abrupt_process(crash)
+    assert hosts.load_receipt(receipt_path, active=False)["state"] == "native_finishing"
+    with pytest.raises(DomainError) as incomplete:
+        install("codex", strict=False)
+    assert incomplete.value.code == "HOST_UNINSTALL_INCOMPLETE"
+    hooks_path.write_bytes(hooks_raw)
+    assert hosts.uninstall_host(settings, project, "codex")["state"] == "uninstalled"
+    assert not hooks_path.exists() and not (project / ".codex/config.toml").exists()
+    assert hosts.load_receipt(receipt_path, active=False)["state"] == "removed"
+
+
+def test_root_vanishing_after_precheck_keeps_cleanup_incomplete(installation, monkeypatch):
+    project, settings, _, _, install = installation
+    receipt_path = install("codex", strict=False)
+    moved = project.parent / "moved-away"
+    project.rename(moved)
+    hosts.uninstall_host(settings, project, "codex", project_deleted=True)
+    moved.rename(project)
+    lock = hosts._ownership_lock
+
+    @contextlib.contextmanager
+    def vanish_while_waiting(*args, **kwargs):
+        with lock(*args, **kwargs):
+            project.rename(moved)
+            yield
+
+    monkeypatch.setattr(hosts, "_ownership_lock", vanish_while_waiting)
+    with pytest.raises(DomainError) as changed:
+        hosts.uninstall_host(settings, project, "codex")
+    assert changed.value.code == "HOST_CONFIG_DRIFT"
+    assert hosts.load_receipt(receipt_path, active=False, allow_deleted_project=True)["state"] == "native_removed"
+
+
+def test_root_vanishing_during_scan_keeps_cleanup_incomplete(installation, monkeypatch):
+    project, settings, _, _, install = installation
+    receipt_path = install("codex", strict=False)
+    moved = project.parent / "moved-away"
+    project.rename(moved)
+    hosts.uninstall_host(settings, project, "codex", project_deleted=True)
+    moved.rename(project)
+    scan = hosts._removal_plan
+
+    def vanish_during_scan(*args, **kwargs):
+        project.rename(moved)
+        return scan(*args, **kwargs)
+
+    monkeypatch.setattr(hosts, "_removal_plan", vanish_during_scan)
+    with pytest.raises(DomainError) as changed:
+        hosts.uninstall_host(settings, project, "codex")
+    assert changed.value.code == "HOST_CONFIG_DRIFT"
+    assert hosts.load_receipt(receipt_path, active=False, allow_deleted_project=True)["state"] == "native_removed"
+
+
+@pytest.mark.parametrize("change", ["vanished", "replaced"])
+@pytest.mark.parametrize("resume", ["install", "uninstall"])
+@pytest.mark.parametrize("state", ["pending", "removing"])
+def test_root_changed_while_waiting_to_resume_interrupted_intent_is_refused(installation, monkeypatch, state, resume, change):
+    project, settings, agent, producer, install = installation
+    receipt_path = hosts._receipt_path(settings, project.resolve(), "codex")
+    if state == "removing":
+        install("codex", strict=False)
+
+    def crash():
+        writer = hosts.private_write
+
+        def write_and_exit(path, content, *, replace=False, **options):
+            writer(path, content, replace=replace, **options)
+            if path == receipt_path and json.loads(content)["state"] == state:
+                os._exit(41)
+
+        hosts.private_write = write_and_exit
+        if state == "pending":
+            hosts.install_host(settings, project, "project-binding", "codex", agent, producer, strict=False)
+        else:
+            hosts.uninstall_host(settings, project, "codex")
+
+    _abrupt_process(crash)
+    receipt = hosts.load_receipt(receipt_path, active=False)
+    assert receipt["state"] == state
+    intent = hosts._intent_path(receipt)
+    moved = project.parent / "moved-away"
+    lock = hosts._ownership_lock
+
+    @contextlib.contextmanager
+    def change_while_waiting(*args, **kwargs):
+        with lock(*args, **kwargs):
+            project.rename(moved)
+            if change == "replaced":
+                project.mkdir()
+            yield
+
+    monkeypatch.setattr(hosts, "_ownership_lock", change_while_waiting)
+    with pytest.raises(DomainError) as changed:
+        if resume == "install":
+            hosts.install_host(settings, project, "project-binding", "codex", agent, producer, strict=False)
+        else:
+            hosts.uninstall_host(settings, project, "codex")
+    assert changed.value.code == "HOST_CONFIG_DRIFT" and changed.value.effect == EffectState.NOT_STARTED
+    assert hosts.load_receipt(receipt_path, active=False, allow_deleted_project=change == "vanished")["state"] == state
+    assert intent.exists()
+    assert (list(project.iterdir()) == []) if change == "replaced" else not project.exists()
+    if state == "removing":
+        assert (moved / ".codex/hooks.json").exists() and (moved / ".codex/config.toml").exists()
+
+
+def test_foreign_unparseable_hook_does_not_block_uninstall(installation):
+    project, settings, _, _, install = installation
+    receipt_path = install("codex", strict=False)
+    hooks_path = project / ".codex/hooks.json"
+    document = json.loads(hooks_path.read_text())
+    foreign = {"hooks": [{"type": "command", "command": 'echo "$(echo "it\'s")"', "timeout": 5}]}
+    document["hooks"]["UserPromptSubmit"].append(foreign)
+    hooks_path.write_text(json.dumps(document))
+    assert hosts.uninstall_host(settings, project, "codex")["state"] == "uninstalled"
+    assert json.loads(hooks_path.read_text())["hooks"] == {"UserPromptSubmit": [foreign]}
+    assert hosts.load_receipt(receipt_path, active=False)["state"] == "removed"
+
+
+@pytest.mark.parametrize("quoted", [False, True])
+def test_owned_hook_edited_into_unparseable_shell_is_drift(installation, tmp_path, quoted):
+    project, settings, agent, producer, _ = installation
+    if quoted:
+        settings = settings.model_copy(update={"state_dir": tmp_path / "O'Brien" / "state"})
+    receipt_path = Path(hosts.install_host(settings, project, "project-binding", "codex", agent, producer, strict=False)["receipt"])
+    moved = project.parent / "moved-away"
+    project.rename(moved)
+    hosts.uninstall_host(settings, project, "codex", project_deleted=True)
+    moved.rename(project)
+    hooks_path = project / ".codex/hooks.json"
+    document = json.loads(hooks_path.read_text())
+    handler = document["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+    handler["command"] += " # it's"
+    hooks_path.write_text(json.dumps(document))
+    before = hooks_path.read_bytes()
+    # The finishing pass skips digest mismatches, so only the reference scan can refuse.
+    with pytest.raises(DomainError) as drift:
+        hosts.uninstall_host(settings, project, "codex")
+    assert drift.value.code == "HOST_OWNERSHIP_DRIFT"
+    assert hooks_path.read_bytes() == before
+    assert hosts.load_receipt(receipt_path, active=False)["state"] == "native_removed"
+
+
+@pytest.mark.parametrize("host", ["claude", "codex"])
+def test_root_vanishing_during_intent_apply_keeps_recovery_intent(installation, monkeypatch, host):
+    project, settings, _, _, install = installation
+    receipt_path = install(host, strict=False)
+    moved = project.parent / "moved-away"
+    apply = hosts._apply
+
+    def vanish_while_applying(*args):
+        if project.exists():
+            project.rename(moved)
+        return apply(*args)
+
+    monkeypatch.setattr(hosts, "_apply", vanish_while_applying)
+    with pytest.raises(DomainError) as changed:
+        hosts.uninstall_host(settings, project, host)
+    assert changed.value.code == "HOST_CONFIG_DRIFT" and changed.value.effect == EffectState.UNKNOWN
+    assert hosts.load_receipt(receipt_path, active=False, allow_deleted_project=True)["state"] == "removing"
+    monkeypatch.setattr(hosts, "_apply", apply)
+    moved.rename(project)
+    assert hosts.uninstall_host(settings, project, host)["state"] == "uninstalled"
+    owned = ".claude/settings.local.json" if host == "claude" else ".codex/hooks.json"
+    assert not (project / owned).exists()
+    assert hosts.load_receipt(receipt_path, active=False)["state"] == "removed"
+    assert hosts.load_receipt(install(host, strict=False))["state"] == "installed"
+
+
+@pytest.mark.parametrize("host", ["claude", "codex"])
+def test_root_moved_and_restored_during_intent_apply_removes_only_for_real(installation, monkeypatch, host):
+    project, settings, _, _, install = installation
+    receipt_path = install(host, strict=False)
+    moved = project.parent / "moved-away"
+    apply = hosts._apply
+
+    def flicker_while_applying(*args):
+        project.rename(moved)
+        try:
+            return apply(*args)
+        finally:
+            moved.rename(project)
+
+    monkeypatch.setattr(hosts, "_apply", flicker_while_applying)
+    assert hosts.uninstall_host(settings, project, host)["state"] == "uninstalled"
+    owned = ".claude/settings.local.json" if host == "claude" else ".codex/hooks.json"
+    assert not (project / owned).exists()
+    assert hosts.load_receipt(receipt_path, active=False)["state"] == "removed"
+
+
+@pytest.mark.parametrize("entry", ["directory", "socket"])
+def test_non_regular_owned_config_is_refused_without_changes(installation, monkeypatch, entry):
+    project, settings, _, _, install = installation
+    receipt_path = install("codex", strict=False)
+    hooks_path = project / ".codex/hooks.json"
+    config = (project / ".codex/config.toml").read_bytes()
+    hooks_path.unlink()
+    with contextlib.ExitStack() as stack:
+        if entry == "directory":
+            hooks_path.mkdir()
+        else:
+            monkeypatch.chdir(hooks_path.parent)
+            stack.enter_context(socket.socket(socket.AF_UNIX)).bind(hooks_path.name)
+        with pytest.raises(DomainError) as invalid:
+            hosts.uninstall_host(settings, project, "codex")
+    assert invalid.value.code == "HOST_CONFIG_INVALID"
+    assert hosts.load_receipt(receipt_path, active=False)["state"] == "installed"
+    assert (project / ".codex/config.toml").read_bytes() == config
+
+
+def test_pinned_project_refuses_links_and_non_regular_entries(tmp_path):
+    root, outside = tmp_path / "project", tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (outside / "hooks.json").write_bytes(b"{}")
+    (root / "linked").symlink_to(outside)
+    (root / "final.json").symlink_to(outside / "hooks.json")
+    (root / "blocker").write_bytes(b"file")
+    (root / "folder").mkdir()
+    os.mkfifo(root / "fifo")
+    (root / "large.json").write_bytes(b"x" * 11)
+    with hosts._pinned_project(root) as pinned:
+        for path, code in (
+            (root / "linked/hooks.json", "HOST_PATH_DENIED"), (root / "final.json", "HOST_PATH_DENIED"),
+            (root / "folder", "HOST_CONFIG_INVALID"), (root / "fifo", "HOST_CONFIG_INVALID"),
+        ):
+            with pytest.raises(DomainError) as refused:
+                pinned.read(path)
+            assert refused.value.code == code
+        with pytest.raises(DomainError) as oversized:
+            pinned.read(root / "large.json", 10)
+        assert oversized.value.code == "HOST_CONFIG_INVALID"
+        assert pinned.read(root / "blocker/hooks.json") is None
+        for path in (root / "linked/hooks.json", root / "blocker/hooks.json"):
+            with pytest.raises(DomainError) as denied:
+                pinned.write(path, b"owned", replace=False)
+            assert denied.value.code == "HOST_PATH_DENIED"
+    assert (outside / "hooks.json").read_bytes() == b"{}"
+    assert not list(root.rglob(".memory-private-*"))
+
+
+@pytest.mark.parametrize("boundary", ["removing_receipt", "native_key"])
+def test_older_native_only_removing_intent_finishes_project_entries(installation, boundary):
+    project, settings, _, _, install = installation
+    receipt = install()
+    moved = project.parent / "moved-away"
+    project.rename(moved)
+    _crash_deleted_claude_removal(project, settings, receipt, boundary)
+    manifest = hosts.load_receipt(receipt, active=False, allow_deleted_project=True)
+    manifest["state"] = "removing"
+    hosts._write_receipt(receipt, manifest)
+    moved.rename(project)
+    with pytest.raises(DomainError) as incomplete:
+        install()
+    assert incomplete.value.code == "HOST_UNINSTALL_INCOMPLETE" and incomplete.value.effect == EffectState.UNKNOWN
+    assert hosts.uninstall_host(settings, project, "claude")["state"] == "uninstalled"
+    assert not (project / ".claude" / "settings.local.json").exists()
+    assert hosts.load_receipt(receipt, active=False)["state"] == "removed"
+    assert hosts.load_receipt(install())["state"] == "installed"
+
+
+@pytest.mark.parametrize("boundary", ["removing_receipt", "native_key"])
+def test_interrupted_deleted_cleanup_finishes_project_entries_after_root_returns(installation, boundary):
+    project, settings, _, _, install = installation
+    receipt = install()
+    moved = project.parent / "moved-away"
+    project.rename(moved)
+    _crash_deleted_claude_removal(project, settings, receipt, boundary)
+    moved.rename(project)
+    hooks_path = project / ".claude" / "settings.local.json"
+    assert "hooks" in json.loads(hooks_path.read_text())
+    with pytest.raises(DomainError) as incomplete:
+        install()
+    assert incomplete.value.code == "HOST_UNINSTALL_INCOMPLETE" and incomplete.value.effect == EffectState.NOT_STARTED
+    assert hosts.handle_hook(receipt, native(project))["code"] == "HOST_UNINSTALL_INCOMPLETE"
+    assert hosts.uninstall_host(settings, project, "claude")["state"] == "uninstalled"
+    assert not hooks_path.exists()
+    manifest = hosts.load_receipt(receipt, active=False)
+    assert manifest["state"] == "removed"
+    assert not hosts._intent_path(manifest).exists()
+    assert hosts.load_receipt(install())["state"] == "installed"
+
+
+def test_refusal_after_resumed_native_cleanup_reports_unknown_effect(installation):
+    project, settings, _, _, install = installation
+    receipt = install()
+    moved = project.parent / "moved-away"
+    project.rename(moved)
+    _crash_deleted_claude_removal(project, settings, receipt, "removing_receipt")
+    moved.rename(project)
+    hooks_path = project / ".claude" / "settings.local.json"
+    document = json.loads(hooks_path.read_text())
+    next(iter(document["hooks"].values()))[0]["hooks"][0]["timeout"] = 99
+    hooks_path.write_text(json.dumps(document))
+    with pytest.raises(DomainError) as drift:
+        hosts.uninstall_host(settings, project, "claude")
+    assert drift.value.code == "HOST_OWNERSHIP_DRIFT" and drift.value.effect == EffectState.UNKNOWN
+    assert hosts.load_receipt(receipt, active=False)["state"] == "native_removed"
+
+
+def _crash_deleted_claude_removal(project, settings, receipt, boundary):
+    native_path = hosts._claude_config_path()
+
+    def crash():
+        writer = hosts.private_write
+
+        def write_and_exit(path, content, *, replace=False, **options):
+            writer(path, content, replace=replace, **options)
+            if boundary == "native_key" and path == native_path:
+                os._exit(41)
+            if boundary == "removing_receipt" and path == receipt and json.loads(content)["state"] == "native_removing":
+                os._exit(41)
+
+        hosts.private_write = write_and_exit
+        hosts.uninstall_host(settings, project, "claude", project_deleted=True)
+
+    _abrupt_process(crash)
+    assert hosts.load_receipt(receipt, active=False, allow_deleted_project=True)["state"] == "native_removing"
+    assert not project.exists()
+
+
+@pytest.mark.parametrize("boundary", ["removing_receipt", "native_key"])
+def test_deleted_project_removal_crash_recovers_without_recreation_or_unowned_loss(installation, boundary):
+    import shutil
+
+    project, settings, _, _, install = installation
+    receipt = install()
+    shutil.rmtree(project)
+    _crash_deleted_claude_removal(project, settings, receipt, boundary)
+    document = update_native_unowned_state(project)
+    servers = mcp_servers(document, project)
+    assert (hosts.SERVER_NAME in servers) == (boundary == "removing_receipt")
+    servers.pop(hosts.SERVER_NAME, None)
+    for _ in range(2):
+        assert hosts.uninstall_host(settings, project, "claude", project_deleted=True)["state"] == "native_uninstalled"
+        assert json.loads(hosts._claude_config_path().read_text()) == document
+        assert not project.exists()
+    manifest = hosts.load_receipt(receipt, active=False, allow_deleted_project=True)
+    assert manifest["state"] == "native_removed"
+    assert not hosts._intent_path(manifest).exists()
+
+
+def test_deleted_project_cleanup_uses_validated_receipt_bytes_once(installation, monkeypatch):
+    import shutil
+
+    project, settings, _, _, install = installation
+    receipt = install()
+    shutil.rmtree(project)
+    document = update_native_unowned_state(project)
+    mcp_servers(document, project).pop(hosts.SERVER_NAME)
+    reader = private_io.private_read
+    replaced = False
+
+    def replace_after_read(path, *args, **kwargs):
+        nonlocal replaced
+        raw = reader(path, *args, **kwargs)
+        if path == receipt and not replaced:
+            replaced = True
+            private_io.private_write(receipt, b"invalid replacement receipt\n", replace=True)
+        return raw
+
+    monkeypatch.setattr(private_io, "private_read", replace_after_read)
+    assert hosts.uninstall_host(settings, project, "claude", project_deleted=True)["state"] == "native_uninstalled"
+    assert hosts.load_receipt(receipt, active=False, allow_deleted_project=True)["state"] == "native_removed"
+    assert json.loads(hosts._claude_config_path().read_text()) == document
+    assert not project.exists()
+
+
+@pytest.mark.parametrize("drift", [
+    "native_value", "before_value", "after_value", "empty_before", "project_file",
+    "legacy_document", "foreign_project", "foreign_deployment", "pending",
+    "legacy_receipt", "tampered_intent",
+])
+def test_deleted_project_removal_recovery_refuses_non_deletion_foreign_or_drifted_intent(installation, drift):
+    import shutil
+
+    project, settings, _, _, install = installation
+    receipt = install()
+    shutil.rmtree(project)
+    _crash_deleted_claude_removal(project, settings, receipt, "removing_receipt")
+    manifest = hosts.load_receipt(receipt, active=False, allow_deleted_project=True)
+    old_intent_path = hosts._intent_path(manifest)
+    intent = json.loads(old_intent_path.read_text())
+    step = intent["steps"][0]
+    native_path = hosts._claude_config_path()
+    if drift == "native_value":
+        document = json.loads(native_path.read_text())
+        mcp_servers(document, project)[hosts.SERVER_NAME] = {"command": "foreign-owner"}
+        native_path.write_text(json.dumps(document))
+    elif drift == "before_value":
+        step["before"] = {"command": "foreign-owner"}
+    elif drift == "after_value":
+        step["after"] = step["before"]
+    elif drift == "empty_before":
+        step["before"] = None
+    elif drift == "project_file":
+        entry = next(item for item in manifest["ownership"] if item["kind"] == "hook")
+        raw = b'{"hooks":{"UserPromptSubmit":[]}}'
+        intent["steps"].append({
+            "path": entry["path"], "before": None, "before_digest": None,
+            "after": base64.b64encode(raw).decode(), "after_digest": hosts._digest(raw),
+        })
+    elif drift == "legacy_document":
+        before = native_path.read_bytes()
+        document = json.loads(before)
+        mcp_servers(document, project).pop(hosts.SERVER_NAME)
+        after = json.dumps(document).encode()
+        intent["steps"][0] = {
+            "path": str(native_path), "before": base64.b64encode(before).decode(),
+            "before_digest": hosts._digest(before), "after": base64.b64encode(after).decode(),
+            "after_digest": hosts._digest(after),
+        }
+    elif drift == "foreign_project":
+        step["project"] = str(project.parent / "foreign")
+    elif drift == "foreign_deployment":
+        manifest["deployment_id"] = "foreign-deployment"
+    elif drift == "pending":
+        manifest["state"] = "pending"
+    elif drift == "legacy_receipt":
+        manifest["adapter_version"] = 2
+    elif drift == "tampered_intent":
+        intent["installation_id"] = "tampered-installation"
+    if drift != "tampered_intent":
+        manifest["intent_digest"] = hosts.canonical_digest(intent)
+    intent_path = hosts._intent_path(manifest)
+    intent_path.write_text(json.dumps(intent))
+    hosts._write_receipt(receipt, manifest)
+    snapshots = {path: path.read_bytes() for path in {receipt, native_path, old_intent_path, intent_path}}
+
+    with pytest.raises(DomainError) as denied:
+        hosts.uninstall_host(settings, project, "claude", project_deleted=True)
+    assert denied.value.code in {"HOST_RECEIPT_INVALID", "HOST_RECOVERY_DRIFT", "HOST_CONFIG_DRIFT"}
+    assert all(path.read_bytes() == raw for path, raw in snapshots.items())
+    assert not project.exists()
+
+
+@pytest.mark.parametrize("boundary", [None, "removing_receipt", "native_key"])
+def test_deleted_linked_worktree_preserves_exact_native_project_cleanup(installation, boundary):
+    project, settings, _, _, install = installation
+    project.rmdir()
+    main = project.parent / "canonical"
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
+    commands = [
+        ["init", str(main)],
+        ["-C", str(main), "commit", "--allow-empty", "-m", "isolated deleted worktree fixture"],
+        ["-C", str(main), "worktree", "add", "--detach", str(project)],
+    ]
+    prefix = ["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=Test", "-c", "user.email=test@example.invalid"]
+    for arguments in commands:
+        subprocess.run(prefix + arguments, check=True, capture_output=True, timeout=10, env=environment)
+    local = hosts._claude_config_path()
+    original = {"projects": {str(main): {"hasTrustDialogAccepted": False, "user-field": "retained"}}}
+    local.write_text(json.dumps(original))
+    receipt = install()
+    with pytest.raises(DomainError) as live:
+        hosts.load_receipt(receipt, active=False, allow_deleted_project=True)
+    assert live.value.code == "HOST_RECEIPT_INVALID"
+    subprocess.run(
+        prefix + ["-C", str(main), "worktree", "remove", "--force", str(project)],
+        check=True, capture_output=True, timeout=10, env=environment,
+    )
+    with pytest.raises(DomainError) as active:
+        hosts.load_receipt(receipt, allow_deleted_project=True)
+    assert active.value.code == "HOST_RECEIPT_INVALID"
+    if boundary is not None:
+        _crash_deleted_claude_removal(project, settings, receipt, boundary)
+        original = update_native_unowned_state(main)
+        assert (hosts.SERVER_NAME in mcp_servers(original, main)) == (boundary == "removing_receipt")
+        mcp_servers(original, main).pop(hosts.SERVER_NAME, None)
+    result = hosts.uninstall_host(settings, project, "claude", project_deleted=True)
+    assert result["state"] == "native_uninstalled"
+    assert json.loads(local.read_text()) == original
+    assert not project.exists()
+    assert hosts.uninstall_host(settings, project, "claude", project_deleted=True)["state"] == "native_uninstalled"
+    assert json.loads(local.read_text()) == original
+    assert not project.exists()
+    manifest = hosts.load_receipt(receipt, active=False, allow_deleted_project=True)
+    assert manifest["state"] == "native_removed"
+    assert not hosts._intent_path(manifest).exists()

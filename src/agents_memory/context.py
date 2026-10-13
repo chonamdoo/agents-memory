@@ -116,6 +116,7 @@ def _claim(claim: Claim) -> dict:
         "exceptions": list(draft.exceptions),
         "evidence": [
             {"source": span.source_id, "revision": span.source_revision, "source_speaker": span.source_speaker,
+             **span.model_dump(mode="json", include={"source_event_time", "source_recorded_at"}),
              "bytes": [span.byte_start, span.byte_end], "quote": span.quote}
             for span in claim.evidence
         ],

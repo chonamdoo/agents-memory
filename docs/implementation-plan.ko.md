@@ -69,8 +69,10 @@ Storage writer가 필요한 추가 helper는 내부 함수로 만든다. 공개 
 - `embed(Sequence[str]) -> list[list[float]]`: BGE-M3 1024 normalized dense, finite actual model output. to_thread/worker로 event loop heartbeat를 막지 않는다.
 - `consolidate(Sequence[Claim]) -> Consolidation`: bounded true manifest; 조건/시간/부정/authority/snapshot 다르면 함부로 duplicate/supersede 하지 않는다. 0/1 claim의 pair 집합은 실제로 empty이고 model 호출이 필요 없다.
 - `rerank(query, Sequence[Claim]) -> list[RankedClaim]`: 실제 BGE cross-encoder; 최종 작은 candidate도 점수 계산. invalid IDs/NaN 거절.
-- `reflect(query, Sequence[Claim]) -> ReflectionDraft`: 문장별 manifest citations, grounded candidate. 문장에 새 숫자/코드 identifier가 출처에서 확인되지 않으면 거절; 모든 실제 입력이 dependency.
+- `reflect(query, Sequence[Claim]) -> ReflectionDraft`: 문장별 manifest citations, grounded candidate. 문장에 새 숫자/코드 identifier가 출처에서 확인되지 않으면 거절; 모든 실제 입력이 dependency. 생성 schema는 `GeneratedReflection`의 `answer.kind`가 `source_provenance`(claim ID만 선택)인지 `assertions`(text+claim ID)인지 고른다. provenance는 `semantic.resolve_reflection`이 cited span에서 코드로 채운다.
 - `close()`: observed in-flight 작업과 close/drain 상태를 구분. thread timeout을 inference termination이라 하지 않는다.
+
+모델 입력 projection은 `models.py`의 include-list(`_SOURCE_INPUT_FIELDS`, `_DRAFT_INPUT_FIELDS`, `_SPAN_INPUT_FIELDS`)로만 만든다. `models.py`·`prompts.py`·`semantic.py`·`semantic_contract.py`가 semantic fingerprint 대상이고 `domain.py`는 아니므로, domain에 필드를 추가해도 승인 없이 모델 입력이 바뀌지 않는다. consolidation은 span 전체(source clock 포함)를, rerank는 speaker·clock·quote를, reflection은 speaker·quote만 받는다. route revision은 바뀌지만 embedding vector compatibility는 별도로 유지한다.
 
 `lexical.tokens(text: str) -> list[str]`는 NFKC 검색 view에서 Hangul bigram/원문 token/camel/snake/exact code identifier를 생성한다. evidence는 정규화하지 않는다. `semantic.validate_reflection(result, claims)`는 실제 입력 citation/identifier/number의 deterministic 경계 검증을 제공한다. model uncertainty를 자동 human approval로 승격하지 않는다.
 
@@ -79,6 +81,8 @@ Storage writer가 필요한 추가 helper는 내부 함수로 만든다. 공개 
 core는 위 Store와 SemanticRuntime을 결합한 유일한 orchestrator다. worker는 한 queue만 소비한다. 모든 model 단계는 짧은 admission commit→DB 밖 inference→currentness/fence publish다. required rule selector는 true/false/unknown, overflow/unknown strict 행동은 block이다. native/model input receipt와 실제 시행·자연어 준수를 혼동하지 않는다.
 
 Heartbeat transient continuation은 마지막 확인 lease의 monotonic cutoff 안에서만 허용한다. 동일 owner가 갱신한 deadline은 admission에서만 수용하며 exact heartbeat/publication fence와 모든 credential/source/route/나머지 lease identity 검사는 유지한다. journal의 latest exact head 요구는 유지한다.
+
+운영 경계 명령: `project relocate`(binding revision+locator CAS), `host-uninstall --project-deleted`(부재 root의 native 항목만 정리, `native_removed`; root 재등장 시 일반 uninstall이 `removed`로 완료), `model approve --supersede-pending-intent <SHA256>`(현재 operator의 명시 intent 교체; 실패 시 원래 intent 복원). 세부 의미는 `architecture.ko.md` 7절을 따른다.
 
 공식 SDK2의 direct `CallToolResult`/단일 TextContent로 네 agent tools를 노출한다. producer/operator action은 별도 token·CLI/API다. legacy SDK session credential 혼합은 outer HTTP 현재 token 검증 및 credential-bound session으로 막고 실제 dual-era/cross-token 시험을 실행한다. server instructions/corpus는 빈 값이다. stdio는 같은 HTTP/core로 중계하며 별도 DB/engine을 열지 않는다. bounded 오류의 RPC ID/type/public code/effect를 검증해 효과를 보존하고 확인할 수 없는 전송 결과는 unknown이다. raw 진단/자동 mutation retry 없음.
 

@@ -3,7 +3,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import fcntl
+import hashlib
 import json
+import os
 import secrets
 import sys
 import time
@@ -15,9 +18,11 @@ from pydantic import ValidationError
 from .client import LocalClient
 from .config import MODEL_PURPOSES, ModelConfig, Settings, load_settings, resolve_binding
 from .domain import (
+    BindingRelocation,
     CaptureCommand,
     ContextCommand,
     DomainError,
+    EffectState,
     FeedbackCommand,
     RecordCommand,
     Role,
@@ -26,6 +31,7 @@ from .domain import (
     RuleScope,
     Selector,
     approval_signing_payload,
+    canonical_digest,
 )
 from .private_io import private_read, private_write
 from .wire import decode_json, validate_wire
@@ -68,6 +74,210 @@ async def authority(args):
             yield settings, store, actor
         finally:
             await store.close()
+
+
+def _model_config_digest(settings: Settings) -> str:
+    return canonical_digest({
+        "models": settings.models.model_dump(mode="json"),
+        "purposes": list(settings.allowed_model_purposes),
+    })
+
+
+def _model_authority_digest(settings: Settings) -> str:
+    values = settings.model_dump(mode="json")
+    return canonical_digest({name: values[name] for name in (
+        "deployment_id", "realm", "mode", "database_dsn", "migrator_dsn", "state_dir", "journal_dir",
+    )})
+
+
+def _guard_model_config(path: Path, expected: bytes) -> None:
+    if private_read(path, 262144) != expected:
+        raise DomainError("MODEL_APPROVAL_CONFLICT", "The private configuration changed before publication")
+
+
+def _finish_model_approval_intent(path: Path) -> None:
+    path.unlink()
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+async def _publish_model_approval(args, settings: Settings, actor, updated: Settings, runtime) -> dict:
+    from .ops import _file, _private_directory
+
+    _private_directory(settings.state_dir)
+    lock_path = settings.state_dir / "model-approval.lock"
+    if args.config.resolve() == lock_path.resolve():
+        raise DomainError("PATH_DENIED", "Model approval cannot replace its recovery lock")
+    try:
+        private_write(lock_path, b"")
+    except FileExistsError:
+        pass
+    descriptor = _file(lock_path, maximum=0)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise DomainError("MODEL_APPROVAL_BUSY", "Another model approval is still reconciling") from None
+        return await _reconcile_model_approval(args, settings, actor, updated, runtime)
+    finally:
+        os.close(descriptor)
+
+
+async def _reconcile_model_approval(args, settings: Settings, actor, updated: Settings, runtime) -> dict:
+    original_raw = private_read(args.config, 262144)
+    original = Settings.model_validate_json(original_raw)
+    authority_digest = _model_authority_digest(settings)
+    if (_model_authority_digest(original) != authority_digest
+            or _model_config_digest(original) != _model_config_digest(settings)):
+        raise DomainError("MODEL_APPROVAL_CONFLICT", "The authority or model configuration changed during validation")
+    updated = Settings.model_validate({
+        **original.model_dump(), "models": updated.models,
+        "allowed_model_purposes": updated.allowed_model_purposes,
+    })
+    target = _model_config_digest(updated)
+    request = canonical_digest({
+        "config_path": os.path.abspath(args.config), "authority": authority_digest,
+        "principal": actor.id, "credential": actor.credential_id, "generation": actor.generation,
+        "target": target, "revision": runtime.revision,
+    })
+    intent_path = settings.state_dir / "model-approval-intent.json"
+    if args.config.resolve() == intent_path.resolve():
+        raise DomainError("PATH_DENIED", "Model approval cannot replace its recovery intent")
+    recovering = intent_path.exists() or intent_path.is_symlink()
+    superseded_raw = None
+    if recovering:
+        try:
+            intent_raw = private_read(intent_path, 4096)
+            intent = decode_json(intent_raw)
+            if (set(intent) != {"format", "request", "before", "target"}
+                    or type(intent["format"]) is not int or intent["format"] != 1
+                    or any(
+                        not isinstance(intent[key], str) or len(intent[key]) != 64
+                        or any(character not in "0123456789abcdef" for character in intent[key])
+                        for key in ("request", "before", "target")
+                    )
+                    or _model_config_digest(original) not in {intent["before"], intent["target"]}):
+                raise ValueError
+            exact_retry = intent["request"] == request and intent["target"] == target
+            if not exact_retry and args.supersede_pending_intent != hashlib.sha256(intent_raw).hexdigest():
+                raise ValueError
+        except (DomainError, ValueError, TypeError):
+            raise DomainError("MODEL_APPROVAL_CONFLICT", "Reconcile the exact pending model approval without replacing conflicting configuration",
+                effect=EffectState.UNKNOWN) from None
+        if not exact_retry:
+            replacement = {"format": 1, "request": request, "before": _model_config_digest(original), "target": target}
+            try:
+                private_write(intent_path, json.dumps(replacement) + "\n", replace=True,
+                    before_publish=lambda: _guard_model_config(intent_path, intent_raw))
+            except (DomainError, OSError):
+                raise DomainError("MODEL_APPROVAL_RECOVERY_REQUIRED", "Pending approval replacement is uncertain; reconcile the current private intent",
+                    status=503, effect=EffectState.UNKNOWN) from None
+            superseded_raw = intent_raw
+            intent = replacement
+            recovering = False
+    else:
+        if args.supersede_pending_intent is not None:
+            raise DomainError("MODEL_APPROVAL_CONFLICT", "No pending model approval matches the explicit supersession")
+        intent = {"format": 1, "request": request, "before": _model_config_digest(original), "target": target}
+        try:
+            private_write(intent_path, json.dumps(intent) + "\n")
+        except FileExistsError:
+            raise DomainError("MODEL_APPROVAL_CONFLICT", "Another model approval owns the recovery intent") from None
+        except OSError:
+            raise DomainError("MODEL_APPROVAL_RECOVERY_REQUIRED", "Retry the exact model approval to reconcile its private intent",
+                status=503, effect=EffectState.NOT_COMMITTED) from None
+    adopted = False
+    adoption_attempted = False
+    try:
+        if _model_config_digest(original) != target:
+            private_write(args.config, updated.model_dump_json(indent=2) + "\n", replace=True,
+                before_publish=lambda: _guard_model_config(args.config, original_raw))
+        async with authority(args) as (adoption_settings, adoption_store, adoption_actor):
+            if (_model_authority_digest(adoption_settings) != authority_digest
+                    or _model_config_digest(adoption_settings) != target):
+                raise DomainError("MODEL_APPROVAL_CONFLICT", "The published model configuration was superseded")
+            if (
+                adoption_actor.id, adoption_actor.credential_id, adoption_actor.realm,
+                adoption_actor.role, adoption_actor.generation,
+            ) != (
+                actor.id, actor.credential_id, actor.realm, actor.role, actor.generation,
+            ):
+                raise DomainError("AUTH_DENIED", "The approval credential changed before route adoption", status=403)
+            adoption_attempted = True
+            await adoption_store.configure_route(actor, runtime.revision, updated.allowed_model_purposes, True)
+            adopted = True
+        current = load_settings(args.config)
+        if _model_authority_digest(current) != authority_digest or _model_config_digest(current) != target:
+            raise DomainError("MODEL_APPROVAL_CONFLICT", "The adopted model configuration was superseded")
+        _finish_model_approval_intent(intent_path)
+    except Exception as error:
+        effect = EffectState.COMMITTED if adopted else EffectState.UNKNOWN
+        uncertain_adoption = adoption_attempted and (
+            not isinstance(error, DomainError) or error.effect not in {EffectState.NOT_STARTED, EffectState.NOT_COMMITTED}
+        )
+        if not adopted and not uncertain_adoption and not recovering:
+            try:
+                current_raw = private_read(args.config, 262144)
+                current = Settings.model_validate_json(current_raw)
+                current_digest = _model_config_digest(current)
+                if _model_authority_digest(current) == authority_digest and current_digest in {intent["before"], target}:
+                    if current_digest != intent["before"]:
+                        restored = Settings.model_validate({
+                            **current.model_dump(), "models": original.models,
+                            "allowed_model_purposes": original.allowed_model_purposes,
+                        })
+                        private_write(args.config, restored.model_dump_json(indent=2) + "\n", replace=True,
+                            before_publish=lambda: _guard_model_config(args.config, current_raw))
+                    if superseded_raw is None:
+                        _finish_model_approval_intent(intent_path)
+                    else:
+                        private_write(intent_path, superseded_raw, replace=True,
+                            before_publish=lambda: _guard_model_config(intent_path, (json.dumps(intent) + "\n").encode()))
+                    effect = EffectState.NOT_COMMITTED
+            except (DomainError, OSError, ValueError):
+                pass
+        code = error.code if isinstance(error, DomainError) else "MODEL_APPROVAL_RECOVERY_REQUIRED"
+        status = error.status if isinstance(error, DomainError) else 503
+        raise DomainError(code, "Model approval did not complete; retry the exact request after resolving its barrier or configuration conflict",
+            status=status, effect=effect) from None
+    return {"route_revision": runtime.revision, "purposes": updated.allowed_model_purposes, "approved": True,
+        "service_restart_required": True, "inference_verified": False}
+
+
+async def _approve_models(args, settings: Settings) -> dict:
+    from .models import LocalSemanticRuntime
+
+    try:
+        async with authority(args) as (settings, _, actor):
+            if actor.role != Role.OPERATOR:
+                raise DomainError("ROLE_DENIED", "Only the operator can adopt a local inference route", status=403)
+            model = ModelConfig(
+                generation_url=args.generation_url,
+                generation_key_file=args.generation_key_file,
+                generation_artifact=args.gguf,
+                embedding_path=args.embedding,
+                reranker_path=args.reranker,
+                manifest_path=args.manifest,
+                cpu_threads=args.cpu_threads,
+            )
+            updated = Settings.model_validate({
+                **settings.model_dump(), "models": model,
+                "allowed_model_purposes": tuple(args.purpose or MODEL_PURPOSES),
+            })
+            runtime = LocalSemanticRuntime(model)
+            await asyncio.to_thread(runtime.validate_artifacts)
+    except DomainError as error:
+        intent = settings.state_dir / "model-approval-intent.json"
+        if intent.exists() or intent.is_symlink():
+            raise DomainError(
+                error.code, "An earlier model approval is pending; resolve the authority barrier before reconciling its exact intent",
+                status=error.status, effect=EffectState.UNKNOWN,
+            ) from None
+        raise
+    return await _publish_model_approval(args, settings, actor, updated, runtime)
 
 
 def scope_choice() -> RuleScope:
@@ -129,7 +339,7 @@ async def execute(args) -> dict | None:
     if args.command == "host-uninstall":
         from .hosts import uninstall_host
 
-        return await asyncio.to_thread(uninstall_host, load_settings(args.config), args.project.resolve(), args.host)
+        return await asyncio.to_thread(uninstall_host, load_settings(args.config), args.project, args.host, project_deleted=args.project_deleted)
     if args.command == "init":
         from .initialization import initialize_deployment
 
@@ -202,6 +412,8 @@ async def execute(args) -> dict | None:
 
         await run_stdio(settings, token_path(args))
         return None
+    if args.command == "model" and args.model_action == "approve":
+        return await _approve_models(args, settings)
     if args.command in {"context", "record", "feedback", "capture", "inspect", "correct"}:
         client = LocalClient(settings.base_url, token_path(args))
         if args.command == "context":
@@ -253,6 +465,19 @@ async def execute(args) -> dict | None:
             if args.project_action == "add":
                 binding = await store.register_binding(actor, args.label, str(args.locator.resolve()) if args.locator else None, args.key)
                 return binding.model_dump(mode="json")
+            if args.project_action == "relocate":
+                try:
+                    locator = args.locator.resolve(strict=True)
+                except (OSError, RuntimeError):
+                    raise DomainError("BINDING_LOCATOR_INVALID", "The new project directory is unavailable") from None
+                if not locator.is_dir():
+                    raise DomainError("BINDING_LOCATOR_INVALID", "The new project locator must be a directory")
+                command = BindingRelocation(
+                    binding_id=args.binding, expected_revision=args.expected_revision,
+                    expected_locator=os.path.abspath(args.expected_locator),
+                    locator=str(locator), idempotency_key=args.key,
+                )
+                return (await store.relocate_binding(actor, command)).model_dump(mode="json")
             return {"projects": [item.model_dump(mode="json") for item in await store.list_bindings(actor)], "target_set_revision": await store.target_set_revision(actor)}
         if args.command == "credential":
             if actor.role != Role.OPERATOR:
@@ -265,28 +490,6 @@ async def execute(args) -> dict | None:
             private_write(args.output, secret + "\n")
             principal = await store.issue_token(actor, Role(args.role), tuple(args.binding), secret)
             return {"principal": principal.model_dump(mode="json"), "token_file": str(args.output), "strong_human_presence": False}
-        if args.command == "model" and args.model_action == "approve":
-            from .models import LocalSemanticRuntime
-
-            if actor.role != Role.OPERATOR:
-                raise DomainError("ROLE_DENIED", "Only the operator can adopt a local inference route", status=403)
-            model = ModelConfig(
-                generation_url=args.generation_url,
-                generation_key_file=args.generation_key_file,
-                generation_artifact=args.gguf,
-                embedding_path=args.embedding,
-                reranker_path=args.reranker,
-                manifest_path=args.manifest,
-                cpu_threads=args.cpu_threads,
-            )
-            runtime = LocalSemanticRuntime(model)
-            await asyncio.to_thread(runtime.validate_artifacts)
-            purposes = tuple(args.purpose or MODEL_PURPOSES)
-            updated = settings.model_copy(update={"models": model, "allowed_model_purposes": purposes})
-            private_write(args.config, updated.model_dump_json(indent=2) + "\n", replace=True)
-            async with authority(args) as (_, adoption_store, adoption_actor):
-                await adoption_store.configure_route(adoption_actor, runtime.revision, purposes, True)
-            return {"route_revision": runtime.revision, "purposes": purposes, "approved": True, "service_restart_required": True, "inference_verified": False}
         if args.command == "model" and args.model_action == "disable":
             revision = args.revision or settings.models.revision()
             await store.configure_route(actor, revision, tuple(args.purpose or MODEL_PURPOSES), False)
@@ -402,6 +605,7 @@ def parser() -> argparse.ArgumentParser:
     uninstall = commands.add_parser("host-uninstall")
     uninstall.add_argument("--project", type=Path, required=True)
     uninstall.add_argument("--host", choices=("claude", "codex", "omp"), required=True)
+    uninstall.add_argument("--project-deleted", action="store_true", help="Acknowledge the project was deleted; only native entries can be verified and removed")
     migration = commands.add_parser("migrate", help="Upgrade a stopped authority through the private operator connection")
     migration.add_argument("--confirm-deployment", required=True)
     init = commands.add_parser("init")
@@ -463,6 +667,12 @@ def parser() -> argparse.ArgumentParser:
     add.add_argument("--label", required=True)
     add.add_argument("--locator", type=Path)
     add.add_argument("--key", required=True)
+    relocate = project.add_parser("relocate")
+    relocate.add_argument("--binding", required=True)
+    relocate.add_argument("--expected-revision", type=int, required=True)
+    relocate.add_argument("--expected-locator", type=Path, required=True)
+    relocate.add_argument("--locator", type=Path, required=True)
+    relocate.add_argument("--key", required=True)
     credential = commands.add_parser("credential").add_subparsers(dest="credential_action", required=True)
     issue = credential.add_parser("issue")
     issue.add_argument("--role", choices=tuple(Role), required=True)
@@ -484,6 +694,7 @@ def parser() -> argparse.ArgumentParser:
         approve.add_argument("--" + name, type=Path, required=True)
     approve.add_argument("--generation-url", required=True)
     approve.add_argument("--cpu-threads", type=int, default=8)
+    approve.add_argument("--supersede-pending-intent", help="Explicitly start a new authorized approval in place of this exact pending intent SHA256")
     approve.add_argument("--purpose", action="append", choices=MODEL_PURPOSES)
     disable = model.add_parser("disable")
     disable.add_argument("--revision")

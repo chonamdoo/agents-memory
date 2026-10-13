@@ -7,7 +7,7 @@ import json
 import os
 import uuid
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import asyncpg
@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from agents_memory.config import ModelConfig, Settings
 from agents_memory.domain import (
+    BindingRelocation,
     CaptureCommand,
     CitedSentence,
     ClaimDraft,
@@ -38,6 +39,8 @@ from agents_memory.domain import (
 )
 from agents_memory.journal import DeletionJournal
 from agents_memory.migrations import migrate
+from agents_memory.semantic import resolve_reflection
+from agents_memory.semantic_contract import GeneratedReflection
 from agents_memory.store import Store
 
 VECTOR = [1.0, *([0.0] * 1023)]
@@ -139,6 +142,78 @@ async def recall_context(authority, snapshot=None):
     application = Application(authority.store.settings, authority.store, RecallFixture())
     return await application.context(authority.actor, ContextCommand(
         binding_id=authority.binding_id, query="CacheKey", snapshot=snapshot))
+
+
+@pytest.mark.parametrize("event_time", [None, datetime(2020, 1, 2, tzinfo=UTC)])
+async def test_original_source_times_survive_recall_inspect_and_reflection_admission(authority, event_time):
+    store, actor = authority.store, authority.actor
+    body = "CacheKey is retained only offline; the change happened yesterday."
+    captured_at = datetime(2026, 10, 9, tzinfo=UTC)
+    extracted_at = datetime(2026, 10, 10, tzinfo=UTC)
+    request = command(authority, "source-times", body).model_copy(update={"event_time": event_time})
+    operation = await store.capture(actor, request)
+    # Explicit fixture clocks distinguish provenance from extraction without
+    # depending on wall-clock timing or interpreting the ambiguous body.
+    async with store.pool.acquire() as connection:
+        await connection.execute("UPDATE am_sources SET recorded_at=$2 WHERE id=$1", operation.source_id, captured_at)
+    lease = await store.claim_job()
+    admission = await store.admit_job(lease, authority.revision, "extraction")
+    source = next(source for source in await store.admitted_sources(admission) if source.id == operation.source_id)
+    assert source.event_time == event_time and source.recorded_at == captured_at
+    draft = extraction(operation.source_id, body)
+    spans = store._spans(draft.claims[0], {source.id: source})
+    assert spans[0].source_event_time == event_time
+    assert spans[0].source_recorded_at == captured_at
+    await store.publish_extraction(lease, admission, draft, [VECTOR], [["CacheKey", "offline"]])
+    consolidation = await store.claim_job()
+    consolidation_admission = await store.admit_job(consolidation, authority.revision, "consolidation")
+    consolidated_claims = await store.admitted_claims(consolidation_admission)
+    assert consolidated_claims[0].evidence[0].source_recorded_at == captured_at
+    await store.publish_consolidation(consolidation, consolidation_admission, Consolidation(relations=()))
+    selected = (await store.search(actor, authority.binding_id, VECTOR, ["CacheKey"], None))[0][0]
+    async with store.pool.acquire() as connection:
+        await connection.execute("UPDATE am_claims SET created_at=$2 WHERE id=$1", selected.id, extracted_at)
+    selected = await store.claim(actor, authority.binding_id, selected.id)
+    assert selected.created_at == extracted_at
+    assert selected.draft.valid_from is None and selected.draft.valid_until is None
+    inspected = await store.inspect(actor, authority.binding_id, selected.id)
+    recalled = json.loads((await recall_context(authority))["context"])
+    recall_span = recalled["memory_candidates"][0]["evidence"][0]
+    inspect_span = inspected["evidence"][0]
+    assert recall_span["source_event_time"] == inspect_span["source_event_time"]
+    if event_time is None:
+        assert recall_span["source_event_time"] is None
+    else:
+        assert datetime.fromisoformat(recall_span["source_event_time"]) == event_time
+    assert datetime.fromisoformat(recall_span["source_recorded_at"]) == captured_at
+    assert datetime.fromisoformat(inspect_span["source_recorded_at"]) == captured_at
+    assert recall_span["source_speaker"] == inspect_span["source_speaker"] == "human"
+    assert recall_span["quote"] == inspect_span["quote"] == body
+    reflection_request = ContextCommand(binding_id=authority.binding_id, query="When was this captured?",
+        mode="reflect", idempotency_key="reflect-source-times")
+    await store.submit_reflection(actor, reflection_request, (selected.id,))
+    reflection_lease = await store.claim_job()
+    reflection_admission = await store.admit_job(reflection_lease, authority.revision, "reflection")
+    reflected_claim = (await store.admitted_claims(reflection_admission))[0]
+    assert reflected_claim.created_at == extracted_at
+    assert reflected_claim.evidence[0].source_event_time == event_time
+    assert reflected_claim.evidence[0].source_recorded_at == captured_at
+    result = resolve_reflection(
+        GeneratedReflection(answer={
+            "kind": "source_provenance", "sentences": ({"claim_ids": (selected.id,)},),
+        }),
+        (reflected_claim,),
+    )
+    published = await store.publish_reflection(reflection_lease, reflection_admission, result)
+    reflected = await store.inspect(actor, authority.binding_id, published.artifact_id)
+    assert reflected["sentences"][0]["text"] == result.sentences[0].text
+    provenance = reflected["sentences"][0]["source_provenance"]
+    assert provenance == [{
+        "source_id": operation.source_id, "source_revision": 1, "source_speaker": "human",
+        "source_event_time": inspect_span["source_event_time"],
+        "source_recorded_at": inspect_span["source_recorded_at"],
+    }]
+    assert reflected["candidate"] is True and reflected["partial"] is False
 
 
 async def test_snapshot_statistics_include_only_eligible_indexed_memory(authority):
@@ -330,6 +405,47 @@ async def test_exact_utf8_repeated_span_never_uses_normalized_evidence(authority
     assert claims[0][0].evidence[0].quote == "한글"
 
 
+@pytest.mark.parametrize("overflow", ("none", "limitations", "sentence", "separator"))
+async def test_reflection_inspect_preserves_limitations_within_delivery_budget(authority, overflow):
+    store, actor = authority.store, authority.actor
+    body = "CacheKey is retained only offline."
+    if overflow == "sentence":
+        body += " 범위는 인용 근거에 한정된다." * 60
+    _, claim = await ready_claim(authority, body=body)
+    limitation = "추가 근거는 검증되지 않았다."
+    if overflow != "none":
+        limitation *= 60
+    limitations = (limitation, "다른 원천에 대한 일반화는 확인하지 않았다." * 60) if overflow == "limitations" else (limitation,)
+    if overflow == "separator":
+        limitation = "Unverified evidence. " * 97
+        overhead = len(json.dumps({"sentences": [], "limitations": [limitation, ""]}).encode("utf-8"))
+        limitations = (limitation, "x" * (4097 - overhead))
+    operation = await store.submit_reflection(actor, ContextCommand(
+        binding_id=authority.binding_id, query="Describe the bounded evidence",
+        mode="reflect", idempotency_key="bounded-limitations",
+    ), (claim.id,))
+    lease = await store.claim_job()
+    admission = await store.admit_job(lease, authority.revision, "reflection")
+    draft = ReflectionDraft(
+        sentences=(CitedSentence(text=claim.draft.statement, claim_ids=(claim.id,)),),
+        limitations=limitations,
+    )
+    published = await store.publish_reflection(lease, admission, draft)
+    assert published.id == operation.id
+    delivered = await store.inspect(actor, authority.binding_id, published.artifact_id)
+    assert len(json.dumps({
+        "sentences": delivered["sentences"], "limitations": delivered["limitations"],
+    }, ensure_ascii=False).encode("utf-8")) <= 4096
+    assert delivered["limitations"] == list(limitations[:len(delivered["limitations"])])
+    if overflow == "none":
+        assert delivered["limitations"] == list(limitations)
+        assert delivered["sentences"][0]["text"] == claim.draft.statement
+        assert not delivered["partial"]
+    else:
+        assert delivered["partial"] and delivered["sentences"] == []
+        assert delivered["limitations"] == [limitation]
+
+
 async def test_uncited_reflection_input_retraction_invalidates_entire_artifact(authority):
     store, actor = authority.store, authority.actor
     _, first = await ready_claim(authority, "first")
@@ -340,7 +456,9 @@ async def test_uncited_reflection_input_retraction_invalidates_entire_artifact(a
     result = ReflectionDraft(sentences=(CitedSentence(text=first.draft.statement, claim_ids=(first.id,)),))
     published = await store.publish_reflection(lease, admission, result)
     assert published.id == reflection_operation.id
-    assert (await store.inspect(actor, authority.binding_id, published.artifact_id))["state"] == "active"
+    inspected = await store.inspect(actor, authority.binding_id, published.artifact_id)
+    assert inspected["state"] == "active"
+    assert {item["source_id"] for item in inspected["sentences"][0]["source_provenance"]} == set(first.input_source_ids)
     await store.retract(actor, authority.binding_id, second_operation.source_id, "uncited-input")
     hidden = await store.inspect(actor, authority.binding_id, published.artifact_id)
     assert hidden["state"] == "retracted" and "sentences" not in hidden
@@ -2021,3 +2139,53 @@ async def test_logical_relation_recall_collapses_independent_derivations_without
         assert await connection.fetchval("SELECT count(*) FROM am_relations WHERE state='active'") > 0
     await store.retract(actor, authority.binding_id, sources[0], "withdraw-common-endpoint")
     assert await store.relations(actor, authority.binding_id, (right,)) == []
+
+
+@pytest.mark.asyncio
+async def test_binding_relocation_cas_replay_authority_and_identity(authority, tmp_path):
+    store, actor = authority.store, authority.actor
+    old, new = tmp_path / "deleted", tmp_path / "stable"
+    new.mkdir()
+    binding = await store.register_binding(actor, "Continuity", str(old), "relocation-register")
+    actor = await store.authenticate(TOKEN)
+    producer = await store.issue_token(actor, Role.PRODUCER, (binding.id,), "relocation-producer-" + "p" * 32)
+    memory_authority = Authority(store, actor, binding.id, authority.revision)
+    operation, claim = await ready_claim(memory_authority, key="relocation-memory")
+    source_before = await store.source(actor, binding.id, operation.source_id)
+    proposal = await store.propose_rule(actor, RuleProposal(binding_id=binding.id,
+        idempotency_key="relocation-rule", body="Keep CacheKey offline.", required=True))
+    approved = await store.approve_rule(actor, RuleApproval(
+        proposal_id=proposal["proposal_id"], expected_digest=proposal["digest"],
+        scope=RuleScope.LOCAL_PROJECT, target_bindings=(binding.id,),
+        target_set_revision=proposal["target_set_revision"], idempotency_key="relocation-approval"))
+    command = BindingRelocation(binding_id=binding.id, expected_revision=1,
+        expected_locator=str(old), locator=str(new), idempotency_key="relocation")
+    roster = await store.target_set_revision(actor)
+    with pytest.raises(DomainError) as denied:
+        await store.relocate_binding(producer, command)
+    assert denied.value.code == "SCOPE_DENIED"
+    relocated = await store.relocate_binding(actor, command)
+    assert relocated.id == binding.id
+    assert (relocated.realm, relocated.owner_id, relocated.label) == (binding.realm, binding.owner_id, binding.label)
+    assert relocated.locator == str(new) and relocated.revision == 2
+    assert await store.relocate_binding(actor, command) == relocated
+    assert await store.target_set_revision(actor) == roster
+    assert binding.id in (await store.authenticate(TOKEN)).bindings
+    assert await store.source(actor, binding.id, operation.source_id) == source_before
+    recalled = await store.search(actor, binding.id, VECTOR, ["CacheKey"], None)
+    assert any(item.id == claim.id for item, _ in recalled)
+    assert binding.id in producer.bindings
+    rules = await store.rules(actor, binding.id)
+    assert any(rule.id == approved.id and rule.target_bindings == approved.target_bindings
+        and rule.revision == approved.revision and rule.digest == approved.digest for rule in rules)
+    with pytest.raises(DomainError) as stale:
+        await store.relocate_binding(actor, command.model_copy(update={"idempotency_key": "stale"}))
+    assert stale.value.code == "BINDING_RELOCATION_CONFLICT"
+    third = tmp_path / "third"
+    third.mkdir()
+    await store.relocate_binding(actor, command.model_copy(update={
+        "expected_revision": 2, "expected_locator": str(new), "locator": str(third), "idempotency_key": "later"}))
+    with pytest.raises(DomainError) as superseded:
+        await store.relocate_binding(actor, command)
+    assert superseded.value.code == "BINDING_RELOCATION_CONFLICT"
+    assert superseded.value.effect.value == "committed"

@@ -7,6 +7,7 @@ from datetime import datetime
 from pydantic import Field, ValidationError
 
 from .domain import (
+    CitedSentence,
     Claim,
     ClaimDraft,
     Consolidation,
@@ -17,7 +18,12 @@ from .domain import (
     Source,
     TypedModel,
 )
-from .semantic_contract import AnchoredQualification, GeneratedExtraction
+from .semantic_contract import (
+    AnchoredQualification,
+    GeneratedExtraction,
+    GeneratedProvenanceReflection,
+    GeneratedReflection,
+)
 
 _NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-+]?\d+(?:[.,:/-]\d+)*(?:%|％)?(?![A-Za-z0-9_])")
 _IDENTIFIER = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*(?:[.:/\\-][A-Za-z0-9_$]+)*")
@@ -257,6 +263,20 @@ def validate_extraction(result: Extraction, source: Source) -> None:
         )
 
 
+def resolve_reflection(result: GeneratedReflection, claims: Sequence[Claim]) -> ReflectionDraft:
+    if isinstance(result.answer, GeneratedProvenanceReflection):
+        draft = ReflectionDraft(sentences=tuple(
+            CitedSentence(text="인용 원문의 시간·작성자 근거입니다.", claim_ids=sentence.claim_ids)
+            for sentence in result.answer.sentences
+        ))
+    else:
+        draft = ReflectionDraft(
+            sentences=result.answer.sentences, limitations=result.answer.limitations,
+        )
+    validate_reflection(draft, claims)
+    return draft
+
+
 def validate_reflection(result: ReflectionDraft, claims: Sequence[Claim]) -> None:
     manifest = {claim.id: claim for claim in claims}
     if len(manifest) != len(claims):
@@ -266,13 +286,13 @@ def validate_reflection(result: ReflectionDraft, claims: Sequence[Claim]) -> Non
             raise DomainError("MODEL_OUTPUT_INVALID", "Reflection has an invalid sentence citation")
         if any(claim_id not in manifest for claim_id in sentence.claim_ids):
             raise DomainError("MODEL_OUTPUT_INVALID", "Reflection cites outside the supplied manifest")
-        evidence = "\n".join(
-            span.quote for claim_id in sentence.claim_ids for span in manifest[claim_id].evidence
+        spans = tuple(
+            span for claim_id in sentence.claim_ids for span in manifest[claim_id].evidence
         )
-        _validate_literals(sentence.text, evidence)
-    all_evidence = "\n".join(span.quote for claim in claims for span in claim.evidence)
+        _validate_literals(sentence.text, "\n".join(span.quote for span in spans))
+    all_spans = tuple(span for claim in claims for span in claim.evidence)
     for limitation in result.limitations:
-        _validate_literals(limitation, all_evidence)
+        _validate_literals(limitation, "\n".join(span.quote for span in all_spans))
 
 
 def validate_consolidation(result: Consolidation, claims: Sequence[Claim]) -> None:

@@ -9,10 +9,12 @@ from typing import Literal
 from pydantic import Field, create_model
 
 from .domain import (
+    CitedSentence,
     ClaimDraft,
     Consolidation,
     DomainError,
     Extraction,
+    Handle,
     ReflectionDraft,
     SmallText,
     TypedModel,
@@ -61,6 +63,25 @@ class GeneratedExtraction(TypedModel):
     unused_span_ids: tuple[str, ...] = Field(max_length=128)
 
 
+class ProvenanceSelection(TypedModel):
+    claim_ids: tuple[Handle, ...] = Field(min_length=1, max_length=8)
+
+
+class GeneratedProvenanceReflection(TypedModel):
+    kind: Literal["source_provenance"]
+    sentences: tuple[ProvenanceSelection, ...] = Field(min_length=1, max_length=8)
+
+
+class GeneratedAssertionReflection(TypedModel):
+    kind: Literal["assertions"]
+    sentences: tuple[CitedSentence, ...] = Field(min_length=1, max_length=8)
+    limitations: tuple[SmallText, ...] = Field(max_length=4)
+
+
+class GeneratedReflection(TypedModel):
+    answer: GeneratedProvenanceReflection | GeneratedAssertionReflection
+
+
 def explicit_generation_schema(schema: type[TypedModel]) -> dict:
     value = schema.model_json_schema()
 
@@ -103,7 +124,7 @@ def require_generated_fields(value: object, schema: dict) -> None:
 
 
 _SOURCE_ROOT = Path(__file__).parent
-_SOURCE_NAMES = ("semantic_contract.py", "semantic.py", "prompts.py")
+_SOURCE_NAMES = ("semantic_contract.py", "semantic.py", "prompts.py", "models.py")
 
 
 def _source_stamp(path: Path) -> tuple[int, int, int, int, int]:
@@ -133,7 +154,7 @@ _PROCESS_CONTRACT_DIGEST = canonical_digest({
     "version": "original-spans-explicit-time-v1",
     "schemas": {
         schema.__name__: explicit_generation_schema(schema)
-        for schema in (GeneratedExtraction, Extraction, Consolidation, ReflectionDraft)
+        for schema in (GeneratedExtraction, Extraction, Consolidation, GeneratedReflection, ReflectionDraft)
     },
     "implementations": {name: value[0] for name, value in _PROCESS_SOURCES.items()},
 })

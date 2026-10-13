@@ -1,0 +1,48 @@
+{
+  "surface": "Actual successor host-hook CLI with an installed fresh Claude receipt and a new synthetic event identity",
+  "host": "claude",
+  "strict": false,
+  "baseline": {
+    "host": "claude",
+    "event": "UserPromptSubmit",
+    "exit_code": 0,
+    "stdout": {
+      "systemMessage": "agents-memory: HOST_PROMPT_ORIGIN_UNOBSERVABLE"
+    },
+    "stderr": "",
+    "state": "degraded",
+    "code": null,
+    "provider_input_observed": false,
+    "offered": false,
+    "capture": {
+      "state": "gap",
+      "code": "HOST_PROMPT_ORIGIN_UNOBSERVABLE"
+    },
+    "generation": 1,
+    "identity": "native_scoped",
+    "turn_identity": "native_event",
+    "gaps": {
+      "HOST_PROMPT_ORIGIN_UNOBSERVABLE": 1
+    }
+  },
+  "malformed_result": {
+    "host": "claude",
+    "event": "PreToolUse",
+    "exit_code": 0,
+    "stdout": {
+      "systemMessage": "agents-memory: HOST_STATE_INVALID"
+    },
+    "stderr": "",
+    "state": "degraded",
+    "code": "HOST_STATE_INVALID",
+    "provider_input_observed": false,
+    "enforcement_dimensions": {
+      "paths": "native_tool_schema",
+      "purpose": "unsupported_native",
+      "snapshot": "unsupported_native"
+    }
+  },
+  "state_bytes_unchanged": true,
+  "body_offered": false,
+  "limit": "Advisory mode refusal/warning; not a strict native denial or provider-consumption proof."
+}

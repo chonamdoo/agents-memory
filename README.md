@@ -41,6 +41,17 @@ uv run agents-memory --config "$CONFIG" credential issue \
 
 등록 응답의 opaque binding ID를 사용한다. CWD·branch·MCP session ID·요청 body의 owner/realm은 권한 증명이 아니다. 하나의 credential에 여러 project grant가 있으면 호출에 binding을 명시한다.
 
+프로젝트 경로가 바뀌어도 memory·grant·승인 target을 새 binding으로 복제하지 않는다. operator가 현재 binding의 revision과 기존 locator를 확인한 뒤 같은 identity를 명시적으로 이전한다.
+
+```sh
+uv run agents-memory --config "$CONFIG" --token-file "$OPERATOR_TOKEN_FILE" project relocate \
+  --binding "$BINDING_ID" --expected-revision "$CURRENT_REVISION" \
+  --expected-locator "$OLD_PROJECT_ROOT" --locator "$NEW_PROJECT_ROOT" \
+  --key "$RELOCATION_KEY"
+```
+
+새 locator는 존재하는 canonical directory여야 한다. 이전 경로는 이미 삭제됐어도 exact expected locator로 검증한다. 첫 실행은 locator·revision만 변경하고 owner·label·grant·roster·memory·frozen target은 유지한다. 같은 key/인자의 replay는 같은 결과이며, 이후 다시 이전된 binding의 과거 replay는 committed conflict로 반환한다. 경로/CWD 변경 자체는 권한이나 승인이 아니다.
+
 회사·고객·개인은 서로 다른 deployment, database/schema, journal, state directory, token, port와 host 설정으로 운영한다. 회사→개인/cloud sync 경로는 없다. `--mode company`는 model fetch의 네트워크 사용을 허용하지 않는다. 회사에서는 검증된 offline artifact를 반입하고 승인된 내부 executor만 사용한다. 로컬 프로세스 설정만으로 같은 UID의 unrestricted agent나 OS 전체의 no-egress를 증명하지 못한다. 회사의 강한 경계에는 별도 OS/service identity, network policy와 관리되는 approver key가 필요하다.
 
 `init`은 private recovery intent와 원래 operator credential을 먼저 영속화한다. bootstrap 이후 완료 receipt를 쓰지 못한 경우 같은 인자·owner·원래 token으로 `init --resume`한다. 기존 배포를 새 owner/token으로 묵시적으로 인수하지 않는다. 완료된 init replay는 이후 정상 변경한 model/queue 설정을 초기 기본값으로 되돌리지 않는다. 기존 migration은 변경하지 않으며 현재 `0004_operation_successors`를 operator 경로로 명시 적용한다.
@@ -69,6 +80,10 @@ uv run agents-memory --config "$CONFIG" model approve \
 uv run agents-memory --config "$CONFIG" serve
 ```
 
+승인은 private `model-approval.lock`으로 협력하는 승인 명령만 직렬화하고, config publication·DB route adoption 사이에 secret-free `model-approval-intent.json`을 남긴다. 실패의 `not_committed`는 config의 확정 보상과 intent 종료, `unknown`은 미확정 효과, `committed`는 확인된 route adoption을 뜻한다. unknown pending intent가 있으면 authority 선검증 실패도 `not_started`로 보고하지 않는다. 기본 복구는 원래 operator credential/generation·authority·config path·같은 artifact/purposes의 **정확히 같은 승인 요청**을 다시 실행한다. 무관한 최신 설정은 보존한다. 같은 route의 재승인도 기존 admission을 fence하므로 소비자는 새 admission을 받아야 한다. purposes를 좁히면 DB도 빠진 purpose를 같은 승인 transaction에서 비활성화하므로 이전 설정을 가진 소비자가 계속 사용할 수 없다. 파일 publication 직전 bytes 검사는 임의 same-UID 편집자에 대한 원자 CAS나 OS sandbox가 아니다.
+
+revoke·restore로 원래 credential을 더는 사용할 수 없으면 현재 operator가 **새 승인**을 명시한다. private intent의 SHA256을 `shasum -a 256 "$STATE_DIR/model-approval-intent.json"`으로 확인하고, 검증할 artifact/purpose를 지정한 `model approve`에 `--supersede-pending-intent "$INTENT_SHA256"`을 추가한다. 현재 operator 인증·artifact 선검증·cooperative lock·exact intent bytes·현재 config가 기록된 before/target 중 하나라는 검사는 그대로 적용된다. 이는 이전 credential을 부활시키거나 이전 승인 결과를 대신 확인하는 동작이 아니다. 잘못된 hash·상충 config·malformed/symlink intent는 덮어쓰지 않으며 intent를 수동 삭제하지 않는다.
+
 ## Agent Flow 없이도 사용
 
 ```sh
@@ -79,7 +94,11 @@ uv run agents-memory --config "$CONFIG" host-install \
 
 `--host codex` 또는 `--host omp`로 같은 core에 연결한다. 설치는 소유한 project entry만 관리하고 Agent Flow/user hook을 보존한다. root `AGENTS.md`/`CLAUDE.md`에 memory corpus나 rulebook을 넣지 않는다. uninstall은 owned entry만 제거하며 사용자 변경·drift는 거절한다.
 
-Claude MCP entry는 공유 `.mcp.json`이 아니라 개인 `.claude.json`의 native project scope에 설치한다. Git linked worktree는 Claude가 조회하는 원본 저장소 key를 사용하지만 receipt·token·binding은 선택 worktree 그대로다. 다른 worktree/CWD에서 자동 상속된 native relay는 scope 오류로 종료한다. 서로 다른 worktree에 같은 server 이름을 동시에 등록하려면 기존 owned 설치와 충돌하며 임의 덮어쓰지 않는다. 별도 명시 MCP/CLI 연결은 해당 credential의 grant를 계속 검사한다. 구형 worktree 설치를 업데이트할 때는 기존 버전으로 owned uninstall을 먼저 수행한다.
+Claude MCP entry는 공유 `.mcp.json`이 아니라 개인 `.claude.json`의 native project scope에 설치한다. Git linked worktree는 Claude가 조회하는 원본 저장소 key를 사용하지만 receipt·token·binding은 선택 worktree 그대로다. 다른 worktree/CWD에서 자동 상속된 native relay는 scope 오류로 종료한다. 서로 다른 worktree에 같은 server 이름을 동시에 등록하려면 기존 owned 설치와 충돌하며 임의 덮어쓰지 않는다. 별도 명시 MCP/CLI 연결은 해당 credential의 grant를 계속 검사한다.
+
+worktree를 옮기거나 삭제할 때는 소비 프로세스를 먼저 중지하고 기존 `--project "$OLD_PROJECT_ROOT"`·host의 owned uninstall → 같은 binding의 `project relocate` → 새 stable project의 host-install 순서로 실행한다. project 경로가 없으면 `host-uninstall`은 `HOST_PROJECT_ABSENT`로 거절한다. 경로가 이동·unmount된 것이면 다시 마운트하거나 복원한 뒤 일반 uninstall을 실행한다. 실제로 삭제됐을 때만 `--project-deleted`를 추가한다. 이 정리는 해당 host/deployment/realm/runtime에 일치하는 **private completed modern receipt**만 허용하며, private native 항목만 검증·제거하고 `native_uninstalled`와 `project_entries: unverified_absent`를 반환한다. receipt는 `native_removed`로 남는다. 이 정리가 중단돼도 receipt는 durable `native_removing` 상태라 같은 범위로만 재개된다. 같은 root가 나중에 다시 나타나면 그 안의 hook과 재설치는 모두 `HOST_UNINSTALL_INCOMPLETE`로 거절된다. 이때 `--project-deleted` 없이 `host-uninstall`을 다시 실행하면 중단된 native 정리를 먼저 마치고 project 상대 hook/MCP 항목을 제거해 `removed`로 끝낸다. 이 receipt를 호출하는 hook이 다른 event로 옮겨졌거나 바뀐 사본으로 남았거나, owned TOML·native key가 바뀌었으면 `HOST_OWNERSHIP_DRIFT`로 거절하고 `native_removed`를 유지한다. 그대로 다시 생긴 owned native key는 함께 제거한다. 이전 버전이 남긴 native-only `removing` intent도 같은 범위로 판별해 `removed`로 바로 끝내지 않는다. 마무리 정리가 중단돼도(`native_finishing`) 다음 uninstall이 현재 파일을 다시 검사한 뒤에만 `removed`로 끝낸다. 예외적으로 Claude의 modern `removing` receipt는 정확한 외부 native key의 owned before→null deletion-only intent일 때만 두 중단점 이후 재개한다. project directory를 재생성하지 않는다. symlink·drift·legacy·pending install·project-local 또는 상충 recovery intent는 거절한다. 사용자 trust·다른 host/AF 설정·credentials·pending spool은 보존한다.
+
+host-install에 사용한 package/venv도 삭제될 임시 checkout 밖에 유지해야 한다. executable·project·endpoint·token이 바뀌면 설치를 덮어쓰지 말고 owned uninstall/reinstall을 수행한다. root rulebook이나 전체 memory catalog를 설치에 포함하지 않는다.
 
 설치만으로 매 프롬프트마다 의미 검색하거나 기억 본문을 자동 주입하지 않는다. 필요한 순간에 네 MCP 도구 또는 workflow에서 호출한다. 자동 prompt recall을 원하는 프로젝트에만 설치 시 `--prompt-recall`을 추가한다. 이 opt-in은 조회 상한을 유지하지만 relevance·모델 준수를 보장하지 않는다. prompt 본문이 없거나 허용 크기를 넘으면 대체 검색어로 corpus를 주입하지 않는다. capture/lifecycle와 protected-action의 required-rule 검사는 이 선택과 별개다.
 
@@ -96,6 +115,7 @@ generic MCP는 자동 호출/자연어 준수를 강제하지 않는다. opt-in 
 - snapshot-bound source는 같은 `snapshot` 요청에서만 읽힌다. 직접 source `memory_inspect`/API/CLI도 본문 반환 전에 이를 검사하므로 `inspect --snapshot "$SNAPSHOT"`를 사용한다. 누락·불일치는 거절하며 snapshot 없는 global source는 어느 요청 snapshot에서도 적격이다. `stats --snapshot`도 동일한 eligibility를 사용한다.
 - optional 결과 기본 총 3개/2,400 UTF-8 bytes. required TRUE는 완전한 본문·revision을 전달하고 FALSE는 제외한다. UNKNOWN은 일반 조회에서 bounded opaque ref만 알리며 원문·승인 stamp를 제공하지 않는다. protected action에서는 UNKNOWN/overflow를 거절한다. native context는 marker와 newline을 포함한 1,800 UTF-8 bytes 상한이다. tool 본문은 TextContent 한 plane이고 최대 wire body는 16KiB다.
 - 부정·조건·예외·valid time·snapshot·원문 revision/UTF-8 span과 **`source_speaker`**를 보존한다. claim/recall/reflect 입력의 근거는 실제 source metadata에서 speaker를 읽으므로 agent note를 human source로 합치지 않는다. 이 분류는 source의 선언된 종류이지 인간 존재·사실 검증·승인 증거가 아니다. 조건/예외는 인용된 원문의 구절이어야 한다. syntax/grounding guard는 일반적인 factual entailment나 모든 조건 누락을 증명하지 않는다. 실제 품질 검증과 사람의 정정이 필요하다.
+- reflection의 각 전달 문장은 인용한 claim에 대응하는 `source_provenance`를 포함한다: `source_id`, `source_revision`, `source_speaker`, nullable `source_event_time`, `source_recorded_at`. 코드는 원래 source metadata를 붙이며 모델에 clock 재서술을 맡기지 않는다. 누락 event time은 null이고 recorded/claim 생성 시각으로 대체하지 않는다. provenance는 validity·사실 검증·승인·supersession 근거가 아니다. assertion과 limitations의 숫자/식별자 검증은 인용 원문에 한정한다. inspect는 저장된 `limitations`를 문장·provenance보다 먼저 4,096-byte 전달 budget에 넣고 전체 JSON 구분자도 센다. limitations를 모두 전달할 수 없으면 assertion 문장을 전달하지 않고 partial을 표시한다. 남은 예산을 넘는 문장도 provenance 전체와 함께 제외하며 내용을 잘라 보내지 않는다.
 - stdio relay는 검증된 bounded HTTP 오류의 공개 code/effect를 보존한다. 연결 유실·잘못된/잘린/ID 불일치 응답의 durable 효과는 `unknown`이며 같은 business key로 소비자가 명시 reconcile한다. raw upstream 진단 전달이나 자동 mutation retry는 없다.
 - convention은 candidate → exact digest/target-set revision 승인 → active rule이다. 적용 범위는 정확히 **이 로컬 프로젝트 / 내 프로젝트들 / 팀 또는 프로젝트 공유**다. 내 project target set은 frozen이며 새로운 project를 자동 포함하지 않는다. 같은 UID의 bearer를 인간 검토 증거로 주장하지 않는다. 회사 공유 승인은 구성된 별도 managed Ed25519 approver signature가 필요하다.
 

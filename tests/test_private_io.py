@@ -145,6 +145,28 @@ private_io.private_write(target, b"complete-private-receipt")
     assert leftovers[0].exists()
 
 
+def test_directory_publication_follows_the_descriptor_not_the_path(tmp_path):
+    parent, moved = tmp_path / "parent", tmp_path / "moved"
+    parent.mkdir()
+    directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+
+    def refuse():
+        raise DomainError("REFUSED", "publication refused")
+
+    try:
+        parent.rename(moved)
+        private_io.private_write(parent / "receipt", b"pinned", directory=directory)
+        with pytest.raises(FileExistsError):
+            private_io.private_write(parent / "receipt", b"loser", directory=directory)
+        with pytest.raises(DomainError):
+            private_io.private_write(parent / "receipt", b"refused", replace=True, before_publish=refuse, directory=directory)
+    finally:
+        os.close(directory)
+    assert not parent.exists()
+    assert (moved / "receipt").read_bytes() == b"pinned"
+    assert list(moved.iterdir()) == [moved / "receipt"]
+
+
 def test_fullfsync_follows_fsync_and_preserves_real_io_errors(monkeypatch):
     calls = []
     monkeypatch.setattr(private_io.sys, "platform", "darwin")

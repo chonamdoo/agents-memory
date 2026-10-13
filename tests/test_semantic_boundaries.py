@@ -19,11 +19,12 @@ from agents_memory.domain import (
 from agents_memory.semantic import (
     original_spans,
     resolve_extraction,
+    resolve_reflection,
     validate_consolidation,
     validate_extraction,
     validate_reflection,
 )
-from agents_memory.semantic_contract import GeneratedExtraction
+from agents_memory.semantic_contract import GeneratedExtraction, GeneratedReflection
 
 
 def claim(identifier: str, quote: str, **qualifiers) -> Claim:
@@ -44,6 +45,7 @@ def claim(identifier: str, quote: str, **qualifiers) -> Claim:
         ),
         evidence=(EvidenceSpan(
             source_id=source_id, source_revision=1, source_speaker="human", byte_start=0,
+            source_event_time=None, source_recorded_at=datetime(2026, 10, 10, tzinfo=UTC),
             byte_end=len(quote.encode("utf-8")), quote=quote,
         ),),
         input_source_ids=(source_id,),
@@ -60,6 +62,32 @@ def reflection(text: str, *claim_ids: str) -> ReflectionDraft:
 def test_foreign_or_repeated_sentence_citation_is_rejected(citations):
     with pytest.raises(DomainError, match="citation|manifest"):
         validate_reflection(reflection("근거가 제한적이다.", *citations), [claim("a", "근거 원문")])
+
+
+@pytest.mark.parametrize("citations", [("outside",), ("a", "outside"), ("a", "a")])
+def test_provenance_selection_cannot_bypass_citation_eligibility(citations):
+    generated = GeneratedReflection(answer={
+        "kind": "source_provenance", "sentences": ({"claim_ids": citations},),
+    })
+    with pytest.raises(DomainError) as rejected:
+        resolve_reflection(generated, (claim("a", "근거 원문"),))
+    assert rejected.value.code == "MODEL_OUTPUT_INVALID"
+
+
+@pytest.mark.parametrize("unsupported", ["assertion", "limitation"])
+def test_assertion_reflection_does_not_authorize_unbacked_assertion_literals(unsupported):
+    sentences = [{"text": "The policy starts after review.", "claim_ids": ("a",)}]
+    limitations = ()
+    if unsupported == "assertion":
+        sentences[0]["text"] = "The policy starts at 2020-01-02T00:00:00Z."
+    else:
+        limitations = ("The policy starts at 2020-01-02T00:00:00Z.",)
+    generated = GeneratedReflection(answer={
+        "kind": "assertions", "sentences": sentences, "limitations": limitations,
+    })
+    with pytest.raises(DomainError) as rejected:
+        resolve_reflection(generated, (claim("a", "The policy starts after review."),))
+    assert rejected.value.code == "MODEL_OUTPUT_INVALID"
 
 
 def test_empty_sentence_citation_is_malformed():
@@ -134,6 +162,44 @@ def test_equivalent_timestamp_in_an_uncited_claim_does_not_authorize_a_sentence(
             claim("a", "유효 시작은 아직 정해지지 않았다."),
             claim("b", "유효 시작은 2026-10-11T00:00:00+00:00다."),
         ])
+
+
+@pytest.mark.parametrize("timestamp", [
+    "2020-01-02T00:00:00Z", "2026-10-10T00:00:00Z", "2026-10-12T00:00:00Z",
+])
+def test_source_and_extraction_clocks_cannot_authorize_a_timestamp_assertion(timestamp):
+    selected = claim("a", "The policy starts after review.")
+    selected = selected.model_copy(update={"evidence": (
+        selected.evidence[0].model_copy(update={"source_event_time": datetime(2020, 1, 2, tzinfo=UTC)}),
+    )})
+    with pytest.raises(DomainError) as rejected:
+        validate_reflection(reflection(f"The policy starts at {timestamp}.", "a"), [selected])
+    assert rejected.value.code == "MODEL_OUTPUT_INVALID"
+
+
+@pytest.mark.parametrize("text", [
+    "source_event_time=2026-10-10T00:00:00Z.",
+    "The event happened at 2026-10-10T00:00:00Z.",
+    "The limit is 2026.",
+    "source_revision is 1.",
+])
+def test_missing_event_time_and_metadata_do_not_authorize_invented_facts(text):
+    with pytest.raises(DomainError, match="unsupported"):
+        validate_reflection(reflection(text, "a"), [claim("a", "The event date is unknown.")])
+
+
+
+@pytest.mark.parametrize("bound", ["event_time", "recorded_at"])
+def test_source_time_metadata_is_never_extracted_as_claim_validity(bound):
+    source = Source(
+        id="source_a", binding_id="project_a", realm="personal", revision=1,
+        body="The change happened yesterday.", speaker="human", origin_key="event_a",
+        root_run_id=None, snapshot=None, event_time=datetime(2020, 1, 2, tzinfo=UTC),
+        recorded_at=datetime(2026, 10, 10, tzinfo=UTC),
+    )
+    draft = claim("a", source.body).draft.model_copy(update={"valid_from": getattr(source, bound)})
+    with pytest.raises(DomainError, match="original temporal evidence"):
+        validate_extraction(Extraction(claims=(draft,)), source)
 
 
 def test_compatibility_guard_preserves_conditions_and_time():

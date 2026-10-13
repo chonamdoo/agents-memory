@@ -87,6 +87,22 @@ class Binding(TypedModel):
     revision: int = Field(ge=1)
 
 
+class BindingRelocation(TypedModel):
+    binding_id: Handle
+    expected_revision: int = Field(ge=1)
+    expected_locator: PathText
+    locator: PathText
+    idempotency_key: Key
+
+    @field_validator("expected_locator", "locator")
+    @classmethod
+    def absolute_locator(cls, value: str) -> str:
+        path = PurePosixPath(value)
+        if not path.is_absolute() or ".." in path.parts or "\x00" in value or str(path) != value:
+            raise ValueError("A normalized absolute locator is required")
+        return value
+
+
 class CaptureCommand(TypedModel):
     binding_id: Handle
     idempotency_key: Key
@@ -203,6 +219,8 @@ class EvidenceSpan(TypedModel):
     source_id: Handle
     source_revision: int
     source_speaker: str
+    source_event_time: datetime | None
+    source_recorded_at: datetime
     byte_start: int = Field(ge=0)
     byte_end: int = Field(gt=0)
     quote: str

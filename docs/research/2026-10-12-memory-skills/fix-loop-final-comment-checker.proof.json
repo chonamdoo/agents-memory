@@ -1,0 +1,15 @@
+{
+  "scope": "final-pass-only after fresh review fixes",
+  "checker_sha256": "0eb61a66acdd1ec4031c4cb8aedf78aced785f0b69c46e50a0234241adbd3f5f",
+  "configured_asset_checksum_matches": true,
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": "",
+  "comments": [
+    {
+      "file_path": "tests/test_store_authority.py",
+      "new_string": "    # Explicit fixture clocks distinguish provenance from extraction without\n    # depending on wall-clock timing or interpreting the ambiguous body.",
+      "old_string": ""
+    }
+  ]
+}
