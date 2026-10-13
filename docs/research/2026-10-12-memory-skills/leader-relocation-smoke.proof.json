@@ -1,0 +1,52 @@
+{
+  "observed_utc": "2026-10-12T11:40:26.906Z",
+  "endpoint": "http://127.0.0.1:8768",
+  "real_service": "AgentsMemoryMcpLeader20261012R20",
+  "doctor_exit_code": 0,
+  "context": {
+    "http_status": 200,
+    "payload_bytes": 2368,
+    "payload_budget": 2400,
+    "wire_bytes": 3138,
+    "pipeline": {
+      "pending": 0,
+      "blocked": 0,
+      "failed": 0,
+      "dlq": 0,
+      "stale_index_claims": 0
+    },
+    "candidate_not_execution_authority": "memory_candidates_not_execution_authority"
+  },
+  "source_snapshot_boundary": [
+    {
+      "probe": "missing",
+      "http_status": 409,
+      "body_present": false,
+      "code": null,
+      "state": null
+    },
+    {
+      "probe": "wrong",
+      "http_status": 409,
+      "body_present": false,
+      "code": null,
+      "state": null
+    },
+    {
+      "probe": "matching",
+      "http_status": 200,
+      "body_present": true,
+      "code": null,
+      "state": "active"
+    }
+  ],
+  "earlier_purged_source": {
+    "http_status": 200,
+    "state": "purged",
+    "body_present": false
+  },
+  "limits": [
+    "Native3 evidence remains previous R19; this relocation smoke is real CLI/API, not a fresh native3 run.",
+    "No trial duration, cloud, or universal zero-egress claim."
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "inputSha256": "36d909bc0a8a024b958b76edb23bf7d62c77b1c780e99216a0835aa4d24455a5",
+  "inputBytes": 180322,
+  "inputsEqual": true,
+  "opus": {
+    "exitCode": 0,
+    "canonicalModelUsageKeys": [
+      "claude-opus-5-5"
+    ],
+    "success": true,
+    "outputHashMatches": true,
+    "jsonResultEqualsSavedText": true,
+    "outputSha256": "9fe356983dd512a8817d90dec631cf913123c9af2d98fb86d81e07748c10aa0a",
+    "outputBytes": 37655
+  },
+  "sol": {
+    "exitCode": 0,
+    "nativeBanner": {
+      "model": "gpt-6.1-sol",
+      "provider": "openai",
+      "reasoning_effort": "xhigh"
+    },
+    "success": true,
+    "outputHashMatches": true,
+    "outputSha256": "44328e620c5fef598c5205cb51a48aa5aab6685626e3d5853134d3b78a097b39",
+    "outputBytes": 23230
+  },
+  "parallel": {
+    "overlapStartUtc": "2026-10-11T05:46:41.978Z",
+    "overlapEndUtc": "2026-10-11T05:49:22.900Z",
+    "overlapSeconds": 160.922
+  },
+  "limits": [
+    "No memory product deployment or runtime verification",
+    "Not Agent Flow runner-sealed approval",
+    "Opus server-resolved effort not returned; Sol runtime banner not provider attestation",
+    "Opus first HOME-isolated auth failure excluded; native auth state metadata changed on successful original-HOME invocation"
+  ]
+}

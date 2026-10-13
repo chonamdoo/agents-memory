@@ -1,0 +1,63 @@
+{
+  "files": [
+    {
+      "file": "memory-pipeline-research.md",
+      "bytes": 18575,
+      "sha256": "b337dab0ad8aa767b9bed728e13d8ccdba862e602911973dcddaa46d3ae1dd09"
+    },
+    {
+      "file": "verified-claims.json",
+      "bytes": 6159,
+      "sha256": "022a72441c412d6c109de590c143964bb3e6efe0260e1fe2119ff856f635c312"
+    },
+    {
+      "file": "video-summary.ko.md",
+      "bytes": 9120,
+      "sha256": "3292fa7598da6b88a636cf4a21ffbe5842ddb20b459cc2a794d28ab032562534"
+    },
+    {
+      "file": "transcript.timed.en.txt",
+      "bytes": 65393,
+      "sha256": "b1317247a0481f6977a327d09769606aadabd90a0cb608698c9095eb1ca5bdd3"
+    },
+    {
+      "file": "transcript.en.txt",
+      "bytes": 53672,
+      "sha256": "e727dee4dcf2acdc88dd3c1b5342afda9ae5feadeb4bf4a0f433dd5fb0511240"
+    },
+    {
+      "file": "research-index.ko.md",
+      "bytes": 2062,
+      "sha256": "ecf3b3084fd9504fba29c7131a81b81f11bd897e57952107eda19ef8d177090c"
+    },
+    {
+      "file": "open-source-memory-comparison.ko.md",
+      "bytes": 36955,
+      "sha256": "7b3a18b1f72e98150d5b2a996cbb49bc7982f68caf1c3a3c8dc4c5dd04556aae"
+    },
+    {
+      "file": "project-memory-pipeline.ko.md",
+      "bytes": 17893,
+      "sha256": "94a01f9e7edb4b0d198a3c7d4bbea4a1cd6a66779f49ca9d9d2b7b238fbbec40"
+    },
+    {
+      "file": "baml-jev-verification.ko.md",
+      "bytes": 25290,
+      "sha256": "4f9ac1cc5fb8d561552fde341b317a58b5496246e7c3fd8d5c5ed8c94f4e7b2e"
+    }
+  ],
+  "allNineSourcesReadable": true,
+  "timedTranscriptMatchesFrozenCopy": false,
+  "verifiedClaimCount": 9,
+  "handling": {
+    "transcripts": "Original full timed transcript in frozen packet; plain transcript also checked but not duplicated",
+    "verifiedClaims": "All original nine cue claims appended to v2",
+    "derivedReports": "Generic facts reconsidered against primary sources; not authority for implementation or approval",
+    "projectSpecificDesign": "Excluded by explicit user correction; no app codegraph/SQLite minimum design adopted",
+    "serenaClaudeMem": "Fresh generic primary-source comparison appended to v2; no app-specific application"
+  },
+  "privateAppCodeOrCredentialsSent": false,
+  "timedTranscriptTextCuesEqual": true,
+  "timedTranscriptCueCount": 1511,
+  "transcriptDifference": "Retained copy has millisecond timestamps and a different provenance header; original has minute:second timestamps. All cue texts match. Final v2 uses exact user-supplied original timed file."
+}

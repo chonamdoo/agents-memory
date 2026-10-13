@@ -1,0 +1,34 @@
+{
+  "observed_utc": "2026-10-12T12:55:44.722Z",
+  "actual_operator_cli": true,
+  "initial": {
+    "exit_code": 0,
+    "value": {
+      "id": "binding_5a89f574d8444043a01f7c3115f5c160",
+      "realm": "personal-namdoo",
+      "owner_id": "namdoo",
+      "label": "Agent Memory MCP AF worktree",
+      "locator": "/Users/namdoo/Developer/Aiproject/agent-memory-mcp",
+      "revision": 2
+    }
+  },
+  "replay": {
+    "exit_code": 0,
+    "value": {
+      "id": "binding_5a89f574d8444043a01f7c3115f5c160",
+      "realm": "personal-namdoo",
+      "owner_id": "namdoo",
+      "label": "Agent Memory MCP AF worktree",
+      "locator": "/Users/namdoo/Developer/Aiproject/agent-memory-mcp",
+      "revision": 2
+    }
+  },
+  "binding_id_retained": true,
+  "expected_locator": true,
+  "revision_once": true,
+  "roster_retained": true,
+  "limits": [
+    "Explicit operator relocation, not automatic caller path hints or MCP scope widening.",
+    "Native installation/cleanup follows separately; no cloud or credential grant mutation."
+  ]
+}

@@ -1,0 +1,118 @@
+{
+  "video": "mAKUL12h1n8",
+  "source": "Freshly downloaded YouTube auto en-orig JSON3",
+  "verifiedAt": "2026-10-11T12:48:19.327Z",
+  "claimCount": 9,
+  "allExcerptsPresent": true,
+  "claimTruthNotImplied": true,
+  "claims": [
+    {
+      "id": "citation",
+      "time": "05:54",
+      "startMs": 354080,
+      "excerpt": " cloud MD or in your skills or whatever it is. We would have um I don't know do you remember what else was in there? There was like a citation of like >> Yeah, citation was the exact which sessions. >> Yeah, exactly. Yeah. And then it would have like you know uh session ID, message ID, etc. So that we could tie it back to a real conversation event >> and and the user ID, right? One of the interesting parts about uh human layer is that many people are in your org and you can kind of analyze all of these sessions across uh your whole team. Right. >> Right.",
+      "verification": {
+        "kind": "Exact normalized original-caption text occurrence, not claim truth or product verification",
+        "freshFullTranscriptContainsExcerpt": true,
+        "freshRawJson3Sha256": "a12be7a5b4cd8916e14ab0d027515e2f51ee915a5370b19f45c75edc8553b734",
+        "timeIsAutomaticCaptionCueStart": true
+      }
+    },
+    {
+      "id": "cost",
+      "time": "12:55",
+      "startMs": 775760,
+      "excerpt": "workflow that is like cheap. So for example, this one analyzed a week's worth of our coding data for like uh $2 or sorry one uh two cents, sorry, two cents. >> Two cents per session. >> Very very cheap. Yeah. Two cents per session, right? Uh so it's very very cheap to do this and like think of of how many tokens you can spend on one session. And the fact that we were able to analyze that for two cents is kind of nuts. like how do we do that? Uh so anyway, when I got this problem, the first thing was uh here, let me skip through this. >> Oh, this looks co",
+      "verification": {
+        "kind": "Exact normalized original-caption text occurrence, not claim truth or product verification",
+        "freshFullTranscriptContainsExcerpt": true,
+        "freshRawJson3Sha256": "a12be7a5b4cd8916e14ab0d027515e2f51ee915a5370b19f45c75edc8553b734",
+        "timeIsAutomaticCaptionCueStart": true
+      }
+    },
+    {
+      "id": "threeTypes",
+      "time": "20:05",
+      "startMs": 1205600,
+      "excerpt": "ening in this pipeline and let me just give you a refresher of the pipeline. Uh, this takes a little bit to load but this is kind of like the pipeline. So it's divided into three things like what did the agents find out in general like what are facts about the about the transcript. Uh this is what the people like humans actually corrected agents like when did they correct agents and what did they say? And then this is like what agents kept researching. Um, but as I'm working on these things and there's like filtering steps and all kinds of stuff like I I",
+      "verification": {
+        "kind": "Exact normalized original-caption text occurrence, not claim truth or product verification",
+        "freshFullTranscriptContainsExcerpt": true,
+        "freshRawJson3Sha256": "a12be7a5b4cd8916e14ab0d027515e2f51ee915a5370b19f45c75edc8553b734",
+        "timeIsAutomaticCaptionCueStart": true
+      }
+    },
+    {
+      "id": "threeTypesDetail",
+      "time": "26:01",
+      "startMs": 1561120,
+      "excerpt": "like just split it into this pipeline and I can dive into the actual pipeline. Uh so essentially this is what you you guys are seeing. Uh remember like that we divided into three sections what agents find found out the corrections that people gave agents and what agents kept researching. >> And so in here we >> what's the difference between what agents found out and what agents kept researching? >> Yes. So um what agents found found out is just like basic small little facts of the codebase. >> Okay. >> Uh so it like includes more more data than just like",
+      "verification": {
+        "kind": "Exact normalized original-caption text occurrence, not claim truth or product verification",
+        "freshFullTranscriptContainsExcerpt": true,
+        "freshRawJson3Sha256": "a12be7a5b4cd8916e14ab0d027515e2f51ee915a5370b19f45c75edc8553b734",
+        "timeIsAutomaticCaptionCueStart": true
+      }
+    },
+    {
+      "id": "query",
+      "time": "38:08",
+      "startMs": 2288720,
+      "excerpt": "s >> nice >> uh observability. Oh the other thing that I wanted to highlight uh that was interesting is this dashboard is uh actually made with a thing that we called BAML query. So what is BML query? So whenever we're writing like any regular code uh I think I have it here. Whenever we're writing anyone co any code like usually you have to like add spans to track everything. >> Yeah. >> Like you you do like start active span then you do the open responses you catch the error you set like the error in this span thing and then you like set the status. >> ",
+      "verification": {
+        "kind": "Exact normalized original-caption text occurrence, not claim truth or product verification",
+        "freshFullTranscriptContainsExcerpt": true,
+        "freshRawJson3Sha256": "a12be7a5b4cd8916e14ab0d027515e2f51ee915a5370b19f45c75edc8553b734",
+        "timeIsAutomaticCaptionCueStart": true
+      }
+    },
+    {
+      "id": "queryCapture",
+      "time": "38:47",
+      "startMs": 2327760,
+      "excerpt": "Yep. >> But with BAML that that stuff comes for free. So uh we just made it really efficient in how we capture information and we have like um we like create a spans automatically for certain types of functions like LLM functions in a way that we detect. >> Okay. So that basically means like I run my program and then what I get like a CLI where I can run BAML query and ask things about how it ran and then the model can use that to like pipe that into a report. >> Yeah, actually and I I'll show you what's happening when I run this. Uh maybe let's let me s",
+      "verification": {
+        "kind": "Exact normalized original-caption text occurrence, not claim truth or product verification",
+        "freshFullTranscriptContainsExcerpt": true,
+        "freshRawJson3Sha256": "a12be7a5b4cd8916e14ab0d027515e2f51ee915a5370b19f45c75edc8553b734",
+        "timeIsAutomaticCaptionCueStart": true
+      }
+    },
+    {
+      "id": "health",
+      "time": "44:06",
+      "startMs": 2646880,
+      "excerpt": "alluding to this at the beginning of like okay now that we have a context chart and maybe we accept some of them and deny some of them like how do we track the health of a memory right >> and the model and suddenly something we needed to tell it all the time is now in the way it's like how do we how do we identify that and like remove it from context because we may be like Tariq calls it like hobbling the model by giving telling it to do things that it already knows how to do. >> Yeah. Yeah. And so I don't know if you had some ideas here. I don't have an",
+      "verification": {
+        "kind": "Exact normalized original-caption text occurrence, not claim truth or product verification",
+        "freshFullTranscriptContainsExcerpt": true,
+        "freshRawJson3Sha256": "a12be7a5b4cd8916e14ab0d027515e2f51ee915a5370b19f45c75edc8553b734",
+        "timeIsAutomaticCaptionCueStart": true
+      }
+    },
+    {
+      "id": "staleIdea",
+      "time": "49:11",
+      "startMs": 2951920,
+      "excerpt": "we have doesn't make sense anymore. Like it's very hard to determine if you are actually using the same inputs to evaluate the outputs. >> Yeah. And I think my my one idea I had actually to like figure out how to figure out whether something is stale is um is I tie each sort of memory to like a place in the codebase or a or a region in the codebase and uh and there's various ways of like doing that like the code map that I mentioned where like you tie each memory to like a place in the codebase. >> Yeah. But also you can probably ask the agent also like ",
+      "verification": {
+        "kind": "Exact normalized original-caption text occurrence, not claim truth or product verification",
+        "freshFullTranscriptContainsExcerpt": true,
+        "freshRawJson3Sha256": "a12be7a5b4cd8916e14ab0d027515e2f51ee915a5370b19f45c75edc8553b734",
+        "timeIsAutomaticCaptionCueStart": true
+      }
+    },
+    {
+      "id": "fourthInput",
+      "time": "50:46",
+      "startMs": 3046000,
+      "excerpt": "nk about like ingesting that feedback to improve the pipeline itself? What would your what would your like eval climb look like? >> I think there would be like another fourth input. So you know how the pipeline had like three different inputs, there will be a fourth one that just goes into like the final draft and report that has either the existing uh save memories from previous sessions. >> Uh because otherwise it's going to regenerate the same if you pass the same sessions in it's going to regenerate. Okay. So if you the first step is make it incremen",
+      "verification": {
+        "kind": "Exact normalized original-caption text occurrence, not claim truth or product verification",
+        "freshFullTranscriptContainsExcerpt": true,
+        "freshRawJson3Sha256": "a12be7a5b4cd8916e14ab0d027515e2f51ee915a5370b19f45c75edc8553b734",
+        "timeIsAutomaticCaptionCueStart": true
+      }
+    }
+  ]
+}

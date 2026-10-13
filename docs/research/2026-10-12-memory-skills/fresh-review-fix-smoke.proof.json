@@ -1,0 +1,155 @@
+{
+  "proof_layer": "Actual manually grounded application/PG and CLI crash-recovery checks; not a new formal review approval",
+  "exit_code": 0,
+  "observations": [
+    {
+      "step": "actual_persisted_application_inspect",
+      "limitations": [
+        "This captured claim is not an approved rule."
+      ],
+      "candidate": true,
+      "partial": false,
+      "source_provenance_count": 1,
+      "generation_fixture": "Manually supplied and authority-validated synthetic extraction/reflection; not an LLM-generation claim."
+    },
+    {
+      "step": "real_artifacts_isolated_pg_crash_restore_supersede",
+      "abrupt_cli_exit": 41,
+      "actual_artifacts_validated": true,
+      "restore_authority_recovery": "Actual Store.recover_after_restore, not archive SQL executor",
+      "old_credential_denied": true,
+      "restored_routes_disabled": true,
+      "implicit_supersession_denied": true,
+      "explicit_expected_intent_sha256": "e1a31ea1b52840941ae4140aa988ab841a4b8eb671f4b6d60761060cf477c45f",
+      "fresh_approval": {
+        "route_revision": "d42da38effe7c83029ac9e691e94188cc64d6b05d5b5e936e1b1229b5b540463",
+        "purposes": [
+          "extraction",
+          "embedding",
+          "consolidation",
+          "rerank",
+          "reflection"
+        ],
+        "approved": true,
+        "service_restart_required": true,
+        "inference_verified": false
+      },
+      "intent_removed": true,
+      "fresh_claim_admission_accepted": true
+    }
+  ],
+  "purpose_narrowing": {
+    "step": "actual_cli_same_revision_purpose_narrowing",
+    "actual_artifacts_validated": true,
+    "approved": {
+      "route_revision": "d42da38effe7c83029ac9e691e94188cc64d6b05d5b5e936e1b1229b5b540463",
+      "purposes": [
+        "embedding"
+      ],
+      "approved": true,
+      "service_restart_required": true,
+      "inference_verified": false
+    },
+    "old_authority_settings_purposes": [
+      "extraction",
+      "embedding",
+      "consolidation",
+      "rerank",
+      "reflection"
+    ],
+    "checks": [
+      {
+        "case": "new_rerank",
+        "error_code": "MODEL_ROUTE_BLOCKED"
+      },
+      {
+        "case": "old_rerank_admission",
+        "error_code": "MODEL_ROUTE_BLOCKED"
+      },
+      {
+        "case": "old_embedding_admission",
+        "error_code": "ADMISSION_STALE"
+      }
+    ],
+    "new_embedding_admission_accepted": true,
+    "proof_layer": "Real CLI approval and persistent PG authority using an old-settings Store instance; not a separate native daemon/process."
+  },
+  "gates": {
+    "deferred_ci_checks": [],
+    "execution": "local",
+    "passed": true,
+    "produced_by": {
+      "gate_execution": "local",
+      "gate_phase": "all",
+      "nonce": "9d372305f18f4f0801f5c8934fa21d33",
+      "tool": "agent-flow gates"
+    },
+    "results": [
+      {
+        "argv": [
+          "uv",
+          "run",
+          "ruff",
+          "check",
+          "src",
+          "tests"
+        ],
+        "command": "uv run ruff check src tests",
+        "exit_code": 0,
+        "gate_id": "lint",
+        "passed": true,
+        "required": true,
+        "stderr": "",
+        "stdout": "All checks passed!\n",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "uv",
+          "run",
+          "pytest",
+          "-q"
+        ],
+        "command": "uv run pytest -q",
+        "exit_code": 0,
+        "gate_id": "test",
+        "passed": true,
+        "required": true,
+        "stderr": "",
+        "stdout": "........................................................................ [  8%]\n........................................................................ [ 16%]\n........................................................................ [ 24%]\n........................................................................ [ 32%]\n........................................................................ [ 40%]\n........................................................................ [ 48%]\n........................................................................ [ 56%]\n........................................................................ [ 64%]\n........................................................................ [ 72%]\n........................................................................ [ 80%]\n........................................................................ [ 88%]\n........................................................................ [ 96%]\n............................                                             [100%]\n892 passed in 105.17s (0:01:45)\n",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "uv",
+          "build"
+        ],
+        "command": "uv build",
+        "exit_code": 0,
+        "gate_id": "package",
+        "passed": true,
+        "required": true,
+        "stderr": "Building source distribution...\nBuilding wheel from source distribution...\nSuccessfully built dist/agents_memory-0.1.0.tar.gz\nSuccessfully built dist/agents_memory-0.1.0-py3-none-any.whl\n",
+        "stdout": "",
+        "timed_out": false
+      }
+    ],
+    "status": "green"
+  },
+  "comment_checker_proof": "fix-loop-final-comment-checker.proof.json",
+  "formal_review": {
+    "actual_provider": "codex",
+    "completed": 6,
+    "approve": 3,
+    "request_changes": 3,
+    "claude": "generalist exit1 OAuth token expired401; remaining5 skipped",
+    "source": "Official current runner manifest, actual independent artifact hashes verified.",
+    "final12_pool_complete": false
+  },
+  "limitations": [
+    "restore smoke exercises actual private authority credential/route recovery, not archive SQL restoration.",
+    "Reflection fixture is manually supplied and validator-checked, not model-generated output.",
+    "Purpose narrowing uses actual CLI and old-settings Store instance, not separate native daemon.",
+    "No credentials, DSN, raw reasoning or unrelated corpus is persisted."
+  ]
+}

@@ -1,0 +1,137 @@
+{
+  "verified_at": "2026-10-11T17:11:16.657Z",
+  "requested_models": [
+    "gpt-6.1-sol",
+    "claude-opus-5-5"
+  ],
+  "requested_effort": "xhigh",
+  "actual_server_effort": "unknown; native CLI configured/banner evidence is not provider attestation",
+  "method": "Two fresh native CLI calls per model, same immutable input in each round; round2 contains both exact round1 answers and completed OSS reports",
+  "round1": {
+    "input": {
+      "round": 1,
+      "created_at": "2026-10-11T16:30:10.595Z",
+      "shared_input": "research/local-first-design-round1-v2-input.ko.md",
+      "bytes": 90057,
+      "sha256": "4bfcddf22a42ce9ff8976dc1b0ef05747bb2e9f0c100af20e2ebdb2756eb27bc",
+      "sources": [
+        {
+          "path": "research/unified-memory-pipeline-proposal.ko.md",
+          "bytes": 32323,
+          "sha256": "7ab1f79f0b96df99dfc3fe35023706f440dca782f89c71cec814760d77ddfc28"
+        },
+        {
+          "path": "research/local-first-invocation-contract.ko.md",
+          "bytes": 14224,
+          "sha256": "faf33330d15728808e6941215613d2db57495f48dd6b28f7e6acc5ee7d5f1543"
+        },
+        {
+          "path": "research/local-first-host-evidence.ko.md",
+          "bytes": 15959,
+          "sha256": "3054a40e8c494e052005721b10620fee619c6d6256a7d42e1defafd9b7f7ce66"
+        },
+        {
+          "path": "research/local-first-engine-evidence.ko.md",
+          "bytes": 16871,
+          "sha256": "1cfe5b35847927ca9d8db1599e81abbd35d1e21a7f56d8034a6b4d7bbd39e69f"
+        },
+        {
+          "path": "research/local-first-python-mcp-feasibility.ko.md",
+          "bytes": 5853,
+          "sha256": "09a58e7a0c9eb04de5aef277301bed329bd66a1bdb8a06f16e3e6f4d10ce0ea0"
+        }
+      ],
+      "source_digest_is_not_runtime_or_provider_attestation": true,
+      "open_source_updates_shared_in_round2": true,
+      "supersedes_unexecuted_input": "research/local-first-design-round1-input.ko.md",
+      "execution_scope": "AgentFlow latest project installation + final-design local full implementation; cloud not now"
+    },
+    "actual_process_overlap_seconds": 548.298,
+    "independently_recomputed_output_hashes": true,
+    "receipts": [
+      "research/local-first-codex-round1.evidence.json",
+      "research/local-first-opus-round1.evidence.json"
+    ]
+  },
+  "round2": {
+    "input": {
+      "round": 2,
+      "created_at": "2026-10-11T16:49:32.443Z",
+      "shared_input": "research/local-first-design-round2-input.ko.md",
+      "bytes": 213872,
+      "sha256": "514b2db6201d030637fbd8676c7d9f8c641ea5b25628c4791706036ae58d9fb7",
+      "sources": [
+        {
+          "path": "research/local-first-design-round1-v2-input.ko.md",
+          "bytes": 90057,
+          "sha256": "4bfcddf22a42ce9ff8976dc1b0ef05747bb2e9f0c100af20e2ebdb2756eb27bc"
+        },
+        {
+          "path": "research/local-first-codex-round1.ko.md",
+          "bytes": 29253,
+          "sha256": "5001008d4bd58536c093c93d097392e07beff93627cb2c80fd8d4c9d2956144b"
+        },
+        {
+          "path": "research/local-first-opus-round1.ko.md",
+          "bytes": 26926,
+          "sha256": "1d759fc3ac74e40ea113552517c5d912dbb4f69b2917c62b604d0c2157402667"
+        },
+        {
+          "path": "research/local-first-sie-protocol-oss.ko.md",
+          "bytes": 26331,
+          "sha256": "9f80ef94d00eba24087a3c6438b91ec72276df3f1fb9a6c81ed65b021243c9c7"
+        },
+        {
+          "path": "research/local-first-storage-ops-oss.ko.md",
+          "bytes": 31584,
+          "sha256": "ee43ce8426bad9ee63ada88073bcc67de53170f51f23e5c621d177f8dd4d966d"
+        },
+        {
+          "path": ".agent-flow/local-skills/architecture/SKILL.md",
+          "bytes": 3656,
+          "sha256": "5fe27c2bded2b4a8c0dd75e7331bb46ce02bee34acc1ab6e99eb9f0bde68ee7f"
+        }
+      ],
+      "round1_overlap_seconds": 548.298,
+      "parent_recomputed_round1_outputs": true,
+      "same_input_both_requested_models": true,
+      "peer_exchange": "each reads both exact native R1 answers and same completed OSS updates"
+    },
+    "actual_process_overlap_seconds": 434.966,
+    "independently_recomputed_outputs": [
+      {
+        "path": "research/local-first-codex-round2.ko.md",
+        "bytes": 24882,
+        "sha256": "64de9698db4c3a4fe2a31a645178e03d4e6f981a93206fcbb13676612e31d69c",
+        "exit_code": 0
+      },
+      {
+        "path": "research/local-first-opus-round2.ko.md",
+        "bytes": 29385,
+        "sha256": "f7146c8b25fc340b14fc2518849050f9441d78a700f2dc41ffe84564f908f029",
+        "exit_code": 0
+      }
+    ],
+    "receipts": [
+      "research/local-first-codex-round2.evidence.json",
+      "research/local-first-opus-round2.evidence.json"
+    ]
+  },
+  "peer_exchange_observed": {
+    "codex": "Explicit accept/rebut table and own-R1 revisions; inference-long advisory lock withdrawn",
+    "opus": "Explicit response to eight disputes and own-R1 revisions; Hindsight barrier/PG16/PR-only authority withdrawn"
+  },
+  "convergence": "Owned complete Python/PG semantic engine, official SDK2 dual-era edge, one durable job authority, short admission/publication CAS, non-Git rule approval, bounded context, local-first AF development workflow",
+  "remaining_parent_decisions": [
+    "Logical retract acknowledgement separate from observed local drain; admission expiry is not process termination",
+    "Exact original UTF8 evidence spans, no NFKC quote substitution",
+    "Idempotency explicit key plus canonical digest, never content-plus-time-window dedup",
+    "All actual model input dependencies invalidate derived artifacts; OR retention only for independently generated surviving derivations",
+    "Offered or same-generation retry alone does not prove a later model-input generation"
+  ],
+  "limits": [
+    "Design evidence, not product implementation or native host/PG/model acceptance",
+    "One-to-two-week elapsed usage is not yet observed",
+    "Existing global CLI/config and company data were not replaced or copied"
+  ]
+}

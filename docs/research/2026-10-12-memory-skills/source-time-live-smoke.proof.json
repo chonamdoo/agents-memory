@@ -1,0 +1,112 @@
+{
+  "observed_utc": "2026-10-12T12:41:35.068Z",
+  "actual_live_service": true,
+  "actual_local_model": true,
+  "captures": [
+    {
+      "label": "OLD",
+      "event_time": "2020-01-02T00:00:00Z",
+      "source_id": "source_105a427aa1b242beacf6683e19cc0e63",
+      "operation_id": "operation_7d24fef168ad47ceb9c03b4d10eb7a9d",
+      "actual_capture_exit": 0,
+      "actual_await_exit": 0,
+      "terminal": {
+        "id": "operation_7d24fef168ad47ceb9c03b4d10eb7a9d",
+        "binding_id": "binding_5a89f574d8444043a01f7c3115f5c160",
+        "kind": "capture",
+        "state": "semantic_ready",
+        "source_id": "source_105a427aa1b242beacf6683e19cc0e63",
+        "artifact_id": null,
+        "successor_operation_id": null,
+        "error_code": null,
+        "epoch": 232,
+        "effect": "committed"
+      }
+    },
+    {
+      "label": "NULL",
+      "event_time": null,
+      "source_id": "source_272809b310b24b94b1e9764fa1fc50e7",
+      "operation_id": "operation_ac09ea3670344ce6bc95fcbb597d5f59",
+      "actual_capture_exit": 0,
+      "actual_await_exit": 0,
+      "terminal": {
+        "id": "operation_ac09ea3670344ce6bc95fcbb597d5f59",
+        "binding_id": "binding_5a89f574d8444043a01f7c3115f5c160",
+        "kind": "capture",
+        "state": "semantic_ready",
+        "source_id": "source_272809b310b24b94b1e9764fa1fc50e7",
+        "artifact_id": null,
+        "successor_operation_id": null,
+        "error_code": null,
+        "epoch": 235,
+        "effect": "committed"
+      }
+    }
+  ],
+  "recall_and_inspect": [
+    {
+      "label": "OLD",
+      "source_id": "source_105a427aa1b242beacf6683e19cc0e63",
+      "claim_ref": "claim_3fee42a858d945f39005f3c32635f11a",
+      "recall_context_bytes": 1802,
+      "recall_event_time": "2020-01-02T00:00:00Z",
+      "inspect_event_time": "2020-01-02T00:00:00Z",
+      "recall_recorded_at": "2026-10-12T12:38:27.518664Z",
+      "inspect_recorded_at": "2026-10-12T12:38:27.518664Z",
+      "claim_created_at": "2026-10-12T12:39:05.855290Z",
+      "valid_from": null,
+      "valid_until": null,
+      "exact_time_fields_match": true
+    },
+    {
+      "label": "NULL",
+      "source_id": "source_272809b310b24b94b1e9764fa1fc50e7",
+      "claim_ref": "claim_a6a8112db2a84e53aab8be32e019f330",
+      "recall_context_bytes": 2120,
+      "recall_event_time": null,
+      "inspect_event_time": null,
+      "recall_recorded_at": "2026-10-12T12:39:06.324532Z",
+      "inspect_recorded_at": "2026-10-12T12:39:06.324532Z",
+      "claim_created_at": "2026-10-12T12:39:11.944115Z",
+      "valid_from": null,
+      "valid_until": null,
+      "exact_time_fields_match": true
+    }
+  ],
+  "limits": [
+    "Source timestamps are provenance, not automatically claim validity.",
+    "This is synthetic current service proof, not elapsed trial or native provider-consumption attestation."
+  ],
+  "extraction_metadata_source": "Readonly exact-admission persisted claim projection, not inferred from inspect fields.",
+  "reflection": {
+    "operation_id": "operation_c0cb8fc6edb940a7b352cccfd4ec3b8c",
+    "state": "failed",
+    "error_code": "MODEL_OUTPUT_INVALID",
+    "diagnostic": "One readonly exact-admission local generation, not original stored generation and not durable retry/publication",
+    "rejected_output": {
+      "sentences": [
+        {
+          "text": "ChronicleR21OLD has a source_event_time of 2020-01-02T00:00:00Z.",
+          "claim_ids": [
+            "claim_3fee42a858d945f39005f3c32635f11a"
+          ]
+        },
+        {
+          "text": "ChronicleR21NULL has a source_event_time that is null.",
+          "claim_ids": [
+            "claim_a6a8112db2a84e53aab8be32e019f330"
+          ]
+        }
+      ],
+      "limitations": []
+    },
+    "validation": {
+      "state": "rejected",
+      "code": "MODEL_OUTPUT_INVALID",
+      "message": "The model introduced an unsupported timestamp"
+    },
+    "original_detailed_artifact_not_persisted": true,
+    "production_validation_relaxed": false
+  }
+}

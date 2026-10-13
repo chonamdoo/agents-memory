@@ -1,0 +1,208 @@
+{
+  "proof_layer": "actual local service/native/isolated PG and filesystem observations; not formal review or QA approval",
+  "semantic_revision": "d42da38effe7c83029ac9e691e94188cc64d6b05d5b5e936e1b1229b5b540463",
+  "embedding_revision": "5746aa946889325cd26d84aafb3e1ac05ae4fccba400bfc6597431b26a1ac13a",
+  "retained_original_failed_proof_sha256": "0d50ab8b6c5f46d4d43416cf5b3a2e1251ad74d490e2a1c858a399e8b8ee346d",
+  "current_original_owner_read": {
+    "id": "operation_c0cb8fc6edb940a7b352cccfd4ec3b8c",
+    "binding_id": "binding_5a89f574d8444043a01f7c3115f5c160",
+    "kind": "reflect",
+    "state": "semantic_ready",
+    "source_id": "source_e654e1be8a094196a606326e608bb381",
+    "artifact_id": "reflection_21ea3838f4bf4fb6b256e02a6a7a5968",
+    "successor_operation_id": null,
+    "error_code": null,
+    "epoch": 322,
+    "effect": "committed"
+  },
+  "current_native_proof": "stable-runtime-native-smoke.proof.json",
+  "current_stats": {
+    "epoch": 343,
+    "pending": 0,
+    "blocked": 0,
+    "failed": 6,
+    "dlq": 6,
+    "stale_index_claims": 0,
+    "current_operations": {
+      "failed": 6
+    },
+    "recovery_jobs": [
+      {
+        "id": "job_e4f8472531234fba8c8913e942a143dd",
+        "operation_id": "operation_d9b48967d00a45b79bde2454c3f77664",
+        "state": "failed",
+        "error_code": "MODEL_OUTPUT_INVALID",
+        "attempts": 4,
+        "generation": 9
+      },
+      {
+        "id": "job_f65cca6b927c40c696005df34e1fe1bc",
+        "operation_id": "operation_3902c5e400fe43cc9ed80fc9091b1d28",
+        "state": "failed",
+        "error_code": "MODEL_OUTPUT_INVALID",
+        "attempts": 4,
+        "generation": 9
+      },
+      {
+        "id": "job_753d3bc99fe74d36bb2fe2f6aeadb808",
+        "operation_id": "operation_a3658fa132864117a0e67cb5d57d7408",
+        "state": "failed",
+        "error_code": "MODEL_OUTPUT_INVALID",
+        "attempts": 4,
+        "generation": 9
+      },
+      {
+        "id": "job_74968841890e4ea28513939bbd2f7d5d",
+        "operation_id": "operation_0c2b2ad2611740ec92a90ec58c4a7a5c",
+        "state": "failed",
+        "error_code": "MODEL_OUTPUT_INVALID",
+        "attempts": 4,
+        "generation": 9
+      },
+      {
+        "id": "job_f889ae62053649ab9d036f7c59a98c19",
+        "operation_id": "operation_64dfa51a77c94e358543b594e9c37d11",
+        "state": "failed",
+        "error_code": "MODEL_OUTPUT_INVALID",
+        "attempts": 4,
+        "generation": 9
+      },
+      {
+        "id": "job_ad952c719c4f4c189621ebe3850ecfd0",
+        "operation_id": "operation_64f02bc476ea443c94d4c6850bca8bc5",
+        "state": "failed",
+        "error_code": "MODEL_OUTPUT_INVALID",
+        "attempts": 4,
+        "generation": 9
+      }
+    ]
+  },
+  "earlier_same_session_observations": {
+    "provenance": "Observed before eval kernel reset; these are sanitized observation records, not a re-created raw transcript.",
+    "temporal_operation": "operation_efc2f357144b4d79aad0fc557bf7150c",
+    "temporal_reflection": "reflection_9544ce2314504c8f92999afc6d75e579",
+    "ordinary_operation": "operation_a712817add5d43c19de937970c27c403",
+    "ordinary_reflection": "reflection_20fc50c053504b03bf7996fcfec1b5a0",
+    "synthetic_pipeline": {
+      "capture_operation": "operation_e0f1a34823b04a69a185c6125ea1a452",
+      "source": "source_700007a0feec46a58ab4b8f55356d0a0",
+      "claim": "claim_e67abaa1f1bf4c7ab48e344a64efdad2",
+      "asserted_window_seconds": 37,
+      "reflection": "reflection_12b9781af38b4831b2ce86ea364b78df",
+      "correct_operation": "operation_d4fc59268984494fb099cc585ca2fbe4",
+      "corrected_source": "source_f41bc3195903424fb387c27c93bbc1f0",
+      "corrected_claim": "claim_a076988959f34a48854e6806ff2027db",
+      "corrected_window_seconds": 41,
+      "old_reflection_hidden_after_correction": true,
+      "next_recall_utf8_bytes": 2182,
+      "next_recall_old_37_excluded": true,
+      "explicit_retract_key": "r26-window-explicit-retract",
+      "retract_epoch": 323,
+      "retract_head": "bbe09802469834cce3ac0e06dc4b83609bfc7c63a84e7805f1602828c25b9883",
+      "retract_claims": "Logical retraction committed; no physical purge or already-delivered context erasure claimed."
+    },
+    "real_reranker": {
+      "pair_token_lengths": [
+        236,
+        245
+      ],
+      "relevant_raw_score": 5.4071879386901855,
+      "irrelevant_raw_score": -10.908003807067871,
+      "long_synthetic_pair_tokens": 9295,
+      "bound_tokens": 8192,
+      "long_error_code": "MODEL_INPUT_TOO_LARGE",
+      "long_fixture_ingested": false
+    },
+    "real_filesystem_host": {
+      "strict_loop": "native deny/exit0/body-free, durable state unchanged",
+      "advisory_loop": "warning/exit0, durable state unchanged",
+      "deleted_recovery_cases": [
+        "normal/receipt_durability",
+        "normal/native_key_publication",
+        "linked/receipt_durability",
+        "linked/native_key_publication"
+      ],
+      "abrupt_child_exit_code": 41,
+      "repeat_uninstall_success": true,
+      "root_recreated": false,
+      "unrelated_native_settings_preserved": true,
+      "actual_interactive_claude_session": false
+    },
+    "actual_artifacts_isolated_pg_approval": {
+      "post_publication_barrier_effect": "not_committed",
+      "unrelated_queue_setting_preserved": true,
+      "pending_barred_exact_retry_before_cli_fix_effect": "not_started",
+      "pending_barred_exact_retry_after_cli_fix_effect": "unknown",
+      "restored_isolated_head_exact_retry": "approved",
+      "fresh_consumer_admission": "accepted",
+      "production_journal_mutated": false
+    }
+  },
+  "gates": {
+    "deferred_ci_checks": [],
+    "execution": "local",
+    "passed": true,
+    "produced_by": {
+      "gate_execution": "local",
+      "gate_phase": "all",
+      "nonce": "9d372305f18f4f0801f5c8934fa21d33",
+      "tool": "agent-flow gates"
+    },
+    "results": [
+      {
+        "argv": [
+          "uv",
+          "run",
+          "ruff",
+          "check",
+          "src",
+          "tests"
+        ],
+        "command": "uv run ruff check src tests",
+        "exit_code": 0,
+        "gate_id": "lint",
+        "passed": true,
+        "required": true,
+        "stderr": "",
+        "stdout": "All checks passed!\n",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "uv",
+          "run",
+          "pytest",
+          "-q"
+        ],
+        "command": "uv run pytest -q",
+        "exit_code": 0,
+        "gate_id": "test",
+        "passed": true,
+        "required": true,
+        "stderr": "",
+        "stdout": "........................................................................ [  8%]\n........................................................................ [ 16%]\n........................................................................ [ 24%]\n........................................................................ [ 32%]\n........................................................................ [ 40%]\n........................................................................ [ 48%]\n........................................................................ [ 56%]\n........................................................................ [ 65%]\n........................................................................ [ 73%]\n........................................................................ [ 81%]\n........................................................................ [ 89%]\n........................................................................ [ 97%]\n.....................                                                    [100%]\n885 passed in 104.52s (0:01:44)\n",
+        "timed_out": false
+      },
+      {
+        "argv": [
+          "uv",
+          "build"
+        ],
+        "command": "uv build",
+        "exit_code": 0,
+        "gate_id": "package",
+        "passed": true,
+        "required": true,
+        "stderr": "Building source distribution...\nBuilding wheel from source distribution...\nSuccessfully built dist/agents_memory-0.1.0.tar.gz\nSuccessfully built dist/agents_memory-0.1.0-py3-none-any.whl\n",
+        "stdout": "",
+        "timed_out": false
+      }
+    ],
+    "status": "green"
+  },
+  "limitations": [
+    "Six live MODEL_OUTPUT_INVALID failed/DLQ owners remain; no global clean claim.",
+    "Installed leader host receipt executable cutover has not executed due active worker boundary.",
+    "No permanent native trust, company headless/egress, hosted/registry deployment or elapsed trial completion."
+  ]
+}

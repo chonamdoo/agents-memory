@@ -1,0 +1,7 @@
+{
+  "scope": "Final changed-comment-only pass; git diff used solely to extract added comments, not routine validation or re-audit of applied code.",
+  "added_comment_count": 4,
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": ""
+}

@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+import asyncio
+import re
+from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+
+MIGRATIONS = ("0001_authority", "0002_directional_tombstones", "0003_origin_and_vector_compat", "0004_operation_successors")
+MIGRATION = MIGRATIONS[-1]
+
+
+def _arguments(dsn: str) -> tuple[str, dict]:
+    parts = urlsplit(dsn)
+    query = dict(parse_qsl(parts.query))
+    schema = query.pop("schema", None)
+    options = {"passfile": "/dev/null"}
+    if schema is not None:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", schema):
+            raise ValueError("Invalid schema name")
+        options["server_settings"] = {"search_path": f'"{schema}"'}
+    url = urlunsplit(("postgresql+asyncpg", parts.netloc, parts.path, urlencode(query), parts.fragment))
+    return url, options
+
+
+async def _migrate(dsn: str) -> dict:
+    url, options = _arguments(dsn)
+    engine = create_async_engine(url, connect_args=options)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(current_database() || :migration_tag, 0))"),
+                {"migration_tag": ":agent-memory-explicit-migration"},
+            )
+            version = int((await connection.execute(text("SHOW server_version_num"))).scalar_one())
+            if not 180000 <= version < 190000:
+                raise RuntimeError("PostgreSQL 18 is required")
+            await connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public"))
+            vector = (await connection.execute(text("SELECT extversion FROM pg_extension WHERE extname='vector'"))).scalar_one()
+            if tuple(int(part) for part in vector.split(".")) < (0, 8, 7):
+                raise RuntimeError("pgvector >= 0.8.7 is required")
+            configuration = Config()
+            configuration.set_main_option("script_location", str(Path(__file__).parent))
+            def upgrade(sync_connection) -> None:
+                configuration.attributes["connection"] = sync_connection
+                command.upgrade(configuration, "head")
+            await connection.run_sync(upgrade)
+            migration = (await connection.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
+            return {"migration": migration, "postgresql_version": version, "vector_version": vector}
+    finally:
+        await engine.dispose()
+
+
+def migrate(dsn: str) -> dict:
+    return asyncio.run(_migrate(dsn))
+
+
+def restore_preparation_sql(archived_revision: str, schema: str) -> str:
+    """Prepare dependencies inside the executor's uncommitted restore transaction.
+
+    pg_restore --clean replaces every archived table, including its newer columns.
+    Newer cross-table foreign keys and tables absent from the archive must be
+    removed first. This function never opens or changes a database.
+    """
+    if archived_revision not in MIGRATIONS:
+        raise ValueError("Unsupported archived authority migration")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", schema):
+        raise ValueError("Invalid schema name")
+    statements = [
+        f'SET LOCAL search_path = "{schema}", public',
+        "SELECT pg_advisory_xact_lock(hashtextextended(current_database() || ':agent-memory-explicit-migration', 0))",
+        "DO $$ BEGIN IF (SELECT version_num FROM alembic_version) IS DISTINCT FROM "
+        f"'{MIGRATION}' THEN RAISE EXCEPTION 'Unsupported current authority migration'; END IF; END $$",
+    ]
+    archived_index = MIGRATIONS.index(archived_revision)
+    if archived_index < 3:
+        statements.append("ALTER TABLE am_operations DROP CONSTRAINT am_operations_successor_operation_id_fkey")
+    if archived_index < 2:
+        statements.append("DROP TABLE am_origin_reservations")
+        statements.append("ALTER TABLE am_claims DROP CONSTRAINT am_claims_extraction_operation_id_fkey")
+        statements.append("ALTER TABLE am_claims DROP CONSTRAINT am_claims_superseded_by_fkey")
+    if archived_index < 1:
+        statements.append("DROP TABLE am_relation_claims")
+    return ";\n".join(statements) + ";\n"

@@ -1,0 +1,37 @@
+{
+  "proof_layer": "Actual latest stable package against the three current leader receipts; read-only receipt load and in-process advisory native failure input. No leader file change, native trust change or uninstall/reinstall.",
+  "wheel_sha256": "84ba86ade65a208e4f8390fbec59910e72fcd95e86b35b3ba7700b904e24a72e",
+  "observations": {
+    "claude": {
+      "installed_state": "installed",
+      "strict": false,
+      "project_root": "/Users/namdoo/Developer/Aiproject/agent-memory-mcp",
+      "stable_interpreter": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/84ba86ade65a208e4f8390fbec59910e72fcd95e86b35b3ba7700b904e24a72e/venv/bin/python",
+      "stable_package_path": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/84ba86ade65a208e4f8390fbec59910e72fcd95e86b35b3ba7700b904e24a72e/venv/lib/python3.12/site-packages/agents_memory/hosts.py",
+      "stable_command_matches": true,
+      "oversized_input": {
+        "exit_code": 0,
+        "state": "degraded",
+        "code": "HOST_ENVELOPE_INVALID",
+        "stderr": ""
+      }
+    },
+    "codex": {
+      "installed_state": "installed",
+      "strict": false,
+      "project_root": "/Users/namdoo/Developer/Aiproject/agent-memory-mcp",
+      "stable_interpreter": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/84ba86ade65a208e4f8390fbec59910e72fcd95e86b35b3ba7700b904e24a72e/venv/bin/python",
+      "stable_package_path": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/84ba86ade65a208e4f8390fbec59910e72fcd95e86b35b3ba7700b904e24a72e/venv/lib/python3.12/site-packages/agents_memory/hosts.py",
+      "stable_command_matches": true
+    },
+    "omp": {
+      "installed_state": "installed",
+      "strict": false,
+      "project_root": "/Users/namdoo/Developer/Aiproject/agent-memory-mcp",
+      "stable_interpreter": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/84ba86ade65a208e4f8390fbec59910e72fcd95e86b35b3ba7700b904e24a72e/venv/bin/python",
+      "stable_package_path": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/84ba86ade65a208e4f8390fbec59910e72fcd95e86b35b3ba7700b904e24a72e/venv/lib/python3.12/site-packages/agents_memory/hosts.py",
+      "stable_command_matches": true
+    }
+  },
+  "not_yet_executed": "Owned leader receipt cutover is blocked by the active AF worker boundary and remains for the supported post-run operator stage. A strict native crash/timeout run after cutover is not claimed."
+}

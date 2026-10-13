@@ -1,0 +1,36 @@
+--- a/python/agent_flow/adapters/hosted.py
++++ b/python/agent_flow/adapters/hosted.py
+@@ -15,6 +15,7 @@
+ import hashlib
+ import json
+ import logging
++import os
+ import time
+ from collections.abc import Mapping, Sequence
+ from dataclasses import dataclass
+@@ -236,6 +237,17 @@
+     project_root: Path,
+     adapter: Adapter,
+ ) -> tuple[Distribution, ReviewExecution]:
++    raw_timeout = os.environ.get("AGENT_FLOW_REVIEW_TIMEOUT_S", "600")
++    try:
++        timeout_s = int(raw_timeout)
++    except ValueError:
++        raise WorktreeIsolationError(
++            "AGENT_FLOW_REVIEW_TIMEOUT_S must be an integer from 1 to 3600"
++        ) from None
++    if not 1 <= timeout_s <= 3600:
++        raise WorktreeIsolationError(
++            "AGENT_FLOW_REVIEW_TIMEOUT_S must be an integer from 1 to 3600"
++        )
+     started = time.monotonic()
+     review_input = _write_review_input_snapshot(
+         project_root,
+@@ -261,6 +273,7 @@
+     execution = run_distribution(
+         distribution,
+         project_root,
++        timeout_s=timeout_s,
+         config_root=adapter.config_root_or(project_root),
+     )
+     wall_s = time.monotonic() - started

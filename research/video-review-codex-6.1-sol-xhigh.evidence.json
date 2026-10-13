@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "purpose": "Independent native Codex full-video and portable OSS-memory adversarial review; no runner-authored substantive review.",
+  "argv": [
+    "codex",
+    "exec",
+    "--model",
+    "gpt-6.1-sol",
+    "-c",
+    "model_reasoning_effort=\"xhigh\"",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--ephemeral",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "-"
+  ],
+  "binary": {
+    "requested_absolute_binary_used": true,
+    "name": "codex",
+    "absolute_binary_path_published": false,
+    "version_observed_in_runtime_banner": "codex-cli 0.162.1"
+  },
+  "input": {
+    "path": "research/video-review-input.ko.md",
+    "bytes": 205168,
+    "sha256": "c046de5447908e18d0762a533058d49fe8df4699bff90ac3bdc78a9fb0b5db3b",
+    "expected_bytes": 205168,
+    "expected_sha256": "c046de5447908e18d0762a533058d49fe8df4699bff90ac3bdc78a9fb0b5db3b",
+    "verified_before_execution": true,
+    "transport": "stdin only; full unchanged UTF-8 bytes; no prefix, suffix, additional prompt, or summary",
+    "communicate_completed_with_full_input": true
+  },
+  "output": {
+    "path": "research/video-review-codex-6.1-sol-xhigh.ko.md",
+    "bytes": 26732,
+    "sha256": "67bed62334d1931a092ade70d36bd70ca898da2cb7db2c8a370bf32721af2edd",
+    "source": "native CLI stdout, unmodified bytes"
+  },
+  "execution": {
+    "start_utc": "2026-10-11T12:59:44.836342+00:00",
+    "end_utc": "2026-10-11T13:07:24.671981+00:00",
+    "duration_seconds": 459.848141542,
+    "deadline_seconds": 1800,
+    "exit_code": 0,
+    "timed_out": false,
+    "safe_error": null,
+    "failure_classification": null,
+    "native_success": true
+  },
+  "isolation": {
+    "cwd_initially_empty": true,
+    "separate_codex_home_mode": "0700",
+    "auth_copy_mode": "0600",
+    "auth_copy_only": true,
+    "existing_config_rules_sessions_memories_plugins_mcp_copied": false,
+    "isolated_os_home_and_xdg_paths": true,
+    "inherited_environment_policy": "Explicit minimal allowlist: HOME, CODEX_HOME, PATH, XDG_*_HOME, TMPDIR, LANG, TZ; no inherited provider/model/MCP variables",
+    "inherited_codex_openai_anthropic_provider_model_mcp_environment_removed": true,
+    "temporary_cwd_home_and_auth_copy_deleted": true,
+    "original_auth_config_user_files_modified": false,
+    "input_or_project_code_modified": false,
+    "fallback_or_substitution": false
+  },
+  "native_identity_and_effort": {
+    "source": "native stderr runtime banner only",
+    "observed": {
+      "model": "gpt-6.1-sol",
+      "provider": "openai",
+      "reasoning_effort": "xhigh"
+    },
+    "requested_model": "gpt-6.1-sol",
+    "requested_reasoning_effort": "xhigh",
+    "banner_matches_request": true,
+    "server_resolved_metadata_evidence_level": "CLI runtime banner, not independent server attestation",
+    "provider_internal_identity_or_effort_attestation": false,
+    "canonical_provider_model_source_proof_available": false,
+    "attestation_limitation": "Runtime banner is not cryptographic or provider-side identity/effort attestation; no external model/source lookup performed."
+  },
+  "stderr_observations": {
+    "full_stderr_retained_or_published": false,
+    "account_session_ids_workdir_or_prompt_echo_published": false,
+    "input_echo_removed_before_scanning": true,
+    "input_echo_occurrences_removed": 1,
+    "trace_scan_reliable": true,
+    "mcp_startup_no_servers_banner_observed": false,
+    "structural_marker_counts": {
+      "mcp_starting": 0,
+      "mcp_ready": 0,
+      "mcp_failed": 0,
+      "command_exec": 0,
+      "command_result": 0,
+      "external_tool": 0
+    },
+    "external_command_or_tool_calls_observed": false,
+    "observation_scope": "Prompt-excluded native stderr structural markers only; not a complete provider-side audit. Tool text and raw stderr are discarded."
+  }
+}

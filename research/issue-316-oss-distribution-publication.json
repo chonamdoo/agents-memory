@@ -1,0 +1,41 @@
+{
+  "repository": "chonamdoo/agent-flow",
+  "issueNumber": 316,
+  "commentId": 6106087372,
+  "commentUrl": "https://github.com/chonamdoo/agent-flow/issues/316#issuecomment-6106087372",
+  "author": "chonamdoo",
+  "createdAt": "2026-10-11T06:05:46Z",
+  "updatedAt": "2026-10-11T06:14:20Z",
+  "readbackVerifiedAt": "2026-10-11T06:14:21.919Z",
+  "publicationFile": "research/issue-316-oss-distribution.ko.md",
+  "bodyBytes": 37934,
+  "bodyCharacters": 25315,
+  "bodySha256": "06ba4f453289d497eb20f598c335b67e96288549af38624a65c053a84538f33c",
+  "readbackSha256": "06ba4f453289d497eb20f598c335b67e96288549af38624a65c053a84538f33c",
+  "exactBodyMatch": true,
+  "originalPublishedBodySha256": "f4796323497b64eba0819bffc4c42e38c43516edfedcd72171111151ab3ad7aa",
+  "nativeReviewFrozenHead": "a57c0c8a67df2814324e4e197dcd82faaff1c8b3",
+  "nativeParallelProofFile": "research/distribution-native-parallel-proof.json",
+  "latestPr": {
+    "observedAt": "2026-10-11T06:07:47.376Z",
+    "head": "5a9b6f6bf93913bb2a8504cada18756a3bc29bf3",
+    "base": "642d1792edf0b22bda2bb879ac65df145273dc19",
+    "state": "closed",
+    "merged": true,
+    "mergedAt": "2026-10-11T05:59:35Z",
+    "mergeCommitSha": "ccbc6cc2621256c89d25ce94f7d50d7709d379aa",
+    "labels": [
+      "phase-budget-accepted"
+    ],
+    "nativeReviewsRerunForLatestHead": false,
+    "latestDeltaInspectedByParent": true,
+    "deltaSourceFile": "research/distribution-pr334-concurrent-update.json"
+  },
+  "scope": {
+    "originalIssueBodyChanged": false,
+    "prChangedByThisTask": false,
+    "memoryProductImplemented": false,
+    "memoryProductDeployed": false,
+    "memoryProductBenchmarked": false
+  }
+}

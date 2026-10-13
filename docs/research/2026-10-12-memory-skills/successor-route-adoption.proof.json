@@ -1,0 +1,24 @@
+{
+  "started_at": "2026-10-12T12:32:35.221Z",
+  "finished_at": "2026-10-12T12:32:40.273Z",
+  "exit_code": 0,
+  "result": {
+    "route_revision": "38f1609ae94d2c2bacd713b5c2a012d4447e68c72ff95eb0b317b77e72431842",
+    "purposes": [
+      "extraction",
+      "embedding",
+      "consolidation",
+      "rerank",
+      "reflection"
+    ],
+    "approved": true,
+    "service_restart_required": true,
+    "inference_verified": false
+  },
+  "changed_model_configuration_keys": [],
+  "purposes_unchanged": true,
+  "limits": [
+    "Operator route adoption is explicit and requires restart; it is not inference proof.",
+    "Only personal synthetic deployment; PostgreSQL and generation processes preserved."
+  ]
+}

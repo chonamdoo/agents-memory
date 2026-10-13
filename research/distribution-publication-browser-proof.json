@@ -1,0 +1,15 @@
+{
+  "url": "https://github.com/chonamdoo/agent-flow/issues/316#issuecomment-6106087372",
+  "title": "프로젝트 메모리 파이프라인 조사·적대적 리뷰: 코어 도입 보류, 유한 분석 PoC 조건부 제안 (Jev/기존 에이전트) · Issue #316 · chonamdoo/agent-flow · GitHub",
+  "heading": "독립 OSS 제안 + 실제 Opus 5.5 / Codex 6.1 Sol xhigh 병렬 적대적 리뷰",
+  "comparisonHeading": "2. MCP냐 설치형이냐: 서로 다른 축이다",
+  "latestMergedCorrectionRendered": true,
+  "latestHeadRendered": true,
+  "nativeFixedHeadDisclosureRendered": true,
+  "literalCorrectionBoldMarkersRemoved": true,
+  "tableCount": 8,
+  "comparisonTableText": "안\t장점\t단점·영향\t적절한 환경\nA. agent가 stdio child로 DB/worker까지 띄우는 올인원 MCP\t시작이 간단하고 별도 listener가 없을 수 있음\tsession 종료/강제 kill, 복수 host의 중복 migration·worker, data-dir 충돌, accepted 작업의 복구·같은 UID 권한 문제\t단일 사용자·제한된 lifecycle을 정직하게 명시하고 복구/동시성 계약을 검증한 설치. “stdio” 자체가 금지되는 것은 아님\nB. 로컬 service+관리 CLI/UI만, MCP 없음\t운영/backup/승인 UX를 agent tool과 분리하기 쉬움\thosted chat agent가 CLI를 실행할 수 없음; 각 host의 shell/API wrapper 필요; direct DB CLI는 auth 우회 위험\t사내 전용 runner/일반 애플리케이션에서 shell/API 연동만 필요한 경우\nC. 공통 설치형 engine/service+관리 도구, MCP는 접속 adapter\tagent session과 DB/worker lifecycle 분리; 다중 agent·local/cloud가 같은 domain operation 사용\tinstaller·migration·운영·auth·host compatibility의 책임 증가\t회사/개인 공통 제품의 기본 방향. local HTTP 우선; 실제 stdio-only 소비자가 있을 때 thin shim 추가",
+  "verifiedAt": "2026-10-11T06:15:06.624Z",
+  "publicationSha256": "06ba4f453289d497eb20f598c335b67e96288549af38624a65c053a84538f33c",
+  "viewportScreenshotCaptured": true
+}

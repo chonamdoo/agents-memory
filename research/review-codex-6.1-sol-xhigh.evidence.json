@@ -1,0 +1,94 @@
+{
+  "successful": true,
+  "cli_path": "/Users/namdoo/.nvm/versions/node/v24.14.1/bin/codex",
+  "cli_version": "codex-cli 0.162.1",
+  "requested_args": [
+    "/Users/namdoo/.nvm/versions/node/v24.14.1/bin/codex",
+    "exec",
+    "--model",
+    "gpt-6.1-sol",
+    "-c",
+    "model_reasoning_effort=\"xhigh\"",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--ephemeral",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "-"
+  ],
+  "requested_model": "gpt-6.1-sol",
+  "requested_reasoning_effort": "xhigh",
+  "input_path": "research/review-input.ko.md",
+  "input_sha256": "0735cfb4c2fd2f2251acab3373f862d0e5c2d99e0191526edd5fa1def22f51d3",
+  "input_bytes": 183259,
+  "stdin_delivery": "entire frozen file, byte-for-byte, subprocess.run input bytes",
+  "start_utc": "2026-10-11T04:56:15.952221+00:00",
+  "end_utc": "2026-10-11T05:04:47.793868+00:00",
+  "duration_seconds": 511.853423667,
+  "exit_code": 0,
+  "failure": null,
+  "runtime_selection": {
+    "model": "gpt-6.1-sol",
+    "provider": "openai",
+    "reasoning_effort": "xhigh",
+    "banner_lines": [
+      "OpenAI Codex v0.162.1",
+      "model: gpt-6.1-sol",
+      "provider: openai",
+      "approval: never",
+      "sandbox: read-only",
+      "reasoning effort: xhigh",
+      "reasoning summaries: none"
+    ]
+  },
+  "identity_limitations": "CLI startup selection evidence only. No provider-side canonical model identity attestation was returned; no model self-identification used as proof.",
+  "usage": {
+    "reported_label": "tokens used",
+    "reported_value": 71109,
+    "thinking_tokens": null,
+    "cost": null,
+    "limitations": "CLI aggregate tokens-used counter only; no input/output/thinking breakdown or billed cost attestation."
+  },
+  "tool_calls": {
+    "observed_count": 0,
+    "observed_invocations": [],
+    "observation": "Native non-JSON runtime log after echoed prompt contained only codex commentary/final blocks and tokens-used footer; no exec/tool/MCP invocation markers observed. Not a provider-side complete tool-call attestation.",
+    "unexpected_private_read_observed": false
+  },
+  "isolation": {
+    "empty_temporary_cwd": true,
+    "scratch_codex_home_mode": "0700",
+    "auth_copy_mode": "0600",
+    "only_auth_copied": true,
+    "config_rules_memory_sessions_copied": false,
+    "scratch_removed": true,
+    "other_reviewer_output_read": false
+  },
+  "output": {
+    "path": "research/review-codex-6.1-sol-xhigh.ko.md",
+    "characters": 10155,
+    "sha256": "a5181b516b79a784eac857a78032d9f93b0ad7325a0847076402cfc96a080d91",
+    "native_text_unmodified": true,
+    "wrapper_handling": "stdout already contained final review only; preserved verbatim including line breaks."
+  },
+  "raw_runtime_logs_saved": false,
+  "raw_log_retention_note": "Raw stderr includes echoed public prompt and session identifier; intentionally not persisted or published. Only sanitized banner and usage evidence retained.",
+  "top3_findings": [
+    {
+      "id": "R01",
+      "priority": "P1",
+      "summary": "Agent 위임 credential과 실제 인간 승인 capability 분리 및 content digest/revision/scope 결합이 부족하다."
+    },
+    {
+      "id": "R02",
+      "priority": "P1",
+      "summary": "commit 전 epoch 재확인만으로 철회 race를 막지 못하며 atomic CAS/guard lock와 lease fencing이 필요하다."
+    },
+    {
+      "id": "R03",
+      "priority": "P1",
+      "summary": "queryable/partial의 event·chunk·projection·generation 판정 단위와 coverage/watermark 계약이 불명확하다."
+    }
+  ]
+}

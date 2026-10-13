@@ -1,12 +1,12 @@
 # 요구사항·완료 계약
 
-상태: 구현 전 요구 계약. 아래 항목은 완료 주장이나 실행 결과가 아니다. 검증 결과는 실제 실행 이후 별도 acceptance 기록으로 연결한다.
+상태: 제품 요구 계약. 구현의 실제 runtime/native/회귀 증거와 미관측·운영 외부·trial pending 경계는 [검증 기록](verification.ko.md)에서 항목별로 확인한다. 요구 표 자체를 완료 주장으로 사용하지 않는다.
 
 ## 사용자 요구
 
 | ID | 요구 | 완료 관측·범위 |
 |---|---|---|
-| U01 | 독립 agent-memory 오픈소스 | Agent Flow 자체 수정 없이 독립 설치·실행·패키징 |
+| U01 | 독립 agents-memory 오픈소스 | Agent Flow 자체 수정 없이 독립 설치·실행·패키징 |
 | U02 | Agent Flow에서도 사용 | 같은 core API·adapter를 실제 AF workflow에서 소비 |
 | U03 | Claude Code에서도 사용 | 설치된 native Claude의 실제 MCP 호출과 지원 adapter 경로 |
 | U04 | Codex에서도 사용 | 설치된 native Codex의 실제 MCP 호출과 지원 adapter 경로 |

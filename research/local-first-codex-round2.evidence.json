@@ -1,0 +1,74 @@
+{
+  "round": 2,
+  "argv": [
+    "/Users/namdoo/.nvm/versions/node/v24.14.1/bin/codex",
+    "exec",
+    "--model",
+    "gpt-6.1-sol",
+    "-c",
+    "model_reasoning_effort=\"xhigh\"",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--ephemeral",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "-"
+  ],
+  "input": {
+    "path": "research/local-first-design-round2-input.ko.md",
+    "bytes": 213872,
+    "sha256": "514b2db6201d030637fbd8676c7d9f8c641ea5b25628c4791706036ae58d9fb7"
+  },
+  "output": {
+    "path": "research/local-first-codex-round2.ko.md",
+    "bytes": 24882,
+    "sha256": "64de9698db4c3a4fe2a31a645178e03d4e6f981a93206fcbb13676612e31d69c"
+  },
+  "process_start_utc": "2026-10-11T16:51:27.599Z",
+  "process_end_utc": "2026-10-11T17:00:54.484Z",
+  "exit_code": 0,
+  "signal": null,
+  "observed_banner": {
+    "model": "gpt-6.1-sol",
+    "provider": "openai",
+    "reasoning_effort": "xhigh"
+  },
+  "configured_reasoning_effort": "xhigh",
+  "actual_server_reasoning_effort": "unknown",
+  "provider_attestation": "CLI banner only; not cryptographic provider attestation",
+  "tool_call_markers_excluding_input": [],
+  "tool_call_verification": "No CLI execution/tool markers observed after excluding the source packet",
+  "security": {
+    "fresh_empty_cwd": true,
+    "private_directories_mode": "0700",
+    "auth_copy_mode": "0600",
+    "auth_only": true,
+    "environment_allowlist": [
+      "HOME",
+      "CODEX_HOME",
+      "PATH",
+      "XDG_CONFIG_HOME",
+      "XDG_CACHE_HOME",
+      "XDG_STATE_HOME",
+      "TMPDIR",
+      "LANG",
+      "TZ"
+    ],
+    "sandbox": "read-only",
+    "ignore_user_config": true,
+    "ignore_rules": true,
+    "ephemeral": true
+  },
+  "peer_rebuttal_observed": {
+    "explicit_peer": "Opus",
+    "acceptance_and_rebuttal_table": true,
+    "own_round_one_revisions_explicit": true,
+    "verdict": "Direct Python semantic engine; Hindsight excluded as runtime engine",
+    "remaining_disagreements": [
+      "Hindsight project-bank zero-extension barrier does not prove input eligibility or fenced publication",
+      "PG authority and non-Git shared approval versus Git-default authority",
+      "Resume/fork receipts cannot prove preserved model-input generation; strict gate requires observation"
+    ]
+  }
+}

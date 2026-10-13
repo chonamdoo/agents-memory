@@ -1,0 +1,38 @@
+{
+  "round": 1,
+  "created_at": "2026-10-11T16:30:10.595Z",
+  "shared_input": "research/local-first-design-round1-v2-input.ko.md",
+  "bytes": 90057,
+  "sha256": "4bfcddf22a42ce9ff8976dc1b0ef05747bb2e9f0c100af20e2ebdb2756eb27bc",
+  "sources": [
+    {
+      "path": "research/unified-memory-pipeline-proposal.ko.md",
+      "bytes": 32323,
+      "sha256": "7ab1f79f0b96df99dfc3fe35023706f440dca782f89c71cec814760d77ddfc28"
+    },
+    {
+      "path": "research/local-first-invocation-contract.ko.md",
+      "bytes": 14224,
+      "sha256": "faf33330d15728808e6941215613d2db57495f48dd6b28f7e6acc5ee7d5f1543"
+    },
+    {
+      "path": "research/local-first-host-evidence.ko.md",
+      "bytes": 15959,
+      "sha256": "3054a40e8c494e052005721b10620fee619c6d6256a7d42e1defafd9b7f7ce66"
+    },
+    {
+      "path": "research/local-first-engine-evidence.ko.md",
+      "bytes": 16871,
+      "sha256": "1cfe5b35847927ca9d8db1599e81abbd35d1e21a7f56d8034a6b4d7bbd39e69f"
+    },
+    {
+      "path": "research/local-first-python-mcp-feasibility.ko.md",
+      "bytes": 5853,
+      "sha256": "09a58e7a0c9eb04de5aef277301bed329bd66a1bdb8a06f16e3e6f4d10ce0ea0"
+    }
+  ],
+  "source_digest_is_not_runtime_or_provider_attestation": true,
+  "open_source_updates_shared_in_round2": true,
+  "supersedes_unexecuted_input": "research/local-first-design-round1-input.ko.md",
+  "execution_scope": "AgentFlow latest project installation + final-design local full implementation; cloud not now"
+}

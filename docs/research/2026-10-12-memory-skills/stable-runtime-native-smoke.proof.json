@@ -1,0 +1,123 @@
+{
+  "proof_layer": "actual native Codex CLI and TextContent MCP results; authenticated plain stdio, not installed leader receipt",
+  "wheel_sha256": "afd0b5ee427da2a7509ce7d191d04eb52c15cdc8501d73477c58da9bf495ec6c",
+  "package_validation": {
+    "module_paths": {
+      "agents_memory.cli": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/afd0b5ee427da2a7509ce7d191d04eb52c15cdc8501d73477c58da9bf495ec6c/venv/lib/python3.12/site-packages/agents_memory/cli.py",
+      "agents_memory.hosts": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/afd0b5ee427da2a7509ce7d191d04eb52c15cdc8501d73477c58da9bf495ec6c/venv/lib/python3.12/site-packages/agents_memory/hosts.py",
+      "agents_memory.models": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/afd0b5ee427da2a7509ce7d191d04eb52c15cdc8501d73477c58da9bf495ec6c/venv/lib/python3.12/site-packages/agents_memory/models.py",
+      "agents_memory.semantic": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/afd0b5ee427da2a7509ce7d191d04eb52c15cdc8501d73477c58da9bf495ec6c/venv/lib/python3.12/site-packages/agents_memory/semantic.py",
+      "agents_memory.semantic_contract": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/afd0b5ee427da2a7509ce7d191d04eb52c15cdc8501d73477c58da9bf495ec6c/venv/lib/python3.12/site-packages/agents_memory/semantic_contract.py",
+      "agents_memory.store": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/afd0b5ee427da2a7509ce7d191d04eb52c15cdc8501d73477c58da9bf495ec6c/venv/lib/python3.12/site-packages/agents_memory/store.py"
+    },
+    "semantic_revision": "d42da38effe7c83029ac9e691e94188cc64d6b05d5b5e936e1b1229b5b540463",
+    "embedding_revision": "5746aa946889325cd26d84aafb3e1ac05ae4fccba400bfc6597431b26a1ac13a",
+    "validated_actual_artifacts": true,
+    "worker_import_path_absent": true
+  },
+  "native_exit_code": 0,
+  "duration_seconds": 23.199,
+  "cwd": "/Users/namdoo/.agent-flow/worktrees/agent-memory-mcp-97e899f21134/feat-agents-memory-resume",
+  "requested_model": "gpt-6.1-sol",
+  "requested_effort": "xhigh",
+  "served_model_effort_exposed": false,
+  "stderr_present": false,
+  "tools": [
+    {
+      "name": "memory_inspect",
+      "arguments": {
+        "binding_id": "binding_5a89f574d8444043a01f7c3115f5c160",
+        "ref": "source_f41bc3195903424fb387c27c93bbc1f0"
+      },
+      "status": "completed",
+      "error": null,
+      "structured_content": null,
+      "content_items": 1
+    },
+    {
+      "name": "memory_inspect",
+      "arguments": {
+        "binding_id": "binding_5a89f574d8444043a01f7c3115f5c160",
+        "ref": "claim_a076988959f34a48854e6806ff2027db"
+      },
+      "status": "completed",
+      "error": null,
+      "structured_content": null,
+      "content_items": 1
+    },
+    {
+      "name": "memory_inspect",
+      "arguments": {
+        "binding_id": "binding_5a89f574d8444043a01f7c3115f5c160",
+        "ref": "reflection_9544ce2314504c8f92999afc6d75e579"
+      },
+      "status": "completed",
+      "error": null,
+      "structured_content": null,
+      "content_items": 1
+    }
+  ],
+  "observed_synthetic_results": {
+    "source_f41bc3195903424fb387c27c93bbc1f0": {
+      "id": "source_f41bc3195903424fb387c27c93bbc1f0",
+      "kind": "source",
+      "epoch": 343,
+      "state": "retracted",
+      "revision": 2,
+      "snapshot": null,
+      "speaker": "human"
+    },
+    "claim_a076988959f34a48854e6806ff2027db": {
+      "id": "claim_a076988959f34a48854e6806ff2027db",
+      "kind": "claim",
+      "epoch": 343,
+      "state": "retracted"
+    },
+    "reflection_9544ce2314504c8f92999afc6d75e579": {
+      "id": "reflection_9544ce2314504c8f92999afc6d75e579",
+      "kind": "reflection",
+      "epoch": 343,
+      "state": "active",
+      "sentences": [
+        {
+          "text": "인용 원문의 시간·작성자 근거입니다.",
+          "claim_ids": [
+            "claim_3fee42a858d945f39005f3c32635f11a"
+          ],
+          "source_provenance": [
+            {
+              "source_id": "source_105a427aa1b242beacf6683e19cc0e63",
+              "source_revision": 1,
+              "source_speaker": "human",
+              "source_event_time": "2020-01-02T00:00:00Z",
+              "source_recorded_at": "2026-10-12T12:38:27.518664Z"
+            }
+          ]
+        },
+        {
+          "text": "인용 원문의 시간·작성자 근거입니다.",
+          "claim_ids": [
+            "claim_a6a8112db2a84e53aab8be32e019f330"
+          ],
+          "source_provenance": [
+            {
+              "source_id": "source_272809b310b24b94b1e9764fa1fc50e7",
+              "source_revision": 1,
+              "source_speaker": "human",
+              "source_event_time": null,
+              "source_recorded_at": "2026-10-12T12:39:06.324532Z"
+            }
+          ]
+        }
+      ],
+      "partial": false,
+      "candidate": true
+    }
+  },
+  "limitations": [
+    "Per-invocation selected-tool approval is not permanent workspace or hook trust.",
+    "Existing leader receipts still use worker interpreter; protected leader cutover has not executed.",
+    "No final provider-input/compliance or company headless/egress approval.",
+    "Private immutable runtime install, not registry or hosted MCP deployment."
+  ]
+}

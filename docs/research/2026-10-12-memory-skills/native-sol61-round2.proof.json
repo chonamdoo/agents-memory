@@ -1,0 +1,70 @@
+{
+  "argv": [
+    "/Users/namdoo/.nvm/versions/node/v24.14.1/bin/codex",
+    "exec",
+    "--model",
+    "gpt-6.1-sol",
+    "-c",
+    "model_reasoning_effort=\"xhigh\"",
+    "-c",
+    "mcp_servers={}",
+    "--ephemeral",
+    "--json",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "-"
+  ],
+  "cwd": "/Users/namdoo/Developer/Aiproject/agent-memory-mcp",
+  "stdin": {
+    "source": "local://agents-memory-skills-round2-evidence.ko.md",
+    "encoding": "UTF-8",
+    "bytes": 79277,
+    "sha256": "0c4377976ea082438b887a0f48cd295578603c27a1d5fae5df1da3462b88b553",
+    "delivery": "native process stdin; exact full contents, no prefix"
+  },
+  "configured_model": "gpt-6.1-sol",
+  "configured_reasoning_effort": "xhigh",
+  "observed_model": null,
+  "observed_reasoning_effort": null,
+  "model_observations": [],
+  "effort_observations": [],
+  "observation_limit": "JSONL contains no model or effort metadata; configured values are evidenced only by argv. No claim of server-side model identity.",
+  "start_utc": "2026-10-12T11:26:22.864832+00:00",
+  "end_utc": "2026-10-12T11:32:04.358016+00:00",
+  "duration_seconds": 341.496415334,
+  "deadline_seconds": 1800,
+  "exit_code": 0,
+  "timed_out": false,
+  "event_counts": {
+    "thread.started": 1,
+    "turn.started": 1,
+    "item.completed": 1,
+    "turn.completed": 1
+  },
+  "item_type_counts": {
+    "agent_message": 1
+  },
+  "model_origin_tool_event_count": 0,
+  "usage_scope": "whole native CLI call, not memory startup overhead",
+  "usage": [
+    {
+      "input_tokens": 47237,
+      "cached_input_tokens": 13184,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 8421,
+      "reasoning_output_tokens": 5032
+    }
+  ],
+  "jsonl_parse_errors": 0,
+  "stdout_bytes": 14497,
+  "stderr_bytes": 0,
+  "stderr": "",
+  "final": {
+    "source": "single item.completed agent_message text, unchanged",
+    "path": "local://agents-memory-sol61-round2.ko.md",
+    "bytes": 14046,
+    "sha256": "3ec42b401d88d83c7c2bdbc697e9c866b87b4ac2bbdcdcee32d611b4a43beb2f"
+  },
+  "sanitization": "No hidden/encrypted reasoning, authentication, environment values, or raw JSONL retained in proof; usage reasoning token count is aggregate only."
+}

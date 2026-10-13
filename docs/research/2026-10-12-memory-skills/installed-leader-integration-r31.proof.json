@@ -1,0 +1,483 @@
+{
+  "proof_layer": "Immutable stable package and receipt-owned leader host cutover; actual native read-only synthetic consumer calls",
+  "observed_utc": "2026-10-13T10:33:38.662015+00:00",
+  "package": {
+    "wheel_sha256": "3ad2fb0a4627eee3ca62a66c5d5508d6af55470dc457192dce78e07728332172",
+    "python": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/3ad2fb0a4627eee3ca62a66c5d5508d6af55470dc457192dce78e07728332172/venv/bin/python",
+    "build_command": "uv build --wheel",
+    "dependency_command": "UV_PROJECT_ENVIRONMENT=<hash>/venv uv sync --locked --offline --extra local-models --no-install-project --no-dev",
+    "wheel_install": "uv pip install --offline --no-deps --python <hash>/venv/bin/python <wheel>",
+    "installed_source_identical": true,
+    "changed_package_modules_from_R30": [
+      "hosts.py",
+      "private_io.py"
+    ],
+    "tests_not_rerun_in_this_session": true
+  },
+  "route": {
+    "semantic_contract_digest_before": "9ef2866ed43795fe10b537fb5e000f7bc0357eb675aa7d87bae7c4e02062c7df",
+    "semantic_contract_digest_after": "9ef2866ed43795fe10b537fb5e000f7bc0357eb675aa7d87bae7c4e02062c7df",
+    "route_revision": "9e01d6468d901c3f42c0f90b21db535dee25894572450ba7e2290dadab01ef59",
+    "reapproval_required": false
+  },
+  "service": {
+    "name": "AgentsMemoryMcpStable20261013R31",
+    "pid": 96967,
+    "cwd": "/private/tmp",
+    "listen": "127.0.0.1:8768",
+    "R30_pid_9379_stopped": true,
+    "doctor_exit": 0,
+    "stats_exit": 0,
+    "stats_epoch_at_start": 421,
+    "pending": 0,
+    "blocked": 0,
+    "failed": 6,
+    "dlq": 6,
+    "stale_index_claims": 0
+  },
+  "cutover": {
+    "steps": [
+      {
+        "action": "uninstall",
+        "host": "claude",
+        "exit": 0
+      },
+      {
+        "action": "uninstall",
+        "host": "codex",
+        "exit": 0
+      },
+      {
+        "action": "uninstall",
+        "host": "omp",
+        "exit": 0
+      },
+      {
+        "action": "install",
+        "host": "claude",
+        "exit": 0
+      },
+      {
+        "action": "install",
+        "host": "codex",
+        "exit": 0
+      },
+      {
+        "action": "install",
+        "host": "omp",
+        "exit": 0
+      }
+    ],
+    "first_install_failure": {
+      "host": "claude",
+      "error": "AUTH_DENIED",
+      "effect": "not_started",
+      "reason": "default pre-restore operator credential; explicit operator-after-restore.token used for successful installations"
+    },
+    "non_owned_before_hashes": {
+      "claude_settings_json_bytes": "847053964160e3c57bc92eb7a9174469c8e11bd6964378ff2d0f7b8c400c9d25",
+      "claude_local_unowned": "0cbcae5314557c56e57b28e180f747b18ed858897d7489bcfc7e7ab3c58c6ac6",
+      "codex_hooks_unowned": "d872ec2e97a1718100bf6ce68ece3283cf939e51204d051f73a8926ec315c51c",
+      "codex_toml_unowned": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "omp_mcp_unowned": "139f0a6d5883f3caadbca38e6cbcc1d39ffcbff19c43fc17f5d6163673021b5e",
+      "omp_af_extension_bytes": "daba8bc2cf4dac96ae1c076b37d755e468cc5617a01088e2c31f423812b7ac59",
+      "claude_native_leader_other_keys": "fda70db0b7e62f791cd9cf65cd0bd363698c303d33b583c2c07706a01c3d5760",
+      "claude_native_top_keys": "7b91ad484fc1d19a948e3eab40693fe3335d5b0ef9cc8f12b0bc6acd83f7b76a",
+      "claude_native_other_projects": "39f409f4219784a85f7594962d84ecf032f8def68d3f77a1bcb3872bae18c404"
+    },
+    "non_owned_after_hashes": {
+      "claude_settings_json_bytes": "847053964160e3c57bc92eb7a9174469c8e11bd6964378ff2d0f7b8c400c9d25",
+      "claude_local_unowned": "0cbcae5314557c56e57b28e180f747b18ed858897d7489bcfc7e7ab3c58c6ac6",
+      "codex_hooks_unowned": "d872ec2e97a1718100bf6ce68ece3283cf939e51204d051f73a8926ec315c51c",
+      "codex_toml_unowned": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "omp_mcp_unowned": "139f0a6d5883f3caadbca38e6cbcc1d39ffcbff19c43fc17f5d6163673021b5e",
+      "omp_af_extension_bytes": "daba8bc2cf4dac96ae1c076b37d755e468cc5617a01088e2c31f423812b7ac59",
+      "claude_native_leader_other_keys": "fda70db0b7e62f791cd9cf65cd0bd363698c303d33b583c2c07706a01c3d5760",
+      "claude_native_top_keys": "7b91ad484fc1d19a948e3eab40693fe3335d5b0ef9cc8f12b0bc6acd83f7b76a",
+      "claude_native_other_projects": "39f409f4219784a85f7594962d84ecf032f8def68d3f77a1bcb3872bae18c404"
+    },
+    "preservation": {
+      "claude_settings_json_bytes": true,
+      "claude_local_unowned": true,
+      "codex_hooks_unowned": true,
+      "codex_toml_unowned": true,
+      "omp_mcp_unowned": true,
+      "omp_af_extension_bytes": true,
+      "claude_native_leader_other_keys": true,
+      "claude_native_top_keys": true,
+      "claude_native_other_projects": true
+    },
+    "owned_commands_after": {
+      "claude_local": [
+        "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/3ad2fb0a4627eee3ca62a66c5d5508d6af55470dc457192dce78e07728332172/venv/bin/python"
+      ],
+      "codex_hooks": [
+        "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/3ad2fb0a4627eee3ca62a66c5d5508d6af55470dc457192dce78e07728332172/venv/bin/python -m agents_memory.cli host-hook --receipt /Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/authority/host-adapters/a619cfec45525acaf01f72937ea1605ca9c4ada1617ca5f90379acc814cf9291/codex.json"
+      ],
+      "codex_toml": [
+        "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/3ad2fb0a4627eee3ca62a66c5d5508d6af55470dc457192dce78e07728332172/venv/bin/python"
+      ],
+      "omp_mcp": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/3ad2fb0a4627eee3ca62a66c5d5508d6af55470dc457192dce78e07728332172/venv/bin/python",
+      "claude_native_mcp": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/3ad2fb0a4627eee3ca62a66c5d5508d6af55470dc457192dce78e07728332172/venv/bin/python",
+      "omp_extension_python": [
+        "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/3ad2fb0a4627eee3ca62a66c5d5508d6af55470dc457192dce78e07728332172/venv/bin/python"
+      ]
+    },
+    "strict": false,
+    "prompt_recall": false,
+    "native_trust_changed": false
+  },
+  "omp_lifecycle": {
+    "current_pane": "w18:p9",
+    "current_pid_96114_not_stopped": true,
+    "other_live_omp_cwds": [
+      "baro",
+      "개인사업자",
+      "cuefinder",
+      "herdr-tui"
+    ],
+    "unrelated_sessions_not_restarted": true,
+    "previous_leader_pid_2009_and_host_stdio_pid_2030_absent_at_later_process_inventory": true,
+    "fresh_leader_omp_invocation": "--print --mode json; installed extension discovered, not explicit replacement extension; ephemeral native consumer"
+  },
+  "initial_parallel_smoke": {
+    "omp": "memory_context MODEL_BUSY/not_started twice; memory_inspect succeeded",
+    "codex": "memory_context MODEL_BUSY/not_started; memory_inspect succeeded",
+    "claude": "memory_context and memory_inspect succeeded",
+    "failure_artifacts_preserved": {
+      "omp": {
+        "stdout.jsonl": {
+          "path": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/update-checkpoint-20261012/native-r31-omp.stdout.jsonl",
+          "sha256": "0e49f72af26be0b25b986c143ec4903cb2bda7aaa94205d54db99ad49a728542"
+        },
+        "stderr.txt": {
+          "path": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/update-checkpoint-20261012/native-r31-omp.stderr.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "claude": {
+        "stdout.jsonl": {
+          "path": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/update-checkpoint-20261012/native-r31-claude.stdout.jsonl",
+          "sha256": "e3c75b14cba3d3c98ddd554f440c627962cbe529def268497aca0f2ab3ecfac0"
+        },
+        "stderr.txt": {
+          "path": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/update-checkpoint-20261012/native-r31-claude.stderr.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "codex": {
+        "stdout.jsonl": {
+          "path": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/update-checkpoint-20261012/native-r31-codex.stdout.jsonl",
+          "sha256": "9dd4ff6fa73675f7110f671cb3a61bbe6de4aa39b72299fdf048f891e776c9a7"
+        },
+        "stderr.txt": {
+          "path": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/update-checkpoint-20261012/native-r31-codex.stderr.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "subsequent_OMP_Codex_runs": "sequential, no service code or retry feature change"
+  },
+  "native_smoke": [
+    {
+      "host": "omp",
+      "exit_code": 0,
+      "seconds": 19.108,
+      "cwd": "/Users/namdoo/Developer/Aiproject/agent-memory-mcp",
+      "argv": [
+        "omp",
+        "--print",
+        "--mode",
+        "json",
+        "--model",
+        "openai-codex/gpt-6.1-sol",
+        "--thinking",
+        "xhigh",
+        "--no-session",
+        "--no-title",
+        "--no-lsp",
+        "--no-pty",
+        "--no-skills",
+        "--no-rules",
+        "--no-tools",
+        "--max-time",
+        "300",
+        "Actual personal synthetic memory consumer smoke only. Use only memory_context and memory_inspect MCP tools. No shell, files, writes, record, feedback, approvals or task tools. Call memory_context with binding_id binding_5a89f574d8444043a01f7c3115f5c160, mode recall, query \"IntegR30 loopback port\", max_bytes 2400, limit 3. Then call memory_inspect with the same binding_id and ref claim_b159614a725e4aac894706c906eec5c4. Report the actual statement, source speaker and approved_rule from the tool result. No claim that candidates are approved rules."
+      ],
+      "observed_models": [
+        "gpt-6.1-sol"
+      ],
+      "tools": [
+        "mcp__agents_memory_memory_context",
+        "mcp__agents_memory_memory_inspect"
+      ],
+      "tool_error": false,
+      "context": {
+        "status": "partial",
+        "refs": [
+          "claim_b159614a725e4aac894706c906eec5c4",
+          "claim_0a651866f4e3492e903c559d6e5f0785"
+        ],
+        "retrieval_arms": {
+          "claim_b159614a725e4aac894706c906eec5c4": [
+            "lexical",
+            "vector"
+          ],
+          "claim_0a651866f4e3492e903c559d6e5f0785": [
+            "vector"
+          ]
+        },
+        "pipeline": {
+          "pending": 0,
+          "blocked": 0,
+          "failed": 6,
+          "dlq": 6,
+          "stale_index_claims": 0
+        }
+      },
+      "inspect": {
+        "id": "claim_b159614a725e4aac894706c906eec5c4",
+        "state": "active",
+        "statement": "the agents-memory integration smoke service listens only on loopback port 8768 while the stable package R30 runs, unless the operator changes the deployment port",
+        "evidence": [
+          {
+            "source_id": "source_7cc2c898d9c74517b6400d31acb5a8d9",
+            "source_revision": 1,
+            "source_speaker": "agent_note",
+            "source_event_time": null,
+            "source_recorded_at": "2026-10-13T04:10:57.239564Z",
+            "byte_start": 0,
+            "byte_end": 187,
+            "quote": "IntegR30 synthetic fact: the agents-memory integration smoke service listens only on loopback port 8768 while the stable package R30 runs, unless the operator changes the deployment port."
+          },
+          {
+            "source_id": "source_7cc2c898d9c74517b6400d31acb5a8d9",
+            "source_revision": 1,
+            "source_speaker": "agent_note",
+            "source_event_time": null,
+            "source_recorded_at": "2026-10-13T04:10:57.239564Z",
+            "byte_start": 188,
+            "byte_end": 237,
+            "quote": "This is a personal synthetic fixture, not a rule."
+          }
+        ],
+        "approved_rule_field_present": false
+      },
+      "approved_rules": [],
+      "stderr_present": false,
+      "private_artifacts": {
+        "stdout.jsonl": {
+          "path": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/update-checkpoint-20261012/native-r31-serial/native-r31-omp.stdout.jsonl",
+          "sha256": "252912b3247ee2b33c629e4731a1fcfacd9babf88dff67b2cbb0352056607eb4"
+        },
+        "stderr.txt": {
+          "path": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/update-checkpoint-20261012/native-r31-serial/native-r31-omp.stderr.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    {
+      "host": "claude",
+      "exit_code": 0,
+      "seconds": 50.929,
+      "cwd": "/Users/namdoo/Developer/Aiproject/agent-memory-mcp",
+      "argv": [
+        "claude",
+        "--print",
+        "--model",
+        "claude-opus-5-5",
+        "--effort",
+        "xhigh",
+        "--no-session-persistence",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--tools",
+        "",
+        "--allowedTools",
+        "mcp__agents-memory__memory_context,mcp__agents-memory__memory_inspect",
+        "--permission-prompts",
+        "none",
+        "--disable-slash-commands"
+      ],
+      "observed_models": [
+        "claude-opus-5-5"
+      ],
+      "tools": [
+        "mcp__agents-memory__memory_context",
+        "mcp__agents-memory__memory_inspect"
+      ],
+      "tool_error": false,
+      "context": {
+        "status": "partial",
+        "refs": [
+          "claim_b159614a725e4aac894706c906eec5c4",
+          "claim_0a651866f4e3492e903c559d6e5f0785"
+        ],
+        "retrieval_arms": {
+          "claim_b159614a725e4aac894706c906eec5c4": [
+            "lexical",
+            "vector"
+          ],
+          "claim_0a651866f4e3492e903c559d6e5f0785": [
+            "vector"
+          ]
+        },
+        "pipeline": {
+          "pending": 0,
+          "blocked": 0,
+          "failed": 6,
+          "dlq": 6,
+          "stale_index_claims": 0
+        }
+      },
+      "inspect": {
+        "id": "claim_b159614a725e4aac894706c906eec5c4",
+        "state": "active",
+        "statement": "the agents-memory integration smoke service listens only on loopback port 8768 while the stable package R30 runs, unless the operator changes the deployment port",
+        "evidence": [
+          {
+            "source_id": "source_7cc2c898d9c74517b6400d31acb5a8d9",
+            "source_revision": 1,
+            "source_speaker": "agent_note",
+            "source_event_time": null,
+            "source_recorded_at": "2026-10-13T04:10:57.239564Z",
+            "byte_start": 0,
+            "byte_end": 187,
+            "quote": "IntegR30 synthetic fact: the agents-memory integration smoke service listens only on loopback port 8768 while the stable package R30 runs, unless the operator changes the deployment port."
+          },
+          {
+            "source_id": "source_7cc2c898d9c74517b6400d31acb5a8d9",
+            "source_revision": 1,
+            "source_speaker": "agent_note",
+            "source_event_time": null,
+            "source_recorded_at": "2026-10-13T04:10:57.239564Z",
+            "byte_start": 188,
+            "byte_end": 237,
+            "quote": "This is a personal synthetic fixture, not a rule."
+          }
+        ],
+        "approved_rule_field_present": false
+      },
+      "approved_rules": [],
+      "stderr_present": false,
+      "private_artifacts": {
+        "stdout.jsonl": {
+          "path": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/update-checkpoint-20261012/native-r31-claude.stdout.jsonl",
+          "sha256": "e3c75b14cba3d3c98ddd554f440c627962cbe529def268497aca0f2ab3ecfac0"
+        },
+        "stderr.txt": {
+          "path": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/update-checkpoint-20261012/native-r31-claude.stderr.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    {
+      "host": "codex",
+      "exit_code": 0,
+      "seconds": 26.874,
+      "cwd": "/Users/namdoo/Developer/Aiproject/agent-memory-mcp",
+      "argv": [
+        "codex",
+        "exec",
+        "--model",
+        "gpt-6.1-sol",
+        "-c",
+        "model_reasoning_effort=\"xhigh\"",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--ephemeral",
+        "--json",
+        "--sandbox",
+        "read-only",
+        "-c",
+        "mcp_servers.agents-memory.command=\"/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/packages/3ad2fb0a4627eee3ca62a66c5d5508d6af55470dc457192dce78e07728332172/venv/bin/python\"",
+        "-c",
+        "mcp_servers.agents-memory.args=[\"-m\", \"agents_memory.cli\", \"host-stdio\", \"--receipt\", \"/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/authority/host-adapters/a619cfec45525acaf01f72937ea1605ca9c4ada1617ca5f90379acc814cf9291/codex.json\"]",
+        "-c",
+        "mcp_servers.agents-memory.tools.memory_context.approval_mode=\"approve\"",
+        "-c",
+        "mcp_servers.agents-memory.tools.memory_inspect.approval_mode=\"approve\"",
+        "-"
+      ],
+      "observed_models": [],
+      "tools": [
+        "memory_context",
+        "memory_inspect"
+      ],
+      "tool_error": false,
+      "context": {
+        "status": "partial",
+        "refs": [
+          "claim_b159614a725e4aac894706c906eec5c4",
+          "claim_0a651866f4e3492e903c559d6e5f0785"
+        ],
+        "retrieval_arms": {
+          "claim_b159614a725e4aac894706c906eec5c4": [
+            "lexical",
+            "vector"
+          ],
+          "claim_0a651866f4e3492e903c559d6e5f0785": [
+            "vector"
+          ]
+        },
+        "pipeline": {
+          "pending": 0,
+          "blocked": 0,
+          "failed": 6,
+          "dlq": 6,
+          "stale_index_claims": 0
+        }
+      },
+      "inspect": {
+        "id": "claim_b159614a725e4aac894706c906eec5c4",
+        "state": "active",
+        "statement": "the agents-memory integration smoke service listens only on loopback port 8768 while the stable package R30 runs, unless the operator changes the deployment port",
+        "evidence": [
+          {
+            "source_id": "source_7cc2c898d9c74517b6400d31acb5a8d9",
+            "source_revision": 1,
+            "source_speaker": "agent_note",
+            "source_event_time": null,
+            "source_recorded_at": "2026-10-13T04:10:57.239564Z",
+            "byte_start": 0,
+            "byte_end": 187,
+            "quote": "IntegR30 synthetic fact: the agents-memory integration smoke service listens only on loopback port 8768 while the stable package R30 runs, unless the operator changes the deployment port."
+          },
+          {
+            "source_id": "source_7cc2c898d9c74517b6400d31acb5a8d9",
+            "source_revision": 1,
+            "source_speaker": "agent_note",
+            "source_event_time": null,
+            "source_recorded_at": "2026-10-13T04:10:57.239564Z",
+            "byte_start": 188,
+            "byte_end": 237,
+            "quote": "This is a personal synthetic fixture, not a rule."
+          }
+        ],
+        "approved_rule_field_present": false
+      },
+      "approved_rules": [],
+      "stderr_present": false,
+      "private_artifacts": {
+        "stdout.jsonl": {
+          "path": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/update-checkpoint-20261012/native-r31-serial/native-r31-codex.stdout.jsonl",
+          "sha256": "9f58a10f8898ce515dc7e027a35644ae47708c099f92d11f141d322d2081fb09"
+        },
+        "stderr.txt": {
+          "path": "/Users/namdoo/.local/share/agent-memory-mcp/runtime/local-af20261011/update-checkpoint-20261012/native-r31-serial/native-r31-codex.stderr.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    }
+  ],
+  "limits": [
+    "Personal synthetic fixture only; no company source or credential export.",
+    "Native next-call evidence, not provider-input consumption attestation or 1-2 week trial.",
+    "Recall status remains partial because live failed6/DLQ6 persist.",
+    "Codex explicit per-invocation selected-tool approval, not permanent project trust.",
+    "Only existing applicable sessions would be restarted; current controller and unrelated project OMP sessions were left running.",
+    "Claude print prompt capture is documented as unobservable; this smoke verifies native read tools, not complete automatic capture.",
+    "No push, registry, remote hosting, deployment, commit, AF guard modification or bypass."
+  ]
+}

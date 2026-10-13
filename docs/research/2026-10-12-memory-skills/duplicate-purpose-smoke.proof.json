@@ -1,0 +1,21 @@
+{
+  "before": {
+    "before_fix": true,
+    "native_cli_exit": 1,
+    "private_temp_config_changed": true,
+    "reload": "CONFIG_INVALID",
+    "public_error": "CONFIG_INVALID",
+    "production_config_untouched": true,
+    "route_adoption_not_completed": true
+  },
+  "after": {
+    "after_fix": true,
+    "native_cli_exit": 1,
+    "private_temp_config_changed": false,
+    "reload": "valid",
+    "public_error": "LOCAL_INPUT_INVALID",
+    "production_config_untouched": true,
+    "route_adoption_not_completed": true
+  },
+  "limits": "Private disposable config only; existing actual weights and credentials used, not printed. Negative command intentionally exits1; passing-after means readable unchanged config. No live route adopted."
+}

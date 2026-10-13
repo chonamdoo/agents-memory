@@ -1,0 +1,105 @@
+{
+  "schema": "native-adversarial-critique-proof/v1",
+  "round": 1,
+  "provider": "native Codex CLI",
+  "requested_model": "gpt-6.1-sol",
+  "configured_model": "gpt-6.1-sol",
+  "observed_model": null,
+  "observed_model_metadata": [],
+  "model_proof_basis": "Actual --model argument recorded; JSONL result contains no model identifier. No model self-claim is treated as proof.",
+  "requested_reasoning_effort": "xhigh",
+  "configured_reasoning_effort": "xhigh",
+  "observed_reasoning_effort": null,
+  "executable": "/Users/namdoo/.nvm/versions/node/v24.14.1/bin/codex",
+  "argv": [
+    "/Users/namdoo/.nvm/versions/node/v24.14.1/bin/codex",
+    "exec",
+    "--model",
+    "gpt-6.1-sol",
+    "-c",
+    "model_reasoning_effort=\"xhigh\"",
+    "-c",
+    "mcp_servers={}",
+    "--ephemeral",
+    "--json",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "-"
+  ],
+  "cwd": "/Users/namdoo/.agent-flow/worktrees/agent-memory-mcp-97e899f21134/feat-local-first-memory-pipeline",
+  "safe_flags": {
+    "ephemeral": true,
+    "json": true,
+    "sandbox": "read-only",
+    "skip_git_repo_check": true,
+    "mcp_servers_override": "{}",
+    "approval_bypass": false,
+    "hook_trust_bypass": false,
+    "fallback_model": false
+  },
+  "input": {
+    "packet_path": "/Users/namdoo/.agent-flow/worktrees/agent-memory-mcp-97e899f21134/feat-local-first-memory-pipeline/.agent-flow/research/skills-memory-pipeline-20261012/shared-evidence.ko.md",
+    "packet_sha256": "e616627f23ed5c7182956cbd990af6809894b96c490f2a9f4d146f5c1d15fac7",
+    "packet_utf8_bytes": 27917,
+    "prefix": "You are an adversarial architecture reviewer. Analyze only this shared public evidence and current baseline; do not use tools, memory, file operations or edit anything. Write a complete Korean critique with conclusion first, option A–D comparison (adopt/hold/reject, impact, pros/cons, correctness, security, context, host support, operational acceptance), rank proposals, identify weakest claims/unknowns, distinguish present implementation from unimplemented proposal, and provide clear counterarguments. Cite the supplied primary URLs/timestamps. Do not reveal hidden chain of thought. No fabricated experiment or inferred complete support.",
+    "delimiter": "\n\n",
+    "stdin_sha256": "13d0f5d8b2320888f428705fe99fc19b47d8a3fae71a0d880928907e48bb988f",
+    "stdin_utf8_bytes": 28564,
+    "transport": "stdin with positional -"
+  },
+  "execution": {
+    "started_at_utc": "2026-10-12T10:37:11.416510+00:00",
+    "finished_at_utc": "2026-10-12T10:42:19.569214+00:00",
+    "duration_seconds": 308.15671,
+    "exit_code": 0,
+    "timed_out": false,
+    "deadline_seconds": 1800
+  },
+  "native_result_metadata": [
+    {
+      "event_type": "thread.started",
+      "thread_id": "01a12fb0-16e5-77e1-afe0-c43a48ec5d19"
+    }
+  ],
+  "usage": [
+    {
+      "input_tokens": 33643,
+      "cached_input_tokens": 13184,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 8865,
+      "reasoning_output_tokens": 4632
+    }
+  ],
+  "event_type_counts": {
+    "thread.started": 1,
+    "turn.started": 1,
+    "item.completed": 2,
+    "turn.completed": 1
+  },
+  "item_type_counts": {
+    "agent_message": 2
+  },
+  "actual_tool_event_counts": {},
+  "public_error_messages": [],
+  "stderr_utf8_bytes": 0,
+  "non_json_stdout_line_count": 0,
+  "final": {
+    "path": "/Users/namdoo/.agent-flow/worktrees/agent-memory-mcp-97e899f21134/feat-local-first-memory-pipeline/.agent-flow/research/skills-memory-pipeline-20261012/native-sol61-round1.ko.md",
+    "extraction": "Last completed agent_message text; preceding agent_message excluded as nonfinal preface.",
+    "completed_agent_message_count": 2,
+    "source_text_characters": 10427,
+    "utf8_bytes": 17335,
+    "sha256": "5bf4036a4ec969b0ee1773ca70f02d0245bb377360c2e8357f227f1ee64dff01",
+    "normalization": "Only a trailing newline added if absent; no substantive changes."
+  },
+  "caveats": [
+    "Requested model and xhigh effort are configured by the actual argv; native JSONL does not independently identify the served model or realized reasoning effort.",
+    "Identical frozen packet and complete stdin hashes are proven; identical complete native system/harness prompts across different CLIs are not proven. Normal CLI configuration loading was not bypassed or modified.",
+    "No model-originated tool invocation appears in returned native JSONL. The model was instructed not to use tools; read-only sandbox is not a network or reasoning-level enforcement guarantee.",
+    "mcp_servers={} was supplied exactly as required; no MCP tool-call events were observed. No claim is made that ordinary CLI configuration merge behavior independently proves an empty registry.",
+    "Token counts are native turn.completed usage, including harness overhead and cached input; not a packet-only token measurement.",
+    "Source audit statements and the critique are not implementation, performance, or native host Skills activation experiments.",
+    "No encrypted reasoning, hidden reasoning text, full raw events, authentication, or environment data is retained in deliverables."
+  ]
+}

@@ -1,0 +1,215 @@
+{
+  "success": true,
+  "sdk_version": "2.3.0",
+  "python_version": "3.12.13",
+  "one_server_one_endpoint": true,
+  "results": [
+    {
+      "mode": "2026-07-28",
+      "negotiated": "2026-07-28",
+      "stored": true
+    },
+    {
+      "mode": "legacy",
+      "negotiated": "2025-11-25",
+      "exact_note_recalled": true
+    },
+    {
+      "mode": "auto",
+      "negotiated": "2026-07-28",
+      "exact_note_recalled": true
+    },
+    {
+      "mode": "2026-07-28",
+      "negotiated": "2026-07-28",
+      "exact_note_recalled": true
+    }
+  ],
+  "wire": [
+    {
+      "phase": "modern_store",
+      "http_method": "POST",
+      "rpc_method": "tools/call",
+      "protocol_header": "2026-07-28",
+      "mcp_method": "tools/call",
+      "mcp_name": "probe_store",
+      "request_session_header_present": false,
+      "meta_keys": [
+        "io.modelcontextprotocol/clientCapabilities",
+        "io.modelcontextprotocol/clientInfo",
+        "io.modelcontextprotocol/protocolVersion"
+      ],
+      "http_status": 200,
+      "response_session_header_present": false
+    },
+    {
+      "phase": "modern_store",
+      "http_method": "POST",
+      "rpc_method": "tools/list",
+      "protocol_header": "2026-07-28",
+      "mcp_method": "tools/list",
+      "mcp_name": null,
+      "request_session_header_present": false,
+      "meta_keys": [
+        "io.modelcontextprotocol/clientCapabilities",
+        "io.modelcontextprotocol/clientInfo",
+        "io.modelcontextprotocol/protocolVersion"
+      ],
+      "http_status": 200,
+      "response_session_header_present": false
+    },
+    {
+      "phase": "read_legacy",
+      "http_method": "POST",
+      "rpc_method": "initialize",
+      "protocol_header": null,
+      "mcp_method": null,
+      "mcp_name": null,
+      "request_session_header_present": false,
+      "meta_keys": [],
+      "http_status": 200,
+      "response_session_header_present": true
+    },
+    {
+      "phase": "read_legacy",
+      "http_method": "POST",
+      "rpc_method": "notifications/initialized",
+      "protocol_header": "2025-11-25",
+      "mcp_method": null,
+      "mcp_name": null,
+      "request_session_header_present": true,
+      "meta_keys": [],
+      "http_status": 202,
+      "response_session_header_present": true
+    },
+    {
+      "phase": "read_legacy",
+      "http_method": "GET",
+      "rpc_method": null,
+      "protocol_header": "2025-11-25",
+      "mcp_method": null,
+      "mcp_name": null,
+      "request_session_header_present": true,
+      "meta_keys": [],
+      "http_status": 200,
+      "response_session_header_present": true
+    },
+    {
+      "phase": "read_legacy",
+      "http_method": "POST",
+      "rpc_method": "tools/call",
+      "protocol_header": "2025-11-25",
+      "mcp_method": null,
+      "mcp_name": null,
+      "request_session_header_present": true,
+      "meta_keys": [],
+      "http_status": 200,
+      "response_session_header_present": true
+    },
+    {
+      "phase": "read_legacy",
+      "http_method": "POST",
+      "rpc_method": "tools/list",
+      "protocol_header": "2025-11-25",
+      "mcp_method": null,
+      "mcp_name": null,
+      "request_session_header_present": true,
+      "meta_keys": [],
+      "http_status": 200,
+      "response_session_header_present": true
+    },
+    {
+      "phase": "read_legacy",
+      "http_method": "DELETE",
+      "rpc_method": null,
+      "protocol_header": "2025-11-25",
+      "mcp_method": null,
+      "mcp_name": null,
+      "request_session_header_present": true,
+      "meta_keys": [],
+      "http_status": 200,
+      "response_session_header_present": true
+    },
+    {
+      "phase": "read_auto",
+      "http_method": "POST",
+      "rpc_method": "server/discover",
+      "protocol_header": "2026-07-28",
+      "mcp_method": "server/discover",
+      "mcp_name": null,
+      "request_session_header_present": false,
+      "meta_keys": [
+        "io.modelcontextprotocol/clientCapabilities",
+        "io.modelcontextprotocol/clientInfo",
+        "io.modelcontextprotocol/protocolVersion"
+      ],
+      "http_status": 200,
+      "response_session_header_present": false
+    },
+    {
+      "phase": "read_auto",
+      "http_method": "POST",
+      "rpc_method": "tools/call",
+      "protocol_header": "2026-07-28",
+      "mcp_method": "tools/call",
+      "mcp_name": "probe_read",
+      "request_session_header_present": false,
+      "meta_keys": [
+        "io.modelcontextprotocol/clientCapabilities",
+        "io.modelcontextprotocol/clientInfo",
+        "io.modelcontextprotocol/protocolVersion"
+      ],
+      "http_status": 200,
+      "response_session_header_present": false
+    },
+    {
+      "phase": "read_auto",
+      "http_method": "POST",
+      "rpc_method": "tools/list",
+      "protocol_header": "2026-07-28",
+      "mcp_method": "tools/list",
+      "mcp_name": null,
+      "request_session_header_present": false,
+      "meta_keys": [
+        "io.modelcontextprotocol/clientCapabilities",
+        "io.modelcontextprotocol/clientInfo",
+        "io.modelcontextprotocol/protocolVersion"
+      ],
+      "http_status": 200,
+      "response_session_header_present": false
+    },
+    {
+      "phase": "read_2026-07-28",
+      "http_method": "POST",
+      "rpc_method": "tools/call",
+      "protocol_header": "2026-07-28",
+      "mcp_method": "tools/call",
+      "mcp_name": "probe_read",
+      "request_session_header_present": false,
+      "meta_keys": [
+        "io.modelcontextprotocol/clientCapabilities",
+        "io.modelcontextprotocol/clientInfo",
+        "io.modelcontextprotocol/protocolVersion"
+      ],
+      "http_status": 200,
+      "response_session_header_present": false
+    },
+    {
+      "phase": "read_2026-07-28",
+      "http_method": "POST",
+      "rpc_method": "tools/list",
+      "protocol_header": "2026-07-28",
+      "mcp_method": "tools/list",
+      "mcp_name": null,
+      "request_session_header_present": false,
+      "meta_keys": [
+        "io.modelcontextprotocol/clientCapabilities",
+        "io.modelcontextprotocol/clientInfo",
+        "io.modelcontextprotocol/protocolVersion"
+      ],
+      "http_status": 200,
+      "response_session_header_present": false
+    }
+  ],
+  "limits": "Synthetic actual SDK/HTTP/SQLite interoperability, not native host, auth, Hindsight/PG, product memory, token savings or crash recovery"
+}

@@ -1,0 +1,63 @@
+{
+  "host": "omp",
+  "exit_code": 0,
+  "duration_seconds": 30.123,
+  "requested_model": "gpt-6.1-sol",
+  "requested_effort": "xhigh",
+  "served_model_ids_observed": [
+    "gpt-6.1-sol"
+  ],
+  "stdin_sha256": "e166a6a07e119dc19c7b6fdaafc9b29ea7d6d4da4eb36c9c7cf259816391518e",
+  "cwd": "/Users/namdoo/Developer/Aiproject/agent-memory-mcp",
+  "calls": [
+    {
+      "name": "mcp__agents_memory_memory_context",
+      "input": {
+        "query": "ChronicleR21OLD ChronicleR21NULL source temporal provenance",
+        "binding_id": "binding_5a89f574d8444043a01f7c3115f5c160",
+        "mode": "recall",
+        "max_bytes": 2400,
+        "limit": 3
+      }
+    },
+    {
+      "name": "mcp__agents_memory_memory_inspect",
+      "input": {
+        "ref": "claim_3fee42a858d945f39005f3c32635f11a",
+        "binding_id": "binding_5a89f574d8444043a01f7c3115f5c160"
+      }
+    },
+    {
+      "name": "mcp__agents_memory_memory_inspect",
+      "input": {
+        "ref": "claim_a6a8112db2a84e53aab8be32e019f330",
+        "binding_id": "binding_5a89f574d8444043a01f7c3115f5c160"
+      }
+    }
+  ],
+  "completions": [
+    {
+      "name": "mcp__agents_memory_memory_context",
+      "is_error": false
+    },
+    {
+      "name": "mcp__agents_memory_memory_inspect",
+      "is_error": false
+    },
+    {
+      "name": "mcp__agents_memory_memory_inspect",
+      "is_error": false
+    }
+  ],
+  "finals": [
+    {
+      "result": "{\n  \"OLD\": {\n    \"source_event_time\": \"2020-01-02T00:00:00Z\",\n    \"source_recorded_at\": \"2026-10-12T12:38:27.518664Z\",\n    \"source_speaker\": \"human\"\n  },\n  \"NULL\": {\n    \"source_event_time\": null,\n    \"source_recorded_at\": \"2026-10-12T12:39:06.324532Z\",\n    \"source_speaker\": \"human\"\n  }\n}"
+    }
+  ],
+  "stderr_present": false,
+  "limits": [
+    "Actual CLI/tool trace, not final subsequent provider-input attestation or compliance.",
+    "Input/output token totals are not memory-only overhead.",
+    "Explicit per-invocation Codex selected-tool approval is not permanent native hook/workspace trust."
+  ]
+}

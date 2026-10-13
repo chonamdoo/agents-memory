@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Fresh complete-conversation independent native adversarial design reviews; not product acceptance or AgentFlow seal",
+  "inputFile": "research/unified-review-input-v2.ko.md",
+  "inputUri": "local://unified-memory-review-input-v2.ko.md",
+  "inputBytes": 529500,
+  "inputSha256": "e2f36bcaa958e6af9d0854c0498afe890da49483c043845ef6ef62e23a4a0de9",
+  "sources": [
+    {
+      "path": "research/design-contract.ko.md",
+      "bytes": 15448,
+      "sha256": "e4ed71f671b10d76ece16b3d5e06b46d0f04ab9a5ddcd3274ae298db90727b68"
+    },
+    {
+      "path": "research/distribution-design-proposal.ko.md",
+      "bytes": 14831,
+      "sha256": "0406947e5bb9990710e49b9adefd437e93e873131ca3ace36435fe5ba5ef7aa6"
+    },
+    {
+      "path": "research/papers.ko.md",
+      "bytes": 43543,
+      "sha256": "5e02184912b13b6a6a13d7177f95c50629f11d6da08dd96576d0f22cc3879f72"
+    },
+    {
+      "path": "research/github-memory.ko.md",
+      "bytes": 58698,
+      "sha256": "44b84ec5ac43c2958f05de1ce4f13fca9fc90e7a86962b5e56ed326a821da137"
+    },
+    {
+      "path": "research/video-mAKUL12h1n8-reanalysis.ko.md",
+      "bytes": 20755,
+      "sha256": "66c1d0b2eee4057b15cfdcbc4319ec454bd83f53c0655bed50883fec2f81e80c"
+    },
+    {
+      "path": "research/video-mAKUL12h1n8-tools.ko.md",
+      "bytes": 40971,
+      "sha256": "bc423b7eee8f1ff922d0994f12f7f342981eb2a1e2d3fdaf3ea5b0997fca1edf"
+    },
+    {
+      "path": "research/video-mAKUL12h1n8-portable.ko.md",
+      "bytes": 42217,
+      "sha256": "04168e788353b7dc373c3fd89d24a8fc2ff9ecaae1efd4d6f9cf71e3fd323998"
+    },
+    {
+      "path": "research/video-mAKUL12h1n8-primary-checks.ko.md",
+      "bytes": 3745,
+      "sha256": "d6617f2d047eb87d4838b6d3fceab27c6178ccbe853469991ff40949cbb96e3d"
+    },
+    {
+      "path": "user-supplied/transcript.timed.en.txt",
+      "bytes": 65393,
+      "sha256": "b1317247a0481f6977a327d09769606aadabd90a0cb608698c9095eb1ca5bdd3"
+    },
+    {
+      "path": "research/pr341-spec-adoption.ko.md",
+      "bytes": 27774,
+      "sha256": "50252b62b4d6b8aeea51f9754afa4e9e3c273cca7da707e9f1fc38e93cb823d4"
+    },
+    {
+      "path": "research/root-free-claude-conventions.ko.md",
+      "bytes": 41584,
+      "sha256": "bc6ff8184cdabf3d11f0352ca43349c03f7b5b49dbdd046bcff4cf0a14d6c720"
+    },
+    {
+      "path": "research/root-free-codex-conventions.ko.md",
+      "bytes": 37156,
+      "sha256": "0660d239eaa6d3c626afde031d2ddc90a4af3dfae487394fd454aa5c37efbe19"
+    },
+    {
+      "path": "research/root-free-conventions-papers-oss.ko.md",
+      "bytes": 31672,
+      "sha256": "d9a1a89ea286d0e2d2b5cb0a75979bbbe14dc81484a054c2268d034f52268417"
+    },
+    {
+      "path": "research/company-personal-memory-skill-security.ko.md",
+      "bytes": 20123,
+      "sha256": "27e4f51563ff9268d9e98e51656fe358821d8555d8fb83b54e51d4bafde16d6b"
+    },
+    {
+      "path": "research/company-approved-model-boundary.ko.md",
+      "bytes": 15922,
+      "sha256": "a55796a21c488b7627e88a2debff9135a40ce3490ac1c5420166189c8f827ba9"
+    },
+    {
+      "path": "research/mcp-context-design.ko.md",
+      "bytes": 9643,
+      "sha256": "1974c33103755a546a83f30d719d3e4b0e4827cf8338758706afb429984e89a1"
+    },
+    {
+      "path": "research/mcp-2026-localhost-verification.ko.md",
+      "bytes": 7488,
+      "sha256": "a92f087a22c4f6b684cb6a04e129ac9dae266121f08b77bbca1acedb72a26bcc"
+    },
+    {
+      "path": "research/unified-additional-oss-sources.ko.md",
+      "bytes": 7224,
+      "sha256": "c07ab2614e799e9e6c4cb89d0ede26f018f286923986c28756afeafa91da3b5e"
+    },
+    {
+      "path": "user-supplied/verified-claims.json",
+      "bytes": 6159,
+      "sha256": "022a72441c412d6c109de590c143964bb3e6efe0260e1fe2119ff856f635c312"
+    }
+  ],
+  "olderNativeVerdictsIncluded": false,
+  "latestContractOverridesOlderNotes": true,
+  "firstVideoDirectKoreanTranscriptUnavailable": true,
+  "supersedes": "v1 lacked generic Serena and claude-mem candidate facts; v1 is not the final review",
+  "allNineOriginalSourcesChecked": true,
+  "verifiedOriginalCueClaims": 9,
+  "originalTimedTranscriptUsed": true,
+  "sourceFormattingDifferenceDisclosed": true
+}
