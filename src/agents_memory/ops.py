@@ -838,17 +838,17 @@ async def restore(settings: Settings, operator_token_file: Path, archive: Path,
                 decrypt = await _decrypt(processes, runtime, staging / "archive.age", identity)
                 if await _read_header(decrypt.stdout) != metadata:
                     raise _error("ARCHIVE_INVALID", "The encrypted archive changed before restore")
-                # Store the fresh token privately *before* destructive work so
-                # loss of the response/file publish cannot lose a committed token.
-                # It is not active until Store recovery commits.
-                new_token = secrets.token_urlsafe(48)
-                private_write(operator_out, new_token + "\n")
                 try:
                     private_write(marker, json.dumps({"deployment_id": settings.deployment_id,
                         "realm": settings.realm, "effect": "unknown", "phase": "fenced_before_executor",
                         "code": "RESTORE_RECOVERY_REQUIRED"}))
                 finally:
                     started = marker.exists() or marker.is_symlink()
+                # Store the fresh token privately *before* destructive work so
+                # loss of the response/file publish cannot lose a committed token.
+                # It is not active until Store recovery commits.
+                new_token = secrets.token_urlsafe(48)
+                private_write(operator_out, new_token + "\n")
                 await store.close()
                 private_write(marker, json.dumps({"deployment_id": settings.deployment_id,
                     "realm": settings.realm, "effect": "unknown", "phase": "executor_may_have_started",

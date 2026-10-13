@@ -158,3 +158,60 @@ def test_cli_json_capture_rejects_coercions_before_any_capture_acceptance(tmp_pa
         assert spool.status()["pending"] == spool.status()["quarantined"] == 0
     finally:
         spool.close()
+
+
+def operation_arguments(command, root):
+    arguments = [command, "--age-binary", "/opt/homebrew/bin/age"]
+    if command == "backup":
+        return arguments + ["--output", str(root / "backup.age"),
+            "--recipients-file", str(root / "recipients.age")]
+    arguments += ["--expected-head", "a" * 64, "--operator-out", str(root / "fresh-operator"),
+        "--confirm-deployment", "deployment-001"]
+    if command == "restore":
+        arguments += ["--archive", str(root / "backup.age"), "--identity-file", str(root / "identity.age")]
+    return arguments
+
+
+@pytest.mark.parametrize("command", ["backup", "restore", "restore-recover"])
+@pytest.mark.parametrize("missing", [None, "--pg-dump-binary", "--pg-restore-binary", "--psql-binary"])
+def test_cli_local_operations_require_every_explicit_pg_binary(command, missing, tmp_path):
+    arguments = operation_arguments(command, tmp_path)
+    for flag in ("--pg-dump-binary", "--pg-restore-binary", "--psql-binary"):
+        if missing is not None and flag != missing:
+            arguments += [flag, "/explicit/not-invoked/pg-tool"]
+    with pytest.raises(SystemExit) as rejected:
+        cli.parser().parse_args(arguments)
+    assert rejected.value.code == 2
+    assert not (tmp_path / "backup.age").exists()
+    assert not (tmp_path / "fresh-operator").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["backup", "restore", "restore-recover"])
+@pytest.mark.parametrize("flag", ["--pg-dump-binary", "--pg-restore-binary", "--psql-binary"])
+@pytest.mark.parametrize("invalid", ["bare", "relative", "missing", "nonexecutable"])
+async def test_cli_local_invalid_pg_executables_leave_no_operational_effects(
+        tmp_path, command, flag, invalid):
+    from agents_memory.domain import EffectState
+
+    settings, config, token = deployment(tmp_path)
+    settings = settings.model_copy(update={"database_dsn": "postgresql://memory@127.0.0.1:5432/memory?schema=memory",
+        "migrator_dsn": "postgresql://memory@127.0.0.1:5432/memory?schema=memory"})
+    config.write_text(settings.model_dump_json())
+    executable = tmp_path / "executable"
+    executable.write_text("#!/bin/sh\nexit 99\n")
+    executable.chmod(0o700)
+    nonexecutable = tmp_path / "not-executable"
+    nonexecutable.write_text("not executable")
+    paths = {"bare": "pg_dump", "relative": "./pg_dump",
+        "missing": str(tmp_path / "absent"), "nonexecutable": str(nonexecutable)}
+    arguments = ["--config", str(config), "--token-file", str(token)] + operation_arguments(command, tmp_path)
+    for selected in ("--pg-dump-binary", "--pg-restore-binary", "--psql-binary"):
+        arguments += [selected, paths[invalid] if selected == flag else str(executable)]
+    with pytest.raises(DomainError) as rejected:
+        await cli.execute(cli.parser().parse_args(arguments))
+    assert rejected.value.code == "BINARY_REQUIRED"
+    assert rejected.value.effect == EffectState.NOT_STARTED
+    assert not (tmp_path / "backup.age").exists()
+    assert not (tmp_path / "fresh-operator").exists()
+    assert not (settings.state_dir / "restore-barrier.json").exists()

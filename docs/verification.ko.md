@@ -328,3 +328,13 @@ Claude/Codex/OMP owned uninstall→install은 모두 성공했다. 첫 install�
 첫 동시 smoke에서 OMP/Codex recall은 모델 슬롯 충돌로 `MODEL_BUSY / not_started`였다. 실패 transcript를 보존하고 두 host를 순차 실행했다. 재시도 기능이나 서비스 코드는 바꾸지 않았다. 합성 개인 입력만 사용했고 회사 데이터·배포·push·commit·AF guard 변경은 없다.
 
 증거: `docs/research/2026-10-12-memory-skills/installed-leader-integration-r31.proof.json`. 원문 transcript는 private checkpoint에 0600으로 보존한다.
+
+## PR #4 운영 P2 회귀 — 2026-10-13
+
+독립 `feat/pr4-ops-fixes`의 공식 bugfix `20261013-121905`에서 published source 그대로 CLI 입력 누락12건·marker/token 발행 실패4건을 준비했다. reproduce와 implement-fix의 실제 preflight는 각각 exit1/**16 failed**였다. source 수정은 implement-fix RED 이후에만 적용했다.
+
+최소 수정 후 `tests/test_cli_boundaries.py`와 `tests/test_ops_boundaries.py`는 실제 **137 passed**, exit0이었다. local missing/partial PG 옵션, 세 옵션 각각의 bare/relative/absent/nonexecutable 경로 거절, marker 발행 전후 및 fresh token 쓰기 전후 중단을 검증했다.
+
+실제 owned PG18.6/pgvector0.8.7 Docker와 age에서 임시 isolated schema를 사용했다. encrypted backup의 첫 marker 발행을 실패시키면 **not_started·marker/token 없음**, 같은 archive/head/operator/`operator-out`의 exact retry는 **committed**였다. marker를 발행한 뒤 실패시키면 **UNKNOWN·token 없음·authority 차단**이고, 현재 operator의 private recovery 뒤 fresh token만 인증됐다. CLI backup→restore→restore-recover도 host PG 경로를 생략한 Docker 입력으로 성공했고, 각 이전 token은 거절됐다.
+
+이 증거는 실제 Docker PG 도구와 host age 경로를 사용한다. host에 PG18.6 local executables가 없어 local PG 성공을 실제 실행했다고 주장하지 않는다. 개인 live DB schema·회사 데이터·host 설정·배포·AF guard/config/pins는 변경하지 않았다. 전체 공식 review/QA/gate 결과는 해당 run의 artifacts와 최종 private handoff를 따른다.

@@ -765,6 +765,7 @@ async def test_restore_fence_write_failure_matches_published_authority_effect(se
     assert simulated_restore.pg_starts == 0 and marker.exists() == published
     assert interrupted.value.effect == (EffectState.UNKNOWN if published else EffectState.NOT_STARTED)
     assert interrupted.value.code == ("RESTORE_RECOVERY_REQUIRED" if published else "RESTORE_NOT_STARTED")
+    assert not (tmp_path / "prepared-operator").exists()
     monkeypatch.setattr(ops, "private_write", original_write)
     if published:
         with pytest.raises(DomainError) as denied:
@@ -782,6 +783,149 @@ async def test_restore_fence_write_failure_matches_published_authority_effect(se
                 tmp_path / "recovered-operator", settings.deployment_id, BackupRuntime(Path("/not-invoked/age")))
         assert unnecessary.value.code == "RECOVERY_NOT_REQUIRED"
         assert simulated_restore.rotations == 0
+        retried = await restore(settings, tmp_path / "operator", tmp_path / "archive", tmp_path / "identity",
+            "a" * 64, tmp_path / "prepared-operator", settings.deployment_id, BackupRuntime(Path("/not-invoked/age")))
+        assert retried["effect"] == "committed"
+        assert simulated_restore.pg_starts == 1 and simulated_restore.rotations == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("published", (False, True))
+async def test_fresh_token_publication_failure_keeps_private_recovery_fence(
+        settings, tmp_path, simulated_restore, monkeypatch, published):
+    output = tmp_path / "prepared-operator"
+    original_write = ops.private_write
+
+    def interrupted_write(path, *args, **kwargs):
+        if path == output:
+            if published:
+                original_write(path, *args, **kwargs)
+            raise OSError("injected fresh token publication failure")
+        return original_write(path, *args, **kwargs)
+
+    with monkeypatch.context() as injected:
+        injected.setattr(ops, "private_write", interrupted_write)
+        with pytest.raises(DomainError) as interrupted:
+            await restore(settings, tmp_path / "operator", tmp_path / "archive", tmp_path / "identity",
+                "a" * 64, output, settings.deployment_id, BackupRuntime(Path("/not-invoked/age")))
+    assert interrupted.value.effect == EffectState.UNKNOWN
+    assert interrupted.value.code == "RESTORE_RECOVERY_REQUIRED"
+    assert simulated_restore.pg_starts == 0
+    assert output.exists() == published
+    if published:
+        assert output.read_text().strip() not in simulated_restore.active_tokens
+    with pytest.raises(DomainError) as blocked:
+        with authority_lock(settings):
+            pytest.fail("fresh token failure lifted the authority fence")
+    assert blocked.value.code == "RESTORE_RECOVERY_REQUIRED"
+    recovered = await recover_interrupted_restore(settings, tmp_path / "operator", "a" * 64,
+        tmp_path / "recovered-operator", settings.deployment_id, BackupRuntime(Path("/not-invoked/age")))
+    assert recovered["effect"] == "committed"
+    assert recovered["archive_replacement"] == "unknown_not_attested"
+    assert not (settings.state_dir / "restore-barrier.json").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("published", (False, True))
+async def test_real_restore_fence_failure_preserves_exact_retry_or_private_recovery(
+        live_authority, binary_runtime, monkeypatch, published):
+    store, actor, binding, settings, root = live_authority
+    runtime, keygen = binary_runtime
+    identity, recipients = age_keys(root, keygen)
+    await store.capture(actor, CaptureCommand(binding_id=binding.id, idempotency_key="fence-source",
+        origin_key="fence-source", body="Synthetic fence regression.", speaker="human"))
+    archive = root / "fence-backup.age"
+    await backup(settings, root / "operator", archive, recipients, runtime)
+    head = store.journal.verify()["head"]
+    await store.close()
+    marker = settings.state_dir / "restore-barrier.json"
+    output = root / "fresh-operator"
+    original_write = ops.private_write
+
+    def interrupted_write(path, *args, **kwargs):
+        if path == marker:
+            if published:
+                original_write(path, *args, **kwargs)
+            raise OSError("injected first fence publication failure")
+        return original_write(path, *args, **kwargs)
+
+    with monkeypatch.context() as injected:
+        injected.setattr(ops, "private_write", interrupted_write)
+        with pytest.raises(DomainError) as interrupted:
+            await restore(settings, root / "operator", archive, identity, head,
+                output, settings.deployment_id, runtime)
+    assert marker.exists() == published
+    assert not output.exists()
+    assert interrupted.value.effect == (EffectState.UNKNOWN if published else EffectState.NOT_STARTED)
+    assert interrupted.value.code == ("RESTORE_RECOVERY_REQUIRED" if published else "RESTORE_NOT_STARTED")
+    if published:
+        with pytest.raises(DomainError) as blocked:
+            with authority_lock(settings):
+                pytest.fail("published fence allowed ordinary authority")
+        assert blocked.value.code == "RESTORE_RECOVERY_REQUIRED"
+        recovered = await recover_interrupted_restore(settings, root / "operator", head,
+            output, settings.deployment_id, runtime)
+        assert recovered["archive_replacement"] == "unknown_not_attested"
+    else:
+        retried = await restore(settings, root / "operator", archive, identity, head,
+            output, settings.deployment_id, runtime)
+        assert retried["effect"] == "committed"
+    assert not marker.exists()
+    await store.open()
+    current = await store.authenticate(output.read_text().strip(), (Role.OPERATOR,))
+    assert current.id == actor.id
+    with pytest.raises(DomainError):
+        await store.authenticate(TOKEN, (Role.OPERATOR,))
+
+
+@pytest.mark.asyncio
+async def test_real_cli_backup_restore_and_recovery_rotate_operator(live_authority, binary_runtime):
+    from agents_memory import cli
+
+    store, actor, binding, settings, root = live_authority
+    runtime, keygen = binary_runtime
+    identity, recipients = age_keys(root, keygen)
+    config = root / "deployment.json"
+    private_write(config, settings.model_dump_json())
+    base = ["--config", str(config), "--token-file", str(root / "operator")]
+    runtime_arguments = ["--age-binary", str(runtime.age_binary), "--runtime", runtime.mode]
+    if runtime.mode == "docker":
+        runtime_arguments += ["--docker-binary", str(runtime.docker_binary),
+            "--docker-config", str(runtime.docker_config), "--docker-host", runtime.docker_host,
+            "--docker-container", runtime.docker_container]
+    else:
+        runtime_arguments += ["--pg-dump-binary", str(runtime.pg_dump_binary),
+            "--pg-restore-binary", str(runtime.pg_restore_binary), "--psql-binary", str(runtime.psql_binary)]
+    archive = root / "cli-backup.age"
+    backed_up = await cli.execute(cli.parser().parse_args(base + ["backup"] + runtime_arguments
+        + ["--output", str(archive), "--recipients-file", str(recipients)]))
+    assert backed_up["effect"] == "committed" and archive.stat().st_size > 0
+    head = store.journal.verify()["head"]
+    await store.close()
+    fresh = root / "cli-restored-operator"
+    restored = await cli.execute(cli.parser().parse_args(base + ["restore"] + runtime_arguments
+        + ["--archive", str(archive), "--identity-file", str(identity), "--expected-head", head,
+            "--operator-out", str(fresh), "--confirm-deployment", settings.deployment_id]))
+    assert restored["effect"] == "committed" and restored["tokens_rotated"]
+    await store.open()
+    await store.authenticate(fresh.read_text().strip(), (Role.OPERATOR,))
+    with pytest.raises(DomainError):
+        await store.authenticate(TOKEN, (Role.OPERATOR,))
+    marker = settings.state_dir / "restore-barrier.json"
+    private_write(marker, '{"effect":"unknown","code":"RESTORE_RECOVERY_REQUIRED"}')
+    head = store.journal.verify()["head"]
+    await store.close()
+    recovered_output = root / "cli-recovered-operator"
+    recovered = await cli.execute(cli.parser().parse_args(["--config", str(config), "--token-file", str(fresh),
+        "restore-recover"] + runtime_arguments + ["--expected-head", head, "--operator-out", str(recovered_output),
+            "--confirm-deployment", settings.deployment_id]))
+    assert recovered["effect"] == "committed"
+    assert recovered["archive_replacement"] == "unknown_not_attested"
+    assert not marker.exists()
+    await store.open()
+    await store.authenticate(recovered_output.read_text().strip(), (Role.OPERATOR,))
+    with pytest.raises(DomainError):
+        await store.authenticate(fresh.read_text().strip(), (Role.OPERATOR,))
 
 
 @pytest.mark.asyncio

@@ -583,8 +583,20 @@ async def execute(args) -> dict | None:
     raise DomainError("COMMAND_UNKNOWN", "The requested action is unavailable")
 
 
+class _OperationsParser(argparse.ArgumentParser):
+    def parse_args(self, args=None, namespace=None):
+        parsed = super().parse_args(args, namespace)
+        if parsed.command in {"backup", "restore", "restore-recover"} and parsed.runtime == "local":
+            missing = [flag for flag in ("pg_dump_binary", "pg_restore_binary", "psql_binary")
+                if getattr(parsed, flag) is None]
+            if missing:
+                self.error("local runtime requires " + ", ".join("--" + flag.replace("_", "-") for flag in missing)
+                    + " with explicit absolute executable paths")
+        return parsed
+
+
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="agents-memory", description="Local-first shared memory authority; no implicit cloud or auto-approval")
+    root = _OperationsParser(prog="agents-memory", description="Local-first shared memory authority; no implicit cloud or auto-approval")
     root.add_argument("--version", action="version", version="agents-memory 0.1.0")
     root.add_argument("--config", type=Path, default=Path.home() / ".config/agents-memory/personal.json")
     root.add_argument("--token-file", type=Path)
@@ -624,9 +636,9 @@ def parser() -> argparse.ArgumentParser:
         operation = commands.add_parser(action)
         operation.add_argument("--age-binary", type=Path, required=True)
         operation.add_argument("--runtime", choices=("local", "docker"), default="local")
-        operation.add_argument("--pg-dump-binary", default="pg_dump")
-        operation.add_argument("--pg-restore-binary", default="pg_restore")
-        operation.add_argument("--psql-binary", default="psql")
+        operation.add_argument("--pg-dump-binary", help="Required absolute executable path for local runtime; Docker defaults to container pg_dump")
+        operation.add_argument("--pg-restore-binary", help="Required absolute executable path for local runtime; Docker defaults to container pg_restore")
+        operation.add_argument("--psql-binary", help="Required absolute executable path for local runtime; Docker defaults to container psql")
         operation.add_argument("--docker-binary", type=Path)
         operation.add_argument("--docker-config", type=Path)
         operation.add_argument("--docker-host")
@@ -791,8 +803,10 @@ def ops_runtime(args):
     from .ops import BackupRuntime
 
     return BackupRuntime(
-        age_binary=args.age_binary, mode=args.runtime, pg_dump_binary=args.pg_dump_binary,
-        pg_restore_binary=args.pg_restore_binary, psql_binary=args.psql_binary, docker_binary=args.docker_binary,
+        age_binary=args.age_binary, mode=args.runtime,
+        pg_dump_binary=args.pg_dump_binary if args.runtime == "local" or args.pg_dump_binary is not None else "pg_dump",
+        pg_restore_binary=args.pg_restore_binary if args.runtime == "local" or args.pg_restore_binary is not None else "pg_restore",
+        psql_binary=args.psql_binary if args.runtime == "local" or args.psql_binary is not None else "psql", docker_binary=args.docker_binary,
         docker_config=args.docker_config, docker_host=args.docker_host, docker_container=args.docker_container,
         timeout_seconds=args.timeout,
     )

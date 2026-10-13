@@ -131,9 +131,11 @@ native capture spool의 pending·quarantine 본문은 원래 local enqueue부터
 
 `backup`은 PG18.6 `pg_dump` snapshot을 age로 streaming 암호화한다. operations runtime에는 같은 pin의 `pg_dump`, `pg_restore`, `psql`이 필요하다. local mode는 각각 검증한 절대 실행 경로를, Docker mode는 명시한 owned container의 세 바이너리를 사용한다. durable plaintext dump를 만들지 않으며 독립 journal을 archive에 넣지 않는다.
 
+`backup`, `restore`, `restore-recover`의 기본 `--runtime local`에서는 `--pg-dump-binary /절대/경로/pg_dump --pg-restore-binary /절대/경로/pg_restore --psql-binary /절대/경로/psql`을 모두 명시해야 한다. 누락은 CLI 사용법 오류이며 bare/relative·없는 파일·실행 불가능한 파일은 작업 전에 거절한다. PATH 탐색이나 자동 fallback은 없다. `--runtime docker`에서는 이 세 host 경로를 생략하고, 명시한 Docker endpoint/container 내부의 `pg_dump`·`pg_restore`·`psql`을 사용한다.
+
 `restore`는 executor/version/schema/archive/checksum/최신 독립 deletion head를 검증한 뒤 exclusive fence를 건다. 구형 format2 archive의 `0001`/`0002`/`0003` prefix도 현재 `0004` target에 복원한다. 필요한 새 FK/table 정리와 archive SQL은 하나의 미완료 transaction에서 실행하며, authenticated age EOF·digest/크기·성공한 SQL producer를 모두 확인한 경우에만 COMMIT한다. 실패/중단은 기존 table·본문·lineage·reservation을 rollback하지만 durable authority fence는 private recovery 전까지 유지한다. 성공 후 forward migration→fresh operator/이전 token 폐기→rule 재승인·route 비활성화·job fencing→surviving deletion floor를 적용한다. fresh token으로 host 설정을 갱신한다.
 
-복원 fence가 발행되기 전 파일 쓰기 실패는 `not_started`다. 발행 이후 실패/중단만 `UNKNOWN`과 durable fence/private recovery 대상으로 구분한다.
+첫 restore marker를 durable하게 발행한 뒤 fresh token 파일을 쓰고, 그 다음 executor를 시작한다. marker 발행 전 실패는 `not_started`이며 marker/token 파일을 남기지 않으므로 동일한 `--operator-out` 경로로 원래 요청을 다시 실행할 수 있다. marker가 남은 발행 실패나 이후 token 쓰기 실패는 `UNKNOWN`이며 일반 authority 접근을 막는다. 이때 현재 operator로 `restore-recover`를 실행해야 하며, 아직 발급되지 않았거나 활성화되지 않은 fresh token을 credential로 사용하지 않는다. private recovery는 archive가 적용됐다고 증명하지 않는다.
 
 operator가 공급한 latest head는 외부 witness의 attestation이 아니며 WAL/media/암호화된 과거 archive의 완전 삭제를 증명하지 않는다.
 

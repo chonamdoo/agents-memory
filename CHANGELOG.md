@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- PR #4 운영 리뷰 수정: 세 backup/restore CLI의 local PG 절대 실행 경로를 필수 입력으로 만들고 Docker container 이름은 유지했다. 첫 durable restore marker→fresh token→executor 순서로 바꿔 marker 이전 실패의 token 누수와 동일 출력 경로 retry 차단을 없앴다. 발행 후 실패는 UNKNOWN/private recovery 경계를 유지한다.
 - 프로젝트·배포 패키지·CLI·MCP server 이름을 `agents-memory`, Python namespace를 `agents_memory`, 소비 프로젝트의 숨김 경로를 `.agents-memory`로 통일. 기존 데이터·삭제 저널·backup framing·실행 이력은 보존한다.
 - 독립 Python 3.12 서비스와 네 개 MCP tool. 공식 SDK2.3의 modern stateless 및 legacy client가 동일 인증된 core를 사용한다.
 - PG18/pgvector authority, full-input evidence graph, lexical/vector/entity retrieval 및 실제 로컬 extraction/embedding/consolidation/rerank/cited reflection.
