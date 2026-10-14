@@ -1,5 +1,108 @@
 # 실제 로컬 검증 기록
 
+## 공통 coding-agent 판단 전환 — development/20261013-234417
+
+정본은 [통합 이슈 #5](https://github.com/chonamdoo/agents-memory/issues/5)와 [사용자 확정 결정](https://github.com/chonamdoo/agents-memory/issues/5#issuecomment-6150124320)이다. 개인·회사는 현재 Claude/Codex가 MCP로 판단을 제출하고 서버가 원문·revision·권한을 검증하는 같은 경로다. lexical/entity는 후보 색인이며 기본 판단이 아니다. Qwen 추출·consolidation·reflection과 서버 embedding/reranking 실행 경로·설정·의존성을 제거했다.
+
+### 최신 migration 수정 — recovery development/20261014-154435(R6)
+
+R5 수정 후 canonical fresh Codex6개가 모두 완료/request-changes였다(722.84s). Claude probe는 OAuth401이었다. types가0005 보존 admission의 NULL request_digest→DTO ValidationError/INTERNAL_ERROR를, state-integrity가 coroutine 취소 후 live migration thread보다 exclusive lock이 먼저 풀리는 경로를 직접 재현했다. 앞선 R4/R5 경계 수정은 현재 source 검사와 supplied focused evidence로 인정됐지만 원래 S9는 모든 angle에서 여전히 HIGH다. 현재 provider 원본7개·manifest·input patch·집계10개 payload를 byte/hash 검증 archive로 보존했다. SHA256은 run `r6-native-negative-before-fix-preserved.json`에 있다.
+
+구형 admission을 shared typed decoder 이전에 stale로 거절하고, 동기 DDL task를 shield/join해 반복 취소에도 worker가 끝나기 전 lock이 풀리지 않게 했다. migration-kind durable fence는 원래 private config·operator·exact request에 결합하고 current restore recovery와 구분한다. config replace 응답이 유실돼도 exact target·retained original로 명시 재개한다. strict DTO 완화·digest 추측·audit 삭제·취소의 성공 포장은 없다.
+
+새 회귀만 immutable R5 package의 실제 code로 먼저 실패를 재현했다. genuine0005 DDL→actual0006→modern MCP의 admission1건은 **1 failed/1.42s→1 passed/1.29s**였다. 실제 PG·worker thread·OS authority lock의 반복 취소, lost committed DDL, 잘못된 actor/request/restore recovery 거부, config 발행 전/후 유실4건은 **4 failed/1.92s→4 passed/2.16s**였다. 모두 `-W error`, 보고된 경고0이다. 먼저 통과한1건은4건 재검사에서 제외했고 R4/R5 통과 사례·전체 suite도 반복하지 않았다. 최초 four-file lint의 import-order1건은 LSP code action이 없어 수동 정리한 뒤 해당 파일만 재검사해 통과했다.
+
+별도 개인 UUID schema에서 actual PG migration thread를 중단하고 실제 CLI `serve`를 각각 실행했다. worker가 살아 있을 때 AUTHORITY_BUSY, thread 종료 후 명시 복구 전에는 RESTORE_RECOVERY_REQUIRED가 Uvicorn lifespan stderr에 있었고 두 process는 실제 exit3/listener refusal이었다. 실제 CLI `migrate --upgrade-config`는 committed/application_verified 뒤 fence를 해제했다. 최초 throwaway probe는 stderr를 structured CLI JSON으로 잘못 가정해 실패했으며 원본 로그를 보존하고 output-plane 가정만 고쳤다.
+
+복구된 실제 CLI service→loopback HTTP→공식 SDK2.3 MCP→PG에서 구형 NULL-digest admission은 ADMISSION_STALE/not_started, selection0이었다. 원문을 새 inspect한 caller의 같은 idempotency key discard는 committed/selection_recorded·selection1이었고 구형 admission audit도 남았다. 이 관측은 declared synthetic source/current CLI에 한정되며 actual native model·원래 stable deployment·실제 failed6 복구가 아니다.
+
+소유 service의 SIGTERM 종료는 supervisor exit143으로 관측했다. 두 exact UUID schema 부재를 검증하고 private config/token/DSN/state·immutable baseline·throwaway driver를 제거했다. 원래 stable DB/config/hosts/failed6·native trust는 바꾸지 않았다. 이 수정 후 새 official review/QA/local-handoff와 원래 S9는 아직 미완료이며 commit/push/PR·post-merge Agent Flow 설치·deferred 보고서 읽기는 하지 않았다. 최신 package/build identity는 run의 `runtime-proof/r6-package-identities.json`에 기록한다.
+
+### 이전 native 잔여 수정 — recovery development/20261014-154435(R5)
+
+R4 뒤 첫 review wave의 원본12개·manifest를 byte/hash 검증한 archive로 보존했다. Codex rate-limit deadline 뒤 공개 canonical continuation의 documented per-invocation timeout으로 새 wave를 실행했다. 현재 Codex6개는 모두 완료/request-changes이고 Claude는 OAuth401로 실행 불가였다. stale Claude 결과를 재사용하지 않았고 현재 negative set을 정직하게 집계해 정식 FIX-LOOP로 돌아왔다. reviewer/provider·guard·pin·counter를 바꾸지 않았다.
+
+잔여 원인3개를 수정했다. OMP preparation/capture의 소비 타입6개, 실제 두 SQLite connection의 expiry receipt 퇴출 뒤 늦은 ACK/확정 거절2개, fresh/prior-authority preparation secret 거부의 durable gap2개가 수정 전 실패하고 수정 후 **10 passed/1.54s, `-W error`, 보고된 경고0**이었다. 기존 통과15개·전체 suite는 재실행하지 않았다. shared CorrectCommand는 LSP references의 모든 caller를 domain으로 옮겼으며 wire shape를 바꾸거나 compatibility alias를 만들지 않았다. 변경 Python8개 lint도 통과했다.
+
+별도 개인 UUID schema의 실제 source CLI service에서 receipt-owned OMP adapter를 임시 설치했다. 합성 `input` envelope→실제 host-hook CLI→HTTP capture→공식 SDK MCP inspect→현재 caller의 complete-window discard→다음 context는 unclassified0/incomplete1/partial=true였다. `HOST_SESSION_WINDOW_UNOBSERVED`·`HOST_HUMAN_PRESENCE_UNATTESTED`를 판단 완료로 지우지 않았다. 별도 producer LocalClient의 실제 `/api/correct`는 captured였고 다음 MCP inspection에서 old source는 retracted/body 비노출이었다. 두 독립 CLI 프로세스에서도 preparation secret refusal의 body-free gap1이 유지됐고 거부 시 generation0/preparation 없음이었다.
+
+설치된 rendered TypeScript를 Node24.14.1로 불러 실제 Python host-hook child→현재 HTTP service의 finding capture를 실행했다. production reply의 committed/captured와 source pointer가 소비됐다. 첫 throwaway probe는 prompt recall이 꺼져 있는데 context gap 문자열을 기대했고, Node ESM 형식도 선언하지 않아 실패/경고를 남겼다. 원본 로그를 보존하고 own fixture의 type=module 선언 및 명시 finding 경로로만 수정했다. 재실행은 exit0·stderr/경고 출력 없음이었다. native OMP emitter·모델 invocation·provider input 소비 증거로 바꾸지 않는다.
+
+owned host-uninstall은 exit0이며 native trust는 바꾸지 않았다. 확인한 own process group에만 SIGTERM을 보내 종료를 확인했고, UUID schema 부재와 private config/token/state/DSN/driver 제거를 확인했다. 즉시 PID 부재 assertion은 먼저 실패했지만 이후 state inspection은 PID 부재였다. helper 재시작 때문에 service의 raw exit code는 확보하지 못했으며 이를 -15로 추정하지 않는다. 원래 stable DB/config/owned hosts/failed6는 그대로다. 최신 배포물 identity는 run의 `runtime-proof/r5-package-identities.json`에 기록한다.
+
+R4 fixture 진단의 interval 설명도 바로잡았다. `_housekeep()`에는 legacy scrub 호출/interval 자체가 없고 constructor가 별도로 호출한다. 원래 실패와 실제 scrub 경로로 고친 red→green을 보존했다. 현재 수정 후 fresh native review·공식 QA/local-handoff·원래 stable S9/failed6는 아직 미완료다. commit/push/PR·post-merge Agent Flow 설치와 deferred meta-loop 보고서 읽기는 하지 않았다.
+
+### 이전 native 지적3건 수정 — recovery development/20261014-154435(R4)
+
+이전 native Codex5개는 모두 request-changes였으며, note/feedback reason coverage·legacy spool stale 판정의 acknowledged replacement 삭제·OMP numeric additionalContext TypeError를 지적했다. 세 원인을 수정했다. 새 소비 회귀15개가 수정 전 실패했고 수정 후 **15 passed/3.69s, `-W error`, 보고된 경고0**이었다. payload race의 첫 fixture는 `status()`가 legacy scrub을 호출한다고 잘못 가정해 분류를 시작하지 못했다. `_housekeep()`에는 scrub 호출이나 interval이 없고 constructor가 별도로 scrub을 호출한다. trigger를 실제 production scrub 호출로 고친 뒤 정상 replacement 삭제를 재현했다. 최초 실패와 수정된 before/after 증거를 모두 보존했다. 기존 통과 사례·전체 suite는 재실행하지 않았다.
+
+실제 current-source CLI serve→HTTP→공식 SDK→PG18.6의 별도 개인 UUID schema에서 note와 reject reason 뒤 coverage0/partial=false, 미판단 document capture 뒤 unclassified1/incomplete1/partial=true를 관측했다. raw note도 보존됐다. pytest의 합성 company fixture는 일반 assistant를 포함한 네 eligible speaker를 검증했고, 두 실제 SQLite connection의 durable ACK 뒤 payload/digest 보존 및 rendered TypeScript→Node24.14.1→실제 child IPC의 typed refusal5개를 확인했다. 변경 Python 파일 lint와 sdist/wheel build도 통과했다. current-source HTTP proof를 설치 wheel·native 모델 소비·stable 전환 proof로 표현하지 않는다. owned service는 SIGTERM/exit-15로 끝났고 UUID schema·비밀 state·throwaway driver를 제거했다.
+
+이전 Claude generalist timeout/나머지5개 없음과 Codex I/O rate limit(2026-10-14T16:22:33.407038+00:00), automatic regeneration1회·fix-loop round3는 원래 run에 그대로 보존했다. 사용자 선택에 따라 canonical abort 후 같은 dirty worktree/전체 범위로 recovery run을 시작했다. 원래 incomplete negative set을 승인으로 세거나 counter/guard/pin을 수동 reset하지 않았다. 새 fresh official review/QA/handoff와 stable S9/실제 failed6는 여전히 미완료이고 commit/push/PR은 없다. meta-loop 보고서는 현재 작업 뒤 읽으라는 요청대로 아직 보류했다.
+
+
+### 이번 전환에서 직접 관측한 결과
+
+- 첫 공식 리뷰 전 통합 회귀: fork 수정 후 `pytest -q -W error::DeprecationWarning`으로 **1,376 passed, 195.66s, skip0, reported warnings0**. ruff와 sdist/wheel build도 통과했고 product wheel은 실제 MCP 검증본 `bdcc1d…7c473`과 같았다. 이는 아래 리뷰 수정의 검증 결과가 아니다. 이전 CWD 수정 직후에는1,376 passed/179.06s와 fork DeprecationWarning31개였고, 그 이전 통합은1,376 passed/175.55s였다. 최초 실패 기록도 private run에 보존했다. migration의 기존 feedback state 중복, SQL 문자열 안 semicolon 분리, 누락된 relation admission/inventory, 새 identity sequence의 archive scope, MCP tool catalog의 응답 상한을 수정했다. 보호 상한을 늘리거나 strict decoder를 느슨하게 하지 않았다.
+- 실제 loopback HTTP + SDK2.3 MCP: 개인과 별도 **합성 company-mode DB**에서 capture는 captured/unclassified였고, 원문 inspect 뒤 현재 coding agent의 source_selection만 candidate_ready를 만들었다. 별도 회사 selection 승인, 로컬 모델 호출이나 실제 회사 계정 우회는 없었다. record/capture의 exact replay도 관측했다.
+- 실제 두 호출 recall: expansion으로 후보를 찾은 첫 응답은 optional context0이었다. full claim/source를 읽고 relevant=true를 제출한 개인 응답은 cited context562B, 회사의 unrelated 후보에 relevant=false를 제출한 응답은 context0이었다. 다른 query의 saved admission과 철회 뒤 admission은 ADMISSION_STALE였다. 이 수치는 해당 합성 응답의 UTF-8 bytes이며 일반 품질·효익 수치가 아니다.
+- 실제 cleanup: scheduler가 pending만 생성했고, agent의 명시적 no-relation judgment 후 해당 pending은 resolved였다. 별도 전체5-claim manifest에 duplicate/supports/contradicts/supersedes 네 판단과 이유를 제출했다. supersedes는 원문의 explicit change language를 근거로 했으며 기존 negative sibling은 active/원문 유지였다. source 이름·기록 시각만으로 독립 corroboration이나 날짜를 추론하지 않았다.
+- 실제 거부: reject 이유가 다음 source inspection에 노출됐다. 같은 source와 새 origin의 exact-copy remember는 EVIDENCE_REJECTED였다. 새로운 합성 원문에서도 비교 누락은 REJECTION_COMPARISON_REQUIRED였다. inspected rejection 전체의 unrelated/reopen 이유와 독립 새 source를 명시한 뒤에만 좁은 offline-record observation을 게시했다. 의미 동등성 자동 검출이나 실제 세계 사실 검증을 서버의 보장으로 바꾸지 않는다.
+- 실제 secret/note 경계: synthetic credential capture는422/SOURCE_SECRET_REJECTED/not_started였고, 같은 key의 후속 benign capture는202여서 거부가 key를 예약하지 않았음을 관측했다. whitespace-only private-key armor의 false positive를 재현·수정했고 실제 benign 본문 bytes를 보존했다. agent_note-only remember는 SOURCE_INELIGIBLE였으며 raw note inspect/discard는 가능했다.
+- 실제 구형 운영 경로: 기존 immutable0004 패키지는 **합성 schema에서만** capture/pg_dump+age backup에 사용했고 worker·Qwen은 시작하지 않았다. 새 CLI의 authenticated migrate --upgrade-config는0004→0006와 원래 config 보존을 완료했다. 후속 withdrawal 뒤 그 실제0004 archive를 새 restore CLI로 복원해 fresh token 회전·surviving floor 재적용을 관측했다. old operator는 AUTH_DENIED, fresh MCP 조회는 empty였고 old origin replay는 retracted/SOURCE_RETRACTED로 남았다. journal을 archive에서 복원하거나 제공 head의 외부 최신성을 증명했다고 주장하지 않는다.
+- 실제 정정·폐기·CLI: producer correction 직후 replacement는 captured이고 old SQLite 후보는 다음 조회에서 빠졌다. agent가 새 원문을 판단한 뒤 다음 MCP/실제 CLI의 JSON expansion·complete relevance 경로가 PostgreSQL 근거만570B로 반환했다. 별도 withdrawn legacy source의 local row purge1을 관측했으며 WAL·backup/media erasure는 unknown이다.
+- owned 합성 서비스2개와 재기동1개를 종료하고 두 UUID schema·config/token·임시 archive/key를 제거했다. 비밀 없는 결과·실패·정리 증거는 run-owned private runtime-proof에 보존했다. SDK/CLI 증거를 actual native-host read 증거로 바꾸지 않는다.
+- **현재 작업 프로젝트 MCP 연결**: 기존 안정 native command를 실제 feature worktree에서 호출하니 `HOST_SCOPE_UNRESOLVED`로 종료됐다. MCP 전용 CWD 검사를 제거하고, 별도 실제 Git linked-worktree·HTTP·PG 회귀에서 두 checkout의 동일 credential/binding 원문 조회와 다른 binding의 `SCOPE_DENIED`를 검증했다. 자동 capture/protected-action 경로 검사는 유지한다.
+- 이어서 가상 저장소 대신 **현재 작업 checkout 자체**에 receipt-owned OMP MCP entry를 임시 등록했다. 안정 corpus와 분리한 UUID schema·app/owner role·새 scoped credentials·수정된 immutable wheel을 사용했다. 등록된 실제 command/args를 공식 SDK client로 실행해 protocol `2025-11-25`와 네 도구를 확인했다. 이번 실제 사용자 발언77 UTF-8 bytes를 capture/inspect하고, 현재 coding agent가 연결 조건을 보존한 source_selection과 relevance를 직접 제출했다. 첫 optional context0 → candidate_ready → 근거 context685B였고 다른 binding은 `SCOPE_DENIED`였다. capture coverage는 unknown으로 남겨 전체 세션 관측을 주장하지 않는다.
+- 이는 **현재 프로젝트의 실제 MCP 전송/현재 coding-agent 판단 증거**이지 native host UI/tool invocation 완료나 기존 안정 배포 복구 증거가 아니다. 임시 entry는 owned CLI로 uninstall했고 native trust는 변경하지 않았다. 소유한 service를 identity 확인 후 SIGTERM으로 중지했으며 supervised exit143을 관측했다. UUID schema·임시 config/token/state·driver를 제거했다. 비밀 없는 증거는 `runtime-proof/current-project-mcp-evidence.json`과 개별 호출 결과에 보존했다.
+- 후속 fork 경고 수정: 중단·복구 테스트의 `_abrupt_process`가 로컬 closure를 상속하는 강제 fork를 사용했다. module-level fault worker에 operation/인자를 명시적으로 전달하는 spawn으로 바꿨고 parent process handle도 close한다. 실제 write/unlink 직후 exit41과 원래 pending/removing/native cleanup 경계·사용자/AF 항목 보존 assertions는 유지했다. 경고 filter/ignore는 추가하지 않았다. DeprecationWarning을 오류로 처리한 host 전체447개가47.07s에 통과했다.
+- 별도 실제 smoke에서도 부모 background thread가 두 child 시작 시점에 살아 있는 상태로 install pending·uninstall removing에서 exit41을 발생시켰다. 재개 후 uninstalled와 기존 native config 보존을 확인했다. `python -W error::DeprecationWarning` 실행이 exit0이었다. 최초 smoke의 동일 agent/producer fixture token은 기존 separation guard가 거절했고, 서로 다른 test credentials로 fixture만 수정했다. 실패/성공 로그를 모두 보존한다.
+- **실제 native CLI의 수동 MCP 소비**도 별도로 실행했다. OMP18.10.4의 `openai-codex/gpt-6.1-sol`과 Codex0.162.1의 `gpt-6.1-sol`이 네 MCP 도구를 로드하고, 실제 사용자 원문77/213 bytes를 끝까지 읽어 각자 remember 판단을 제출했다. 서버의 별도 credential 두 개로 committed selection2개와 caller-grounded claim6개가 저장됐음을 독립 DB audit으로 확인했다.
+- OMP는 연결 조건을 보존한 claim을 relevant로, 판단 주체에 관한 다른 claim은 irrelevant로 선택해 cited context685B를 받았다. Codex는 다섯 판단 주체·Qwen 제외·lexical/entity 제한을 보존한 뒤 전체6개 후보를 읽고5 relevant/1 irrelevant를 제출했다. recall은3개 인용·1785B·omitted2·partial이었다. 두 client의 권한 밖 binding 조회는 모두 `SCOPE_DENIED/not_started`였다. capture completeness는 unknown이며 자동 capture/enforcement·안정 설치 복구·OMP adapter 소스 pin18.9.1 호환성 증거가 아니다.
+- 최초 시도가 모두 성공한 것은 아니다. OMP는 로컬 인자 오류4개와 grounding 거부4개, Codex는 grounding 거부1개와 context 입력 거부2개를 받은 뒤 모델이 입력을 고쳤다. Codex의 잘못된 최초 relay 경로와 기본 MCP approval 거부도 보존했다. 성공은 해당 invocation의 네 선택 도구에만 approval을 지정한 뒤 관측했고 global trust/auth는 바꾸지 않았다. provider schema 거부는 관측되지 않았으나 모든 schema 분기의 호환성을 보장하지 않는다. Codex는 추가로 무관한 공유 후보에 reject를 기록했다. 이유에는 query-only 의도라고 썼지만 **feedback 자체에는 query scope가 없고 원래 source ID가 거절 대상으로 저장됐다**. 기존 claim의 사실 부정·철회·삭제는 아니나 같은 근거의 재제안 차단에 영향을 준다. 이는 요청 밖의 모델 행동이며 올바른 query relevance 제출로 세지 않는다. Codex exit0, OMP native agent_end를 확인했지만 OMP pipeline의 exit status는 별도로 수집하지 못했다.
+- 이 native 검증은 **첫 리뷰 전 wheel**의 증거다. 소유한 service child identity를 확인해 SIGTERM/exit143으로 종료하고 UUID schema가 사라진 것을 확인했다. 임시 credential/config/DSN/state/journal/driver는 제거했다. 실제 native event와 서버 receipt, 해시·DB audit·정리 결과는 private 증거 및 `runtime-proof/native-manual-mcp-evidence.json`에 보존했다.
+- 첫 공식 native review는 Claude5개·Codex6개가 독립 **request-changes**, Claude I/O1개는600s timeout이었다. 복수 창 discard, 만료 cleanup, 페이지 간 관계 비교, 전체 거절 이력, 관계0 판단의 삭제 전파, 관계 중복·개수 경계, 큰 MCP 응답과 historical/live 실패 분리 등을 지적했다. 정식 fix-loop로 이동했으며 이전1,376-pass나 native 성공을 수정본 검증으로 재사용하지 않았다.
+- **첫 리뷰 수정(R1) 회귀**는 `pytest -q -W error::DeprecationWarning --tb=short`로 **1,470 passed, 254.25s, skip0, reported warnings0**였다. ruff와 wheel build도 통과했다. 만료 cleanup·관계0 judgment purge는 이전 immutable wheel에서 실제 실패를 재현한 뒤 수정본에서 통과했다. 중간 전체 실행의1,474 pass/9 fail은 구형 schema fixture가 신규 컬럼을 남긴 데서 발생했다. 정확한 downgrade projection 수정 뒤9개와 전체 실행이 통과했다. 제품 migration에 IF NOT EXISTS를 붙여 오류를 숨기지 않았다. DTO/hash/default·transport-copy 검사는 제거하고 실제 소비 경계 회귀를 남겼다.
+- 관계 경계는 DTO 복사/hash/default assertion 대신 실제 PG에서128개 관계 전체를 judgment inspect·recall admission으로 읽고129개째에서 명시 overflow를 확인했다. 전체 회귀에는130회 동일 관계 재판단,21개 claim의 페이지 간 공동 비교,10개 이상 rejection history의 전체 비교·변경 시 거절, 실제 encrypted historical restore도 포함된다.
+- R1 wheel의 실제 서비스에서 global source를 요청 snapshot `post-review-request-scope`로 inspect했다. 반환 snapshot은 요청 scope, source_snapshot은 null이었고 실제 사용자 원문77 bytes와 next_byte=null을 보존했다. 이 추가 호출은 API/CLI smoke이며 native 모델의 판단 증거와 구분한다.
+- **R1 수정 후 실제 native 수동 MCP**: 새5661495e wheel의 별도 현재 프로젝트 서비스에 OMP18.10.4와 Codex0.162.1을 연결했다. 두 CLI 모두 exit0·stderr0이었다. 모델이 사용자 원문77/213 bytes를 읽고 직접 source_selection과 전체 candidate relevance를 제출했다. 독립 DB audit에서 서로 다른 agent credential의 active remember2개·caller-grounded claim3개·resolved source pending2개·feedback0개를 확인했다. `mcp연결되면` 조건과 Qwen 제외·lexical/entity 제한의 부정 표현이 저장됐다.
+- OMP의 실제 근거 회수는685B/인용1개/omitted0, Codex는1338B/인용2개/omitted0였다. 두 결과는 partial이고 session capture는 unknown이다. 권한 밖 binding 조회는 각각 정확히1회 SCOPE_DENIED/not_started였다. 모델은 max_bytes/limit·validity 등의 입력 거부와 grounding 거부를 고쳐 성공했으며 최초 성공으로 표현하지 않는다. feedback은 호출하지 않았고 이 질의의 무관함을 durable reject로 바꾸지 않았다. 이는 수동 MCP 증거이지 자동 capture/enforcement·provider-input attestation·안정 전환·adapter pin 호환성 증거가 아니다.
+- 위 임시 service의 final-wheel/config 경로와 child PID를 확인한 뒤 해당 child에만 SIGTERM을 보내 supervised exit143을 관측했다. 소유한 UUID schema의 실제 삭제·부재와 임시 config/DSN/token/state/journal 제거를 확인했다. 원문·receipt·process event·파일 해시와 audit은 private run evidence에 남겼고 안정 schema/config/host는 건드리지 않았다. setup 최초에는 새 schema를 만들지 않아 INIT_RECOVERY_REQUIRED였으며 exact owned intent를 유지한 채 해당 schema 생성 후 명시 --resume으로 완료했다.
+- **두 번째 공식 review(R2)**에서는 Codex 독립6개가 모두 request-changes였다. Claude probe는 OAuth 만료401로 실행되지 않았고 나머지5개는 skipped였다. 이전 Claude 결과를 이번 승인으로 재사용하지 않는다.
+- R2 수정으로 다중 source legacy 작업의 일부 근거 철회 뒤 살아 있는 source를 pending에 유지한다. 원래 job/retired failure audit은 그대로다. selection의 reason·comparison은 현재 source/rejection/review-receipt 적격성을 매번 확인하며 철회·정정·restore 후 노출하지 않는다. feedback의 별도 source와 명시적 후손에도 삭제 floor와 physical row scrub을 적용한다. 독립 새 근거의 claim까지 지우지는 않는다.
+- accepted judgment input에서 미래·만료 claim을 제외하고 실제 `speaker=agent_note`는 human capture capacity에서 제외한다. mandatory rule 없는 정상 empty context는 relevance handoff로 처리하며 미판단 후보 본문을 주입하지 않는다. 만료·나이 불명 legacy spool payload는 secret 검사 뒤 처리해 key/digest가 expiry receipt로 복사되지 않는다. receipt-backed reopening은 최종 direct comparison/prior ID에 다시 열거하지 않되 전체 이력의 일관성을 검증한다.
+- **R2 최종 회귀**: 이전 immutable5661495e에서 새 소비 경계32개 중 **31 failed/1 passed**를 관측했다. 수정본은 `pytest -q -W error::DeprecationWarning --tb=short`로 **1,533 passed, 284.29s, skip0, reported warnings0**, lint·wheel build·offline install도 통과했다. 첫 집중 실행의 잘못된 단언5개와 전체 실행의 obsolete selection-window 거절 단언1개는 제거했다. privacy·전체 reconstruction·독립 근거 recall assertions와 실제 operation-window 거절은 유지했다. 실패와 최종 로그는 `runtime-proof/r2-*`에 보존했다.
+- **R2 실제 CLI→HTTP MCP**: 새 ee28459c wheel의 UUID 격리 schema에서 합성16-relation judgment **30,645 bytes/8창**과8-comparison selection **17,449 bytes/5창**을 읽고 원래 JSON 전체·SHA256을 복원했다. 각 응답은 TextContent1개였고 관측 최대 wire6,353 bytes로16KiB 상한을 유지했다. 근거 철회 뒤 첫 창과 기존 continuation 모두 reason·relations·comparison·draft window를 반환하지 않았다. 이는 설치 패키지의 실제 전송 증거이며 R2 native-host 모델 소비나 안정 전환 증거는 아니다. 서비스 child identity를 확인해 SIGTERM/exit143으로 종료했고 schema 부재·임시 config/token/state/journal 삭제를 확인했다. throwaway driver도 제거했다.
+
+### R3 수정과 실패 항목 한정 검증
+
+- 관련 rejection 후보 최대8개만 필수 비교하고 전체 history는 명시적 선택 cursor로 분리했다. exact source/body 차단은 색인과 독립이며 current scope·feedback ancestry·별도 reason-source privacy를 먼저 검사한다. note는 raw inspection만 남기고 신규 판단 admission/pending/backlog를 만들지 않는다. 각 관계 판단의 독립 전체 lineage와 공개 duplicate 정규화, non-deriving 철회 뒤 uncovered work 재개/legacy held 보존, 고정 insertion bucket/durable cleanup progress를 적용했다. genuine format-one init과 exact-file SHA256 model intent retirement는 private 원본·unknown 효과를 보존하며 Qwen을 켜지 않는다.
+- 분리된 집중 회귀는 서로 겹치므로 합산하지 않는다. 거절/권한51개, 관계/수명주기65개, bounded scheduler12개, 구형 init/승인/restore107개, 중립 표현/실제 admission effect/continuation138개가 각각 통과했다. 대응 로그는 `r3-rejection-scoped-focused.log`, `r3-lineage-focused-grounded.log`, `r3-cleanup-focused-reconciled.log`, `r3-legacy-focused.log`, `r3-inspection-budget-focused-corrected.log`다.
+- 첫 전체 strict 실행은 **1,654 passed/4 failed, 456.05s**, 보고된 경고0이었다. 두 실패는 이제 발급하지 않는 note admission을 요구한 구형 검증이어서 제거했고 stronger no-admission/backlog 회귀는 유지했다. 나머지 snapshot modern/legacy 두 실패는 기본 후보를 전체 이력으로 간주한 fixture였다. 전체 비교 개수 단언을 제거하고 실제 선택 history inspection으로 큰 audit를 구성했다. 수정 경계52개가106.52s에 통과했으며 최소4KiB MCP cap의 원문 읽기→grounded publication도 modern/legacy에서 통과했다. 추가 cap/reserve 완화는 하지 않았다.
+- 사용자의 **“실패한것들만 테스트해”** 지시로 이미 실행 중이던 전체 재검사를 SIGINT로 중단했다. 중단 시 **1,543 passed/387.74s, exit2**였으며 전체 통과로 기록하지 않는다. 이후 통과 항목/전체 pytest를 재실행하지 않았고 실패 경로만 확인했다. `r3-full-strict-first.log`, `r3-contract-focused.log`, `r3-full-strict-cancelled.log`를 구분한다. 경고 suppression·pyright ignore·test skip/retry를 추가하지 않았다.
+- lint와 **sdist+wheel** build가 exit0이었고 새 wheel **79f54ae4ff6fc7e4c95e15de2622abf2e168098914bc9036fad70a48218566ab**를 별도 content-addressed venv에 offline 설치했다. 최종 전체 green을 주장하지 않으며 새 설치의 CLI/SDK 실행은 아래 실패 경로에 한정했다.
+- **설치 패키지의 실제 CLI→HTTP→공식 SDK2.3→PG18.6 실패 경로 smoke**: 유효한2,721 UTF-8-byte reject 이유를 포함한 complete feedback JSON **6,900B/2창**을 원래 body/reason/target과 SHA256까지 복원했다. 무관한 write 후 첫 창/digest/offset이 같았고 operator 철회 뒤 첫 창·기존 continuation 모두 본문을 숨겼다. malformed kind 배열은 `INPUT_INVALID/not_started`였다. SDK 결과를 ASCII JSONRPC로 재직렬화한 최대값은11,228B이며 raw SSE/전체 native prompt 비용 측정은 아니다.16KiB cap은 늘리지 않았다. parent-authored synthetic 판단과 네트워크/저장 경계 증거이지 native provider·안정6건 disposition·최종 Agent Flow 설치 증거가 아니다.
+- smoke 준비의 잘못된 `python -m agents_memory` 호출은 선언된 console entrypoint로 고쳤다. 누락한 새 schema는 진단 후 생성하고 원래 signed init/token bytes를 바꾸지 않은 exact `--resume`으로 완료했다. SDK tuple을 attribute로 사용한 첫 driver는 session 초기화 전 실패했으며 tuple 계약만 수정했다. 제품 fallback·approval/guard 완화는 없었다. 결과는 `r3-failed-feedback-actual-mcp-corrected.log`에 있다. 정확한 owned child64109를 canonical worktree run-command로 SIGTERM해 supervised143을 관측했고 schema 부재·private profile/token/DSN/state 제거를 확인했다. 임시 probe도 제거했다.
+- R3 규범 문서·changelog는 위 bounded 정책으로 갱신했다. 이전 R1/R2의 exhaustive-history·note discard·구형 최신 wheel 서술은 당시 이력이며 R3 기본값이 아니다. fresh official native review/QA/local-handoff와 원래 stable S9/실제 failed6-DLQ6은 아직 완료하지 않았다. 사용자 조건상 모든 #5 항목 해결 전 commit/push/PR, main merge 전 실제 Agent Flow 프로젝트 최종 MCP 설치를 하지 않는다.
+
+
+
+### 안정 배포와 공식 run은 아직 완료 아님
+
+CWD 수정 전 wheel은 `89ebae2c36260ed7e425da20ff5660f13e3cb0cdc47dd2bd75e06ac9377b2781`, 첫 공식 리뷰 전 검증 wheel은 `bdcc1d28748aafaa57d270aaac9e8c6c0303ca16d7bac14cb6ca8fddeca7c473`, R1 검증 wheel은 `5661495e4196ada11c6b04be3d3485a173083fd8ec2d18266be0538fd62c1011`이다. **R2 검증 wheel SHA256은 `ee28459c9050521355d50d5aa7d4839cd2d5754bdb65b01827e50930e40a85df`**이며 별도 immutable hash 경로에 offline 설치했다. R2 실제 CLI/service import는 해당 venv였다. 이전 환경·실패 증거는 덮어쓰지 않았고 R1 native 결과를 R2 실행으로 재사용하지 않는다. 임시 프로젝트 검증은 안정 전환 완료를 뜻하지 않는다. 최초 MarkupSafe 캐시 부재와 같은 lock/hash의 공개 binary wheel 설치 이력도 보존한다. 모델 download/provider fallback은 켜지 않았다.
+
+사용자가 block/drain→encrypted backup→immutable package/schema/receipt-owned host 전환·native read를 승인했으나, 현재 AF host binding은 feature worktree뿐이다. 정식 run-command의 leader-root host-uninstall이 outside-bound-worktree로 **실행 전 차단**됐다. run-command --help에는 외부 root 승인 옵션이 없다. 보호를 우회하거나 binding/guard를 바꾸지 않았다. 따라서 안정 DB/config는0004 그대로, v3 host3개는 installed 그대로이고, 안정 서비스8768의 listener는 관측되지 않았으며 프로젝트 Qwen9877 listener는 아직 중지하지 않았다. 기존 failed6/DLQ6의 exact job/source/error/attempt/time metadata는 전환 전 증거로 보존했지만 해결 완료나 historical-only로 표시하지 않는다. 안정 DB backup·migration·host 전환·fresh stable native read는 미완료다. 첫 fresh review는 위 request-changes로 끝났고, 수정 후 재리뷰·공식 QA/local-handoff도 미완료다. 리더 경로를 정식으로 운영할 실행 컨텍스트가 필요하다.
+당시 publication/운영 controller `w18:p9`는 현재 live inventory에 없었다. 사용자 선택에 따라 리더-cwd 운영 컨텍스트를 열려 했으나 그 pane 생성도 동일 guard가 실행 전에 차단했다. 새 controller나 안정 운영 변경이 실행됐다고 기록하지 않는다. 이 설치/운영 실행 경계는 연결된 MCP의 권한이나 리더 필요 조건이 아니다.
+후속 현재 inventory에도 정식 leader 운영 agent는 없었고 `run-command --help`에도 외부 checkout 권한 옵션은 없다. PATH의 `agent-flow status/continue`에는 installed assets가 kit보다 오래됐다는 별도 안내가 나타났고 `agent-flow-kit`는 PATH에서 실행되지 않았다(exit127). 반면 프로젝트의 **managed launcher**로 실행한 status에는 그 안내가 없었다. managed launcher는 기존 `.agent-flow/runtime/python`과 지정 Python을 사용한다. 진행 run에는 이 고정 실행 경로를 사용하며 asset/binding/guard snapshot을 갱신하지 않는다. pytest fork 경고와 구분한다.
+공식 Codex reviewer stderr에는 별도로 임시 sandbox의 PATH helper 생성 거부 안내가 있었다. 해당 reviewer들은 결과를 반환했으며 이를 제품 pytest 경고나 MCP 권한 오류로 바꾸어 설명하지 않는다. 보호·global 설정을 완화해 안내를 숨기지 않았다.
+
+PMPA·secret/content re-entry·host native memory 공존 시나리오와1–2주 paired on/off trial 기준은 architecture9–10절에 정의했다. **trial은 시작하지 않았고 memory-health 측정·publication/commit/push/PR/merge·native 로그인/trust 변경은 하지 않았다.** 사용자는 이후 검증 준비가 됐을 때 commit/push/PR을 조건부 승인했으며, 현재는 리뷰 수정 때문에 보류 중이다.
+
+## 보존된 이전 실행 기록
+
+이하의 Qwen·회사 lexical 전용 경로와 “현재/최신” 수치는 각 이전 실행 시점의 이력이다. 위 공통 경로의 기본값이나 이번 run의 검증 결과로 재사용하지 않는다.
+
+
 2026-10-11 시작한 Agent Flow development run `20261011-173040`의 product smoke 기록이다. source 사실, 결정, deterministic 회귀, native 실행, 운영 외부 조건과 미관측 상태를 분리한다. 실제 1–2주 trial이나 cloud 배포를 통과했다고 주장하지 않는다. private token·DSN·원문 회사 자료는 이 문서에 넣지 않는다.
 
 ## 실행 환경·관측
@@ -118,7 +221,7 @@ journal은 archive 밖에 존재하고 body-free HMAC/fsync chain이다. 같은 
 - Host native total input tokens에는 기존 AF/global instructions가 포함된다. 이를 memory 전용 token 비용이라고 하지 않는다. 위 수치는 actual wire/body bytes이며 token 추정·host token 집계를 서로 대체하지 않는다.
 - OMP에서 명시 MCP 호출 이전에 다른 subject의 memory가 자동 주입되는 실제 경로를 발견했다. 기본 설치의 자동 prompt recall을 끄고 별도 `--prompt-recall` opt-in으로 분리했다. 새 OMP print 실행에서는 자동 `agents-memory.bounded-context` 메시지0과 명시 inspect/context 성공을 함께 관측했다. 기존 AF/global prompt token은 제거하거나 memory 비용으로 재분류하지 않았다.
 - 최신 Claude2.1.296의 native local scope는 Git linked worktree가 아닌 원본 Git project key였다. 실제 공식 `mcp add-json --scope local`의 임시 owned 진단 entry를 확인·제거하고 installer를 수정했다. 현재 `claude mcp get agents-memory`는 Connected이며 explicit `--mcp-config` override 없이 Opus5.5 xhigh의 세 MCP 호출이 실제 성공했다. native config는 private `.claude.json`, project shared `.mcp.json`은 변경하지 않았다.
-- Canonical config key는 memory 권한 확장이 아니다. receipt/binding/token은 설치 worktree 그대로이며 다른 CWD의 native relay는 HTTP/token 사용 전 `HOST_SCOPE_UNRESOLVED`로 종료하는 실제 subprocess 회귀가 있다. 수정 후 Claude/OMP/Codex의 실제 세 호출을 다시 수행했다. 다른 동시 worktree의 같은 server 이름은 overwrite가 아니라 ownership conflict이며 explicit generic 연결은 별도 grant 계약을 따른다.
+- 당시 Canonical config key는 memory 권한 확장이 아니었다. 그 시점에는 다른 CWD의 native relay를 HTTP/token 사용 전 `HOST_SCOPE_UNRESOLVED`로 종료하는 회귀가 있었으나, **현재 공통 경로에서는 이 MCP CWD 제한을 제거했다**. 위 최신 전환 절의 credential/binding 기반 두 checkout 검증을 따른다. 설치 ownership 충돌 검사와 자동 hook의 CWD locator 검사는 별개로 유지한다.
 
 ## 요구사항 coverage
 
@@ -328,3 +431,102 @@ Claude/Codex/OMP owned uninstall→install은 모두 성공했다. 첫 install�
 첫 동시 smoke에서 OMP/Codex recall은 모델 슬롯 충돌로 `MODEL_BUSY / not_started`였다. 실패 transcript를 보존하고 두 host를 순차 실행했다. 재시도 기능이나 서비스 코드는 바꾸지 않았다. 합성 개인 입력만 사용했고 회사 데이터·배포·push·commit·AF guard 변경은 없다.
 
 증거: `docs/research/2026-10-12-memory-skills/installed-leader-integration-r31.proof.json`. 원문 transcript는 private checkpoint에 0600으로 보존한다.
+
+## 회사 lexical/entity capability A — no-model 실행 증거 (development/20261013-103527)
+
+공식 run의 implement phase 안에서 수행한 parent 통합 검증이다. 이후 공식 native review·QA·local-handoff 결과로 대신하지 않는다.
+
+### Profile gates (최종 코드, worker cwd)
+
+- `uv run ruff check src tests` 통과. `uv run pytest -q` **1127 passed, skip 0** (실제 PG_TEST_DSN, age/age-keygen, docker 모드 pg_dump/pg_restore/psql). `uv build` 통과, wheel SHA256 `454f922ac5872165f97cfb54fbb5debc52539d68fdfe983b2dd4abfd408a5227`.
+- 통합 중 실제로 발견해 수정한 결함: 0005 DDL의 JSON default `"original_bytes":null`이 SQLAlchemy bind parameter로 해석돼 migration 실패(`jsonb_build_object`로 교체), purge-floor scrub의 generator 안 `await`(`TypeError`), capture 상태 안내가 opt-in recall 본문을 budget 밖으로 밀어낸 우선순위 오류, 과거 schema fixture의 0005 역변환 누락, 이전 archive allowlist의 revision 대응. 회사 `required-context`에 실제 빈 nonmodel admission을 연결했다.
+
+### 격리 합성 service smoke
+
+- 환경: 새 venv에 wheel `d266b14a92224aed05fdadf68a87926625a2a48136164a7a931466b2221f777f`와 core 의존성 35개만 설치했다. `torch`·`sentence_transformers`·`llama_cpp`·`huggingface_hub`·`transformers`는 설치되지 않았다. 모든 CLI·service process를 `agents_memory.models`와 위 package import를 막고 기록하는 guard 아래 실행했다. 41개 process report 모두 import 시도 0, 적재 0이다. 소유한 임시 schema `am_smoke_company_*`, 독립 journal/state, 임시 port를 사용했고 끝난 뒤 schema와 DSN 파일·venv를 제거했다.
+- init `--mode company --capability lexical_entity`: migration `0005_company_selection`, PG180006/vector0.8.7. `readyz`·`doctor`: `semantic_capabilities=unsupported`, `lexical_entity=available`, `background_inference=unsupported`, `model_route_configured=false`.
+- capture: 한국어+식별자 원문 54 UTF-8 bytes → `captured`, `capture_disposition=captured`, body-free pointer(speaker human, `source_event_time=null`, `observed_window`). MCP `memory_inspect` window는 0–54/partial=false/span 1개였다.
+- 판단: grounded remember → `candidate_ready`(CLI `await` 동일). 같은 key replay는 같은 operation, 같은 key의 다른 판단은 `IDEMPOTENCY_CONFLICT/not_started`. discard·review는 `selection_recorded`이며 label 집계 remember1/discard1/review1, claim은 remember 하나뿐이었다. 원문에 없는 식별자는 당시 wheel에서 `MODEL_OUTPUT_INVALID/not_started`로 거절됐다. 모델이 없는 caller 판단이므로 이후 `SELECTION_GROUNDING_INVALID`로 바꿨고, 이 변경은 실제 PG 회귀(174개 boundary 포함)로 확인했다. service smoke는 이전 wheel의 관측이다.
+- recall: `capability=lexical_entity`, arms `["entity","lexical"]`, limitations 네 개, context 622 bytes/wire 1,916 bytes. claim inspect는 원문 quote·byte 0–54·speaker·nullable event time·recorded time과 `caller_grounded_candidate`를 반환했다. reflect는 `CAPABILITY_UNAVAILABLE/not_started`. `index-status`는 `vector_revision=null`, `stale_index_claims=0`.
+- 실제 `/api/correct`: 원래 source와 claim은 `retracted`/본문 없음. 정정 source를 remember한 뒤 새 agent credential의 다음 recall은 14일 claim 하나만 반환했고 이전 문장은 없었다.
+- coverage: 판단하지 않은 source와 `truncated` capture가 있으면 `unclassified_sources=2/incomplete_sources=2`, recall `partial`. truncated window inspect는 partial=true/status truncated.
+- budget·rule: max_bytes 256 recall은 `partial`/0 bytes/omitted1이며 잘라 보내지 않았다. local-project required rule 승인 뒤 `/api/required-context`는 200/required=true/본문 포함.
+- fence: policy disable 뒤 recall·record는 `SELECTION_POLICY_BLOCKED/not_started`, required-context는 503 같은 code(fail-closed). 이전 epoch 승인은 `SELECTION_POLICY_STALE`. 재승인 뒤 recall 복구. 폐기한 agent credential은 401 `AUTH_DENIED`, producer의 read는 403 `ROLE_DENIED`.
+- purge·restore: 철회 없는 purge는 `RETRACTION_REQUIRED/not_started`. 실제 age+pg_dump(docker) backup 뒤 정정 source를 retract→purge(`physically_purged`, backup retention unknown)했다. service 중지 후 이 이전 archive를 실제 restore했다: committed, tokens rotated, jobs fenced, routes disabled, migration 0001–0005. 이전 operator는 `AUTH_DENIED`, policy는 비활성이며 재승인 전 recall은 `SELECTION_POLICY_BLOCKED`. purge된 source는 `purged`/본문 없음, 같은 origin replay는 `retracted`, 재승인 뒤 recall에 14일 문장이 없었다.
+
+### 경계
+
+- smoke는 race를 순차로 재현했다. `tests/test_company_authority.py`의 publication·delivery 회귀도 admission이나 window를 얻은 뒤 grant·revision·policy를 바꾸고 다음 호출이 거절되는지를 순차로 확인한다. 실제로 동시에 실행되는 race 증거는 아니다.
+- 첫 service는 SIGTERM으로 종료돼 atexit import report가 없다. 둘째 service는 SIGINT로 종료했고 report가 있다. guard는 process 안 import 시도만 기록하며 OS 전체 egress 차단 증거가 아니다.
+- 이 smoke와 회귀는 native host 실행, 실제 회사 운영 승인, optional native classifier B, 1–2주 trial을 대신하지 않는다. evidence JSON은 private runtime의 `company-smoke-20261013T211728/`에 0600으로 보존했다.
+
+## PR #4 운영 P2 회귀 — 2026-10-13
+
+독립 `feat/pr4-ops-fixes`의 공식 bugfix `20261013-121905`에서 published source 그대로 CLI 입력 누락12건·marker/token 발행 실패4건을 준비했다. reproduce와 implement-fix의 실제 preflight는 각각 exit1/**16 failed**였다. source 수정은 implement-fix RED 이후에만 적용했다.
+
+최소 수정 후 `tests/test_cli_boundaries.py`와 `tests/test_ops_boundaries.py`는 실제 **137 passed**, exit0이었다. local missing/partial PG 옵션, 세 옵션 각각의 bare/relative/absent/nonexecutable 경로 거절, marker 발행 전후 및 fresh token 쓰기 전후 중단을 검증했다.
+
+실제 owned PG18.6/pgvector0.8.7 Docker와 age에서 임시 isolated schema를 사용했다. encrypted backup의 첫 marker 발행을 실패시키면 **not_started·marker/token 없음**, 같은 archive/head/operator/`operator-out`의 exact retry는 **committed**였다. marker를 발행한 뒤 실패시키면 **UNKNOWN·token 없음·authority 차단**이고, 현재 operator의 private recovery 뒤 fresh token만 인증됐다. CLI backup→restore→restore-recover도 host PG 경로를 생략한 Docker 입력으로 성공했고, 각 이전 token은 거절됐다.
+
+이 증거는 실제 Docker PG 도구와 host age 경로를 사용한다. host에 PG18.6 local executables가 없어 local PG 성공을 실제 실행했다고 주장하지 않는다. 개인 live DB schema·회사 데이터·host 설정·배포·AF guard/config/pins는 변경하지 않았다. 전체 공식 review/QA/gate 결과는 해당 run의 artifacts와 최종 private handoff를 따른다.
+
+## 회사 capability A fix-loop — 2026-10-14
+
+공식 `development/20261013-103527`의 round-2 리뷰 수정 뒤 검증이다. 위 implement smoke의 required-context와 selection policy 결합은 이 수정에서 폐기됐다. 아직 fresh native review·공식 QA·local-handoff 완료 증거는 아니다.
+
+- worker에서 `agent-flow run-command`로 ruff, 실제 PG/age/Docker runtime의 pytest, uv build를 실행했다. **1244 passed, skip 0**, lint·package exit0. wheel SHA256 `b26e6f09b1788fc88bb83d04f547f80cdcf6c88732f9d2f40fda6c9ab339fe23`.
+- core-only wheel을 격리 venv에 설치하고 실제 loopback service를 실행했다. 회사와 개인 synthetic deployment는 독립 schema·journal·state·credential·port를 썼다. kind 없는 note와 flat MCP tool schema를 확인했다. 개인 schema에는 `source_selection`이 없었다.
+- 한글 dense 원문은 첫 smoke에서 `RESULT_TOO_LARGE`로 실패했다. SDK가 바깥 JSON 문자열의 비ASCII 문자를 escape하는 wire 비용을 estimator에 반영한 뒤, 같은 유형 원문을 실제 MCP로 **7개 연속 window**에서 읽어 원문과 정확히 재조립했다. 최대 wire **14,392/16,384 bytes**, span **59/128**, 마지막 `next_byte=null`이었다. 한글 dense 원문의 두 capability 회귀도 전체 suite에 포함된다.
+- selection policy를 실제 비활성화한 뒤 `/api/required-context`는 **200/required=true**로 승인 규칙을 전달했고 candidate recall은 `SELECTION_POLICY_BLOCKED`였다. relocate→현재 policy 재승인 뒤 기존 candidate 한 개가 계속 recall됐다. 모순된 observed byte coverage는 **409/CAPTURE_COVERAGE_INVALID/not_started**였다.
+- 두 retract된 source를 별도 CLI process에서 같은 purge key로 동시에 요청했다. 한 process만 `physically_purged/exit0`, 다른 process는 **IDEMPOTENCY_CONFLICT/exit1**이었다. 이것은 실제 동시 실행 증거다. 다른 grant·publication·delivery 회귀의 순차 mutation을 동시 race라고 부르지 않는다.
+- 실제 age+Docker pg_dump backup 뒤 candidate source를 retract→purge하고, service를 중지한 뒤 이전 archive를 restore했다. **committed/tokens_rotated/deletion_floors_reapplied**. 새 service에서 이전 operator는 `AUTH_DENIED`, policy는 비활성, purge source는 `purged`/body 없음이었다. 현재 policy 재승인 전 recall은 `SELECTION_POLICY_BLOCKED`; 재승인 뒤에도 purge된 claim·문장은 없었다.
+- 개인 full-semantic stats에는 회사 coverage·classification labels가 없었다. 임시 OMP 설치에서 prompt recall을 끈 synthetic native adapter event의 stdout은 비어 있었다. 설치는 owned uninstall로 회수했다. 실제 OMP model 실행이나 회사 운영 승인을 주장하지 않는다.
+- import guard의 **56개 report에서 model import 시도 0·적재 0**. service report는 최종 회사와 개인 process 두 개다. 앞선 SIGTERM service는 atexit report가 없으며, 최종 회사 process는 SIGINT 뒤 report를 남겼다. guard는 OS 전체 egress 차단 증거가 아니다.
+- 소유한 synthetic schema 두 개를 drop했고 임시 venv·DSN·token·backup·adapter scaffolding을 제거했다. 실패 관측과 최종 증거·gate 로그는 private runtime `company-smoke-20261013T235345/`에 남겼다. `fix-loop-evidence.json`은 0600이다. 개인 stable service와 live failed6/DLQ6은 변경하지 않았다.
+
+이 smoke는 당시 explicit capability 구현의 증거이며 개인/회사 판단 기본값을 확정하지 않는다. 현재 확정 결정과 다음 공통 경로 전환은 [#5 댓글 6150124320](https://github.com/chonamdoo/agents-memory/issues/5#issuecomment-6150124320)을 따른다. 다음 전환을 이 smoke에서 완료했다고 주장하지 않는다.
+
+## 회사 capability A round-3 fix-loop — 실제 spool·upgrade 경계
+
+fresh native review 3차는 Codex 6개 중 approve1/request-changes5, Claude probe timeout이었다. 네 지적을 수정한 뒤 worker의 ruff·pytest·build를 실행했다: **1380 passed, skip 0**, lint/package exit0. 새 migration regression은 처음 Store reopen 뒤 `reconcile_journal()` 누락으로 `DELETION_BARRIER`가 발생했고, 기존 공식 절차를 추가한 후 단일 회귀와 전체 suite가 통과했다.
+
+- 같은 core-only wheel SHA256 `d7103eddb54832075646009371fd275a58b6c92a5b8b1230660e790202e7ea82`를 새 격리 venv에 설치했다. 독립 synthetic schema와 실제 loopback service·producer credential을 사용했다.
+- 변경 전 wheel에서 모순 coverage head와 정상 후속 capture를 두 번 flush해도 `pending2/committed0/quarantined0`이었다. correction-origin replay도 `CAPTURE_RECEIPT_INVALID/pending1`이었다. 새 wheel을 설치한 뒤 **동일한 기존 spool**을 reopen했다: poison은 quarantine1, 후속 capture committed1/pending0; correction replay는 원래 correction operation ID로 committed1/pending0이었다.
+- 기존 isolated historical fixture로 pre-0005 schema를 구성하고 실제 CLI migration을 적용했다. 새 service의 `/api/capture` replay는 `source_pointer=null/capture_disposition=null`을 반환했고 spool은 committed1/pending0으로 drain했다. 저장된 receipt에는 pointer·disposition을 지어내지 않았다. permanent regression은 실제 lost ACK·migration·다음 capture·reopen까지 검증한다.
+- 정확한 historical metadata를 가진 signed pre-capability v4 OMP receipt fixture는 변경 전 공식 uninstall이 `HOST_RECEIPT_INVALID`였다. 새 wheel의 공식 uninstall은 `uninstalled`, 재설치는 `capability=lexical_entity`였다. 마지막 설치도 owned uninstall로 회수했다. 실제 native OMP model 실행이나 회사 host enablement는 아니다.
+- CLI/service import guard report **14개에서 ML import 시도0/적재0**. 서비스 세 번 모두 SIGINT 뒤 report가 있다. 이 report는 historical fixture helper나 OS 전체 egress의 증거가 아니다.
+- 소유 synthetic schema를 drop했고 임시 venv·DSN·token·SQLite·adapter/script scaffolding을 제거했다. pre-fix 실패·post-fix 결과·한계는 private runtime `company-fix3-20261014T004401/{before,after,summary}.json`에 0600으로 남겼다. 실제 QA·local-handoff 완료는 다음 공식 phase의 결과를 따른다.
+
+## 현재 run round-4 fix-loop — schema·credential 경계
+
+fresh native review 4차의 must-fix 2건만 수정했다. ruff 통과, 실제 PG/age/Docker runtime의 pytest **1413 passed, skip 0, 173.53s**, uv build 통과. 변경 경계 선택 검증은 152 passed/1261 deselected였다. 처음 lint는 새 client 상수 앞의 빈 줄로 실패했고, targeted LSP import action이 없어 해당 빈 줄만 수정했다.
+
+- core wheel SHA256 `e06b33eee23388069ece512652bb38850e94578de3cb96ac7ac76a129cfbe2f3`를 별도 venv에 설치하고 기존 worker venv의 dependency만 연결했다. package는 새 venv의 installed wheel에서 import됐다. 별도 synthetic DB schema·app/migrator 역할·journal·credential·port의 실제 loopback service에서 operator readiness HTTP200을 관측했다.
+- 실제 modern MCP `tools/list`에서 받은 flat record schema를 strict decoder와 비교했다. kindless note와 nullable-policy selection은 둘 다 허용됐다. missing body/provenance, mixed note/selection, kindless selection은 둘 다 거절됐다. 같은 malformed 입력의 실제 MCP 호출은 `INPUT_INVALID/not_started`; shape-valid nullable policy는 authority 검증의 `SELECTION_POLICY_BLOCKED`였다. branch별 required/allowed 필드는 `if/then/else`로 표현한다. 이 결과는 native provider의 조건부 schema 지원 증거가 아니다.
+- 실제 CLI의 0600 credential+newline record는 `captured/committed`였다. writer 없는 FIFO·1MiB token·symlink·0644 token은 각각 약0.11–0.13초 안에 `CREDENTIAL_INVALID/not_started`, exit1이었다. credential 읽기는 최대2050 bytes(512 UTF-8 characters+CRLF)로 제한한다. permanent regression은 opener 전 거절·bounded read·잘못된 UTF-8·512-character 경계와 기존 unknown network effect를 다룬다.
+- service import guard의 ML import 시도0/적재0, SIGINT exit130을 확인했다. startup info logging은 꺼져 있으므로 log-based ready timeout은 실제 startup 실패가 아니었고 authenticated operator HTTP200으로 확인했다. owned service 종료 뒤 synthetic schema·venv·DSN·credential·state·journal·project·script를 제거했다. 0600 evidence는 private runtime `record-client-fix4-20261014T014109/{summary,imports}.json`과 gate logs에 있다. 개인 stable 서비스·failed6/DLQ6에는 손대지 않았다.
+- 이 수정은 current run scope 안이다. 이후 fresh native review·공식 QA·local-handoff 완료는 각 공식 phase의 결과를 따른다. #5의 개인/회사 공통 LLM 판단 전환과 건강도 제외는 다음 run 결정이며 여기서 구현한 기능으로 보고하지 않는다.
+
+## 기존 run의 공식 native review 5차 및 QA 차단
+
+- installed runner가 시작한 Codex의 독립 confined subprocess 6개(generalist/types/architecture-design/state-integrity/clean-architecture/io-safety)는 모두 approve였다. Claude의 현재 probe는 unavailable이었고 stale Claude angle은 aggregate에 포함하지 않았다. current manifest의 artifact hash 7개가 일치했다. runner가 review → QA 전환을 승인했다.
+- QA phase의 공식 `agent-flow gates --phase all --execution local --run-dir …`는 **2/3 통과**였다. lint/package는 exit0, pytest는 **1412 passed/1 failed, 173.64s**. 실패는 `test_related_withdrawal_preserves_live_read_and_completes_original_pipeline[claim-pending]`의 `ready_claim`에서 첫 `claim_job()`이 `None`인 fixture assertion이었다. 단순 확인용 재실행은 하지 않았다.
+- 초기 job의 `available_at` default와 eligibility는 모두 PG `clock_timestamp()`를 쓴다. 실제 runtime probe는 한 connection 10000회/2.146초에서 backward step0, 두 connection 교대 100000회/21.312초에서 backward step2/max**2.067403초**를 관측했다. [INFERENCE] enqueue와 claim 사이 clock rollback은 해당 setup 실패를 설명할 수 있으나 이미 teardown된 실패 fixture의 정확한 시각은 복구할 수 없다. 실제 worker는 `None` 뒤 다음 poll을 기다린다. publication/withdrawal fixture는 scheduler delay 자체를 시험하지 않으므로 queued work를 명시적으로 due 상태로 준비하는 수정이 제안됐다. product 코드·runtime clock 변경이나 test retry/skip은 적용하지 않았다.
+- `qa.md`의 request-changes 뒤 canonical continue는 **fix-loop exceeded 3 rounds routing qa → fix-loop / route_blocked**였다. 제한·counter·guard·workflow·approval token을 변경하지 않았다. 추가 fixture edit, fresh review, QA green, local-handoff는 아직 없다. controller의 공식 복구 결정이 필요한 상태다.
+- 실패 gate 결과와 clock probe는 private `record-client-fix4-20261014T014109/`에 0600으로 보존했다. 최신 wheel의 기존 실제 service smoke와 round-5 source 일치 증거는 유효하지만 이 QA 실패를 대신하지 않는다. #5의 별도 전환 범위는 현재 run에 합치지 않았다.
+
+## 동일 범위 복구 implement — development/20261013-221430
+
+- 사용자가 증거 보존 종료와 동일 범위 복구 run을 선택했다. 공식 `abort`는 기존 run artifacts를 보존했고, `run --workflow development --reuse-existing-worktree --allow-dirty`로 같은 작업 트리·branch를 재사용했다. 원래 fix-loop counter3은 그대로다. 기존 QA에서 수정을 건너뛰거나 green으로 바꾸지 않았다.
+- 변경은 `tests/test_store_authority.py`의 fixture 준비다. `make_initial_work_due`는 한 operation의 pending/attempt0 작업에만 `available_at=-infinity`를 설정한다. `ready_claim`과 해당 withdrawal scenario의 기대 claim 앞에서 호출한다. 상태·attempts·generation·lease·원문·업무 assertions를 바꾸지 않고 sleeps/retries/skips를 추가하지 않았다. 제품 scheduler와 모든 Python/TS 제품 파일35개는 기존 검증 wheel과 byte-identical이다.
+- 집중 회귀는 **8 passed/1405 deselected, 4.93s**였다. 실제 독립 PG fixture smoke에서 future initial과 예약 retry가 있을 때 `claim_job()`은 `None`, initial만 명시 due로 바꾼 뒤 실제 extract lease/attempt1을 받았다. attempt1의 예약 retry는 helper를 직접 호출해도 row 전체가 불변이었다. 이 증거는 fixture/DB 경계이며 actual model pipeline이나 native host 소비 증거가 아니다. scaffold와 소유 fixture schema는 제거했다.
+- implement phase의 공식 all/local gates는 **3/3 통과**, pytest **1413 passed/skip0, 174.23s**, lint/build exit0이었다. wheel SHA256은 `e06b33eee23388069ece512652bb38850e94578de3cb96ac7ac76a129cfbe2f3`로 같았다. 이전 actual service/MCP/CLI/spool/upgrade/purge/restore proof는 해당 source identity와 함께 보존하지만 새 run의 review/QA 결과를 대신하지 않는다.
+- 0600 evidence/logs는 private runtime `qa-fixture-recovery-20261014T071020/`에 있다. fresh 공식 native review·QA·local-handoff는 이후 phase 대상이다. commit/index/push/PR/배포, 개인 stable service·failed6/DLQ6, 다음 공통 LLM 판단 전환·건강도 측정에는 손대지 않았다.
+
+## 복구 run fresh review·공식 QA·인계
+
+- `development/20261013-221430`의 installed runner가 Claude6/Codex6 독립 confined OS subprocess를 실행했다. **12개 모두 approve**, current manifest의 artifact hash12개가 일치했다. timeout/skipped/stale 결과나 parent/in-session 리뷰 대체는 없었다. 전체 original A1–A11 범위와 제품 identity를 읽어 검토했고 fixture-only delta와 다음 #5 전환을 구분했다.
+- review 승인 뒤 QA 진입 시각은 `2026-10-13T22:46:42.086751+00:00`이었다. 해당 window에서 공식 all/local gates를 다시 실행했다: **lint/test/package 3/3**, pytest **1413 passed/skip0, 190.79s**, lint/build exit0. 이 결과는 이전 implement gate나 원래 실패 run의 복사본이 아니다. wheel과 제품 파일35개 identity는 그대로다.
+- 실제 수정 경계는 앞 절의 독립 PG fixture smoke로 확인했다. 해당 schema·script는 제거했고 0600 logs/summary를 보존했다. 원래 실제 service/transport/spool/upgrade/restore 증거는 source-identical 제품에 대한 원래 층위이며, 이 fixture smoke를 모델·native-host 실행 증거로 대신하지 않는다.
+- runner가 green QA를 받아 handoff phase로 전환했고 `handoff.md`에 controller w18:p9 소유권·검증·비차단 위험·다음 #5 범위를 기록했다. 최종 workflow 종료 상태는 canonical continue 결과/run report/status를 따른다. commit/index/push/PR/배포·실제 회사 enablement·trial·다음 공통 LLM 전환은 수행하지 않았다.
+- 비차단 위험은 current `review.md`를 따른다. selection digest와 개인 model-source 결합, package 교체/손상 중 CLI import-time fingerprint I/O의 strict hook refusal 전 실패 가능성, claimless withdrawal floor/source labels, `partial`와 capture coverage, OMP 최대 envelope·provider conditional-schema 호환성, 다른 fixture의 wall-clock 의존을 숨기지 않는다. 현재 승인이나 immutable-wheel proof가 그 실패 모드 검증은 아니다.

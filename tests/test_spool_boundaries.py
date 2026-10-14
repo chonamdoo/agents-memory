@@ -1,11 +1,28 @@
+import asyncio
 import json
+import os
 import sqlite3
+import uuid
+from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import asyncpg
 import pytest
+import pytest_asyncio
 
 from agents_memory import spool as spool_module
-from agents_memory.domain import CaptureCommand, DomainError, EffectState, canonical_digest
+from agents_memory.config import Settings
+from agents_memory.domain import (
+    CaptureCommand,
+    CaptureCoverage,
+    DomainError,
+    EffectState,
+    canonical_digest,
+)
+from agents_memory.journal import DeletionJournal
+from agents_memory.migrations import migrate
 from agents_memory.spool import ProducerSpool
+from agents_memory.store import Store
 
 
 def envelope(**changes):
@@ -163,13 +180,49 @@ def test_transient_failure_stops_ordered_drain_without_poisoning_remaining_rows(
         spool.close()
 
 
-def test_quarantine_retry_and_discard_are_explicit_and_durable(tmp_path):
+@pytest.mark.parametrize("effect", [EffectState.NOT_STARTED, EffectState.NOT_COMMITTED])
+def test_confirmed_invalid_coverage_quarantines_head_and_delivers_later_capture(tmp_path, effect):
+    path = tmp_path / "outbox.sqlite"
+    spool = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    invalid = envelope(coverage=CaptureCoverage(status="observed_window", original_bytes=1))
+    valid = envelope(idempotency_key="capture-002", origin_key="origin-002")
+    sent = []
+
+    class Endpoint:
+        def request(self, route, payload):
+            sent.append(payload["idempotency_key"])
+            if payload["idempotency_key"] == invalid.idempotency_key:
+                raise DomainError("CAPTURE_COVERAGE_INVALID", "Confirmed coverage rejection", effect=effect)
+            return {"effect": "committed", "id": "operation-valid"}
+
+    try:
+        spool.enqueue(invalid)
+        spool.enqueue(valid)
+        result = spool.flush(Endpoint())
+        assert sent == [invalid.idempotency_key, valid.idempotency_key]
+        assert result["committed"] == result["newly_quarantined"] == 1
+        assert result["pending"] == 0
+        assert result["errors"] == ["CAPTURE_COVERAGE_INVALID"]
+        assert result["blocked"] == {"CAPTURE_COVERAGE_INVALID": 1}
+    finally:
+        spool.close()
+    reopened = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    try:
+        assert reopened.status()["quarantined"] == 1
+        assert reopened.enqueue(invalid)["replay"] is True
+        assert reopened.disposition(valid.idempotency_key) == {"state": "committed", "operation_id": "operation-valid"}
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("code", ["INPUT_INVALID", "CAPTURE_COVERAGE_INVALID"])
+def test_quarantine_retry_and_discard_are_explicit_and_durable(tmp_path, code):
     path = tmp_path / "outbox.sqlite"
     spool = ProducerSpool(path, "deployment-001", "binding-001", 65536)
 
     class Reject:
         def request(self, route, payload):
-            raise DomainError("INPUT_INVALID", "No raw evidence", status=422)
+            raise DomainError(code, "No raw evidence", status=422)
 
     try:
         spool.enqueue(envelope())
@@ -217,14 +270,16 @@ def test_unknown_capture_receipt_preserves_head_for_safe_business_key_replay(tmp
         spool.close()
 
 
-def test_unknown_effect_never_becomes_permanent_quarantine_even_with_conflict_code(tmp_path):
-    spool = ProducerSpool(tmp_path / "outbox.sqlite", "deployment-001", "binding-001", 65536)
+@pytest.mark.parametrize("code", ["ORIGIN_CONFLICT", "CAPTURE_COVERAGE_INVALID"])
+def test_unknown_effect_never_becomes_permanent_quarantine_even_with_conflict_code(tmp_path, code):
+    path = tmp_path / "outbox.sqlite"
+    spool = ProducerSpool(path, "deployment-001", "binding-001", 65536)
     calls = []
 
     class Endpoint:
         def request(self, route, payload):
             calls.append(payload)
-            raise DomainError("ORIGIN_CONFLICT", "Unreconciled upstream outcome", effect=EffectState.UNKNOWN)
+            raise DomainError(code, "Unreconciled upstream outcome", effect=EffectState.UNKNOWN)
 
     try:
         spool.enqueue(envelope())
@@ -232,8 +287,16 @@ def test_unknown_effect_never_becomes_permanent_quarantine_even_with_conflict_co
         result = spool.flush(Endpoint())
         assert len(calls) == 1
         assert result["pending"] == 2 and result["quarantined"] == 0
+        assert result["errors"] == [code] and result["blocked"] == {}
     finally:
         spool.close()
+    reopened = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    try:
+        assert reopened.status()["pending"] == 2
+        assert reopened.status()["quarantined"] == 0
+        assert reopened.enqueue(envelope())["replay"] is True
+    finally:
+        reopened.close()
 
 
 @pytest.mark.parametrize("late_rejection", [False, True])
@@ -494,7 +557,8 @@ def test_payload_expiry_is_visible_body_free_and_never_transmitted(tmp_path, clo
         reopened.close()
 
 
-def test_payload_original_age_survives_unknown_retry_quarantine_replay_and_reopen(tmp_path, clock):
+@pytest.mark.parametrize("code", ["INPUT_INVALID", "CAPTURE_COVERAGE_INVALID"])
+def test_payload_original_age_survives_unknown_retry_quarantine_replay_and_reopen(tmp_path, clock, code):
     path = tmp_path / "outbox.sqlite"
     spool = ProducerSpool(path, "deployment-001", "binding-001", 65536)
 
@@ -504,7 +568,7 @@ def test_payload_original_age_survives_unknown_retry_quarantine_replay_and_reope
 
     class Rejected:
         def request(self, route, payload):
-            raise DomainError("INPUT_INVALID", "Confirmed rejection", effect=EffectState.NOT_COMMITTED)
+            raise DomainError(code, "Confirmed rejection", effect=EffectState.NOT_COMMITTED)
 
     class NeverSent:
         def request(self, route, payload):
@@ -551,8 +615,8 @@ def test_old_spool_schema_discards_unknown_age_payloads_without_renewal_or_recei
             "CREATE TABLE receipts (key TEXT PRIMARY KEY, digest TEXT NOT NULL, state TEXT NOT NULL, operation_id TEXT, created_at REAL NOT NULL DEFAULT 0);"
         )
         for command in commands:
-            payload = json.dumps(command.model_dump(mode="json"), separators=(",", ":"))
-            digest = canonical_digest(command.model_dump(mode="json"))
+            payload = json.dumps(command.digest_payload(), separators=(",", ":"))
+            digest = canonical_digest(command.digest_payload())
             table = "quarantine" if command.idempotency_key == "legacy-quarantine" else "outbox"
             failure = "INPUT_INVALID" if command.idempotency_key in {"legacy-failure", "legacy-quarantine"} else None
             connection.execute(
@@ -681,3 +745,767 @@ def test_drain_rechecks_each_payload_age_and_preserves_actual_remote_effect(tmp_
         assert spool.disposition("capture-002") == {"state": "expired", "operation_id": None}
     finally:
         spool.close()
+
+
+@pytest_asyncio.fixture
+async def capture_authority(tmp_path):
+    raw_dsn = os.environ.get("PG_TEST_DSN")
+    if not raw_dsn:
+        pytest.skip("PG_TEST_DSN required for actual model-free capture authority")
+    parts = urlsplit(raw_dsn)
+    query = dict(parse_qsl(parts.query))
+    query.pop("schema", None)
+    admin_dsn = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+    schema = "am_host_capture_" + uuid.uuid4().hex
+    admin = await asyncpg.connect(admin_dsn)
+    store = None
+    try:
+        await admin.execute(f'CREATE SCHEMA "{schema}"')
+        query["schema"] = schema
+        dsn = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+        await asyncio.to_thread(migrate, dsn)
+        settings = Settings(
+            deployment_id="capture-test", realm="capture-company", mode="company",
+            capability="agent_judged", database_dsn=dsn,
+            state_dir=tmp_path / "authority", journal_dir=tmp_path / "journal",
+        )
+        store = Store(settings, DeletionJournal(settings.journal_dir, settings.deployment_id))
+        await store.open()
+        token = "capture-test-operator-" + "a" * 32
+        actor = await store.bootstrap(token, "capture-owner")
+        binding = await store.register_binding(actor, "Synthetic capture", None, "register")
+        actor = await store.authenticate(token)
+        yield store, actor, binding.id
+    finally:
+        if store is not None:
+            await store.close()
+        await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await admin.close()
+
+
+@pytest_asyncio.fixture
+async def capture_endpoint(capture_authority):
+    store, actor, _ = capture_authority
+    loop = asyncio.get_running_loop()
+    sent = []
+
+    class Endpoint:
+        def request(self, route, payload):
+            assert route == "/api/capture"
+            sent.append(payload["idempotency_key"])
+            command = CaptureCommand.model_validate(payload)
+            operation = asyncio.run_coroutine_threadsafe(store.capture(actor, command), loop).result(timeout=30)
+            return operation.model_dump(mode="json")
+
+    return Endpoint(), sent
+
+
+@pytest.mark.asyncio
+async def test_store_invalid_coverage_quarantines_head_before_valid_capture(tmp_path, capture_authority, capture_endpoint):
+    store, actor, binding = capture_authority
+    endpoint, sent = capture_endpoint
+    invalid = envelope(binding_id=binding, coverage=CaptureCoverage(status="observed_window", original_bytes=1))
+    valid = envelope(binding_id=binding, idempotency_key="valid-after-coverage", origin_key="valid-after-coverage")
+    path = tmp_path / "producer" / "capture.sqlite3"
+
+    def drain():
+        spool = ProducerSpool(path, "capture-test", binding, 65536)
+        try:
+            spool.enqueue(invalid)
+            spool.enqueue(valid)
+            result = spool.flush(endpoint)
+            return result, spool.disposition(valid.idempotency_key)
+        finally:
+            spool.close()
+
+    result, receipt = await asyncio.to_thread(drain)
+    assert sent == [invalid.idempotency_key, valid.idempotency_key]
+    assert result["committed"] == result["newly_quarantined"] == 1
+    assert result["pending"] == 0 and result["blocked"] == {"CAPTURE_COVERAGE_INVALID": 1}
+    committed = await store.capture(actor, valid)
+    assert receipt["source_pointer"] == committed.source_pointer.model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+async def test_authoritative_pointer_survives_lost_ack_reopen_and_exact_key_reconciliation(tmp_path, capture_authority):
+    store, actor, binding = capture_authority
+    command = envelope(
+        binding_id=binding, body="한국어 조건: offline에서만 저장",
+        coverage=CaptureCoverage(status="observed_window", original_bytes=len("한국어 조건: offline에서만 저장".encode()), gaps=("SESSION_UNOBSERVED",)),
+    )
+    path = tmp_path / "producer" / "capture.sqlite3"
+    spool = ProducerSpool(path, "capture-test", binding, 65536)
+    spool.enqueue(command)
+    operation = await store.capture(actor, command)
+    assert operation.state == "captured"
+    pending = await store.inspect(actor, binding, "pending")
+    assert any(item["kind"] == "source_selection" and operation.source_id in item["source_ids"] for item in pending["items"])
+
+    class LostAck:
+        def request(self, route, payload):
+            raise DomainError("SERVICE_UNAVAILABLE", "Committed response was lost", effect=EffectState.UNKNOWN)
+
+    assert spool.flush(LostAck())["pending"] == 1
+    spool.close()
+    replayed = await store.capture(actor, command)
+    assert replayed.id == operation.id
+
+    class Reconciled:
+        def request(self, route, payload):
+            return replayed.model_dump(mode="json")
+
+    reopened = ProducerSpool(path, "capture-test", binding, 65536)
+    try:
+        assert reopened.flush(Reconciled())["committed"] == 1
+        result = reopened.disposition(command.idempotency_key)
+        pointer = result["source_pointer"]
+        assert pointer["source_id"] == operation.source_id
+        assert pointer["source_revision"] == operation.source_pointer.source_revision
+        assert pointer["source_event_time"] is None
+        assert pointer["source_recorded_at"] == replayed.source_pointer.model_dump(mode="json")["source_recorded_at"]
+        assert pointer["coverage"]["provenance"] == "producer_reported"
+        assert command.body not in json.dumps(result, ensure_ascii=False)
+        assert reopened.enqueue(command)["source_pointer"] == pointer
+    finally:
+        reopened.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation_kind", ["capture", "correct"])
+@pytest.mark.parametrize("malformation", [
+    "revision", "clock", "binding", "body", "disposition", "source_identity",
+    "operation_binding", "missing_pointer", "missing_disposition", "null_pointer",
+    "null_disposition", "pointer_null_only", "disposition_null_only", "retracted_live",
+    "false_retraction", "legacy_scope", "legacy_epoch", "legacy_extra",
+    "record", "feedback", "reflection",
+])
+async def test_malformed_committed_pointer_keeps_original_head_and_blocks_later_delivery(tmp_path, capture_authority, operation_kind, malformation):
+    store, actor, binding = capture_authority
+    command = envelope(binding_id=binding)
+    if operation_kind == "correct":
+        original = await store.capture(actor, envelope(binding_id=binding, idempotency_key="original", origin_key="original"))
+        command = command.model_copy(update={"kind": "correction"})
+        operation = await store.correct(actor, binding, original.source_id, command)
+    else:
+        operation = await store.capture(actor, command)
+    ack = operation.model_dump(mode="json")
+    if malformation == "revision":
+        ack["source_pointer"]["source_revision"] = True
+    elif malformation == "clock":
+        ack["source_pointer"]["source_recorded_at"] = "2026-10-13T00:00:00"
+    elif malformation == "binding":
+        ack["source_pointer"]["binding_id"] = "another-binding"
+    elif malformation == "body":
+        ack["source_pointer"]["body"] = command.body
+    elif malformation == "disposition":
+        ack["capture_disposition"] = "ignored"
+    elif malformation == "source_identity":
+        ack["source_id"] = "another-source"
+    elif malformation == "operation_binding":
+        ack["binding_id"] = "another-binding"
+    elif malformation == "missing_pointer":
+        ack.pop("source_pointer")
+    elif malformation == "missing_disposition":
+        ack.pop("capture_disposition")
+    elif malformation == "null_pointer":
+        ack["source_pointer"] = None
+    elif malformation == "null_disposition":
+        ack["capture_disposition"] = None
+    elif malformation == "pointer_null_only":
+        ack["source_pointer"] = None
+        ack.pop("capture_disposition")
+    elif malformation == "disposition_null_only":
+        ack["capture_disposition"] = None
+        ack.pop("source_pointer")
+    elif malformation == "retracted_live":
+        ack["state"] = "retracted"
+    elif malformation == "false_retraction":
+        ack["source_pointer"] = None
+        ack["capture_disposition"] = "retracted"
+    elif malformation.startswith("legacy_"):
+        ack["source_pointer"] = ack["capture_disposition"] = None
+        if malformation == "legacy_scope":
+            ack["binding_id"] = "another-binding"
+        elif malformation == "legacy_epoch":
+            ack["epoch"] = True
+        else:
+            ack["body"] = command.body
+    else:
+        ack["kind"] = malformation
+    sent = []
+
+    class Malformed:
+        def request(self, route, payload):
+            sent.append(payload["idempotency_key"])
+            return ack
+
+    path = tmp_path / "producer" / "capture.sqlite3"
+    spool = ProducerSpool(path, "capture-test", binding, 65536)
+    try:
+        spool.enqueue(command)
+        spool.enqueue(envelope(binding_id=binding, idempotency_key="second", origin_key="second"))
+        result = spool.flush(Malformed())
+        assert result["committed"] == 0 and result["pending"] == 2
+        assert result["errors"] == ["CAPTURE_RECEIPT_INVALID"]
+        assert sent == [command.idempotency_key]
+        assert spool.disposition(command.idempotency_key) == {"state": "durably_spooled"}
+    finally:
+        spool.close()
+    reopened = ProducerSpool(path, "capture-test", binding, 65536)
+    try:
+        assert reopened.status()["pending"] == 2
+        assert reopened.enqueue(command)["replay"] is True
+    finally:
+        reopened.close()
+
+
+def test_late_commit_does_not_renew_original_receipt_age(tmp_path, clock):
+    path = tmp_path / "capture.sqlite3"
+    spool = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    command = envelope()
+    digest = canonical_digest(command.digest_payload())
+    try:
+        spool.enqueue(command)
+        spool._store_receipt(command.idempotency_key, digest, "expired", None)
+        clock[0] += 12 * 60 * 60
+        spool._store_receipt(command.idempotency_key, digest, "committed", "late-operation")
+        assert spool.disposition(command.idempotency_key)["operation_id"] == "late-operation"
+        clock[0] += 12 * 60 * 60 + 1
+        with pytest.raises(DomainError) as caught:
+            spool.disposition(command.idempotency_key)
+        assert caught.value.code == "SPOOL_REPLAY_EXPIRED_OR_UNKNOWN"
+    finally:
+        spool.close()
+
+
+@pytest.mark.asyncio
+async def test_committed_ignored_source_never_delivers_a_selectable_pointer(tmp_path, capture_authority):
+    store, actor, binding = capture_authority
+    command = envelope(binding_id=binding, body="[agents-memory:injected] not new evidence")
+    operation = await store.capture(actor, command)
+    assert operation.capture_disposition == "ignored" and operation.source_pointer is None
+
+    class Committed:
+        def request(self, route, payload):
+            return operation.model_dump(mode="json")
+
+    spool = ProducerSpool(tmp_path / "producer" / "capture.sqlite3", "capture-test", binding, 65536)
+    try:
+        spool.enqueue(command)
+        assert spool.flush(Committed())["committed"] == 1
+        result = spool.disposition(command.idempotency_key)
+        assert result["capture_disposition"] == "ignored"
+        assert "source_pointer" not in result
+    finally:
+        spool.close()
+
+
+@pytest.mark.asyncio
+async def test_receipt_persistence_and_outbox_deletion_rollback_together(tmp_path, capture_authority, monkeypatch):
+    store, actor, binding = capture_authority
+    command = envelope(binding_id=binding)
+    operation = await store.capture(actor, command)
+
+    class Committed:
+        def request(self, route, payload):
+            return operation.model_dump(mode="json")
+
+    path = tmp_path / "producer" / "capture.sqlite3"
+    spool = ProducerSpool(path, "capture-test", binding, 65536)
+    spool.enqueue(command)
+    original = spool._store_receipt
+
+    def interrupted(*args, **kwargs):
+        original(*args, **kwargs)
+        raise sqlite3.OperationalError("interrupted ACK transaction")
+
+    monkeypatch.setattr(spool, "_store_receipt", interrupted)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            spool.flush(Committed())
+    finally:
+        spool.close()
+    reopened = ProducerSpool(path, "capture-test", binding, 65536)
+    try:
+        assert reopened.disposition(command.idempotency_key) == {"state": "durably_spooled"}
+        assert reopened.flush(Committed())["committed"] == 1
+        assert reopened.disposition(command.idempotency_key)["source_pointer"]["source_id"] == operation.source_id
+    finally:
+        reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_capture_ack_reopens_without_inventing_pointer_revision_or_clocks(tmp_path, capture_authority):
+    store, actor, binding = capture_authority
+    command = envelope(binding_id=binding)
+    operation = await store.capture(actor, command)
+    legacy = operation.model_dump(mode="json", exclude={"source_pointer", "capture_disposition", "selection_label"})
+
+    class LegacyEndpoint:
+        def request(self, route, payload):
+            return legacy
+
+    path = tmp_path / "producer" / "capture.sqlite3"
+    spool = ProducerSpool(path, "capture-test", binding, 65536)
+    try:
+        spool.enqueue(command)
+        assert spool.flush(LegacyEndpoint())["committed"] == 1
+    finally:
+        spool.close()
+    reopened = ProducerSpool(path, "capture-test", binding, 65536)
+    try:
+        result = reopened.disposition(command.idempotency_key)
+        assert result == {"state": "committed", "operation_id": operation.id}
+        assert reopened.enqueue(command) == {**result, "replay": True}
+        assert all(key not in json.dumps(result) for key in ("source_revision", "source_event_time", "source_recorded_at"))
+    finally:
+        reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_precompany_migration_lost_ack_replay_drains_explicit_null_provenance_and_next_capture(tmp_path, capture_authority, capture_endpoint):
+    from test_store_authority import historical_schema_fixture
+
+    store, actor, binding = capture_authority
+    endpoint, sent = capture_endpoint
+    command = envelope(binding_id=binding)
+    following = envelope(binding_id=binding, idempotency_key="after-legacy", origin_key="after-legacy")
+    path = tmp_path / "producer" / "capture.sqlite3"
+    committed = {}
+
+    class LostAck:
+        def request(self, route, payload):
+            committed.update(endpoint.request(route, payload))
+            raise DomainError("SERVICE_UNAVAILABLE", "Committed response was lost", effect=EffectState.UNKNOWN)
+
+    def lose_ack():
+        spool = ProducerSpool(path, "capture-test", binding, 65536)
+        try:
+            spool.enqueue(command)
+            spool.enqueue(following)
+            result = spool.flush(LostAck())
+            assert result["pending"] == 2 and result["quarantined"] == 0
+        finally:
+            spool.close()
+
+    await asyncio.to_thread(lose_ack)
+    assert sent == [command.idempotency_key]
+    await historical_schema_fixture(store, 3)
+    await store.close()
+    await asyncio.to_thread(migrate, store.settings.database_dsn)
+    await store.open()
+    await store.reconcile_journal()
+    async with store.pool.acquire() as connection:
+        row = await connection.fetchrow("SELECT source_pointer,capture_disposition FROM am_operations WHERE id=$1", committed["id"])
+    assert row["source_pointer"] is None and row["capture_disposition"] is None
+    legacy = await store.capture(actor, command)
+    ack = legacy.model_dump(mode="json")
+    assert ack["source_pointer"] is None and ack["capture_disposition"] is None
+    assert legacy.id == committed["id"]
+
+    def reconcile():
+        spool = ProducerSpool(path, "capture-test", binding, 65536)
+        try:
+            result = spool.flush(endpoint)
+            assert result["committed"] == 2 and result["pending"] == result["quarantined"] == 0
+            assert result["errors"] == []
+        finally:
+            spool.close()
+
+    await asyncio.to_thread(reconcile)
+    assert sent == [command.idempotency_key, command.idempotency_key, following.idempotency_key]
+    next_operation = await store.capture(actor, following)
+    reopened = ProducerSpool(path, "capture-test", binding, 65536)
+    try:
+        receipt = {"state": "committed", "operation_id": legacy.id}
+        assert reopened.disposition(command.idempotency_key) == receipt
+        assert reopened.enqueue(command) == {**receipt, "replay": True}
+        assert reopened.disposition(following.idempotency_key)["source_pointer"] == next_operation.source_pointer.model_dump(mode="json")
+    finally:
+        reopened.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retracted", [False, True])
+async def test_completed_correction_origin_capture_replay_preserves_authoritative_receipt(tmp_path, capture_authority, capture_endpoint, retracted):
+    store, actor, binding = capture_authority
+    endpoint, sent = capture_endpoint
+    original = await store.capture(actor, envelope(binding_id=binding, idempotency_key="original", origin_key="original"))
+    correction = envelope(binding_id=binding, idempotency_key="correct", origin_key="replacement", kind="correction", body="Keep customer data inside this project.")
+    corrected = await store.correct(actor, binding, original.source_id, correction)
+    assert corrected.kind == "correct" and corrected.capture_disposition == "captured"
+    replay = correction.model_copy(update={"idempotency_key": "capture-correction-origin"})
+    if retracted:
+        await store.retract(actor, binding, corrected.source_id, "retract-correction")
+    authoritative = await store.capture(actor, replay)
+    assert authoritative.id == corrected.id and authoritative.kind == "correct"
+    following = envelope(binding_id=binding, idempotency_key="after-correct", origin_key="after-correct")
+    path = tmp_path / "producer" / "capture.sqlite3"
+
+    def drain():
+        spool = ProducerSpool(path, "capture-test", binding, 65536)
+        try:
+            spool.enqueue(replay)
+            spool.enqueue(following)
+            result = spool.flush(endpoint)
+            assert result["committed"] == 2 and result["pending"] == result["quarantined"] == 0
+            assert result["errors"] == []
+        finally:
+            spool.close()
+
+    await asyncio.to_thread(drain)
+    assert sent == [replay.idempotency_key, following.idempotency_key]
+    reopened = ProducerSpool(path, "capture-test", binding, 65536)
+    try:
+        receipt = reopened.disposition(replay.idempotency_key)
+        assert receipt["operation_id"] == corrected.id
+        assert receipt["capture_disposition"] == ("retracted" if retracted else "captured")
+        if retracted:
+            assert authoritative.source_pointer is None
+            assert "source_pointer" not in receipt
+        else:
+            assert receipt["source_pointer"] == corrected.source_pointer.model_dump(mode="json")
+        assert reopened.enqueue(replay) == {**receipt, "replay": True}
+    finally:
+        reopened.close()
+
+
+def test_fresh_legacy_secret_behind_a_transient_head_is_scrubbed_before_delivery(tmp_path):
+    path = tmp_path / "producer" / "capture.sqlite3"
+    secret = "ghp_" + "a" * 36
+    spool = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    spool.enqueue(envelope(idempotency_key="safe-first"))
+    command = envelope(idempotency_key="legacy-second", origin_key="legacy-origin")
+    spool.enqueue(command)
+    payload = command.model_dump(mode="json")
+    payload.update(body=secret, idempotency_key=secret)
+    encoded = json.dumps(payload)
+    spool.db.execute(
+        "UPDATE outbox SET key=?,payload=?,digest=?,bytes=? WHERE key=?",
+        (secret, encoded, "legacy-source-digest", len(encoded), "legacy-second"),
+    )
+    spool.close()
+    reopened = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    calls = []
+
+    class UnavailableEndpoint:
+        def request(self, route, payload):
+            calls.append(payload["idempotency_key"])
+            raise DomainError("SERVICE_UNAVAILABLE", "Delivery cannot start", status=503)
+
+    try:
+        result = reopened.flush(UnavailableEndpoint())
+        assert calls == ["safe-first"]
+        assert result["pending"] == 1 and result["quarantined"] == 1
+        assert result["gaps"]["SOURCE_SECRET_REJECTED"] == 1
+        entry, = reopened.inspect()["entries"]
+        assert entry["code"] == "SOURCE_SECRET_REJECTED"
+        assert entry["effect"] == entry["prior_effect"] == "unknown"
+        assert entry["bytes"] == 0 and entry["digest"] == "" and entry["key"] != secret
+        assert reopened.db.execute("SELECT key FROM outbox").fetchall() == [("safe-first",)]
+        assert reopened.db.execute("SELECT digest,payload,bytes FROM quarantine").fetchall() == [("", "", 0)]
+        assert secret not in json.dumps(reopened.inspect())
+        for candidate in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
+            if candidate.exists():
+                assert secret.encode() not in candidate.read_bytes()
+        with pytest.raises(DomainError) as caught:
+            reopened.resolve(entry["key"])
+        assert caught.value.code == "SOURCE_SECRET_REJECTED" and caught.value.effect == EffectState.UNKNOWN
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("table", ["outbox", "quarantine"])
+def test_secret_legacy_payload_is_body_free_with_unknown_prior_effect(tmp_path, table):
+    path = tmp_path / "producer" / "capture.sqlite3"
+    secret = "ghp_" + "a" * 36
+    command = envelope()
+    spool = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    spool.enqueue(command)
+    payload = command.model_dump(mode="json")
+    payload["body"] = secret
+    payload["idempotency_key"] = secret
+    encoded = json.dumps(payload)
+    spool.db.execute("UPDATE outbox SET key=?,payload=?,digest=?,bytes=?", (secret, encoded, "legacy-source-digest", len(encoded)))
+    if table == "quarantine":
+        spool.db.execute(
+            "INSERT INTO quarantine SELECT key,digest,payload,bytes,'INPUT_INVALID',created_at,expires_at FROM outbox"
+        )
+        spool.db.execute("DELETE FROM outbox")
+    spool.close()
+    reopened = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    attempts = []
+
+    class ForbiddenEndpoint:
+        def request(self, route, payload):
+            attempts.append(payload)
+            raise AssertionError("A refused legacy source must not be dispatched")
+
+    try:
+        result = reopened.flush(ForbiddenEndpoint())
+        assert not attempts and result["pending"] == 0 and result["quarantined"] == 1
+        entry, = reopened.inspect()["entries"]
+        assert entry["code"] == "SOURCE_SECRET_REJECTED"
+        assert entry["effect"] == entry["prior_effect"] == "unknown"
+        assert entry["bytes"] == 0 and entry["digest"] == ""
+        assert secret not in json.dumps(reopened.inspect())
+        row = reopened.db.execute("SELECT key,digest,payload,bytes FROM quarantine").fetchone()
+        assert row[1:] == ("", "", 0) and row[0] != secret
+        with pytest.raises(DomainError) as caught:
+            reopened.resolve(entry["key"])
+        assert caught.value.effect == EffectState.UNKNOWN
+        assert reopened.disposition(entry["key"])["prior_effect"] == "unknown"
+        assert reopened.resolve(entry["key"], discard=True)["state"] == "discarded"
+    finally:
+        reopened.close()
+    assert secret.encode() not in path.read_bytes()
+
+
+@pytest.mark.parametrize("table", ["outbox", "quarantine"])
+@pytest.mark.parametrize("secret_field", ["body", "idempotency_key"])
+@pytest.mark.parametrize("age,boundary", [
+    ("expired", "open"), ("unknown", "open"), ("missing_columns", "open"),
+    ("expired", "housekeep"), ("unknown", "housekeep"),
+])
+def test_aged_legacy_secret_never_creates_a_secret_derived_expiry_receipt(tmp_path, clock, table, secret_field, age, boundary):
+    path = tmp_path / "producer" / "capture.sqlite3"
+    path.parent.mkdir(mode=0o700)
+    path.touch(mode=0o600)
+    spool = ProducerSpool(path, "deployment-001", "binding-001", 65536) if boundary == "housekeep" else None
+    secret = "ghp_" + "a" * 36
+    payload = envelope(idempotency_key="legacy-secret").model_dump(mode="json")
+    payload[secret_field] = secret
+    secret_key = payload["idempotency_key"]
+    secret_digest = canonical_digest(payload)
+    safe = envelope(idempotency_key="safe-expiring", origin_key="safe-expiring")
+    committed = envelope(idempotency_key="safe-committed", origin_key="safe-committed")
+    created_at = clock[0] - spool_module.PAYLOAD_RETENTION_SECONDS
+    expires_at = clock[0] if age == "expired" else 0
+    ages = "" if age == "missing_columns" else ",created_at REAL NOT NULL DEFAULT 0,expires_at REAL NOT NULL DEFAULT 0"
+    connection = sqlite3.connect(path)
+    try:
+        if boundary == "open":
+            connection.executescript(
+                "CREATE TABLE identity (slot INTEGER PRIMARY KEY, deployment TEXT NOT NULL, binding TEXT NOT NULL);"
+                "INSERT INTO identity VALUES(1,'deployment-001','binding-001');"
+                f"CREATE TABLE outbox (key TEXT PRIMARY KEY, digest TEXT NOT NULL, payload TEXT NOT NULL, bytes INTEGER NOT NULL, failure TEXT{ages});"
+                f"CREATE TABLE quarantine (key TEXT PRIMARY KEY, digest TEXT NOT NULL, payload TEXT NOT NULL, bytes INTEGER NOT NULL, failure TEXT NOT NULL{ages});"
+                "CREATE TABLE receipts (key TEXT PRIMARY KEY, digest TEXT NOT NULL, state TEXT NOT NULL, operation_id TEXT, created_at REAL NOT NULL DEFAULT 0);"
+            )
+        for key, digest, body in (
+            (secret_key, secret_digest, payload),
+            (safe.idempotency_key, canonical_digest(safe.digest_payload()), safe.model_dump(mode="json")),
+        ):
+            encoded = json.dumps(body)
+            values = (key, digest, encoded, len(encoded.encode("utf-8")), "INPUT_INVALID")
+            if age == "missing_columns":
+                connection.execute(f"INSERT INTO {table}(key,digest,payload,bytes,failure) VALUES(?,?,?,?,?)", values)
+            else:
+                connection.execute(
+                    f"INSERT INTO {table}(key,digest,payload,bytes,failure,created_at,expires_at) VALUES(?,?,?,?,?,?,?)",
+                    (*values, created_at, expires_at),
+                )
+        connection.execute(
+            "INSERT INTO receipts(key,digest,state,operation_id,created_at) VALUES(?,?,'committed','operation-safe',?)",
+            (committed.idempotency_key, canonical_digest(committed.digest_payload()), clock[0]),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    if spool is None:
+        spool = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    try:
+        inspection = spool.inspect()
+        gap = "SPOOL_PAYLOAD_EXPIRED" if age == "expired" else "SPOOL_PAYLOAD_AGE_UNKNOWN"
+        assert inspection["entries"] == []
+        assert inspection["pending"] == inspection["quarantined"] == inspection["bytes"] == 0
+        assert inspection["gaps"] == {gap: 2, "SOURCE_SECRET_REJECTED": 1}
+        assert inspection["retained_receipts"] == 2
+        assert secret not in json.dumps(inspection) and secret_digest not in json.dumps(inspection)
+        assert spool.db.execute("SELECT 1 FROM receipts WHERE key=? OR digest=?", (secret_key, secret_digest)).fetchone() is None
+        with pytest.raises(DomainError) as caught:
+            spool.disposition(secret_key)
+        assert caught.value.code == "SPOOL_REPLAY_EXPIRED_OR_UNKNOWN"
+        assert secret not in json.dumps(caught.value.public())
+        assert spool.disposition(safe.idempotency_key) == {"state": "expired", "operation_id": None}
+        assert spool.enqueue(safe) == {"state": "expired", "operation_id": None, "replay": True}
+        assert spool.enqueue(committed) == {"state": "committed", "operation_id": "operation-safe", "replay": True}
+        persisted = "\n".join(spool.db.iterdump())
+        assert secret not in persisted and secret_digest not in persisted
+        for companion in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
+            if companion.exists():
+                data = companion.read_bytes()
+                assert secret.encode() not in data and secret_digest.encode() not in data
+    finally:
+        spool.close()
+    reopened = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    try:
+        assert reopened.status()["gaps"] == {gap: 2, "SOURCE_SECRET_REJECTED": 1}
+        assert reopened.disposition(committed.idempotency_key) == {"state": "committed", "operation_id": "operation-safe"}
+        assert secret not in "\n".join(reopened.db.iterdump())
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("malformation", ["type", "extra", "digest", "key"])
+def test_legacy_spool_requires_complete_typed_identity_before_dispatch(tmp_path, malformation):
+    spool = ProducerSpool(tmp_path / "producer" / "capture.sqlite3", "deployment-001", "binding-001", 65536)
+    command = envelope()
+    try:
+        spool.enqueue(command)
+        payload = command.model_dump(mode="json")
+        if malformation == "type":
+            payload["injected"] = "false"
+        elif malformation == "extra":
+            payload["invented_authority"] = True
+        elif malformation == "key":
+            payload["idempotency_key"] = "another-key"
+        spool.db.execute(
+            "UPDATE outbox SET payload=?,digest=?",
+            (json.dumps(payload), "wrong-digest" if malformation == "digest" else canonical_digest(command.digest_payload())),
+        )
+        attempts = []
+
+        class ForbiddenEndpoint:
+            def request(self, route, payload):
+                attempts.append(payload)
+                raise AssertionError("Invalid legacy payload reached dispatch")
+
+        result = spool.flush(ForbiddenEndpoint())
+        assert not attempts and result["errors"] == ["SPOOL_PAYLOAD_INVALID"]
+        assert result["pending"] == 0 and result["newly_quarantined"] == 1
+        entry, = spool.inspect()["entries"]
+        assert entry["prior_effect"] == "unknown" and entry["bytes"] == 0
+    finally:
+        spool.close()
+
+
+@pytest.mark.parametrize("body", (
+    " \tNegation: do not export.\r\n예외도 보존합니다.  ",
+    "-----BEGIN PRIVATE KEY-----\n" + " " * 64 + "\n-----END PRIVATE KEY-----",
+))
+def test_typed_enqueue_does_not_reclassify_or_rewrite_admitted_source(tmp_path, monkeypatch, body):
+    command = envelope(body=body)
+    spool = ProducerSpool(tmp_path / "producer" / "capture.sqlite3", "deployment-001", "binding-001", 65536)
+    try:
+        def forbidden_scan(text):
+            raise AssertionError("Typed admission was scanned again during enqueue")
+
+        monkeypatch.setattr("agents_memory.domain.reject_source_secrets", forbidden_scan)
+        spool.enqueue(command)
+        row = spool.db.execute("SELECT payload,digest FROM outbox").fetchone()
+        assert json.loads(row[0])["body"].encode() == command.body.encode()
+        assert row[1] == canonical_digest(command.digest_payload())
+    finally:
+        spool.close()
+
+
+@pytest.mark.parametrize("corruption", ("payload", "digest"))
+def test_stale_invalid_classification_preserves_acknowledged_replacement(tmp_path, monkeypatch, corruption):
+    path = tmp_path / "producer" / "capture.sqlite3"
+    left = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    right = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+
+    class ForbiddenEndpoint:
+        def request(self, *_args, **_kwargs):
+            pytest.fail("Invalid local evidence must not reach the network")
+
+    try:
+        safe = envelope()
+        left.enqueue(safe)
+        digest, payload = left.db.execute(
+            "SELECT digest,payload FROM outbox WHERE key=?", (safe.idempotency_key,),
+        ).fetchone()
+        if corruption == "payload":
+            legacy = json.loads(payload)
+            legacy["body"] = "ghp_" + "a" * 36
+            invalid = json.dumps(legacy)
+            left.db.execute(
+                "UPDATE outbox SET payload=?,bytes=? WHERE key=?",
+                (invalid, len(invalid.encode()), safe.idempotency_key),
+            )
+            code = "SOURCE_SECRET_REJECTED"
+        else:
+            invalid_digest = ("1" if digest[0] != "1" else "2") + digest[1:]
+            left.db.execute("UPDATE outbox SET digest=? WHERE key=?", (invalid_digest, safe.idempotency_key))
+            code = "SPOOL_PAYLOAD_INVALID"
+
+        original = left._quarantine_invalid
+        acknowledged = []
+
+        def replace_after_classification(*args, **kwargs):
+            assert not acknowledged
+            if corruption == "payload":
+                right._scrub_legacy_sources()
+            else:
+                right.flush(ForbiddenEndpoint())
+            acknowledged.append(right.enqueue(safe))
+            assert acknowledged[0]["state"] == "durably_spooled"
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(left, "_quarantine_invalid", replace_after_classification)
+        if corruption == "payload":
+            left._scrub_legacy_sources()
+            result = left.status()
+        else:
+            result = left.flush(ForbiddenEndpoint())
+        assert len(acknowledged) == 1
+        retained = left.db.execute(
+            "SELECT digest,payload FROM outbox WHERE key=?", (safe.idempotency_key,),
+        ).fetchone()
+        assert retained == (digest, payload), "A stale classifier deleted an acknowledged safe replacement"
+        assert result["pending"] == 1 and result["quarantined"] == 1
+        assert result["gaps"] == {code: 1}
+        if corruption == "digest":
+            assert result["newly_quarantined"] == 0
+            assert result["errors"] == []
+    finally:
+        right.close()
+        left.close()
+
+
+@pytest.mark.parametrize("outcome", ("committed", "rejected"))
+def test_late_network_result_preserves_acknowledged_replacement_after_receipt_eviction(tmp_path, clock, outcome):
+    path = tmp_path / "producer" / "capture.sqlite3"
+    left = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    right = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    original = envelope()
+    replacement = envelope(origin_key="replacement-origin", body="Retain the independently captured replacement.")
+    acknowledged = []
+
+    class CommittedFillers:
+        def request(self, route, payload):
+            return {"effect": "committed", "id": "filler-operation-" + payload["idempotency_key"]}
+
+    class LateOriginal:
+        def request(self, route, payload):
+            assert payload["body"] == original.body
+            clock[0] += 2
+            assert right.status()["pending"] == 0
+            assert right.disposition(original.idempotency_key)["state"] == "expired"
+            for index in range(right.receipt_limit):
+                right.enqueue(envelope(idempotency_key=f"receipt-filler-{index}", origin_key=f"filler-origin-{index}"))
+            filled = right.flush(CommittedFillers(), limit=128)
+            assert filled["committed"] == right.receipt_limit
+            assert right.db.execute("SELECT 1 FROM receipts WHERE key=?", (original.idempotency_key,)).fetchone() is None
+            acknowledged.append(right.enqueue(replacement))
+            assert acknowledged[0]["state"] == "durably_spooled"
+            if outcome == "rejected":
+                raise DomainError("INPUT_INVALID", "Original envelope was rejected", effect=EffectState.NOT_COMMITTED)
+            return {"effect": "committed", "id": "operation-original"}
+
+    try:
+        left.enqueue(original)
+        clock[0] += 24 * 60 * 60 - 1
+        result = left.flush(LateOriginal(), limit=1)
+        assert len(acknowledged) == 1
+        retained = right.db.execute("SELECT digest,payload FROM outbox WHERE key=?", (replacement.idempotency_key,)).fetchone()
+        assert retained is not None, "A late result removed another envelope's durable acknowledgment"
+        assert retained[0] == canonical_digest(replacement.digest_payload())
+        assert json.loads(retained[1])["body"] == replacement.body
+        assert right.disposition(replacement.idempotency_key) == {"state": "durably_spooled"}
+        assert result["pending"] == 1 and result["quarantined"] == 0
+        assert result["committed"] == (1 if outcome == "committed" else 0)
+    finally:
+        right.close()
+        left.close()

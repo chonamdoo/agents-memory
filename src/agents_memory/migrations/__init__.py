@@ -10,7 +10,7 @@ from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-MIGRATIONS = ("0001_authority", "0002_directional_tombstones", "0003_origin_and_vector_compat", "0004_operation_successors")
+MIGRATIONS = ("0001_authority", "0002_directional_tombstones", "0003_origin_and_vector_compat", "0004_operation_successors", "0005_company_selection", "0006_agent_judged")
 MIGRATION = MIGRATIONS[-1]
 
 
@@ -77,6 +77,28 @@ def restore_preparation_sql(archived_revision: str, schema: str) -> str:
         f"'{MIGRATION}' THEN RAISE EXCEPTION 'Unsupported current authority migration'; END IF; END $$",
     ]
     archived_index = MIGRATIONS.index(archived_revision)
+    if archived_index < 5:
+        statements.extend([
+            "ALTER TABLE am_claims DROP COLUMN cleanup_sequence",
+            "ALTER TABLE am_clock DROP COLUMN cleanup_progress",
+            "DROP INDEX am_rejection_history_selection",
+            "DROP INDEX am_rejection_history_feedback",
+            "DROP INDEX am_feedback_reason_source",
+            "DROP TABLE am_rejection_tokens",
+            "DROP TABLE am_rejection_evidence",
+            "ALTER TABLE am_relations DROP CONSTRAINT am_relations_judgment_id_fkey",
+            "ALTER TABLE am_admissions DROP COLUMN pending_id",
+            "DROP TABLE am_claim_judgments",
+            "DROP TABLE am_retired_jobs",
+            "DROP TABLE am_pending_judgments",
+        ])
+    if archived_index < 4:
+        statements.extend([
+            "ALTER TABLE am_claims DROP CONSTRAINT am_claims_selection_id_fkey",
+            "DROP TABLE am_selection_sources",
+            "DROP TABLE am_source_selections",
+            "DROP TABLE am_selection_policies",
+        ])
     if archived_index < 3:
         statements.append("ALTER TABLE am_operations DROP CONSTRAINT am_operations_successor_operation_id_fkey")
     if archived_index < 2:

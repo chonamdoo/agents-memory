@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import hashlib
@@ -17,12 +18,14 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from test_spool_boundaries import capture_authority as capture_authority
 
 from agents_memory import hosts, private_io
 from agents_memory.config import Settings
 from agents_memory.context import compose
 from agents_memory.domain import (
     ActiveRule,
+    CaptureCommand,
     ContextCommand,
     DomainError,
     EffectState,
@@ -543,6 +546,10 @@ def test_strict_action_rejects_service_text_that_fits_only_the_marker_budget(ins
     ("gaps", []), ("gaps", {"malformed-source-private": []}),
     ("gaps", {"capture": True}), ("gaps", {"capture": -1}), ("gaps", {"capture": 0.0}),
     ("gaps", {"capture": 2**63}),
+    ("capture", {"key": "capture-one", "generation": True}),
+    ("capture", {"key": "capture-one", "generation": 0}),
+    ("capture", {"key": "", "generation": 1}),
+    ("capture", {"key": "capture-one", "generation": 1, "body": "malformed-source-private"}),
 ])
 @pytest.mark.parametrize("event_name", ["PreToolUse", "UserPromptSubmit"])
 def test_malformed_durable_generation_state_returns_body_free_native_refusal(installation, authority, field, value, event_name):
@@ -725,10 +732,12 @@ def test_omp_ingress_only_capture_has_explicit_limited_identity(installation, au
     another = hosts.handle_hook(receipt, {**event, "hook_instance_id": "ingress-two"})
     assert another["capture"]["pending"] == 2
     hosts.handle_hook(receipt, native(project, "omp", "before_agent_start", prompt="transformed injected prompt"))
-    assert len([call for call in authority.calls if call[0] == "/api/capture"]) == 3
+    bodies = [body["body"] for path, _, body in authority.calls if path == "/api/capture"]
+    assert set(bodies) == {"a genuine ingress message"}
+    sent = len(bodies)
     excluded = hosts.handle_hook(receipt, {**event, "text": hosts.BOUNDED_CONTEXT_MARKER + " retrieved memory"})
     assert excluded["capture"]["state"] == "excluded"
-    assert len([call for call in authority.calls if call[0] == "/api/capture"]) == 3
+    assert len([call for call in authority.calls if call[0] == "/api/capture"]) == sent
 
 
 def test_spool_overflow_is_durable_explicit_body_free_gap(installation, authority):
@@ -819,6 +828,7 @@ def test_action_output_preserves_exact_required_rule_revision_and_body(installat
 @pytest.mark.parametrize("field,value", [
     ("strict", None), ("strict", "false"), ("host", []), ("state", []),
     ("runtime_dir", None), ("max_http_body_bytes", True), ("ownership", [{}]),
+    ("capability", None), ("capability", "semantic"), ("capability", "lexical_entity"),
 ])
 def test_integrity_signed_but_incomplete_receipt_fails_closed(installation, field, value):
     project, _, _, _, install = installation
@@ -862,15 +872,49 @@ def test_private_runtime_inside_consumer_project_is_refused_before_any_config_wr
     assert list(project.iterdir()) == []
 
 
-def _abrupt_process(work):
-    process = multiprocessing.get_context("fork").Process(target=work)
-    process.start()
-    process.join(10)
-    if process.is_alive():
-        process.kill()
-        process.join()
-        pytest.fail("Owned mutation never reached its deterministic crash point")
-    assert process.exitcode == 41
+def _crash_host_mutation(operation, args, options, crash_path, crash_state, new_intent_except):
+    writer = hosts.private_write
+    unlink = hosts._unlink
+
+    def exit_at_boundary(path, content=None):
+        if new_intent_except is not None:
+            if content is None or not path.name.startswith("ownership-") or path == new_intent_except:
+                return
+        elif path != crash_path or (
+            crash_state is not None and (content is None or json.loads(content)["state"] != crash_state)
+        ):
+            return
+        os._exit(41)
+
+    def write_and_exit(path, content, *, replace=False, **kwargs):
+        writer(path, content, replace=replace, **kwargs)
+        exit_at_boundary(path, content)
+
+    def unlink_and_exit(path, **kwargs):
+        unlink(path, **kwargs)
+        exit_at_boundary(path)
+
+    hosts.private_write = write_and_exit
+    hosts._unlink = unlink_and_exit
+    operation(*args, **options)
+
+
+def _abrupt_process(operation, *args, crash_path=None, crash_state=None, new_intent_except=None, **options):
+    process = multiprocessing.get_context("spawn").Process(
+        target=_crash_host_mutation,
+        args=(operation, args, options, crash_path, crash_state, new_intent_except),
+    )
+    try:
+        process.start()
+        process.join(10)
+        if process.is_alive():
+            pytest.fail("Owned mutation never reached its deterministic crash point")
+        assert process.exitcode == 41
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join()
+        process.close()
     # The child has exited, so its native mkdir lease is abandoned. Expire
     # that real on-disk lease without making every crash regression sleep 10s.
     lock = hosts._claude_config_path().with_name(".claude.json.lock")
@@ -893,21 +937,12 @@ def test_process_death_install_reconciles_owned_intent_without_erasing_user_or_a
     mcp.write_bytes(original)
     receipt_path = hosts._receipt_path(settings, project, host)
 
-    def crash():
-        writer = hosts.private_write
-
-        def write_and_exit(path, content, *, replace=False, **options):
-            writer(path, content, replace=replace, **options)
-            if boundary == "installed_receipt":
-                if path == receipt_path and json.loads(content)["state"] == "installed":
-                    os._exit(41)
-            elif path == (receipt_path if boundary == "pending_receipt" else mcp):
-                os._exit(41)
-
-        hosts.private_write = write_and_exit
-        hosts.install_host(settings, project, "project-binding", host, agent, producer, strict=host != "omp")
-
-    _abrupt_process(crash)
+    _abrupt_process(
+        hosts.install_host, settings, project, "project-binding", host, agent, producer,
+        crash_path=mcp if boundary == "first_config" else receipt_path,
+        crash_state="installed" if boundary == "installed_receipt" else None,
+        strict=host != "omp",
+    )
     pending = hosts.load_receipt(receipt_path, active=False)
     assert pending["state"] == ("installed" if boundary == "installed_receipt" else "pending")
     assert hosts.handle_hook(receipt_path, action(project, host))["state"] == ("degraded" if host == "omp" else "blocked")
@@ -926,39 +961,30 @@ def test_process_death_install_reconciles_owned_intent_without_erasing_user_or_a
         assert json.loads(mcp.read_text()) == (expected if host == "claude" else json.loads(original))
 
 
-@pytest.mark.parametrize("host", ["claude", "codex", "omp"])
+@pytest.mark.parametrize("host,historical_omp_strict", [
+    ("claude", False), ("codex", False), ("omp", False), ("omp", True),
+])
 @pytest.mark.parametrize("boundary", ["removing_receipt", "first_config", "removed_receipt"])
-def test_process_death_uninstall_resumes_removal_and_preserves_other_entries(installation, host, boundary):
+@pytest.mark.parametrize("historical_v4", [False, True])
+def test_process_death_uninstall_resumes_removal_and_preserves_other_entries(installation, host, boundary, historical_v4, historical_omp_strict):
     project, settings, _, _, install = installation
     user = project / "AF-owned.json"
     user.write_text("preserve user and AF\n")
     receipt_path = install(host)
-    manifest = hosts.load_receipt(receipt_path)
+    if historical_omp_strict:
+        _historical_omp_strict_metadata(receipt_path)
+    manifest = _historical_v4_metadata(receipt_path) if historical_v4 else hosts.load_receipt(receipt_path, allow_legacy=historical_omp_strict, active=False)
     first = project / manifest["ownership"][0]["path"]
 
-    def crash():
-        unlink = hosts._unlink
-
-        def unlink_and_exit(path, **options):
-            unlink(path, **options)
-            if boundary == "first_config" and path == first:
-                os._exit(41)
-
-        hosts._unlink = unlink_and_exit
-        writer = hosts.private_write
-
-        def write_and_exit(path, content, *, replace=False, **options):
-            writer(path, content, replace=replace, **options)
-            if boundary == "first_config" and path == first:
-                os._exit(41)
-            if path == receipt_path and json.loads(content)["state"] == boundary.removesuffix("_receipt"):
-                os._exit(41)
-
-        hosts.private_write = write_and_exit
-        hosts.uninstall_host(settings, project, host)
-
-    _abrupt_process(crash)
-    assert hosts.load_receipt(receipt_path, active=False)["state"] == ("removed" if boundary == "removed_receipt" else "removing")
+    _abrupt_process(
+        hosts.uninstall_host, settings, project, host,
+        crash_path=first if boundary == "first_config" else receipt_path,
+        crash_state=None if boundary == "first_config" else boundary.removesuffix("_receipt"),
+    )
+    interrupted = hosts.load_receipt(receipt_path, allow_legacy=historical_v4 or historical_omp_strict, active=False)
+    assert interrupted["state"] == ("removed" if boundary == "removed_receipt" else "removing")
+    if historical_v4:
+        assert "capability" not in interrupted and interrupted["capabilities"] == manifest["capabilities"]
     expected = None
     if host == "claude":
         expected = update_native_unowned_state(project)
@@ -971,7 +997,9 @@ def test_process_death_uninstall_resumes_removal_and_preserves_other_entries(ins
         assert not (project / ".claude/settings.local.json").exists()
     else:
         assert not first.exists()
-    assert hosts.load_receipt(install(host))["installation_id"] != manifest["installation_id"]
+    replacement = hosts.load_receipt(install(host))
+    assert replacement["installation_id"] != manifest["installation_id"]
+    assert replacement["capability"] == settings.capability
 
 
 @pytest.mark.parametrize("boundary", ["pending_receipt", "first_config"])
@@ -981,18 +1009,10 @@ def test_interrupted_claude_install_preserves_unowned_updates(installation, boun
     native = hosts._claude_config_path()
     receipt = hosts._receipt_path(settings, project, "claude")
 
-    def crash():
-        writer = hosts.private_write
-
-        def write_and_exit(path, content, *, replace=False, **options):
-            writer(path, content, replace=replace, **options)
-            if path == (receipt if boundary == "pending_receipt" else native):
-                os._exit(41)
-
-        hosts.private_write = write_and_exit
-        hosts.install_host(settings, project, "project-binding", "claude", agent, producer, strict=True)
-
-    _abrupt_process(crash)
+    _abrupt_process(
+        hosts.install_host, settings, project, "project-binding", "claude", agent, producer,
+        crash_path=receipt if boundary == "pending_receipt" else native, strict=True,
+    )
     expected = update_native_unowned_state(project)
     mcp_servers(expected, project).pop(hosts.SERVER_NAME, None)
     if recover == "install":
@@ -1009,18 +1029,10 @@ def test_interrupted_claude_owned_conflict_refuses_retry_and_cancellation(instal
     native = hosts._claude_config_path()
     receipt = hosts._receipt_path(settings, project, "claude")
 
-    def crash():
-        writer = hosts.private_write
-
-        def write_and_exit(path, content, *, replace=False, **options):
-            writer(path, content, replace=replace, **options)
-            if path == (receipt if boundary == "pending_receipt" else native):
-                os._exit(41)
-
-        hosts.private_write = write_and_exit
-        hosts.install_host(settings, project, "project-binding", "claude", agent, producer, strict=True)
-
-    _abrupt_process(crash)
+    _abrupt_process(
+        hosts.install_host, settings, project, "project-binding", "claude", agent, producer,
+        crash_path=receipt if boundary == "pending_receipt" else native, strict=True,
+    )
     document = update_native_unowned_state(project)
     mcp_servers(document, project)[hosts.SERVER_NAME] = {"command": "not-ours"}
     native.write_text(json.dumps(document))
@@ -1040,20 +1052,11 @@ def test_interrupted_claude_removal_preserves_replacement_owned_conflict(install
     receipt = install()
     native = hosts._claude_config_path()
 
-    def crash():
-        writer = hosts.private_write
-
-        def write_and_exit(path, content, *, replace=False, **options):
-            writer(path, content, replace=replace, **options)
-            if boundary == "first_config" and path == native:
-                os._exit(41)
-            if boundary == "removing_receipt" and path == receipt and json.loads(content)["state"] == "removing":
-                os._exit(41)
-
-        hosts.private_write = write_and_exit
-        hosts.uninstall_host(settings, project, "claude")
-
-    _abrupt_process(crash)
+    _abrupt_process(
+        hosts.uninstall_host, settings, project, "claude",
+        crash_path=native if boundary == "first_config" else receipt,
+        crash_state=None if boundary == "first_config" else "removing",
+    )
     document = update_native_unowned_state(project)
     mcp_servers(document, project)[hosts.SERVER_NAME] = {"command": "replacement-not-ours"}
     native.write_text(json.dumps(document))
@@ -1075,21 +1078,13 @@ def test_legacy_claude_document_intent_recovers_only_its_owned_key(installation,
         install()
         before = native.read_bytes()
 
-    def crash():
-        writer = hosts.private_write
-
-        def write_and_exit(path, content, *, replace=False, **options):
-            writer(path, content, replace=replace, **options)
-            if path == receipt and json.loads(content)["state"] in {"pending", "removing"}:
-                os._exit(41)
-
-        hosts.private_write = write_and_exit
-        if operation == "remove":
-            hosts.uninstall_host(settings, project, "claude")
-        else:
-            hosts.install_host(settings, project, "project-binding", "claude", agent, producer, strict=True)
-
-    _abrupt_process(crash)
+    if operation == "remove":
+        _abrupt_process(hosts.uninstall_host, settings, project, "claude", crash_path=receipt, crash_state="removing")
+    else:
+        _abrupt_process(
+            hosts.install_host, settings, project, "project-binding", "claude", agent, producer,
+            crash_path=receipt, crash_state="pending", strict=True,
+        )
     manifest = hosts.load_receipt(receipt, active=False)
     current_intent = hosts._intent_path(manifest)
     intent = json.loads(current_intent.read_text())
@@ -1417,33 +1412,11 @@ def test_pending_install_can_be_cancelled_even_if_removal_intent_publication_cra
     user.write_text("unchanged AF configuration\n")
     receipt_path = hosts._receipt_path(settings, project, "claude")
 
-    def interrupted_install():
-        writer = hosts.private_write
-
-        def write_and_exit(path, content, *, replace=False, **options):
-            writer(path, content, replace=replace, **options)
-            if path == first:
-                os._exit(41)
-
-        hosts.private_write = write_and_exit
-        hosts.install_host(settings, project, "project-binding", "claude", agent, producer)
-
-    _abrupt_process(interrupted_install)
+    _abrupt_process(hosts.install_host, settings, project, "project-binding", "claude", agent, producer, crash_path=first)
     pending = hosts.load_receipt(receipt_path, active=False)
     original_intent = hosts._intent_path(pending)
 
-    def interrupted_cancellation():
-        writer = hosts.private_write
-
-        def write_and_exit(path, content, *, replace=False, **options):
-            writer(path, content, replace=replace, **options)
-            if path.name.startswith("ownership-") and path != original_intent:
-                os._exit(41)
-
-        hosts.private_write = write_and_exit
-        hosts.uninstall_host(settings, project, "claude")
-
-    _abrupt_process(interrupted_cancellation)
+    _abrupt_process(hosts.uninstall_host, settings, project, "claude", new_intent_except=original_intent)
     assert hosts.load_receipt(receipt_path, active=False)["intent_digest"] == pending["intent_digest"]
     assert original_intent.exists()
     assert hosts.uninstall_host(settings, project, "claude")["state"] == "uninstalled"
@@ -1718,8 +1691,26 @@ def test_claude_local_mcp_entry_does_not_leak_into_shared_project_config(install
     assert shared.read_bytes() == shared_bytes
 
 
-def test_claude_linked_worktree_uses_native_project_without_widening_memory_scope(installation):
-    project, settings, _, _, install = installation
+@pytest.mark.asyncio
+async def test_claude_linked_worktree_mcp_uses_credential_binding_not_cwd(installation, capture_authority):
+    from urllib.request import urlopen
+
+    import uvicorn
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    from agents_memory.domain import Role
+    from agents_memory.edge import create_app
+
+    project, _, agent, producer, _ = installation
+    store, actor, binding = capture_authority
+    agent.write_text("mcp-worktree-agent-" + "a" * 32 + "\n")
+    await store.issue_token(actor, Role.AGENT, (binding,), agent.read_text().strip())
+    body = "The project retains CacheKey only offline."
+    operation = await store.capture(actor, CaptureCommand(
+        binding_id=binding, idempotency_key="cwd-source", origin_key="cwd-source",
+        body=body, speaker="human",
+    ))
     project.rmdir()
     main = project.parent / "canonical"
     environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
@@ -1737,21 +1728,54 @@ def test_claude_linked_worktree_uses_native_project_without_widening_memory_scop
     local = hosts._claude_config_path()
     original = {"projects": {str(main): {"hasTrustDialogAccepted": False}, "/unrelated": {"theme": "preserve"}}}
     local.write_text(json.dumps(original))
-    receipt = install()
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    settings = store.settings.model_copy(update={"port": listener.getsockname()[1]})
+    settings.state_dir.mkdir(mode=0o700, exist_ok=True)
+    settings.state_dir.chmod(0o700)
+    receipt = Path(hosts.install_host(
+        settings, project, binding, "claude", agent, producer, strict=False,
+    )["receipt"])
     manifest = hosts.load_receipt(receipt)
     assert hosts.SERVER_NAME in mcp_servers(json.loads(local.read_text()), main)
     assert manifest["project_root"] == str(project)
-    relay = subprocess.run(
-        [sys.executable, "-m", "agents_memory.cli", "host-stdio", "--receipt", str(receipt)],
-        cwd=main, capture_output=True, text=True, timeout=10,
-    )
-    assert relay.returncode == 1
-    assert relay.stdout == ""
-    assert json.loads(relay.stderr)["error"]["code"] == "HOST_SCOPE_UNRESOLVED"
+    server = uvicorn.Server(uvicorn.Config(create_app(settings), access_log=False, log_level="error"))
+    task = asyncio.create_task(server.serve(sockets=[listener]))
+    try:
+        response = await asyncio.to_thread(urlopen, f"http://127.0.0.1:{settings.port}/healthz", timeout=10)
+        with response:
+            assert response.status == 200
+        for cwd in (main, project):
+            parameters = StdioServerParameters(
+                command=sys.executable,
+                args=["-m", "agents_memory.cli", "host-stdio", "--receipt", str(receipt)],
+                cwd=cwd,
+                env={"CLAUDE_CONFIG_DIR": os.environ["CLAUDE_CONFIG_DIR"]},
+            )
+            async with asyncio.timeout(20):
+                async with stdio_client(parameters) as (reader, writer):
+                    async with ClientSession(reader, writer) as session:
+                        await session.initialize()
+                        result = await session.call_tool("memory_inspect", {
+                            "binding_id": binding, "ref": operation.source_id,
+                        })
+                        inspected = json.loads(result.content[0].text)
+                        assert inspected["span_inventory"][0]["quote"] == body
+                        denied = await session.call_tool("memory_inspect", {
+                            "binding_id": "another-project", "ref": operation.source_id,
+                        })
+                        refusal = json.loads(denied.content[0].text)
+                        assert refusal["error"]["code"] == "SCOPE_DENIED"
+                        assert body not in json.dumps(refusal)
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(task, 10)
+        listener.close()
     assert not (project / ".mcp.json").exists()
     hosts.uninstall_host(settings, project, "claude")
     assert json.loads(local.read_text()) == original
-    hosts.install_host(settings, project, "project-binding", "claude", installation[2], installation[3])
+    hosts.install_host(settings, project, binding, "claude", agent, producer)
     assert hosts.SERVER_NAME in mcp_servers(json.loads(local.read_text()), main)
     hosts.uninstall_host(settings, project, "claude")
     assert json.loads(local.read_text()) == original
@@ -1900,6 +1924,12 @@ def test_omp_strict_refusal_precedes_every_installation_write(installation, exis
 
 def _historical_omp_strict_metadata(receipt):
     document = json.loads(receipt.read_text())
+    document["adapter_version"] = 4
+    document["capabilities"]["scope"] = "registered_binding_plus_cwd_locator_check_not_cwd_authority"
+    if document.get("capability") == "agent_judged":
+        document["capability"] = "full_semantic"
+        document["capabilities"].pop("capture_judgment")
+        document["capabilities"]["capture_processing"] = "automatic_server_extraction_until_semantic_ready"
     document["strict"] = True
     document["capabilities"].update({
         "first_action": "deny_required_without_provider_input_evidence",
@@ -1923,7 +1953,7 @@ def test_historical_omp_strict_receipt_is_cleanup_only_then_advisory_reinstallab
     for options in ({}, {"allow_legacy": True}, {"active": False}):
         with pytest.raises(DomainError) as caught:
             hosts.load_receipt(receipt, **options)
-        assert caught.value.code == "HOST_STRICT_UNSUPPORTED"
+        assert caught.value.code == ("HOST_LEGACY_REINSTALL_REQUIRED" if options.get("allow_legacy") else "HOST_RECEIPT_INVALID")
     cleanup = hosts.load_receipt(receipt, allow_legacy=True, active=False)
     assert cleanup["installation_id"] == historical["installation_id"]
     for strict in (False, True):
@@ -1933,7 +1963,7 @@ def test_historical_omp_strict_receipt_is_cleanup_only_then_advisory_reinstallab
     for event in (native(project, "omp", "before_agent_start", prompt="cannot enforce"), action(project, "omp")):
         result = hosts.handle_hook(receipt, event)
         assert result["state"] == "degraded"
-        assert result["code"] == "HOST_STRICT_UNSUPPORTED"
+        assert result["code"] == "HOST_RECEIPT_UNAVAILABLE"
         assert "block" not in result["stdout"]
     assert not authority.calls
     assert {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()} == before
@@ -1974,18 +2004,10 @@ def test_historical_omp_strict_partial_install_is_reversed_not_resumed_for_execu
     mcp.write_bytes(original)
     receipt = hosts._receipt_path(settings, project, "omp")
 
-    def crash():
-        writer = hosts.private_write
-
-        def write_and_exit(path, content, *, replace=False, **options):
-            writer(path, content, replace=replace, **options)
-            if path == (receipt if boundary == "pending_receipt" else mcp):
-                os._exit(41)
-
-        hosts.private_write = write_and_exit
-        hosts.install_host(settings, project, "project-binding", "omp", agent, producer, strict=False)
-
-    _abrupt_process(crash)
+    _abrupt_process(
+        hosts.install_host, settings, project, "project-binding", "omp", agent, producer,
+        crash_path=receipt if boundary == "pending_receipt" else mcp, strict=False,
+    )
     _historical_omp_strict_metadata(receipt)
     assert hosts.load_receipt(receipt, allow_legacy=True, active=False)["state"] == "pending"
     with pytest.raises(DomainError) as caught:
@@ -2203,18 +2225,7 @@ def test_interrupted_finishing_pass_rescans_restored_entries(installation):
     hooks_raw = hooks_path.read_bytes()
     hooks_path.unlink()
 
-    def crash():
-        writer = hosts.private_write
-
-        def write_and_exit(path, content, *, replace=False, **options):
-            writer(path, content, replace=replace, **options)
-            if path == receipt_path and json.loads(content)["state"] == "native_finishing":
-                os._exit(41)
-
-        hosts.private_write = write_and_exit
-        hosts.uninstall_host(settings, project, "codex")
-
-    _abrupt_process(crash)
+    _abrupt_process(hosts.uninstall_host, settings, project, "codex", crash_path=receipt_path, crash_state="native_finishing")
     assert hosts.load_receipt(receipt_path, active=False)["state"] == "native_finishing"
     with pytest.raises(DomainError) as incomplete:
         install("codex", strict=False)
@@ -2276,21 +2287,13 @@ def test_root_changed_while_waiting_to_resume_interrupted_intent_is_refused(inst
     if state == "removing":
         install("codex", strict=False)
 
-    def crash():
-        writer = hosts.private_write
-
-        def write_and_exit(path, content, *, replace=False, **options):
-            writer(path, content, replace=replace, **options)
-            if path == receipt_path and json.loads(content)["state"] == state:
-                os._exit(41)
-
-        hosts.private_write = write_and_exit
-        if state == "pending":
-            hosts.install_host(settings, project, "project-binding", "codex", agent, producer, strict=False)
-        else:
-            hosts.uninstall_host(settings, project, "codex")
-
-    _abrupt_process(crash)
+    if state == "pending":
+        _abrupt_process(
+            hosts.install_host, settings, project, "project-binding", "codex", agent, producer,
+            crash_path=receipt_path, crash_state=state, strict=False,
+        )
+    else:
+        _abrupt_process(hosts.uninstall_host, settings, project, "codex", crash_path=receipt_path, crash_state=state)
     receipt = hosts.load_receipt(receipt_path, active=False)
     assert receipt["state"] == state
     intent = hosts._intent_path(receipt)
@@ -2516,20 +2519,11 @@ def test_refusal_after_resumed_native_cleanup_reports_unknown_effect(installatio
 def _crash_deleted_claude_removal(project, settings, receipt, boundary):
     native_path = hosts._claude_config_path()
 
-    def crash():
-        writer = hosts.private_write
-
-        def write_and_exit(path, content, *, replace=False, **options):
-            writer(path, content, replace=replace, **options)
-            if boundary == "native_key" and path == native_path:
-                os._exit(41)
-            if boundary == "removing_receipt" and path == receipt and json.loads(content)["state"] == "native_removing":
-                os._exit(41)
-
-        hosts.private_write = write_and_exit
-        hosts.uninstall_host(settings, project, "claude", project_deleted=True)
-
-    _abrupt_process(crash)
+    _abrupt_process(
+        hosts.uninstall_host, settings, project, "claude",
+        crash_path=native_path if boundary == "native_key" else receipt,
+        crash_state=None if boundary == "native_key" else "native_removing", project_deleted=True,
+    )
     assert hosts.load_receipt(receipt, active=False, allow_deleted_project=True)["state"] == "native_removing"
     assert not project.exists()
 
@@ -2693,3 +2687,605 @@ def test_deleted_linked_worktree_preserves_exact_native_project_cleanup(installa
     manifest = hosts.load_receipt(receipt, active=False, allow_deleted_project=True)
     assert manifest["state"] == "native_removed"
     assert not hosts._intent_path(manifest).exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prompt_recall", [False, True])
+@pytest.mark.parametrize("host", ["codex", "omp"])
+async def test_native_capture_pointer_requires_actual_commit_and_is_generation_scoped(installation, capture_authority, monkeypatch, host, prompt_recall):
+    project, settings, agent, producer, _ = installation
+    store, actor, binding = capture_authority
+    company = settings.model_copy(update={"mode": "company"})
+    receipt = Path(hosts.install_host(
+        company, project, binding, host, agent, producer, strict=False, prompt_recall=prompt_recall,
+    )["receipt"])
+    acknowledged = {}
+
+    class Endpoint:
+        def __init__(self, base_url, token_file, timeout=120):
+            self.token_file = token_file
+
+        def request(self, route, payload):
+            if route == "/api/context":
+                text = '{"approved_rules":[],"memory_candidates":[],"relations":[]}'
+                return {"context": text, "context_bytes": len(text.encode()), "stamp": {"epoch": 1, "rules": []}}
+            assert route == "/api/capture" and self.token_file == producer
+            result = acknowledged.get(payload["idempotency_key"])
+            if result is None:
+                raise DomainError("SERVICE_UNAVAILABLE", "No capture acknowledgment", effect=EffectState.UNKNOWN)
+            assert canonical_digest(payload) == result[0]
+            return result[1].model_dump(mode="json")
+
+    monkeypatch.setattr(hosts, "LocalClient", Endpoint)
+    event = native(
+        project, host, "input" if host == "omp" else "UserPromptSubmit",
+        **({"text": "합성 입력: offline에서만 보관", "source": "interactive"} if host == "omp" else {"prompt": "합성 입력: offline에서만 보관"}),
+    )
+    first = hosts.handle_hook(receipt, event)
+    assert first["capture"]["state"] == "durably_spooled"
+    runtime = Path(hosts.load_receipt(receipt)["runtime_dir"])
+    spool = ProducerSpool(runtime / "capture.sqlite3", settings.deployment_id, binding, settings.spool_limit_bytes)
+    try:
+        payload = json.loads(spool.db.execute("SELECT payload FROM outbox").fetchone()[0])
+    finally:
+        spool.close()
+    command = CaptureCommand.model_validate(payload)
+    operation = await store.capture(actor, command)
+    acknowledged[command.idempotency_key] = canonical_digest(payload), operation
+    assert operation.state == "captured"
+    pending = await store.inspect(actor, binding, "pending")
+    assert any(item["kind"] == "source_selection" and operation.source_id in item["source_ids"] for item in pending["items"])
+    if host == "omp":
+        child = hosts.handle_hook(receipt, native(
+            project, "omp", "before_agent_start", prompt="child preparation",
+            agent={"kind": "sub", "id": "child", "parentId": "main-agent", "depth": 1},
+        ))
+        assert "source_pointer" not in json.dumps(child["stdout"])
+        prepared = native(project, "omp", "before_agent_start", prompt="parent preparation")
+        result = hosts.handle_hook(receipt, prepared)
+        reentered = hosts.handle_hook(receipt, prepared)
+        assert "source_pointer" not in json.dumps(reentered["stdout"])
+        hosts.handle_hook(receipt, native(project, "omp", "session_compact"))
+        after = hosts.handle_hook(receipt, prepared)
+        assert "source_pointer" not in json.dumps(after["stdout"])
+    else:
+        result = hosts.handle_hook(receipt, event)
+    assert result["capture"]["source_pointer"]["source_id"] == operation.source_id
+    assert result["capture"]["capture_disposition"] == "captured"
+    assert result["provider_input_observed"] is False
+    output = result["stdout"].get("additionalContext") if host == "omp" else result["stdout"].get("hookSpecificOutput", {}).get("additionalContext")
+    if prompt_recall:
+        status = json.loads(output.removeprefix(hosts.BOUNDED_CONTEXT_MARKER + "\n").split("\n", 1)[0])
+        assert status["capture"]["source_pointer"]["source_id"] == operation.source_id
+        assert status["selection"] and status["candidate_ready"]
+        assert len(output.encode("utf-8")) <= hosts.HOST_CONTEXT_BYTES and command.body not in output
+    else:
+        assert output is None and operation.source_id not in json.dumps(result["stdout"])
+    assert command.coverage.status == "observed_window"
+    assert command.coverage.original_bytes == len(command.body.encode())
+    assert "HOST_SESSION_WINDOW_UNOBSERVED" in command.coverage.gaps
+
+
+@pytest.mark.parametrize("host", ["claude", "codex", "omp"])
+def test_validated_v3_adapter_is_cleanup_only_and_reinstall_advances_owned_contract(installation, host):
+    project, settings, _, _, install = installation
+    receipt = install(host, strict=False)
+    manifest = json.loads(receipt.read_text())
+    manifest["adapter_version"] = 3
+    manifest.pop("capability")
+    manifest["capabilities"]["scope"] = "registered_binding_plus_cwd_locator_check_not_cwd_authority"
+    for key in ("source_pointer", "capture_coverage", "capture_judgment", "capture_processing"):
+        manifest["capabilities"].pop(key, None)
+    hosts._write_receipt(receipt, manifest)
+    with pytest.raises(DomainError):
+        hosts.load_receipt(receipt)
+    with pytest.raises(DomainError) as caught:
+        hosts.load_receipt(receipt, allow_legacy=True)
+    assert caught.value.code == "HOST_LEGACY_REINSTALL_REQUIRED"
+    assert hosts.load_receipt(receipt, allow_legacy=True, active=False)["adapter_version"] == 3
+    refused = hosts.handle_hook(receipt, native(project, host, "before_agent_start" if host == "omp" else "UserPromptSubmit", prompt="not executed"))
+    assert "source_pointer" not in json.dumps(refused["stdout"])
+    assert hosts.uninstall_host(settings, project, host)["state"] == "uninstalled"
+    assert hosts.load_receipt(install(host, strict=False))["adapter_version"] == hosts.ADAPTER_VERSION
+
+
+def _historical_v4_metadata(receipt):
+    document = json.loads(receipt.read_text())
+    document["adapter_version"] = 4
+    document.pop("capability")
+    document["capabilities"]["scope"] = "registered_binding_plus_cwd_locator_check_not_cwd_authority"
+    document["capabilities"].pop("capture_processing", None)
+    document["capabilities"]["capture_judgment"] = "separate_caller_memory_record_no_automatic_candidate_readiness"
+    hosts._write_receipt(receipt, document)
+    return document
+
+
+@pytest.mark.parametrize("host,strict", [
+    ("claude", False), ("claude", True), ("codex", False), ("codex", True),
+    ("omp", False), ("omp", True),
+])
+@pytest.mark.parametrize("prompt_recall", [False, True])
+def test_validated_pre_capability_v4_is_cleanup_only_then_reinstallable(installation, authority, host, strict, prompt_recall):
+    project, settings, _, _, install = installation
+    receipt = install(host, strict=strict if host != "omp" else False, prompt_recall=prompt_recall)
+    historical = _historical_v4_metadata(receipt)
+    if host == "omp" and strict:
+        historical = _historical_omp_strict_metadata(receipt)
+    paths = [receipt, *(Path(entry["path"]) if entry["kind"] == "local_mcp" else project / entry["path"] for entry in historical["ownership"])]
+    before = {path: path.read_bytes() for path in paths}
+    for options in ({}, {"active": False}):
+        with pytest.raises(DomainError) as caught:
+            hosts.load_receipt(receipt, **options)
+        assert caught.value.code == "HOST_RECEIPT_INVALID"
+    with pytest.raises(DomainError) as caught:
+        hosts.load_receipt(receipt, allow_legacy=True, active=True)
+    assert caught.value.code == "HOST_LEGACY_REINSTALL_REQUIRED"
+    cleanup = hosts.load_receipt(receipt, allow_legacy=True, active=False)
+    assert cleanup == historical and "capability" not in cleanup
+    for event in (native(project, host, "before_agent_start" if host == "omp" else "UserPromptSubmit", prompt="not executed"), action(project, host)):
+        refused = hosts.handle_hook(receipt, event)
+        assert refused["state"] == ("degraded" if host == "omp" else "blocked")
+        assert refused["code"] == "HOST_RECEIPT_UNAVAILABLE"
+        assert "source_pointer" not in json.dumps(refused["stdout"])
+    assert not authority.calls
+    with pytest.raises(DomainError) as caught:
+        install(host, strict=strict if host != "omp" else False, prompt_recall=prompt_recall)
+    assert caught.value.code == ("HOST_STRICT_UNSUPPORTED" if host == "omp" and strict else "HOST_LEGACY_REINSTALL_REQUIRED")
+    assert all(path.read_bytes() == raw for path, raw in before.items())
+    assert hosts.uninstall_host(settings, project, host)["state"] == "uninstalled"
+    removed = hosts.load_receipt(receipt, allow_legacy=True, active=False)
+    assert removed["state"] == "removed" and "capability" not in removed
+    assert removed["capabilities"] == historical["capabilities"]
+    assert all(not hosts._owned_entry_matches(project, entry) for entry in historical["ownership"])
+    replacement = hosts.load_receipt(install(host, strict=strict if host != "omp" else False, prompt_recall=prompt_recall))
+    assert replacement["installation_id"] != historical["installation_id"]
+    assert replacement["adapter_version"] == hosts.ADAPTER_VERSION and replacement["capability"] == settings.capability
+    assert replacement["capabilities"] == hosts.capabilities(
+        host, strict=strict if host != "omp" else False, prompt_recall=prompt_recall, capability=settings.capability,
+    )
+    assert replacement["capabilities"]["capture_judgment"] == "unclassified_source_separate_caller_memory_record"
+
+
+@pytest.mark.parametrize("host", ["claude", "codex", "omp"])
+@pytest.mark.parametrize("drift", [
+    "null_capability", "unknown_capability", "malformed_capability", "guessed_semantic",
+    "missing_judgment", "unknown_judgment", "capture_processing", "missing_capabilities", "extra_metadata",
+    "missing_ownership", "malformed_ownership_digest", "wrong_ownership_digest", "malformed_installed_digest",
+    "receipt_digest", "project", "deployment", "host", "runtime", "traversal", "absolute_path", "symlink",
+])
+def test_pre_capability_v4_cleanup_refuses_signed_malformed_or_unrelated_receipts(installation, host, drift):
+    project, settings, _, _, install = installation
+    receipt = install(host, strict=False)
+    historical = _historical_v4_metadata(receipt)
+    entry = next(item for item in historical["ownership"] if item["kind"] != "local_mcp")
+    if drift in {"null_capability", "unknown_capability", "malformed_capability", "guessed_semantic"}:
+        historical["capability"] = {
+            "null_capability": None, "unknown_capability": "semantic",
+            "malformed_capability": [], "guessed_semantic": "full_semantic",
+        }[drift]
+    elif drift == "missing_judgment":
+        historical["capabilities"].pop("capture_judgment")
+    elif drift == "unknown_judgment":
+        historical["capabilities"]["capture_judgment"] = "automatic_candidate_readiness"
+    elif drift == "capture_processing":
+        historical["capabilities"]["capture_processing"] = "automatic_server_extraction_until_semantic_ready"
+    elif drift == "missing_capabilities":
+        historical["capabilities"] = None
+    elif drift == "extra_metadata":
+        historical["capabilities"]["invented_capability"] = True
+    elif drift == "missing_ownership":
+        historical["ownership"] = [{}]
+    elif drift == "malformed_ownership_digest":
+        entry["digest"] = "not-a-digest"
+    elif drift == "wrong_ownership_digest":
+        entry["digest"] = "z" * 64
+    elif drift == "malformed_installed_digest":
+        historical["installed_files"][0]["digest"] = None
+    elif drift == "project":
+        historical["project_root"] = str(project.parent / "unrelated-project")
+    elif drift == "deployment":
+        historical["deployment_id"] = "unrelated-deployment"
+    elif drift == "host":
+        historical["host"] = "codex" if host != "codex" else "omp"
+    elif drift == "runtime":
+        historical["runtime_dir"] = str(project.parent / "unrelated-runtime")
+    elif drift in {"traversal", "absolute_path", "symlink"}:
+        outside = project.parent / "unowned"
+        outside.write_text("never remove\n")
+        if drift == "symlink":
+            (project / "outside-link").symlink_to(outside)
+        new_path = {"traversal": "../unowned", "absolute_path": str(outside), "symlink": "outside-link"}[drift]
+        for installed in historical["installed_files"]:
+            if installed["path"] == entry["path"]:
+                installed["path"] = new_path
+        entry["path"] = new_path
+    hosts._write_receipt(receipt, historical)
+    if drift == "receipt_digest":
+        historical["ownership_digest"] = "0" * 64
+        receipt.write_text(json.dumps(historical))
+    paths = [receipt, hosts._claude_config_path(), *project.rglob("*"), project.parent / "unowned"]
+    before = {path: path.read_bytes() for path in paths if path.is_file()}
+    with pytest.raises(DomainError):
+        hosts.uninstall_host(settings, project, host)
+    assert all(path.read_bytes() == raw for path, raw in before.items())
+
+
+def test_pointer_omission_is_explicit_and_preserves_complete_utf8_marker_budget():
+    receipt = {
+        "host": "omp", "strict": False, "context_budget_bytes": 512,
+        "capability": "agent_judged", "capabilities": {"prompt_context": "bounded_opt_in"},
+    }
+    result = hosts._native_result("omp", "before_agent_start")
+    capture = {"state": "committed", "source_pointer": {"snapshot": "한" * 1024}}
+    offered = hosts._capture_offer(receipt, "before_agent_start", result, capture)
+    text = offered["stdout"]["additionalContext"]
+    assert len(text.encode("utf-8")) <= 512
+    assert hosts.BOUNDED_CONTEXT_MARKER in text
+    assert json.loads(text.removeprefix(hosts.BOUNDED_CONTEXT_MARKER + "\n"))["capture"]["gap"] == "HOST_CAPTURE_POINTER_OMITTED"
+    assert "한" not in text
+
+
+@pytest.mark.parametrize("host", ["claude", "codex", "omp"])
+def test_recall_disabled_prompt_carries_capture_status_only_in_metadata(installation, authority, host):
+    project, _, _, _, install = installation
+    receipt = install(host)
+    if host == "omp":
+        hosts.handle_hook(receipt, native(project, "omp", "input", text="human ingress", source="interactive"))
+    result = hosts.handle_hook(receipt, native(project, host, "before_agent_start" if host == "omp" else "UserPromptSubmit", prompt="human ingress"))
+    assert isinstance(result["capture"], dict)
+    assert "additionalContext" not in result["stdout"] and "hookSpecificOutput" not in result["stdout"]
+    assert hosts.BOUNDED_CONTEXT_MARKER not in json.dumps(result["stdout"])
+    assert not any(call[0] == "/api/context" for call in authority.calls)
+
+
+@pytest.mark.parametrize("host", ["claude", "codex", "omp"])
+def test_personal_opt_in_recall_offers_unclassified_capture_and_caller_selection_guidance(installation, authority, host):
+    project, _, _, _, install = installation
+    receipt = install(host, strict=False, prompt_recall=True)
+    result = hosts.handle_hook(receipt, native(project, host, "before_agent_start" if host == "omp" else "UserPromptSubmit", prompt="Use project conventions"))
+    output = result["stdout"]["additionalContext"] if host == "omp" else result["stdout"]["hookSpecificOutput"]["additionalContext"]
+    status = json.loads(output.removeprefix(hosts.BOUNDED_CONTEXT_MARKER + "\n").split("\n", 1)[0])
+    assert "capture" in status and status["selection"] == "separate_caller_memory_record" and status["candidate_ready"] == "not_claimed"
+    assert output.endswith(authority.text)
+
+
+def test_personal_and_company_receipts_share_the_same_capture_judgment_contract(installation):
+    project, settings, agent, producer, install = installation
+    personal = hosts.load_receipt(install("codex", strict=False))
+    assert personal["capability"] == "agent_judged"
+    assert personal["capabilities"]["capture_judgment"] == "unclassified_source_separate_caller_memory_record"
+    company = settings.model_copy(update={"mode": "company"})
+    assert hosts.install_host(company, project, "project-binding", "codex", agent, producer, strict=False)["replay"] is True
+    hosts.uninstall_host(settings, project, "codex")
+    replacement = hosts.load_receipt(Path(hosts.install_host(company, project, "project-binding", "codex", agent, producer, strict=False)["receipt"]))
+    assert replacement["capability"] == "agent_judged"
+    assert replacement["capabilities"] == personal["capabilities"]
+
+
+def test_omp_reentered_preparation_reuses_ingress_turn_without_new_generation(installation, authority):
+    project, _, _, _, install = installation
+    receipt = install("omp", prompt_recall=True)
+    turn = {"hook_instance_id": "ingress-turn", "adapter_turn_id": "ingress-turn"}
+    ingress = hosts.handle_hook(receipt, native(project, "omp", "input", text="human ingress", source="interactive", **turn))
+    prepared = native(project, "omp", "before_agent_start", prompt="human ingress", **turn)
+    first, again = hosts.handle_hook(receipt, prepared), hosts.handle_hook(receipt, prepared)
+    assert ingress["generation"] == first["generation"] == again["generation"]
+    assert first["capture"]["state"] == "durably_spooled" and "capture" not in again
+    assert hosts.handle_hook(receipt, action(project, "omp", **turn))["code"] != "HOST_GENERATION_UNOBSERVED"
+
+
+@pytest.mark.parametrize("boundary,failure", [
+    ("__init__", OSError("private raw path diagnostics")),
+    ("flush", sqlite3.OperationalError("private raw database diagnostics")),
+    ("disposition", DomainError("SPOOL_PATH_DENIED", "private raw diagnostics")),
+])
+def test_capture_replay_failure_is_a_gap_that_keeps_recall_and_generation(installation, authority, monkeypatch, boundary, failure):
+    project, _, _, _, install = installation
+    receipt = install("omp", prompt_recall=True)
+    ingress = hosts.handle_hook(receipt, native(project, "omp", "input", text="human ingress", source="interactive"))
+    assert ingress["capture"]["capture_key"]
+
+    def fail(self, *args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(ProducerSpool, boundary, fail)
+    result = hosts.handle_hook(receipt, native(project, "omp", "before_agent_start", prompt="human ingress"))
+    code = "SPOOL_PATH_DENIED" if boundary == "disposition" else "HOST_SPOOL_UNAVAILABLE"
+    assert result["capture"] == {**result["capture"], "state": "gap", "code": code}
+    assert result["offered"] is True and result["stdout"]["additionalContext"].endswith(authority.text)
+    assert result["generation"] == ingress["generation"] and result["gaps"][code] == 1
+    assert "private raw" not in json.dumps(result)
+    assert hosts.handle_hook(receipt, action(project, "omp"))["code"] != "HOST_GENERATION_UNOBSERVED"
+
+
+@pytest.mark.parametrize("host,event_name", [("claude", "UserPromptSubmit"), ("codex", "UserPromptSubmit"), ("omp", "input")])
+def test_source_secret_is_a_fixed_gap_before_origin_and_spool(installation, monkeypatch, host, event_name):
+    project, _, _, _, install = installation
+    receipt = hosts.load_receipt(install(host, strict=False))
+    secret = "ghp_" + "a" * 36
+    identity = {"root": "root-001", "path": "path-001", "native_turn": "turn-001", "instance": "instance-001"}
+
+    def forbidden_digest(value):
+        raise AssertionError("Rejected source reached origin digest")
+
+    def forbidden_spool(*args):
+        raise AssertionError("Rejected source reached the producer spool")
+
+    monkeypatch.setattr(hosts, "canonical_digest", forbidden_digest)
+    monkeypatch.setattr(hosts, "ProducerSpool", forbidden_spool)
+    result = hosts._capture(
+        receipt, native(project, host, event_name, prompt=secret, text=secret, source="interactive"), identity, event_name,
+    )
+    assert result == {"state": "gap", "code": "SOURCE_SECRET_REJECTED", "effect": "not_started"}
+    assert secret not in json.dumps(result)
+
+
+@pytest.mark.parametrize("existing_state", (False, True), ids=("fresh", "prior-authority"))
+def test_omp_preparation_secret_refusal_survives_restart_without_permission_advance(
+    installation, monkeypatch, existing_state,
+):
+    project, _, _, _, install = installation
+    receipt_path = install("omp")
+    receipt = hosts.load_receipt(receipt_path)
+    runtime = Path(receipt["runtime_dir"])
+    secret = "ghp_" + "a" * 36
+    digest = hosts.canonical_digest
+
+    def secret_free_digest(value):
+        assert secret not in json.dumps(value), "Raw secret reached a digest"
+        return digest(value)
+
+    monkeypatch.setattr(hosts, "canonical_digest", secret_free_digest)
+    event = native(project, "omp", "prepare_prompt", prompt=secret)
+    identity = hosts._identity(receipt, event)
+    state_path = runtime / (identity["key"] + ".json")
+    before = {
+        "generation": 7 if existing_state else 0,
+        "turn": "prior-turn" if existing_state else None,
+        "offered": {"rules": [], "digest": "b" * 64, "generation": 7} if existing_state else None,
+        "capture": {"key": "prior-capture", "generation": 7} if existing_state else None,
+        "gaps": {"HOST_SESSION_WINDOW_UNOBSERVED": 2} if existing_state else {},
+    }
+    if existing_state:
+        private_io.private_write(state_path, json.dumps(before))
+    result = hosts.handle_hook(receipt_path, event)
+    assert result["code"] == "SOURCE_SECRET_REJECTED"
+    assert result.get("gaps", {}).get("SOURCE_SECRET_REJECTED") == 1
+    assert "preparation_id" not in result and secret not in json.dumps(result)
+    persisted = hosts._generation_state(state_path.read_bytes())
+    assert persisted == {**before, "gaps": {**before["gaps"], "SOURCE_SECRET_REJECTED": 1}}
+    restarted = hosts.handle_hook(receipt_path, native(project, "omp", "session_start"))
+    assert restarted["gaps"]["SOURCE_SECRET_REJECTED"] == 1
+    assert all(secret.encode() not in path.read_bytes() for path in runtime.rglob("*") if path.is_file())
+
+
+@pytest.mark.asyncio
+async def test_host_capture_preserves_benign_utf8_provenance_through_real_authority(installation, capture_authority, monkeypatch):
+    import asyncio
+
+    project, settings, agent, producer, _ = installation
+    store, actor, binding = capture_authority
+    receipt_path = Path(hosts.install_host(settings, project, binding, "omp", agent, producer)["receipt"])
+    loop = asyncio.get_running_loop()
+    body = " \tDo not export; preserve the exception.\r\n예외와 부정을 보존합니다. "
+
+    class Endpoint:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, route, payload):
+            assert route == "/api/capture"
+            command = CaptureCommand.model_validate(payload)
+            operation = asyncio.run_coroutine_threadsafe(store.capture(actor, command), loop).result(timeout=30)
+            return operation.model_dump(mode="json")
+
+    monkeypatch.setattr(hosts, "LocalClient", Endpoint)
+    result = await asyncio.to_thread(
+        hosts.handle_hook, receipt_path, native(project, "omp", "input", text=body, source="interactive"),
+    )
+    assert result["capture"]["state"] == "committed"
+    pointer = result["capture"]["source_pointer"]
+    source = await store.inspect(actor, binding, pointer["source_id"])
+    assert source["body"].encode("utf-8") == body.encode("utf-8")
+    assert source["speaker"] == "human"
+    assert source["coverage"]["capture"]["status"] == "observed_window"
+
+
+@pytest.mark.parametrize("with_required", [False, True])
+@pytest.mark.asyncio
+async def test_opt_in_hook_hands_off_unjudged_candidates_without_injecting_them(installation, capture_authority, monkeypatch, with_required):
+    import asyncio
+    from types import SimpleNamespace
+
+    from test_store_authority import ready_claim
+
+    from agents_memory.application import Application
+    from agents_memory.domain import RuleApproval, RuleProposal
+
+    project, settings, agent, producer, _ = installation
+    store, actor, binding = capture_authority
+    _, claim = await ready_claim(SimpleNamespace(store=store, actor=actor, binding_id=binding))
+    if with_required:
+        proposal = await store.propose_rule(actor, RuleProposal(
+            binding_id=binding, idempotency_key="hook-required", body="Keep customer records local.", required=True,
+        ))
+        await store.approve_rule(actor, RuleApproval(
+            proposal_id=proposal["proposal_id"], expected_digest=proposal["digest"], scope=RuleScope.LOCAL_PROJECT,
+            target_bindings=(binding,), target_set_revision=proposal["target_set_revision"], idempotency_key="hook-approval",
+        ))
+    application = Application(store.settings, store)
+    loop = asyncio.get_running_loop()
+    observed = []
+
+    class Endpoint:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, route, payload):
+            assert route == "/api/context"
+            result = asyncio.run_coroutine_threadsafe(
+                application.context(actor, ContextCommand.model_validate(payload)), loop,
+            ).result(timeout=30)
+            observed.append(result)
+            return result
+
+    monkeypatch.setattr(hosts, "LocalClient", Endpoint)
+    receipt = Path(hosts.install_host(settings, project, binding, "omp", agent, producer, prompt_recall=True)["receipt"])
+    result = await asyncio.to_thread(
+        hosts.handle_hook, receipt, native(project, "omp", "before_agent_start", prompt="CacheKey"),
+    )
+    assert observed[0]["status"] == "judgment_required"
+    assert observed[0]["candidate_manifest"][0]["claim_id"] == claim.id
+    output = result["stdout"]["additionalContext"]
+    if with_required:
+        assert "Keep customer records local." in output
+    assert claim.draft.statement not in output
+    assert result["recall"]["state"] == "judgment_required"
+    assert result["recall"]["gap"] == "HOST_RELEVANCE_MANIFEST_NOT_DELIVERED"
+    assert len(output.encode()) <= hosts.HOST_CONTEXT_BYTES
+
+
+@pytest.mark.parametrize("capability", ["full_semantic", "lexical_entity"])
+@pytest.mark.parametrize("host", ["claude", "codex", "omp"])
+def test_exact_capabilityful_v4_receipt_is_cleanup_only(installation, capability, host):
+    project, settings, _, _, install = installation
+    receipt = install(host, strict=False)
+    historical = json.loads(receipt.read_text())
+    historical["adapter_version"] = 4
+    historical["capability"] = capability
+    historical["capabilities"]["scope"] = "registered_binding_plus_cwd_locator_check_not_cwd_authority"
+    historical["capabilities"].pop("capture_judgment")
+    if capability == "full_semantic":
+        historical["capabilities"]["capture_processing"] = "automatic_server_extraction_until_semantic_ready"
+    else:
+        historical["capabilities"]["capture_judgment"] = "separate_caller_memory_record_no_automatic_candidate_readiness"
+    hosts._write_receipt(receipt, historical)
+    with pytest.raises(DomainError) as caught:
+        hosts.load_receipt(receipt, allow_legacy=True)
+    assert caught.value.code == "HOST_LEGACY_REINSTALL_REQUIRED"
+    assert hosts.load_receipt(receipt, allow_legacy=True, active=False)["capability"] == capability
+    assert hosts.uninstall_host(settings, project, host)["state"] == "uninstalled"
+    assert hosts.load_receipt(install(host, strict=False))["adapter_version"] == hosts.ADAPTER_VERSION
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("prompt_recall", [False, True])
+def test_claude_secret_prompt_persists_turn_generation_and_gap_without_recall_or_spool(
+    installation, authority, monkeypatch, strict, prompt_recall,
+):
+    project, _, _, _, install = installation
+    receipt_path = install(strict=strict, prompt_recall=prompt_recall)
+    receipt = hosts.load_receipt(receipt_path)
+    runtime = Path(receipt["runtime_dir"])
+    first = hosts.handle_hook(receipt_path, native(project, prompt="ordinary prompt"))
+    assert first["generation"] == 1
+    assert first.get("offered", False) is prompt_recall
+    assert first["capture"]["code"] == "HOST_PROMPT_ORIGIN_UNOBSERVABLE"
+    calls = list(authority.calls)
+
+    def forbidden_spool(*args):
+        raise AssertionError("Claude secret prompt reached the producer spool")
+
+    monkeypatch.setattr(hosts, "ProducerSpool", forbidden_spool)
+    secret = "ghp_" + "a" * 36
+    event = native(project, prompt_id="secret-prompt", prompt=secret)
+    result = hosts.handle_hook(receipt_path, event)
+    assert result["state"] == ("blocked" if strict else "degraded")
+    assert result["code"] == "SOURCE_SECRET_REJECTED"
+    assert result["capture"] == {"state": "gap", "code": "SOURCE_SECRET_REJECTED", "effect": "not_started"}
+    assert result["generation"] == 2
+    assert result["gaps"] == {"HOST_PROMPT_ORIGIN_UNOBSERVABLE": 1, "SOURCE_SECRET_REJECTED": 1}
+    assert authority.calls == calls and secret not in json.dumps(result)
+    state_path = runtime / (hosts._identity(receipt, event)["key"] + ".json")
+    state = json.loads(state_path.read_text())
+    assert state["turn"] == hosts._identity(receipt, event)["turn"]
+    assert state["generation"] == result["generation"] and state["gaps"] == result["gaps"]
+    assert state["offered"] is None and state["capture"] is None
+    assert secret.encode() not in state_path.read_bytes()
+    assert not (runtime / "capture.sqlite3").exists()
+    resumed = hosts.handle_hook(receipt_path, action(project, prompt_id="secret-prompt"))
+    assert resumed["generation"] == 2 and resumed["code"] != "HOST_GENERATION_UNOBSERVED"
+    recovered = hosts.handle_hook(receipt_path, native(project, prompt_id="recovered-prompt", prompt="ordinary next prompt"))
+    assert recovered["generation"] == 3
+    assert recovered["capture"]["code"] == "HOST_PROMPT_ORIGIN_UNOBSERVABLE"
+    assert recovered.get("offered", False) is prompt_recall
+    assert recovered["gaps"]["SOURCE_SECRET_REJECTED"] == 1
+
+
+@pytest.mark.parametrize("host", ["claude", "codex", "omp"])
+def test_scope_capability_distinguishes_mcp_authority_and_hook_cwd_with_prior_receipt_cleanup(installation, host):
+    project, settings, _, _, install = installation
+    receipt_path = install(host, strict=False)
+    receipt = hosts.load_receipt(receipt_path)
+    assert receipt["capabilities"]["scope"] == "mcp_credential_registered_binding_authority_hook_cwd_locator_check_only"
+    receipt["capabilities"]["scope"] = "registered_binding_plus_cwd_locator_check_not_cwd_authority"
+    hosts._write_receipt(receipt_path, receipt)
+    assert hosts.load_receipt(receipt_path, allow_legacy=True, active=False)["installation_id"] == receipt["installation_id"]
+    assert hosts.uninstall_host(settings, project, host)["state"] == "uninstalled"
+
+
+def test_multithreaded_spawn_crash_preserves_recovery_without_warnings(installation, recwarn):
+    project, settings, agent, producer, install = installation
+    receipt_path = hosts._receipt_path(settings, project, "claude")
+    user = project / "user-owned.json"
+    original = b'{"keep":"user-owned"}\n'
+    user.write_bytes(original)
+    entered, release = threading.Event(), threading.Event()
+
+    def waiting_thread():
+        entered.set()
+        release.wait()
+
+    thread = threading.Thread(target=waiting_thread)
+    thread.start()
+    assert entered.wait(1)
+    try:
+        _abrupt_process(
+            hosts.install_host, settings, project, "project-binding", "claude", agent, producer,
+            strict=False, crash_path=receipt_path, crash_state="pending",
+        )
+    finally:
+        release.set()
+        thread.join(1)
+    assert not thread.is_alive()
+    recovered = install(strict=False)
+    assert hosts.load_receipt(recovered)["state"] == "installed"
+    assert user.read_bytes() == original
+    assert not list(recwarn)
+
+
+def test_codex_child_secret_recall_persists_its_turn_without_capturing_child_evidence(
+    installation, authority, monkeypatch,
+):
+    project, _, _, _, install = installation
+    receipt_path = install("codex", strict=False, prompt_recall=True)
+    receipt = hosts.load_receipt(receipt_path)
+    runtime = Path(receipt["runtime_dir"])
+    first = hosts.handle_hook(receipt_path, native(
+        project, "codex", agent_id="child-one", prompt="ordinary child prompt",
+    ))
+    assert first["generation"] == 1
+    calls = list(authority.calls)
+
+    def forbidden_spool(*args):
+        raise AssertionError("An unsupported child source must not reach the producer spool")
+
+    monkeypatch.setattr(hosts, "ProducerSpool", forbidden_spool)
+    secret = "ghp_" + "a" * 36
+    event = native(project, "codex", agent_id="child-one", turn_id="secret-turn", prompt=secret)
+    result = hosts.handle_hook(receipt_path, event)
+    assert result["state"] == "degraded" and result["code"] == "SOURCE_SECRET_REJECTED"
+    assert result["capture"] == {"state": "gap", "code": "SOURCE_SECRET_REJECTED", "effect": "not_started"}
+    assert result["generation"] == 2 and result["gaps"]["SOURCE_SECRET_REJECTED"] == 1
+    assert authority.calls == calls and secret not in json.dumps(result)
+    state_path = runtime / (hosts._identity(receipt, event)["key"] + ".json")
+    state = json.loads(state_path.read_text())
+    assert state["turn"] == hosts._identity(receipt, event)["turn"]
+    assert state["generation"] == 2 and state["gaps"] == result["gaps"]
+    assert state["offered"] is None and state["capture"] is None
+    assert secret.encode() not in state_path.read_bytes()
+    assert not (runtime / "capture.sqlite3").exists()
+    recovered = hosts.handle_hook(receipt_path, native(
+        project, "codex", agent_id="child-one", turn_id="recovered-turn", prompt="ordinary next child prompt",
+    ))
+    assert recovered["generation"] == 3 and recovered["gaps"]["SOURCE_SECRET_REJECTED"] == 1

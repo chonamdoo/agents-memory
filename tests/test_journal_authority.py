@@ -151,3 +151,33 @@ def test_directional_artifact_intent_preserves_legacy_chain_without_upstream_flo
     assert journal.verify(current["head"])["sequence"] == 2
     encoded = (journal.directory / "entries").read_bytes()
     assert b"private-claim-id" not in encoded and b"upstream-source-id" not in encoded
+
+
+def test_purge_intent_retains_legacy_bytes_and_durable_body_free_artifact_closure(tmp_path):
+    journal = DeletionJournal(tmp_path / "independent", "deployment_test")
+    journal.initialize()
+    legacy = journal.append("private-binding", ("private-source",), ("private-origin",))
+    before = (journal.directory / "entries").read_bytes()
+    refs = (("selection", "private-selection"), ("claim", "private-claim"))
+    purged = journal.append("private-binding", ("private-source",), ("private-origin",), refs, purge=True)
+    assert (journal.directory / "entries").read_bytes().startswith(before)
+    reopened = DeletionJournal(journal.directory, "deployment_test")
+    entries = reopened.entries()
+    assert "purge" not in entries[0] and entries[1]["purge"] is True
+    assert entries[1]["previous"] == legacy["head"]
+    assert set(entries[1]["artifact_tokens"]) == set(reopened.artifact_tokens(refs).values())
+    assert reopened.verify(purged["head"])["sequence"] == 2
+    assert b"private-" not in (journal.directory / "entries").read_bytes()
+    with pytest.raises(DomainError) as stale_head:
+        reopened.verify(legacy["head"])
+    assert stale_head.value.code == "DELETION_BARRIER"
+
+
+@pytest.mark.parametrize("value", (None, 1, "true", [], {}))
+def test_nonboolean_purge_intent_is_rejected_before_chain_mutation(tmp_path, value):
+    journal = DeletionJournal(tmp_path / "independent", "deployment_test")
+    genesis = journal.initialize()
+    with pytest.raises(DomainError) as invalid:
+        journal.append("project", ("source",), (), purge=value)
+    assert invalid.value.code == "PURGE_INTENT_INVALID"
+    assert journal.verify() == genesis

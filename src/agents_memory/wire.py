@@ -4,7 +4,11 @@ import json
 import math
 from typing import Any
 
+from pydantic import TypeAdapter
+
 from .domain import TypedModel
+
+RESULT_ENVELOPE_BYTES = 2048
 
 
 def _pairs(pairs: list[tuple[str, Any]]) -> dict:
@@ -16,7 +20,7 @@ def _pairs(pairs: list[tuple[str, Any]]) -> dict:
     return result
 
 
-def decode_json(raw: bytes) -> dict:
+def decode_json_value(raw: bytes) -> Any:
     try:
         value = json.loads(raw, object_pairs_hook=_pairs, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
     except RecursionError:
@@ -40,10 +44,25 @@ def decode_json(raw: bytes) -> dict:
             raise ValueError("non-finite JSON number")
 
     validate(value, 0)
+    return value
+
+
+def decode_json(raw: bytes) -> dict:
+    value = decode_json_value(raw)
     if not isinstance(value, dict):
         raise ValueError("object required")
     return value
 
 
-def validate_wire[Model: TypedModel](model: type[Model], value: object) -> Model:
-    return model.model_validate_json(json.dumps(value, ensure_ascii=False, allow_nan=False), strict=True)
+def validate_wire[Model: TypedModel](model: type[Model] | TypeAdapter[Model], value: object) -> Model:
+    raw = json.dumps(value, ensure_ascii=False, allow_nan=False)
+    if isinstance(model, TypeAdapter):
+        return model.validate_json(raw, strict=True)
+    return model.model_validate_json(raw, strict=True)
+
+
+def tool_result_bytes(value: dict) -> int:
+    text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return len(json.dumps(text).encode("ascii")) + RESULT_ENVELOPE_BYTES
+
+

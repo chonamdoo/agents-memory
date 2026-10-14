@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,
@@ -17,9 +16,12 @@ from pydantic import (
     model_validator,
 )
 
+from .capture_guard import contains_source_secret
+
 Handle = Annotated[str, StringConstraints(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")]
 Key = Annotated[str, StringConstraints(min_length=1, max_length=512)]
 SmallText = Annotated[str, StringConstraints(min_length=1, max_length=2048)]
+ReasonText = Annotated[str, StringConstraints(min_length=1, max_length=2048, pattern=r"\S")]
 EntityText = Annotated[str, StringConstraints(min_length=1, max_length=256)]
 PurposeText = Annotated[str, StringConstraints(min_length=1, max_length=128)]
 SnapshotText = Annotated[str, StringConstraints(min_length=1, max_length=512)]
@@ -69,6 +71,13 @@ class DomainError(Exception):
         return {"code": self.code, "message": self.message, "effect": self.effect.value}
 
 
+def reject_source_secrets(text: str) -> None:
+    if contains_source_secret(text):
+        raise DomainError(
+            "SOURCE_SECRET_REJECTED", "High-confidence secret source was refused before persistence", status=422,
+        )
+
+
 class Principal(TypedModel):
     id: Handle
     credential_id: Handle
@@ -103,6 +112,13 @@ class BindingRelocation(TypedModel):
         return value
 
 
+class CaptureCoverage(TypedModel):
+    status: Literal["observed_window", "truncated", "unknown"] = "unknown"
+    gaps: tuple[Handle, ...] = Field(default=(), max_length=16)
+    original_bytes: int | None = Field(default=None, ge=0)
+    provenance: Literal["producer_reported"] = "producer_reported"
+
+
 class CaptureCommand(TypedModel):
     binding_id: Handle
     idempotency_key: Key
@@ -115,6 +131,21 @@ class CaptureCommand(TypedModel):
     snapshot: SnapshotText | None = None
     injected: bool = False
     kind: Literal["conversation", "document", "finding", "correction", "query"] = "conversation"
+    coverage: CaptureCoverage = CaptureCoverage()
+
+    @field_validator("body", "origin_key", "idempotency_key", "root_run_id", "agent_path", "snapshot")
+    @classmethod
+    def secret_free_source(cls, value: str | None) -> str | None:
+        if value is not None:
+            reject_source_secrets(value)
+        return value
+
+    @field_validator("coverage")
+    @classmethod
+    def secret_free_coverage(cls, value: CaptureCoverage) -> CaptureCoverage:
+        for gap in value.gaps:
+            reject_source_secrets(gap)
+        return value
 
     @field_validator("event_time")
     @classmethod
@@ -123,12 +154,33 @@ class CaptureCommand(TypedModel):
             raise ValueError("event_time requires an explicit timezone")
         return value
 
+    def digest_payload(self, *exclude: str) -> dict:
+        # Pre-coverage receipts, origins and correction intents were digested without this field.
+        omitted = {*exclude, "coverage"} if self.coverage == CaptureCoverage() else set(exclude)
+        return self.model_dump(mode="json", exclude=omitted)
+
+    def contradicts_coverage(self) -> bool:
+        size = len(self.body.encode())
+        original = self.coverage.original_bytes
+        return original is not None and (original < size or (self.coverage.status == "observed_window" and original != size))
+
+
+class CorrectCommand(TypedModel):
+    target_ref: Handle
+    source: CaptureCommand
+
 
 class RecordCommand(TypedModel):
     binding_id: Handle | None = None
     idempotency_key: Key
     body: str = Field(min_length=1, max_length=16384, repr=False)
     kind: Literal["note", "rule_candidate"] = "note"
+
+    @field_validator("body", "idempotency_key")
+    @classmethod
+    def secret_free_record(cls, value: str) -> str:
+        reject_source_secrets(value)
+        return value
 
 
 class FeedbackCommand(TypedModel):
@@ -138,18 +190,40 @@ class FeedbackCommand(TypedModel):
     kind: Literal["correct", "reject", "retract_request"]
     body: str | None = Field(default=None, min_length=1, max_length=16384, repr=False)
 
+    @field_validator("body", "idempotency_key")
+    @classmethod
+    def secret_free_feedback(cls, value: str | None) -> str | None:
+        if value is not None:
+            reject_source_secrets(value)
+        return value
+
     @model_validator(mode="after")
-    def correction_has_body(self) -> FeedbackCommand:
-        if self.kind == "correct" and self.body is None:
-            raise ValueError("correct requires body")
+    def feedback_has_body(self) -> FeedbackCommand:
+        if self.kind in {"correct", "reject"} and self.body is None:
+            raise ValueError(f"{self.kind} requires body")
+        if self.kind == "reject" and (self.body is None or self.body.isspace() or len(self.body) > 2048):
+            raise ValueError("reject requires a nonblank reason of at most 2048 characters")
         return self
+
+
+class RelevanceJudgment(TypedModel):
+    claim_id: Handle
+    relevant: bool = Field(strict=True)
+    reason: ReasonText
+
+    @field_validator("reason")
+    @classmethod
+    def secret_free_reason(cls, value: str) -> str:
+        reject_source_secrets(value)
+        return value
 
 
 class ContextCommand(TypedModel):
     binding_id: Handle | None = None
     query: str = Field(min_length=1, max_length=4096)
-    mode: Literal["recall", "reflect"] = "recall"
-    idempotency_key: Key | None = None
+    query_expansions: tuple[str, ...] = Field(default=(), max_length=8)
+    admission_id: Handle | None = None
+    relevance: tuple[RelevanceJudgment, ...] | None = Field(default=None, max_length=20)
     paths: tuple[PathText, ...] | None = Field(default=None, max_length=64)
     purpose: PurposeText | None = None
     host: Literal["claude", "codex", "omp", "generic", "agent-flow"] | None = None
@@ -158,10 +232,35 @@ class ContextCommand(TypedModel):
     max_bytes: int = Field(default=2400, ge=256, le=6144)
     limit: int = Field(default=3, ge=1, le=5)
 
+    @field_validator("query", "purpose", "snapshot")
+    @classmethod
+    def secret_free_query(cls, value: str | None) -> str | None:
+        if value is not None:
+            reject_source_secrets(value)
+        return value
+
+    @field_validator("paths")
+    @classmethod
+    def secret_free_paths(cls, values: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        for value in values or ():
+            reject_source_secrets(value)
+        return values
+
+    @field_validator("query_expansions")
+    @classmethod
+    def bounded_expansions(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        for value in values:
+            reject_source_secrets(value)
+        if any(not value.strip() or len(value.encode()) > 512 for value in values) or sum(len(value.encode()) for value in values) > 4096:
+            raise ValueError("Query expansions exceed their UTF-8 bound")
+        return values
+
     @model_validator(mode="after")
-    def reflection_has_key(self) -> ContextCommand:
-        if self.mode == "reflect" and self.idempotency_key is None:
-            raise ValueError("reflect requires idempotency_key")
+    def complete_relevance(self) -> ContextCommand:
+        if (self.admission_id is None) != (self.relevance is None):
+            raise ValueError("admission_id and relevance must be supplied together")
+        if self.relevance is not None and len({item.claim_id for item in self.relevance}) != len(self.relevance):
+            raise ValueError("Relevance decisions must have unique claim IDs")
         return self
 
 
@@ -178,6 +277,7 @@ class Source(TypedModel):
     event_time: datetime | None
     recorded_at: datetime
     state: Literal["active", "retracted", "purged"] = "active"
+    coverage: CaptureCoverage = CaptureCoverage()
 
 
 class Quote(TypedModel):
@@ -228,6 +328,7 @@ class EvidenceSpan(TypedModel):
 
 class Claim(TypedModel):
     id: Handle
+    revision: int = Field(default=1, ge=1)
     binding_id: Handle
     draft: ClaimDraft
     evidence: tuple[EvidenceSpan, ...]
@@ -235,6 +336,10 @@ class Claim(TypedModel):
     snapshot: str | None
     created_at: datetime
     state: Literal["active", "retracted"] = "active"
+    interpretation_role: Literal["model_derived_candidate", "caller_grounded_candidate"] = "model_derived_candidate"
+    selection_id: Handle | None = None
+    policy_revision: str | None = None
+    awaiting_revalidation: bool = False
 
 
 class Extraction(TypedModel):
@@ -250,8 +355,15 @@ class RelationDraft(TypedModel):
     reason: SmallText
 
 
-class Relation(RelationDraft):
+class Relation(TypedModel):
     id: Handle
+    left_id: Handle
+    right_id: Handle
+    kind: Literal[
+        "duplicate", "supports", "contradicts", "supersedes",
+        "conditional_variant", "possible_same",
+    ]
+    reason: SmallText
 
 
 class Consolidation(TypedModel):
@@ -268,59 +380,61 @@ class ReflectionDraft(TypedModel):
     limitations: tuple[SmallText, ...] = Field(default=(), max_length=4)
 
 
-class RankedClaim(TypedModel):
-    claim_id: Handle
-    score: float = Field(allow_inf_nan=False)
-    arms: tuple[str, ...] = ()
+
+class SourcePointer(TypedModel):
+    source_id: Handle
+    source_revision: int = Field(ge=1)
+    binding_id: Handle
+    binding_revision: int = Field(ge=1)
+    snapshot: SnapshotText | None = None
+    source_speaker: Literal["human", "assistant", "tool", "document", "agent_note", "memory"]
+    source_event_time: datetime | None
+    source_recorded_at: datetime
+    byte_length: int = Field(ge=1)
+    coverage: CaptureCoverage
 
 
 class Operation(TypedModel):
     id: Handle
     binding_id: Handle
     kind: str
-    state: Literal["accepted", "semantic_ready", "pending", "blocked", "failed", "retracted"]
+    state: Literal["accepted", "semantic_ready", "captured", "selection_recorded", "candidate_ready", "pending", "blocked", "failed", "retracted"]
     source_id: Handle | None = None
     artifact_id: Handle | None = None
     successor_operation_id: Handle | None = None
     error_code: str | None = None
     epoch: int = Field(ge=0)
+    source_pointer: SourcePointer | None = None
+    capture_disposition: Literal["captured", "ignored", "retracted", "unresolved"] | None = None
+    selection_label: Literal["remember", "discard", "review"] | None = None
     effect: EffectState = EffectState.COMMITTED
-
-
-class JobLease(TypedModel):
-    job_id: Handle
-    lease_token: Handle
-    generation: int = Field(ge=1)
-    deadline: datetime
-    kind: Literal["extract", "consolidate", "reflect", "reindex"]
-    binding_id: Handle
-    operation_id: Handle
-    credential_id: Handle
-    source_ids: tuple[Handle, ...] = ()
-    claim_ids: tuple[Handle, ...] = ()
-    query_source_id: Handle | None = None
-    attempts: int = Field(ge=1)
 
 
 class RevisionRef(TypedModel):
     id: Handle
-    revision: int = Field(ge=1)
+    revision: int = Field(ge=1, strict=True)
 
 
-class Admission(TypedModel):
+
+class NonmodelAdmission(TypedModel):
     id: Handle
     binding_id: Handle
+    binding_revision: int = Field(ge=1)
     credential_id: Handle
-    credential_generation: int
-    epoch: int
-    route_revision: str
-    purpose: str
-    sources: tuple[RevisionRef, ...]
-    claim_ids: tuple[Handle, ...]
+    credential_generation: int = Field(ge=1)
+    realm: Handle
+    epoch: int = Field(ge=0)
+    deletion_generation: int = Field(ge=0)
+    policy_revision: str
+    policy_epoch: int = Field(ge=0)
+    sources: tuple[RevisionRef, ...] = Field(max_length=128)
+    claim_ids: tuple[Handle, ...] = Field(max_length=64)
+    relation_ids: tuple[Handle, ...] = Field(max_length=128)
+    snapshot: SnapshotText | None
     deadline: datetime
-    job_id: Handle | None = None
-    lease_token: Handle | None = None
-    generation: int | None = None
+    request_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    rejection_ids: tuple[Handle, ...] = Field(default=(), max_length=8)
+    pending_id: Handle | None = None
 
 
 def valid_path_pattern(pattern: str) -> bool:
@@ -358,6 +472,19 @@ class RuleProposal(TypedModel):
     required: bool = False
     source_ids: tuple[Handle, ...] = ()
 
+    @field_validator("body", "idempotency_key")
+    @classmethod
+    def secret_free_proposal(cls, value: str) -> str:
+        reject_source_secrets(value)
+        return value
+
+    @field_validator("exceptions")
+    @classmethod
+    def secret_free_exceptions(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        for value in values:
+            reject_source_secrets(value)
+        return values
+
 
 class RuleApproval(TypedModel):
     proposal_id: Handle
@@ -381,21 +508,6 @@ class ActiveRule(TypedModel):
     target_bindings: tuple[Handle, ...]
     source_ids: tuple[Handle, ...]
 
-
-class SemanticRuntime(Protocol):
-    revision: str
-
-    async def extract(self, source: Source) -> Extraction: ...
-
-    async def embed(self, texts: Sequence[str]) -> list[list[float]]: ...
-
-    async def consolidate(self, claims: Sequence[Claim]) -> Consolidation: ...
-
-    async def rerank(self, query: str, claims: Sequence[Claim]) -> list[RankedClaim]: ...
-
-    async def reflect(self, query: str, claims: Sequence[Claim]) -> ReflectionDraft: ...
-
-    async def close(self) -> None: ...
 
 
 def utc_now() -> datetime:

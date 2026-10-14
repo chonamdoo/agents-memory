@@ -217,12 +217,6 @@ def test_one_selected_conflict_endpoint_keeps_opaque_missing_partner():
     assert result.relation_ids == ("relation-001",)
 
 
-def test_reflection_cannot_reason_from_one_side_of_a_known_conflict():
-    relation = Relation(id="relation-001", left_id="claim-001", right_id="claim-002", kind="contradicts", reason="Different polarity")
-    command = ContextCommand(query="export", mode="reflect", idempotency_key="reflect-001", limit=1)
-    with pytest.raises(DomainError) as caught:
-        compose(command, (), (claim(),), (relation,))
-    assert caught.value.code == "REFLECTION_CONFLICT_INPUT_INCOMPLETE"
 
 
 def test_selected_endpoint_cannot_drop_conflict_when_only_metadata_exceeds_budget():

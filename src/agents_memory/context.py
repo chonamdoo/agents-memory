@@ -108,7 +108,7 @@ def _claim(claim: Claim) -> dict:
     draft = claim.draft
     value = {
         "ref": claim.id,
-        "interpretation_role": "model_derived_candidate",
+        "interpretation_role": claim.interpretation_role,
         "statement": draft.statement,
         "polarity": draft.polarity,
         "modality": draft.modality,
@@ -223,14 +223,6 @@ def compose(
                         "CONFLICT_CONTEXT_OVERFLOW", "Known relationship metadata exceeds the context budget",
                     )
             omitted += 1
-    for relation in relations:
-        if (
-            command.mode == "reflect"
-            and relation.kind in {"contradicts", "supersedes"}
-            and {relation.left_id, relation.right_id}.intersection(claim_ids)
-            and not {relation.left_id, relation.right_id} <= claim_ids
-        ):
-            raise DomainError("REFLECTION_CONFLICT_INPUT_INCOMPLETE", "Reflection must include both known conflict endpoints")
     for rule in unknown_required[:command.limit]:
         stub = {
             "ref": rule.id,

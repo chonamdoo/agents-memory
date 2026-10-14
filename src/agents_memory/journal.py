@@ -251,13 +251,14 @@ class DeletionJournal:
                         raise self._error()
                     entry_mac = entry.pop("mac")
                     fields = {"sequence", "previous", "binding_token", "source_tokens", "origin_tokens"}
-                    if set(entry) not in (fields, fields | {"artifact_tokens"}):
+                    if set(entry) not in (fields, fields | {"artifact_tokens"}, fields | {"purge"}, fields | {"artifact_tokens", "purge"}):
                         raise self._error()
                     token_fields = ("source_tokens", "origin_tokens", "artifact_tokens")
                     if (
                         type(entry["sequence"]) is not int or entry["sequence"] != sequence
                         or entry["previous"] != previous or not self._digest(entry_mac)
                         or not self._digest(entry["binding_token"])
+                        or ("purge" in entry and entry["purge"] is not True)
                         or any(not isinstance(entry.get(field, []), list) for field in token_fields)
                         or any(not self._digest(token) for field in token_fields for token in entry.get(field, []))
                         or not hmac.compare_digest(entry_mac, hmac.new(key, _encoded(entry), hashlib.sha256).hexdigest())
@@ -304,7 +305,9 @@ class DeletionJournal:
             _, entries = self._verify()
             return entries
 
-    def append(self, binding_id: str, source_ids: tuple[str, ...], origin_keys: tuple[str, ...], artifact_refs: tuple[tuple[str, str], ...] = ()) -> dict:
+    def append(self, binding_id: str, source_ids: tuple[str, ...], origin_keys: tuple[str, ...], artifact_refs: tuple[tuple[str, str], ...] = (), *, purge: bool = False) -> dict:
+        if type(purge) is not bool:
+            raise DomainError("PURGE_INTENT_INVALID", "Purge intent requires an explicit boolean")
         if not source_ids and not origin_keys and not artifact_refs:
             raise DomainError("RETRACTION_TARGET_REQUIRED", "A deletion intent requires an explicit source, origin or artifact")
         with self._locked():
@@ -319,6 +322,8 @@ class DeletionJournal:
             }
             if artifact_refs:
                 entry["artifact_tokens"] = sorted({self._token(key, "artifact", ref) for ref in artifact_refs})
+            if purge:
+                entry["purge"] = True
             entry["mac"] = hmac.new(key, _encoded(entry), hashlib.sha256).hexdigest()
             descriptor = os.open(self.directory / "entries", os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
             with os.fdopen(descriptor, "ab") as stream:
