@@ -1,10 +1,8 @@
 from datetime import UTC, datetime
 
 import pytest
-from pydantic import ValidationError
 
 from agents_memory.domain import (
-    CitedSentence,
     Claim,
     ClaimDraft,
     Consolidation,
@@ -12,19 +10,16 @@ from agents_memory.domain import (
     EvidenceSpan,
     Extraction,
     Quote,
-    ReflectionDraft,
     RelationDraft,
     Source,
 )
 from agents_memory.semantic import (
     original_spans,
     resolve_extraction,
-    resolve_reflection,
     validate_consolidation,
     validate_extraction,
-    validate_reflection,
 )
-from agents_memory.semantic_contract import GeneratedExtraction, GeneratedReflection
+from agents_memory.semantic_contract import GeneratedExtraction
 
 
 def claim(identifier: str, quote: str, **qualifiers) -> Claim:
@@ -52,141 +47,6 @@ def claim(identifier: str, quote: str, **qualifiers) -> Claim:
         snapshot="snapshot_a",
         created_at=datetime(2026, 10, 12, tzinfo=UTC),
     )
-
-
-def reflection(text: str, *claim_ids: str) -> ReflectionDraft:
-    return ReflectionDraft(sentences=(CitedSentence(text=text, claim_ids=claim_ids),))
-
-
-@pytest.mark.parametrize("citations", [("outside",), ("a", "outside"), ("a", "a")])
-def test_foreign_or_repeated_sentence_citation_is_rejected(citations):
-    with pytest.raises(DomainError, match="citation|manifest"):
-        validate_reflection(reflection("근거가 제한적이다.", *citations), [claim("a", "근거 원문")])
-
-
-@pytest.mark.parametrize("citations", [("outside",), ("a", "outside"), ("a", "a")])
-def test_provenance_selection_cannot_bypass_citation_eligibility(citations):
-    generated = GeneratedReflection(answer={
-        "kind": "source_provenance", "sentences": ({"claim_ids": citations},),
-    })
-    with pytest.raises(DomainError) as rejected:
-        resolve_reflection(generated, (claim("a", "근거 원문"),))
-    assert rejected.value.code == "MODEL_OUTPUT_INVALID"
-
-
-@pytest.mark.parametrize("unsupported", ["assertion", "limitation"])
-def test_assertion_reflection_does_not_authorize_unbacked_assertion_literals(unsupported):
-    sentences = [{"text": "The policy starts after review.", "claim_ids": ("a",)}]
-    limitations = ()
-    if unsupported == "assertion":
-        sentences[0]["text"] = "The policy starts at 2020-01-02T00:00:00Z."
-    else:
-        limitations = ("The policy starts at 2020-01-02T00:00:00Z.",)
-    generated = GeneratedReflection(answer={
-        "kind": "assertions", "sentences": sentences, "limitations": limitations,
-    })
-    with pytest.raises(DomainError) as rejected:
-        resolve_reflection(generated, (claim("a", "The policy starts after review."),))
-    assert rejected.value.code == "MODEL_OUTPUT_INVALID"
-
-
-def test_empty_sentence_citation_is_malformed():
-    with pytest.raises(ValidationError):
-        reflection("근거 없는 결론이다.")
-
-
-def test_number_in_an_uncited_claim_cannot_support_a_sentence():
-    claims = [claim("a", "cache_limit is 128."), claim("b", "timeout is 42 seconds.")]
-    with pytest.raises(DomainError, match="unsupported number"):
-        validate_reflection(reflection("cache_limit is 42.", "a"), claims)
-
-
-@pytest.mark.parametrize("text", ["cache_limit is 12.", "cache_limit is 256.", "cacheLimit is 128."])
-def test_invented_numeric_and_identifier_literals_are_rejected(text):
-    with pytest.raises(DomainError, match="unsupported"):
-        validate_reflection(reflection(text, "a"), [claim("a", "cache_limit is 128.")])
-
-
-def test_simple_inline_code_identifier_cannot_be_invented():
-    with pytest.raises(DomainError, match="unsupported identifier"):
-        validate_reflection(reflection("Call `flush`.", "a"), [claim("a", "Call refresh().")])
-
-
-def test_identifier_prefix_is_not_exact_identifier_evidence():
-    with pytest.raises(DomainError, match="unsupported identifier"):
-        validate_reflection(reflection("Use `cache`.", "a"), [claim("a", "Use cache.limit.")])
-
-
-def test_valid_citations_allow_semantic_paraphrase_without_word_entailment_gate():
-    validate_reflection(
-        reflection("캐시 상한은 128이며 cache_limit 설정을 사용한다.", "a"),
-        [claim("a", "cache_limit is 128.")],
-    )
-    validate_reflection(
-        reflection("An evidence-based local-first approach is appropriate.", "a"),
-        [claim("a", "Keep information on the user's machine.")],
-    )
-
-
-def test_limitations_cannot_smuggle_unsupported_numbers():
-    result = reflection("근거가 제한적이다.", "a").model_copy(update={
-        "limitations": ("The timeout might be 77 seconds.",),
-    })
-    with pytest.raises(DomainError, match="unsupported number"):
-        validate_reflection(result, [claim("a", "The timeout is unknown.")])
-
-
-@pytest.mark.parametrize("normalized", [
-    "2026-10-11T00:00:00Z",
-    "2026-10-11T09:00:00+09:00",
-])
-def test_cited_timestamp_accepts_equivalent_instants_without_retyping_source_evidence(normalized):
-    validate_reflection(
-        reflection(f"유효 시작은 {normalized}다.", "a"),
-        [claim("a", "유효 시작은 2026-10-11T00:00:00+00:00다.")],
-    )
-
-
-def test_complete_timestamp_cannot_change_day_hidden_by_numeric_tokenization():
-    with pytest.raises(DomainError) as rejected:
-        validate_reflection(
-            reflection("유효 시작은 2026-10-12T00:00:00Z다.", "a"),
-            [claim("a", "유효 시작은 2026-10-11T00:00:00+00:00다.")],
-        )
-    assert rejected.value.code == "MODEL_OUTPUT_INVALID"
-
-
-def test_equivalent_timestamp_in_an_uncited_claim_does_not_authorize_a_sentence():
-    with pytest.raises(DomainError):
-        validate_reflection(reflection("유효 시작은 2026-10-11T00:00:00Z다.", "a"), [
-            claim("a", "유효 시작은 아직 정해지지 않았다."),
-            claim("b", "유효 시작은 2026-10-11T00:00:00+00:00다."),
-        ])
-
-
-@pytest.mark.parametrize("timestamp", [
-    "2020-01-02T00:00:00Z", "2026-10-10T00:00:00Z", "2026-10-12T00:00:00Z",
-])
-def test_source_and_extraction_clocks_cannot_authorize_a_timestamp_assertion(timestamp):
-    selected = claim("a", "The policy starts after review.")
-    selected = selected.model_copy(update={"evidence": (
-        selected.evidence[0].model_copy(update={"source_event_time": datetime(2020, 1, 2, tzinfo=UTC)}),
-    )})
-    with pytest.raises(DomainError) as rejected:
-        validate_reflection(reflection(f"The policy starts at {timestamp}.", "a"), [selected])
-    assert rejected.value.code == "MODEL_OUTPUT_INVALID"
-
-
-@pytest.mark.parametrize("text", [
-    "source_event_time=2026-10-10T00:00:00Z.",
-    "The event happened at 2026-10-10T00:00:00Z.",
-    "The limit is 2026.",
-    "source_revision is 1.",
-])
-def test_missing_event_time_and_metadata_do_not_authorize_invented_facts(text):
-    with pytest.raises(DomainError, match="unsupported"):
-        validate_reflection(reflection(text, "a"), [claim("a", "The event date is unknown.")])
-
 
 
 @pytest.mark.parametrize("bound", ["event_time", "recorded_at"])
@@ -269,7 +129,7 @@ def test_qualification_cannot_be_translated_away_from_its_original_evidence():
     translated = draft.model_copy(update={"conditions": ("company projects",)})
     with pytest.raises(DomainError) as rejected:
         validate_extraction(Extraction(claims=(translated,)), source)
-    assert rejected.value.code == "MODEL_OUTPUT_INVALID"
+    assert rejected.value.code == "GROUNDING_INVALID"
     validate_extraction(Extraction(claims=(draft,)), source)
 
 
@@ -278,6 +138,8 @@ VEGA = (
     "For the same Synthetic Vega sandbox and the same time, the default serialization format is YAML.\n"
     "Neither statement has been selected as an approved policy."
 )
+
+
 KOREAN = (
     "합성 Polaris 프로젝트: PolicyGate.check()는 오프라인 검토에서만 사용한다. "
     "고객 코드는 외부 서비스에 저장하지 않는다. "
@@ -379,7 +241,7 @@ def test_unknown_or_malformed_original_span_ids_are_rejected(ids):
                                   [qualification("context", "Synthetic Vega sandbox", ids)])
     with pytest.raises(DomainError) as rejected:
         resolve_extraction(artifact, source)
-    assert rejected.value.code == "MODEL_OUTPUT_INVALID"
+    assert rejected.value.code == "GROUNDING_INVALID"
 
 
 @pytest.mark.parametrize("targets", [("a9999",), ("a0000", "a0000")])
@@ -519,3 +381,37 @@ def test_unique_original_phrase_resolves_its_real_span_not_the_target_assertion_
     ]), source)
     assert result.claims[0].evidence[1].byte_start == 0
     assert "PolicyGate.check()" in result.claims[0].evidence[1].quote
+
+
+
+@pytest.mark.parametrize(("evidence", "proposed"), [
+    ("cache_limit is 128.", "cache_limit is 12."),
+    ("cache_limit is 128.", "cache_limit is 256."),
+    ("cache_limit is 128.", "cacheLimit is 128."),
+    ("Call refresh().", "Call `flush`."),
+    ("Use cache.limit.", "Use `cache`."),
+    ("The event date is unknown.", "The limit is 2026."),
+    ("The event date is unknown.", "The event happened at 2026-10-10T00:00:00Z."),
+    ("The policy starts at 2026-10-11T00:00:00Z.", "The policy starts at 2026-10-12T00:00:00Z."),
+])
+def test_caller_grounding_refuses_unsupported_literals(evidence, proposed):
+    source = span_source(evidence)
+    selected = claim("a", evidence)
+    draft = selected.draft.model_copy(update={"statement": proposed, "subject": "policy", "predicate": "states", "object": "value", "entities": ()})
+    with pytest.raises(DomainError, match="unsupported"):
+        validate_extraction(Extraction(claims=(draft,)), source)
+
+
+@pytest.mark.parametrize("normalized", ["2026-10-11T00:00:00Z", "2026-10-11T09:00:00+09:00"])
+def test_grounded_timestamp_accepts_equivalent_instants_without_retyping_source(normalized):
+    source = span_source("유효 시작은 2026-10-11T00:00:00+00:00다.")
+    selected = claim("a", source.body)
+    draft = selected.draft.model_copy(update={"statement": f"유효 시작은 {normalized}다.", "subject": "policy", "predicate": "starts", "object": "now", "entities": ()})
+    validate_extraction(Extraction(claims=(draft,)), source)
+
+
+def test_grounded_caller_paraphrase_is_not_a_lexical_entailment_default():
+    source = span_source("Keep information on the user's machine.")
+    selected = claim("a", source.body)
+    draft = selected.draft.model_copy(update={"statement": "An evidence-based local-first approach is appropriate.", "subject": "policy", "predicate": "states", "object": "local", "entities": ()})
+    validate_extraction(Extraction(claims=(draft,)), source)

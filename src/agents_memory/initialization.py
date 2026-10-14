@@ -11,7 +11,7 @@ from pathlib import Path
 
 from pydantic import TypeAdapter, ValidationError
 
-from .config import Settings
+from .config import Settings, prepare_settings_upgrade
 from .domain import DomainError, EffectState, Handle
 from .journal import DeletionJournal
 from .migrations import migrate
@@ -22,7 +22,7 @@ from .store import Store
 _INTENT = "initialization-intent.json"
 _RESULT = "initialization-result.json"
 _SCOPE_FIELDS = (
-    "deployment_id", "realm", "mode", "database_dsn", "migrator_dsn", "state_dir", "journal_dir", "port",
+    "deployment_id", "realm", "mode", "capability", "database_dsn", "migrator_dsn", "state_dir", "journal_dir", "port",
 )
 
 
@@ -112,13 +112,15 @@ def _intent(path: Path) -> dict | None:
     if not _exists(path):
         return None
     value = _record(path)
+    request_fields = set(_SCOPE_FIELDS) | {"owner_id", "config_path", "operator_token_out"}
+    if value.get("format") == 1:
+        request_fields.remove("capability")
     if (set(value) != {"format", "intent_id", "fingerprint", "request", "operator_token", "config"}
-            or type(value["format"]) is not int or value["format"] != 1
+            or type(value["format"]) is not int or value["format"] not in {1, 2}
             or not isinstance(value["request"], dict) or not isinstance(value["config"], str)
             or not isinstance(value["intent_id"], str) or len(value["intent_id"]) != 64
             or any(character not in "0123456789abcdef" for character in value["intent_id"])
-            or set(value["request"]) != {"deployment_id", "realm", "mode", "database_dsn", "migrator_dsn",
-                "state_dir", "journal_dir", "port", "owner_id", "config_path", "operator_token_out"}
+            or set(value["request"]) != request_fields
             or value["fingerprint"] != _digest(value["request"])):
         raise _denied()
     return value
@@ -137,6 +139,8 @@ def _completion(path: Path, intent: dict) -> dict | None:
     expected = {"deployment_id": request["deployment_id"], "realm": request["realm"],
         "mode": request["mode"], "operator_id": request["owner_id"],
         "operator_token_file": request["operator_token_out"], "effect": "committed"}
+    if intent["format"] == 2:
+        expected["capability"] = request["capability"]
     if (set(result) != set(expected) | {"credential_id", "migration"}
             or any(result.get(name) != item for name, item in expected.items())
             or not isinstance(result["credential_id"], str) or not isinstance(result["migration"], dict)):
@@ -144,9 +148,19 @@ def _completion(path: Path, intent: dict) -> dict | None:
     return result
 
 
+def _initialization_settings(raw: bytes, *, legacy: bool) -> Settings:
+    try:
+        if legacy:
+            return prepare_settings_upgrade(raw)
+        return Settings.model_validate_json(raw)
+    except (DomainError, ValueError, TypeError):
+        raise _denied() from None
+
+
 async def initialize_deployment(*, config_path: Path, realm: str, mode: str, database_dsn: str,
         migrator_dsn: str, state_dir: Path, journal_dir: Path, port: int, owner_id: str,
-        operator_token_out: Path | None, deployment_id: str | None, resume: bool = False) -> dict:
+        operator_token_out: Path | None, deployment_id: str | None, resume: bool = False,
+        capability: str = "agent_judged") -> dict:
     """Recover only this private intent; same-UID software is not an isolation boundary."""
     schema, endpoint = _dsn(database_dsn)
     migration_schema, migration_endpoint = _dsn(migrator_dsn)
@@ -158,7 +172,8 @@ async def initialize_deployment(*, config_path: Path, realm: str, mode: str, dat
     _directory(state_dir)
     _directory(journal_dir)
     intent_path, result_path = state_dir / _INTENT, state_dir / _RESULT
-    forbidden = {state_dir / "authority.lock", state_dir / "restore-barrier.json", intent_path, result_path}
+    forbidden = {state_dir / "authority.lock", state_dir / "restore-barrier.json",
+        state_dir / "model-approval.lock", state_dir / "model-approval-intent.json", intent_path, result_path}
     if (config_path.is_relative_to(out) or out.is_relative_to(config_path) or config_path in forbidden or out in forbidden
             or any(path.is_relative_to(journal_dir) or journal_dir.is_relative_to(path) for path in (config_path, out))):
         raise DomainError("PATH_DENIED", "Initialization outputs cannot replace each other, the journal or authority interlocks")
@@ -173,15 +188,19 @@ async def initialize_deployment(*, config_path: Path, realm: str, mode: str, dat
     )
     try:
         TypeAdapter(Handle).validate_python(owner_id)
-        settings = Settings(deployment_id=effective_id, realm=realm, mode=mode,
+        settings = Settings(deployment_id=effective_id, realm=realm, mode=mode, capability=capability,
             database_dsn=database_dsn, migrator_dsn=migrator_dsn,
             state_dir=state_dir, journal_dir=journal_dir, port=port)
     except (ValidationError, ValueError):
         raise DomainError("CONFIG_INVALID", "The requested deployment configuration is invalid") from None
-    request = {"deployment_id": settings.deployment_id, "realm": realm, "mode": mode,
+    request = {"deployment_id": settings.deployment_id, "realm": realm, "mode": mode, "capability": capability,
         "database_dsn": database_dsn, "migrator_dsn": migrator_dsn, "state_dir": str(state_dir),
         "journal_dir": str(journal_dir), "port": port, "owner_id": owner_id,
         "config_path": str(config_path), "operator_token_out": str(out)}
+    if existing is not None and existing["format"] == 1:
+        if capability != "agent_judged":
+            raise _denied()
+        request.pop("capability")
     fingerprint = _digest(request)
     with authority_lock(settings, exclusive=True):
         if _exists(state_dir / "restore-barrier.json"):
@@ -192,16 +211,15 @@ async def initialize_deployment(*, config_path: Path, realm: str, mode: str, dat
         if intent is not None and (intent["request"] != request or intent["fingerprint"] != fingerprint):
             raise _denied()
         if intent is None:
-            intent = {"format": 1, "intent_id": secrets.token_hex(32), "fingerprint": fingerprint,
+            intent = {"format": 2, "intent_id": secrets.token_hex(32), "fingerprint": fingerprint,
                 "request": request, "operator_token": secrets.token_urlsafe(32),
                 "config": settings.model_dump_json(indent=2) + "\n"}
         completed = _completion(result_path, intent)
         if existing is not None and not resume and completed is None:
             raise DomainError("INIT_RESUME_REQUIRED", "An interrupted initialization requires explicit --resume")
-        try:
-            recorded_settings = Settings.model_validate_json(intent["config"])
-        except (ValidationError, ValueError):
-            raise _denied() from None
+        recorded_settings = _initialization_settings(
+            intent["config"].encode(), legacy=intent["format"] == 1,
+        )
         if any(getattr(recorded_settings, name) != getattr(settings, name) for name in _SCOPE_FIELDS):
             raise _denied()
         settings = recorded_settings
@@ -212,9 +230,10 @@ async def initialize_deployment(*, config_path: Path, realm: str, mode: str, dat
             _output(config_path, config_raw if existing is not None else None)
         else:
             try:
-                current_settings = Settings.model_validate_json(private_read(config_path, 262144))
-            except (OSError, ValueError):
+                current_raw = private_read(config_path, 262144)
+            except (DomainError, OSError):
                 raise _denied() from None
+            current_settings = _initialization_settings(current_raw, legacy=intent["format"] == 1)
             if any(getattr(current_settings, name) != getattr(settings, name) for name in _SCOPE_FIELDS):
                 raise _denied()
         journal = DeletionJournal(journal_dir, settings.deployment_id)
@@ -244,6 +263,8 @@ async def initialize_deployment(*, config_path: Path, realm: str, mode: str, dat
             result = {"deployment_id": settings.deployment_id, "realm": realm, "mode": mode,
                 "operator_id": confirmed_actor.id, "credential_id": confirmed_actor.credential_id,
                 "operator_token_file": str(out), "migration": version, "effect": "committed"}
+            if intent["format"] == 2:
+                result["capability"] = settings.capability
             record = {"intent_id": intent["intent_id"], "fingerprint": fingerprint, "result": result}
             private_write(result_path, _signed(record, token))
             return result

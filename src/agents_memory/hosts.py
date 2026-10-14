@@ -22,16 +22,26 @@ from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from .client import LocalClient
 from .config import Settings
 from .constants import BOUNDED_CONTEXT_MARKER, HOST_CONTEXT_BYTES
-from .domain import CaptureCommand, ContextCommand, DomainError, EffectState, canonical_digest
+from .domain import (
+    CaptureCommand,
+    CaptureCoverage,
+    ContextCommand,
+    DomainError,
+    EffectState,
+    canonical_digest,
+    reject_source_secrets,
+)
 from .private_io import private_read, private_write, sync_file
 from .spool import ProducerSpool
 from .wire import decode_json
 
 HOST_VERSIONS = {"claude": "2.1.296", "codex": "0.162.1", "omp": "18.9.1"}
-ADAPTER_VERSION = 3
+ADAPTER_VERSION = 5
 SERVER_NAME = "agents-memory"
 HOST_INPUT_BYTES = 16 * 1024 * 1024
 HOST_PROJECTION_BYTES = 65536
@@ -46,6 +56,7 @@ PROMPT_EVENTS = {"UserPromptSubmit", "before_agent_start"}
 ACTION_EVENTS = {"PreToolUse", "tool_call"}
 PROVIDER_EVENTS = {"before_provider_request", "after_provider_response"}
 ACTION_CONTEXT_CODES = ("HOST_PROVIDER_INPUT_UNOBSERVABLE", "HOST_CONTEXT_STALE")
+RELEVANCE_HANDOFF = '{"recall":"judgment_required","gap":"manifest_not_delivered","next":"Call memory_context; inspect candidate_manifest; submit admission_id with every relevance decision."}'
 
 
 def _json(value: object) -> str:
@@ -61,8 +72,10 @@ def _host(host: str) -> None:
         raise DomainError("HOST_UNSUPPORTED", "Choose claude, codex or omp")
 
 
-def capabilities(host: str, *, strict: bool = False, prompt_recall: bool = False) -> dict:
+def capabilities(host: str, *, strict: bool = False, prompt_recall: bool = False, capability: str = "agent_judged") -> dict:
     _host(host)
+    if capability != "agent_judged":
+        raise DomainError("HOST_CAPABILITY_UNSUPPORTED", "The host requires common caller judgment")
     return {
         "native_version": HOST_VERSIONS[host],
         "evidence": "source_contract_not_runtime_acceptance",
@@ -97,12 +110,15 @@ def capabilities(host: str, *, strict: bool = False, prompt_recall: bool = False
         ),
         "capture_identity": "native_prompt_or_turn_when_available_otherwise_hook_instance_only",
         "unmarked_memory_echo_detection": "unavailable_not_claimed",
+        "source_pointer": "authoritative_body_free_capture_ack",
+        "capture_coverage": "producer_reported_bounded_event_window_not_session_or_human_attestation",
+        "capture_judgment": "unclassified_source_separate_caller_memory_record",
         "child_root_run": "unknown_omitted_when_native_root_not_attested",
         "cross_native_exactly_once": False,
         "lineage": "session_thread_agent_path_generation_separate",
         "human_presence": "not_proven_same_uid_G0",
         "native_trust": "unverified_requires_host_operator_review",
-        "scope": "registered_binding_plus_cwd_locator_check_not_cwd_authority",
+        "scope": "mcp_credential_registered_binding_authority_hook_cwd_locator_check_only",
         "startup_corpus_bytes": 0,
         "convention_export": False,
         "references": [
@@ -111,6 +127,17 @@ def capabilities(host: str, *, strict: bool = False, prompt_recall: bool = False
             "https://github.com/can1357/oh-my-pi/tree/v18.9.1/packages/coding-agent/src/extensibility",
         ],
     }
+
+
+def _historical_capabilities(host: str, *, strict: bool, prompt_recall: bool, capability: str | None) -> dict:
+    expected = capabilities(host, strict=strict, prompt_recall=prompt_recall)
+    expected["scope"] = "registered_binding_plus_cwd_locator_check_not_cwd_authority"
+    expected.pop("capture_judgment")
+    if capability == "full_semantic":
+        expected["capture_processing"] = "automatic_server_extraction_until_semantic_ready"
+    else:
+        expected["capture_judgment"] = "separate_caller_memory_record_no_automatic_candidate_readiness"
+    return expected
 
 
 def _safe_path(root: Path, relative: str) -> Path:
@@ -272,7 +299,7 @@ def _legacy_receipt_path(root: Path, host: str) -> Path:
 
 def _validate_receipt(value: dict, *, allow_legacy: bool, allow_deleted_project: bool = False) -> None:
     version = value.get("adapter_version")
-    if type(version) is not int or version not in ({1, 2, ADAPTER_VERSION} if allow_legacy else {ADAPTER_VERSION}):
+    if type(version) is not int or version not in ({1, 2, 3, 4, ADAPTER_VERSION} if allow_legacy else {ADAPTER_VERSION}):
         raise DomainError("HOST_RECEIPT_INVALID", "The host ownership receipt is missing or unsupported")
     if not isinstance(value.get("host"), str) or value["host"] not in HOST_VERSIONS or type(value.get("strict")) is not bool:
         raise DomainError("HOST_RECEIPT_INVALID", "The host ownership receipt is invalid")
@@ -287,7 +314,7 @@ def _validate_receipt(value: dict, *, allow_legacy: bool, allow_deleted_project:
     for key in ("spool_limit_bytes", "max_capture_bytes", "max_http_body_bytes", "max_mcp_response_bytes", "context_budget_bytes"):
         if type(value.get(key)) is not int or not 1 <= value[key] <= 1073741824:
             raise DomainError("HOST_RECEIPT_INVALID", "The host ownership receipt has an invalid bound")
-    if value["max_capture_bytes"] > 32768 or not 512 <= value["context_budget_bytes"] <= (2400 if allow_legacy and version != ADAPTER_VERSION else HOST_CONTEXT_BYTES):
+    if value["max_capture_bytes"] > 32768 or not 512 <= value["context_budget_bytes"] <= (2400 if allow_legacy and version in {1, 2} else HOST_CONTEXT_BYTES):
         raise DomainError("HOST_RECEIPT_INVALID", "The host ownership receipt has an unsupported bound")
     ownership = value.get("ownership")
     if not isinstance(ownership, list) or not ownership or len(ownership) > 32:
@@ -315,11 +342,27 @@ def _validate_receipt(value: dict, *, allow_legacy: bool, allow_deleted_project:
             raise DomainError("HOST_RECEIPT_INVALID", "The host ownership manifest is incomplete")
     if not isinstance(value.get("capabilities"), dict):
         raise DomainError("HOST_RECEIPT_INVALID", "The host capability receipt is incomplete")
-    if version == ADAPTER_VERSION:
+    capability = value.get("capability")
+    if version == ADAPTER_VERSION and capability != "agent_judged":
+        raise DomainError("HOST_RECEIPT_INVALID", "The host receipt has no supported deployment capability")
+    if version == 4 and "capability" in value and (
+        not isinstance(capability, str) or capability not in {"full_semantic", "lexical_entity"}
+    ):
+        raise DomainError("HOST_RECEIPT_INVALID", "The historical host capability is invalid")
+    if version in {3, 4, ADAPTER_VERSION}:
         prompt_recall = value["capabilities"].get("prompt_context") == "bounded_opt_in"
-        expected = capabilities(value["host"], strict=value["strict"], prompt_recall=prompt_recall)
+        expected = (
+            capabilities(value["host"], strict=value["strict"], prompt_recall=prompt_recall)
+            if version == ADAPTER_VERSION else
+            _historical_capabilities(value["host"], strict=value["strict"], prompt_recall=prompt_recall, capability=capability)
+        )
+        if version == 3:
+            expected = {
+                key: item for key, item in expected.items()
+                if key not in {"source_pointer", "capture_coverage", "capture_judgment", "capture_processing"}
+            }
         historical_omp_strict = None
-        if value["host"] == "omp" and value["strict"]:
+        if version in {3, 4} and value["host"] == "omp" and value["strict"]:
             # Only exact historical metadata is accepted for owned cleanup.
             # It never authorizes execution or replay of the old extension.
             historical_omp_strict = {
@@ -329,7 +372,8 @@ def _validate_receipt(value: dict, *, allow_legacy: bool, allow_deleted_project:
                 "native_failure": "registered_tool_hook_fail_closed",
                 "installation_warnings": expected["installation_warnings"][:-1],
             }
-        if value["capabilities"] != expected and value["capabilities"] != historical_omp_strict:
+        prior_scope = {**expected, "scope": "registered_binding_plus_cwd_locator_check_not_cwd_authority"}
+        if value["capabilities"] not in (expected, prior_scope, historical_omp_strict):
             raise DomainError("HOST_RECEIPT_INVALID", "The host capability receipt does not match its configured modes")
         if value["host"] == "omp" and value["strict"] and not allow_legacy:
             raise DomainError("HOST_STRICT_UNSUPPORTED", "OMP has no fail-closed native pre-request gate; uninstall the historical strict adapter and reinstall without --strict")
@@ -353,7 +397,7 @@ def _validate_receipt(value: dict, *, allow_legacy: bool, allow_deleted_project:
                 raise DomainError("HOST_RECEIPT_INVALID", "The installed file manifest is incomplete")
 
 
-_RECEIPT_REFUSAL_CODES = frozenset({"HOST_STRICT_UNSUPPORTED", "HOST_UNINSTALL_INCOMPLETE"})
+_RECEIPT_REFUSAL_CODES = frozenset({"HOST_STRICT_UNSUPPORTED", "HOST_UNINSTALL_INCOMPLETE", "HOST_LEGACY_REINSTALL_REQUIRED"})
 
 
 def load_receipt(receipt_path: Path, *, allow_legacy: bool = False, active: bool = True, allow_deleted_project: bool = False) -> dict:
@@ -366,6 +410,8 @@ def load_receipt(receipt_path: Path, *, allow_legacy: bool = False, active: bool
     if digest != canonical_digest(value):
         raise DomainError("HOST_RECEIPT_DRIFT", "The host ownership receipt changed")
     value["ownership_digest"] = digest
+    if active and (value["adapter_version"] != ADAPTER_VERSION or "capability" not in value):
+        raise DomainError("HOST_LEGACY_REINSTALL_REQUIRED", "Uninstall the validated owned older adapter and reinstall before execution")
     if active and value["host"] == "omp" and value["strict"]:
         raise DomainError("HOST_STRICT_UNSUPPORTED", "OMP has no fail-closed native pre-request gate; uninstall the historical strict adapter and reinstall without --strict")
     if active and value.get("state") in ("native_removing", "native_finishing", "native_removed"):
@@ -1069,19 +1115,20 @@ def install_host(
         if receipt_path.exists():
             try:
                 receipt = load_receipt(receipt_path, active=False)
-            except DomainError as error:
-                if host != "omp" or error.code != "HOST_STRICT_UNSUPPORTED":
-                    raise
+            except DomainError:
                 receipt = load_receipt(receipt_path, allow_legacy=True, active=False)
                 if receipt["state"] != "removed":
-                    raise
+                    if host == "omp" and receipt["strict"]:
+                        raise DomainError("HOST_STRICT_UNSUPPORTED", "Uninstall the historical strict adapter before reinstalling") from None
+                    raise DomainError("HOST_LEGACY_REINSTALL_REQUIRED", "Uninstall the validated owned older adapter before reinstalling") from None
             if receipt["state"] in {"native_removing", "native_finishing", "native_removed"}:
                 raise DomainError("HOST_UNINSTALL_INCOMPLETE", "Run host-uninstall for this project to finish removing its owned entries before reinstalling")
             expected = {
                 "project_root": str(root), "host": host, "deployment_id": settings.deployment_id,
                 "binding_id": binding_id, "realm": settings.realm, "base_url": settings.base_url,
                 "agent_token_file": str(agent), "producer_token_file": str(producer), "strict": strict,
-                "capabilities": capabilities(host, strict=strict, prompt_recall=prompt_recall),
+                "capability": settings.capability,
+                "capabilities": capabilities(host, strict=strict, prompt_recall=prompt_recall, capability=settings.capability),
                 "runtime_dir": str(_runtime_dir(settings, root, binding_id, host)),
                 "spool_limit_bytes": settings.spool_limit_bytes,
                 "max_capture_bytes": min(settings.max_capture_bytes, 32768),
@@ -1133,6 +1180,7 @@ def install_host(
             "adapter_version": ADAPTER_VERSION, "installation_id": owner, "host": host,
             "project_root": str(root), "binding_id": binding_id, "deployment_id": settings.deployment_id,
             "realm": settings.realm, "base_url": settings.base_url, "strict": bool(strict),
+            "capability": settings.capability,
             "agent_token_file": str(agent), "producer_token_file": str(producer),
             "runtime_dir": str(_runtime_dir(settings, root, binding_id, host)),
             "spool_limit_bytes": settings.spool_limit_bytes,
@@ -1140,7 +1188,7 @@ def install_host(
             "max_http_body_bytes": settings.max_http_body_bytes,
             "max_mcp_response_bytes": settings.max_mcp_response_bytes,
             "context_budget_bytes": HOST_CONTEXT_BYTES,
-            "capabilities": capabilities(host, strict=strict, prompt_recall=prompt_recall), "ownership": ownership,
+            "capabilities": capabilities(host, strict=strict, prompt_recall=prompt_recall, capability=settings.capability), "ownership": ownership,
         }
         _begin_intent(receipt_path, receipt, project, plan, "pending")
         effect.changed = True
@@ -1191,14 +1239,15 @@ def uninstall_host(settings: Settings, project_root: Path, host: str, *, project
         ):
             raise DomainError("HOST_RECEIPT_INVALID", "The receipt belongs to another project, deployment or host")
         if absent and (
-            receipt["adapter_version"] != ADAPTER_VERSION or receipt.get("legacy_digest")
+            receipt["adapter_version"] not in {3, 4, ADAPTER_VERSION} or receipt.get("legacy_digest")
             or receipt.get("state") not in {"installed", "removing", "native_removing", "native_removed", "removed"}
             or (receipt.get("state") in {"removing", "native_removing"} and host != "claude")
         ):
             raise DomainError("HOST_RECEIPT_INVALID", "Deleted project cleanup requires a modern installation or exact native removal recovery")
-        if receipt["adapter_version"] != ADAPTER_VERSION:
+        if receipt["adapter_version"] not in {4, ADAPTER_VERSION}:
             receipt["adapter_version"] = ADAPTER_VERSION
-            receipt["capabilities"] = capabilities(host, strict=receipt["strict"])
+            receipt["capability"] = settings.capability
+            receipt["capabilities"] = capabilities(host, strict=receipt["strict"], capability=settings.capability)
             receipt["context_budget_bytes"] = min(receipt["context_budget_bytes"], HOST_CONTEXT_BYTES)
         if receipt.get("state") == "pending":
             pending = _intent_plan(receipt, root)
@@ -1448,7 +1497,7 @@ def _rule_stamps(value: object, code: str) -> None:
 
 def _validate_generation_state(state: object) -> None:
     code = "HOST_STATE_INVALID"
-    if not isinstance(state, dict) or set(state) != {"generation", "turn", "offered", "gaps"}:
+    if not isinstance(state, dict) or set(state) not in ({"generation", "turn", "offered", "gaps"}, {"generation", "turn", "offered", "gaps", "capture"}):
         raise DomainError(code, "The persisted generation state is invalid")
     generation, turn, offered, gaps = (state[key] for key in ("generation", "turn", "offered", "gaps"))
     if type(generation) is not int or not 0 <= generation <= 9223372036854775807:
@@ -1470,25 +1519,36 @@ def _validate_generation_state(state: object) -> None:
         ):
             raise DomainError(code, "The persisted context offer is invalid")
         _rule_stamps(offered["rules"], code)
+    capture = state.get("capture")
+    if capture is not None:
+        if not isinstance(capture, dict) or set(capture) != {"key", "generation"}:
+            raise DomainError(code, "The persisted capture locator is invalid")
+        if (
+            not isinstance(capture["key"], str) or not 1 <= len(capture["key"].encode()) <= 512
+            or type(capture["generation"]) is not int or capture["generation"] != generation or turn is None
+        ):
+            raise DomainError(code, "The persisted capture generation is invalid")
 
 
 def _generation_state(raw: bytes | None) -> dict:
     if raw is None:
-        return {"generation": 0, "turn": None, "offered": None, "gaps": {}}
+        return {"generation": 0, "turn": None, "offered": None, "gaps": {}, "capture": None}
     try:
         state = decode_json(raw)
     except (ValueError, UnicodeError):
         raise DomainError("HOST_STATE_INVALID", "The persisted generation state is invalid") from None
     _validate_generation_state(state)
+    state.setdefault("capture", None)
     return state
 
 
 def _context(receipt: dict, query: str, paths: tuple[str, ...] | None, *, required: bool) -> dict:
     denial_code = max(ACTION_CONTEXT_CODES, key=len) if required and receipt["strict"] and receipt["host"] != "omp" else None
     budget = min(receipt["context_budget_bytes"], HOST_CONTEXT_BYTES) - len(_context_prefix(denial_code).encode())
+    service_budget = budget
     command = ContextCommand(
         binding_id=receipt["binding_id"], query=query, paths=paths,
-        host=receipt["host"], max_bytes=budget,
+        host=receipt["host"], max_bytes=service_budget,
     )
     result = LocalClient(receipt["base_url"], Path(receipt["agent_token_file"]), timeout=4).request(
         "/api/required-context" if required else "/api/context", command.model_dump(mode="json"),
@@ -1498,8 +1558,19 @@ def _context(receipt: dict, query: str, paths: tuple[str, ...] | None, *, requir
         raise DomainError("HOST_CONTEXT_INVALID", "The service returned an invalid context receipt")
     _rule_stamps(stamp.get("rules"), "HOST_CONTEXT_INVALID")
     size = len(text.encode())
-    if size > budget or type(result.get("context_bytes")) is not int or result["context_bytes"] != size:
+    if size > service_budget or type(result.get("context_bytes")) is not int or result["context_bytes"] != size:
         raise DomainError("REQUIRED_CONTEXT_OVERFLOW", "The complete context exceeds its byte budget")
+    if not required and result.get("status") == "judgment_required":
+        try:
+            injectable = decode_json(text.encode("utf-8")) if text else {}
+            if not isinstance(injectable, dict) or injectable.get("memory_candidates"):
+                raise ValueError("unjudged memories")
+        except (ValueError, UnicodeError):
+            raise DomainError("HOST_UNJUDGED_CONTEXT", "Pending memory candidates cannot be injected") from None
+        separator = "\n" if text else ""
+        if size + len(separator) + len(RELEVANCE_HANDOFF.encode("utf-8")) <= budget:
+            result["context"] = text + separator + RELEVANCE_HANDOFF
+            result["context_bytes"] = len(result["context"].encode("utf-8"))
     return result
 
 
@@ -1511,6 +1582,11 @@ def _capture(receipt: dict, event: dict, identity: dict, event_name: str) -> dic
     if isinstance(body, str) and BOUNDED_CONTEXT_MARKER in body:
         return {"state": "excluded", "code": "CAPTURE_INJECTED_REJECTED"}
     if host == "claude" and event_name == "UserPromptSubmit":
+        if isinstance(body, str):
+            try:
+                reject_source_secrets(body)
+            except DomainError as error:
+                return {"state": "gap", "code": error.code, "effect": "not_started"}
         return {"state": "gap", "code": "HOST_PROMPT_ORIGIN_UNOBSERVABLE"}
     if host == "codex" and event_name == "UserPromptSubmit" and event.get("agent_id"):
         return {"state": "gap", "code": "HOST_CHILD_PROMPT_ORIGIN_UNOBSERVABLE"}
@@ -1526,13 +1602,21 @@ def _capture(receipt: dict, event: dict, identity: dict, event_name: str) -> dic
         return {"state": "excluded", "code": "EXPLICIT_CAPTURE_COMMAND"}
     if len(body.encode()) > receipt["max_capture_bytes"]:
         return {"state": "gap", "code": "CAPTURE_TOO_LARGE"}
+    try:
+        command = CaptureCommand(
+            binding_id=receipt["binding_id"], idempotency_key="host-admission", origin_key="host-admission", body=body,
+            speaker="human", root_run_id=identity["root"], agent_path=identity["path"],
+            kind="finding" if event_name == "capture_finding" else "correction" if event_name == "capture_correction" else "conversation",
+            coverage=CaptureCoverage(
+                status="observed_window", original_bytes=len(body.encode("utf-8")),
+                gaps=("HOST_SESSION_WINDOW_UNOBSERVED", "HOST_HUMAN_PRESENCE_UNATTESTED"),
+            ),
+        )
+    except DomainError as error:
+        return {"state": "gap", "code": error.code, "effect": "not_started"}
     native_event = identity["native_turn"] or identity["instance"]
     origin = "host:" + canonical_digest({"host": host, "root": identity["root"], "path": identity["path"], "event": event_name, "native_event": native_event})
-    command = CaptureCommand(
-        binding_id=receipt["binding_id"], idempotency_key=origin, origin_key=origin, body=body,
-        speaker="human", root_run_id=identity["root"], agent_path=identity["path"],
-        kind="finding" if event_name == "capture_finding" else "correction" if event_name == "capture_correction" else "conversation",
-    )
+    command = command.model_copy(update={"idempotency_key": origin, "origin_key": origin})
     spool = None
     try:
         spool = ProducerSpool(Path(receipt["runtime_dir"]) / "capture.sqlite3", receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
@@ -1547,7 +1631,8 @@ def _capture(receipt: dict, event: dict, identity: dict, event_name: str) -> dic
         return {
             **accepted, **result,
             **delivery,
-            "semantic_ready": "not_claimed",
+            "candidate_ready": "not_claimed",
+            "capture_key": command.idempotency_key,
             "identity": "native_event" if identity["native_turn"] else "hook_instance_only",
         }
     except (sqlite3.Error, OSError):
@@ -1557,6 +1642,60 @@ def _capture(receipt: dict, event: dict, identity: dict, event_name: str) -> dic
     finally:
         if spool is not None:
             spool.close()
+
+
+def _capture_replay(receipt: dict, key: str) -> dict:
+    spool = None
+    try:
+        spool = ProducerSpool(Path(receipt["runtime_dir"]) / "capture.sqlite3", receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
+        spool.flush(LocalClient(receipt["base_url"], Path(receipt["producer_token_file"]), timeout=1), limit=4)
+        return spool.disposition(key)
+    except (sqlite3.Error, OSError):
+        return {"state": "gap", "code": "HOST_SPOOL_UNAVAILABLE", "gaps": {"HOST_SPOOL_UNAVAILABLE": 1}}
+    except DomainError as error:
+        return {"state": "gap", "code": error.code}
+    finally:
+        if spool is not None:
+            spool.close()
+
+
+def _capture_offer(receipt: dict, event_name: str, result: dict, capture: dict) -> dict:
+    # Disabled prompt context: capture status stays in result metadata, never model input.
+    if receipt["capabilities"]["prompt_context"] == "disabled":
+        return result
+    offered = {
+        key: capture[key] for key in ("state", "operation_id", "source_pointer", "capture_disposition", "code")
+        if key in capture
+    }
+    if "source_pointer" not in offered:
+        offered["gap"] = "HOST_CAPTURE_POINTER_UNAVAILABLE"
+    claims = {"candidate_ready": "not_claimed"}
+    text = _json({"capture": offered, "selection": "separate_caller_memory_record", **claims})
+    omitted_status = _json({"capture": {"gap": "HOST_CAPTURE_POINTER_OMITTED"}, **claims})
+    denied = receipt["host"] != "omp" and receipt["strict"] and result.get("code") is not None
+    prefix = _context_prefix(result.get("code") if denied else None)
+    budget = min(receipt["context_budget_bytes"], HOST_CONTEXT_BYTES)
+    if len((prefix + text).encode()) > budget:
+        text = omitted_status
+    stdout = result["stdout"]
+    prior = stdout.get("additionalContext") if receipt["host"] == "omp" else stdout.get("hookSpecificOutput", {}).get("additionalContext")
+    if prior:
+        prior = prior.removeprefix(_context_prefix())
+        combined = text + "\n" + prior
+        omitted = omitted_status + "\n" + prior
+        # The requested recall body wins; capture status is advisory and yields its bytes first.
+        if len((prefix + combined).encode()) <= budget:
+            text = combined
+        elif len((prefix + omitted).encode()) <= budget:
+            text = omitted
+        else:
+            text = prior
+    native = _native_result(
+        receipt["host"], event_name, code=result.get("code"), text=text,
+        strict=receipt["strict"], max_bytes=receipt["context_budget_bytes"],
+    )
+    result["stdout"] = native["stdout"]
+    return result
 
 
 def _native_result(host: str, event_name: str, *, code: str | None = None, text: str | None = None, strict: bool = False, max_bytes: int = HOST_CONTEXT_BYTES) -> dict:
@@ -1687,14 +1826,32 @@ def handle_hook(receipt_path: Path, event: dict) -> dict:
                 result = _native_result(host, event_name)
                 result["state"] = "delegated" if delegated else "outside_advisory_coverage"
                 return result
+        preparation_refusal = None
+        if host == "omp" and event_name == "prepare_prompt":
+            try:
+                command = CaptureCommand(
+                    binding_id=receipt["binding_id"], idempotency_key="host-preparation", origin_key="host-preparation",
+                    body=event.get("prompt"), speaker="human",
+                )
+            except DomainError as error:
+                if error.code != "SOURCE_SECRET_REJECTED":
+                    raise
+                preparation_refusal = error.code
+            else:
+                result = _native_result(host, event_name)
+                result["preparation_id"] = canonical_digest(command.digest_payload())
+                return result
         identity = _identity(receipt, event)
         runtime = Path(receipt["runtime_dir"])
         state_path = runtime / (identity["key"] + ".json")
         with _lock(runtime / (identity["key"] + ".lock")):
             state = _generation_state(_read_bytes(state_path, HOST_STATE_BYTES))
-            if event_name in LIFECYCLE_EVENTS:
+            if preparation_refusal is not None:
+                result = _native_result(host, event_name, code=preparation_refusal, strict=strict)
+                result["capture"] = {"state": "gap", "code": preparation_refusal, "effect": "not_started"}
+            elif event_name in LIFECYCLE_EVENTS:
                 state["generation"] += 1
-                state["turn"], state["offered"] = None, None
+                state["turn"], state["offered"], state["capture"] = None, None, None
                 result = _native_result(host, event_name)
             elif event_name in PROVIDER_EVENTS:
                 # No payload, headers, request IDs or provider bodies are persisted.
@@ -1718,9 +1875,11 @@ def handle_hook(receipt_path: Path, event: dict) -> dict:
                 same_turn = state["turn"] == turn
                 if not same_turn:
                     state["generation"] += 1
-                    state["turn"], state["offered"] = turn, None
+                    state["turn"], state["offered"], state["capture"] = turn, None, None
                 capture = _capture(receipt, event, identity, event_name) if event_name == "UserPromptSubmit" else None
-                if strict and host == "codex":
+                if capture is not None and capture.get("code") == "SOURCE_SECRET_REJECTED":
+                    result = _native_result(host, event_name, code="SOURCE_SECRET_REJECTED", strict=strict)
+                elif strict and host == "codex":
                     result = _native_result(host, event_name, code="HOST_HOSTED_TOOL_GUARD_UNAVAILABLE", strict=True)
                 elif host != "omp" and same_turn and state["offered"]:
                     result = _native_result(host, event_name)
@@ -1730,19 +1889,50 @@ def handle_hook(receipt_path: Path, event: dict) -> dict:
                 else:
                     prompt = event.get("prompt", "")
                     if isinstance(prompt, str) and prompt.strip() and len(prompt) <= 4096:
-                        context = _context(receipt, prompt, None, required=False)
-                        state["offered"] = {"rules": context["stamp"]["rules"], "digest": _digest(context["context"].encode()), "generation": state["generation"]}
-                        result = _native_result(host, event_name, text=context["context"], max_bytes=receipt["context_budget_bytes"])
-                        result["offered"] = True
+                        try:
+                            CaptureCommand(
+                                binding_id=receipt["binding_id"], idempotency_key="host-recall", origin_key="host-recall",
+                                body=prompt, speaker="human",
+                            )
+                        except DomainError as error:
+                            if error.code != "SOURCE_SECRET_REJECTED":
+                                raise
+                            capture = {"state": "gap", "code": error.code, "effect": "not_started"}
+                            result = _native_result(host, event_name, code=error.code, strict=strict)
+                        else:
+                            context = _context(receipt, prompt, None, required=False)
+                            state["offered"] = {"rules": context["stamp"]["rules"], "digest": _digest(context["context"].encode()), "generation": state["generation"]}
+                            result = _native_result(host, event_name, text=context["context"], max_bytes=receipt["context_budget_bytes"])
+                            if context.get("status") == "judgment_required":
+                                result["recall"] = {
+                                    "state": "judgment_required", "admission_id": context.get("admission_id"),
+                                    "gap": "HOST_RELEVANCE_MANIFEST_NOT_DELIVERED",
+                                }
+                            result["offered"] = True
                     else:
                         result = _native_result(host, event_name)
                         result["offered"] = False
                 if capture is not None:
                     result["capture"] = capture
+                    result = _capture_offer(receipt, event_name, result, capture)
+                elif host == "omp" and state["capture"] is not None:
+                    capture = _capture_replay(receipt, state["capture"]["key"])
+                    result["capture"] = capture
+                    result = _capture_offer(receipt, event_name, result, capture)
+                    state["capture"] = None
+                elif host == "omp":
+                    result = _capture_offer(receipt, event_name, result, {"state": "gap", "code": "HOST_CAPTURE_WINDOW_UNOBSERVED"})
             elif event_name in {"input", "capture_finding", "capture_correction"}:
+                if event_name == "input":
+                    state["generation"] += 1
+                    state["turn"], state["offered"], state["capture"] = identity["turn"] or identity["instance"], None, None
                 capture = _capture(receipt, event, identity, event_name)
                 result = _native_result(host, event_name)
                 result["capture"] = capture
+                if event_name == "input" and capture.get("capture_key"):
+                    state["capture"] = {"key": capture["capture_key"], "generation": state["generation"]}
+                if event_name != "input":
+                    result = _capture_offer(receipt, event_name, result, capture)
             else:
                 result = _native_result(host, event_name, code="HOST_EVENT_UNSUPPORTED", strict=strict)
             capture = result.get("capture")
@@ -1766,9 +1956,13 @@ def handle_hook(receipt_path: Path, event: dict) -> dict:
             return result
     except DomainError as error:
         result = _native_result(host, event_name, code=error.code, strict=strict)
+        if error.code == "SOURCE_SECRET_REJECTED":
+            result["capture"] = {"state": "gap", "code": error.code, "effect": "not_started"}
         if event_name in ACTION_EVENTS:
             result["enforcement_dimensions"] = receipt["capabilities"]["action_dimensions"]
         return result
+    except ValidationError:
+        return _native_result(host, event_name, code="INPUT_INVALID", strict=strict)
     except sqlite3.Error:
         return _native_result(host, event_name, code="HOST_SPOOL_UNAVAILABLE", strict=strict)
     except Exception:

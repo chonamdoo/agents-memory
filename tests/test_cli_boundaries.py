@@ -5,11 +5,15 @@ import json
 import threading
 
 import pytest
+from pydantic import ValidationError
+from test_edge_boundaries import selection_arguments
+from test_store_authority import TOKEN
+from test_store_authority import authority as authority
 
 from agents_memory import cli
 from agents_memory.client import LocalClient
 from agents_memory.config import Settings
-from agents_memory.domain import DomainError
+from agents_memory.domain import CaptureCommand, DomainError
 from agents_memory.spool import ProducerSpool
 
 
@@ -138,8 +142,6 @@ def test_cli_incomplete_receipt_has_a_public_failure_not_key_error(tmp_path, mon
 
 @pytest.mark.parametrize("changes", [{"injected": "yes"}, {"injected": 1}, {"unexpected_authority": True}])
 def test_cli_json_capture_rejects_coercions_before_any_capture_acceptance(tmp_path, changes):
-    from pydantic import ValidationError
-
     settings, config, _ = deployment(tmp_path)
     outbox = tmp_path / "capture.sqlite3"
     envelope = tmp_path / "envelope.json"
@@ -158,6 +160,151 @@ def test_cli_json_capture_rejects_coercions_before_any_capture_acceptance(tmp_pa
         assert spool.status()["pending"] == spool.status()["quarantined"] == 0
     finally:
         spool.close()
+
+
+@pytest.mark.parametrize("override", (
+    ["--binding", "binding-override"], ["--key", "changed-key"],
+    ["--kind", "note"], ["--body-file", "unread-body.txt"],
+))
+def test_cli_frozen_selection_rejects_every_mixed_override_before_read_or_dispatch(tmp_path, override):
+    _, config, _ = deployment(tmp_path)
+    args = cli.parser().parse_args([
+        "--config", str(config), "record", "--judgment-file", str(tmp_path / "unread-selection.json"),
+        *override,
+    ])
+    with pytest.raises(DomainError) as caught:
+        asyncio.run(cli.execute(args))
+    assert caught.value.code == "INPUT_INVALID"
+    assert caught.value.effect == "not_started"
+
+
+@pytest.mark.parametrize("change", (
+    {"source_revision": "1"}, {"byte_end": 4097}, {"policy_epoch": False},
+    {"label": "approve"}, {"unexpected": "authority"},
+    {"label": "review", "extraction": {
+        "claims": [], "individual_qualifications": [], "shared_qualifications": [],
+        "validities": [], "unused_span_ids": [],
+    }},
+))
+def test_cli_selection_file_rejects_invalid_judgments_before_http_dispatch(tmp_path, change):
+    _, config, _ = deployment(tmp_path)
+    selection = tmp_path / "selection.json"
+    selection.write_text(json.dumps({**selection_arguments("binding-001", "source-001"),
+                                    "reason": "Inspected original evidence.", **change}))
+    args = cli.parser().parse_args(["--config", str(config), "record", "--judgment-file", str(selection)])
+    with pytest.raises(ValidationError):
+        asyncio.run(cli.execute(args))
+
+
+@pytest.mark.parametrize("malformation", ("duplicate", "nonfinite", "deep"))
+def test_cli_selection_file_rejects_ambiguous_or_unbounded_json(tmp_path, malformation):
+    _, config, _ = deployment(tmp_path)
+    document = {**selection_arguments("binding-001", "source-001"), "reason": "Inspected original evidence."}
+    raw = json.dumps(document)
+    if malformation == "duplicate":
+        raw = raw.replace('"source_revision": 1', '"source_revision": 1, "source_revision": 2')
+    elif malformation == "nonfinite":
+        raw = '{"unbounded":1e999,' + raw[1:]
+    else:
+        nested = 0
+        for _ in range(25):
+            nested = [nested]
+        document["extraction"] = {"nested": nested}
+        raw = json.dumps(document)
+    selection = tmp_path / "selection.json"
+    selection.write_text(raw)
+    args = cli.parser().parse_args(["--config", str(config), "record", "--judgment-file", str(selection)])
+    with pytest.raises(ValueError):
+        asyncio.run(cli.execute(args))
+
+
+def cli_files(authority, tmp_path):
+    config = tmp_path / "deployment.json"
+    config.write_text(authority.store.settings.model_dump_json())
+    config.chmod(0o600)
+    token = tmp_path / "operator.token"
+    token.write_text(TOKEN)
+    token.chmod(0o600)
+    return ["--config", str(config), "--token-file", str(token)]
+
+
+@pytest.mark.parametrize("arguments", (
+    ["model", "fetch"], ["model", "approve"], ["selection-policy", "approve"],
+    ["context", "--mode", "reflect"], ["record", "--selection-file", "obsolete.json"],
+    ["retry", "--job", "job-old"], ["index-recover", "--claim", "claim-old"],
+    ["source-reprocess", "--ref", "source-old"],
+    ["index-status", "--binding", "binding-old"],
+))
+def test_cli_removed_model_and_policy_commands_are_not_compatibility_aliases(arguments):
+    with pytest.raises(SystemExit) as denied:
+        cli.parser().parse_args(arguments)
+    assert denied.value.code == 2
+
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decisions", (
+    [{"claim_id": "claim-001", "relevant": "yes", "reason": "Not a boolean."}],
+    [{"claim_id": "claim-001", "relevant": True, "reason": "First."},
+     {"claim_id": "claim-001", "relevant": False, "reason": "Repeated."}],
+))
+async def test_cli_context_refuses_invalid_relevance_before_dispatch(tmp_path, monkeypatch, decisions):
+    _, config, _ = deployment(tmp_path)
+    query, relevance = tmp_path / "query.txt", tmp_path / "relevance.json"
+    query.write_text("CacheKey")
+    relevance.write_text(json.dumps(decisions))
+
+    async def unexpected(*args):
+        pytest.fail("Invalid relevance reached HTTP dispatch")
+
+    monkeypatch.setattr(LocalClient, "call", unexpected)
+    with pytest.raises(ValidationError):
+        await cli.execute(cli.parser().parse_args([
+            "--config", str(config), "context", "--query-file", str(query),
+            "--admission-id", "admission-001", "--relevance-file", str(relevance),
+        ]))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", ("captured", "selection_recorded", "candidate_ready"))
+async def test_cli_await_recognizes_actual_capture_and_selection_terminals(authority, tmp_path, terminal):
+    store, actor, binding = authority.store, authority.actor, authority.binding_id
+    base = cli_files(authority, tmp_path)
+    captured = await store.capture(actor, CaptureCommand(
+        binding_id=binding, idempotency_key="terminal-source", origin_key="terminal-source",
+        body="CacheKey uses SQLite.", speaker="human",
+    ))
+    operation = captured
+    if terminal != "captured":
+        window = await store.inspect(actor, binding, captured.source_id)
+        document = {
+            **selection_arguments(binding, captured.source_id),
+            "reason": "Inspected exact original evidence for memory selection.",
+            **{name: window[name] for name in (
+                "admission_id", "source_revision", "binding_revision", "byte_start", "byte_end",
+                "window_digest", "policy_revision", "policy_epoch",
+            )},
+        }
+        if terminal == "candidate_ready":
+            document["extraction"] = {
+                "claims": [{
+                    "assertion_id": "a0000", "assertion_span_id": window["span_inventory"][0]["span_id"],
+                    "statement": "CacheKey uses SQLite.", "kind": "fact", "subject": "CacheKey",
+                    "predicate": "uses", "object": "SQLite", "polarity": "positive",
+                    "modality": "asserted", "entities": ["CacheKey", "SQLite"],
+                }],
+                "individual_qualifications": [], "shared_qualifications": [],
+                "validities": [], "unused_span_ids": [],
+            }
+        selection = tmp_path / "terminal-selection.json"
+        selection.write_text(json.dumps(document))
+        command = cli.record_input(cli.parser().parse_args(["record", "--judgment-file", str(selection)]))
+        operation = await store.record(actor, command)
+    result = await cli.execute(cli.parser().parse_args(base + [
+        "await", "--binding", binding, "--operation", operation.id, "--deadline", "1",
+    ]))
+    assert result["state"] == terminal and result["effect"] == "committed"
 
 
 def operation_arguments(command, root):
@@ -215,3 +362,12 @@ async def test_cli_local_invalid_pg_executables_leave_no_operational_effects(
     assert not (tmp_path / "backup.age").exists()
     assert not (tmp_path / "fresh-operator").exists()
     assert not (settings.state_dir / "restore-barrier.json").exists()
+
+
+def test_cli_selection_file_without_kind_is_not_reinterpreted_as_a_note(tmp_path):
+    document = {**selection_arguments("binding-001", "source-001"), "reason": "Inspected original evidence."}
+    document.pop("kind")
+    selection = tmp_path / "selection.json"
+    selection.write_text(json.dumps(document))
+    with pytest.raises(ValidationError):
+        cli.record_input(cli.parser().parse_args(["record", "--judgment-file", str(selection)]))

@@ -2,18 +2,24 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from types import SimpleNamespace
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import asyncpg
 import pytest
+import pytest_asyncio
 
-from agents_memory import initialization
+from agents_memory import initialization, ops
 from agents_memory import journal as journal_module
+from agents_memory.config import Settings
 from agents_memory.domain import DomainError, EffectState, Principal, Role
 from agents_memory.initialization import initialize_deployment
 from agents_memory.journal import DeletionJournal
 from agents_memory.migrations import MIGRATION
 from agents_memory.ops import authority_lock
 from agents_memory.private_io import private_write
+from agents_memory.store import Store
 
 
 @pytest.fixture
@@ -348,8 +354,8 @@ async def test_completed_replay_preserves_authorized_mutable_configuration(argum
     first = await initialize_deployment(**arguments)
     config_path = arguments["config_path"]
     config = json.loads(config_path.read_bytes())
-    config["allowed_model_purposes"] = ["embedding"]
-    config["models"]["timeout_seconds"] = 30
+    config["cleanup_interval_seconds"] = 30
+    config["read_admission_timeout_seconds"] = 120
     config["queue_limit"] = 2048
     config_path.write_text(json.dumps(config))
     previous_bytes, previous_inode = config_path.read_bytes(), config_path.stat().st_ino
@@ -360,3 +366,249 @@ async def test_completed_replay_preserves_authorized_mutable_configuration(argum
     assert config_path.read_bytes() == previous_bytes
     assert config_path.stat().st_ino == previous_inode
     assert database.migrations == database.bootstraps == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("completed", [False, True])
+async def test_common_capability_cannot_change_during_initialization_recovery(arguments, database, completed):
+    arguments.update(mode="company", capability="agent_judged")
+    if not completed:
+        database.failure = "bootstrap_before"
+        with pytest.raises(DomainError):
+            await initialize_deployment(**arguments)
+    else:
+        await initialize_deployment(**arguments)
+    before, events = snapshot(arguments), list(database.events)
+    with pytest.raises(DomainError) as denied:
+        await initialize_deployment(**{**arguments, "capability": "full_semantic"}, resume=True)
+    assert denied.value.code == "CONFIG_INVALID"
+    assert denied.value.effect == EffectState.NOT_STARTED
+    assert snapshot(arguments) == before and database.events == events
+    result = await initialize_deployment(**arguments, resume=True)
+    assert result["capability"] == "agent_judged"
+    assert database.bootstraps == 1
+    config = json.loads(arguments["config_path"].read_bytes())
+    assert "models" not in config and "allowed_model_purposes" not in config
+
+
+def historical_configuration(settings):
+    value = settings.model_dump(mode="json")
+    for name in ("capability", "cleanup_interval_seconds", "read_admission_timeout_seconds"):
+        value.pop(name)
+    value.update(
+        models={
+            "generation_url": None,
+            "generation_model": "memory-local",
+            "generation_key_file": None,
+            "generation_artifact": None,
+            "embedding_path": None,
+            "reranker_path": None,
+            "manifest_path": None,
+            "embedding_dimensions": 1024,
+            "timeout_seconds": 90,
+            "interactive_wait_seconds": 3,
+            "max_input_bytes": 32768,
+            "max_output_tokens": 2048,
+            "cpu_threads": 8,
+        },
+        allowed_model_purposes=[],
+        lease_seconds=120,
+        heartbeat_seconds=10,
+        job_attempt_limit=4,
+    )
+    return (json.dumps(value, indent=2) + "\n").encode()
+
+
+@pytest_asyncio.fixture
+async def real_initialization_arguments(tmp_path):
+    raw_dsn = os.environ.get("PG_TEST_DSN")
+    if not raw_dsn:
+        pytest.skip("PG_TEST_DSN required for genuine format1 initialization recovery")
+    parts = urlsplit(raw_dsn)
+    query = dict(parse_qsl(parts.query))
+    query.pop("schema", None)
+    admin_dsn = urlunsplit((
+        parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment,
+    ))
+    schema = "am_init_" + uuid.uuid4().hex
+    admin = await asyncpg.connect(admin_dsn)
+    root = tmp_path.resolve()
+    try:
+        await admin.execute(f'CREATE SCHEMA "{schema}"')
+        query["schema"] = schema
+        dsn = urlunsplit((
+            parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment,
+        ))
+        yield {
+            "config_path": root / "config.json",
+            "realm": "historical_init",
+            "mode": "personal",
+            "database_dsn": dsn,
+            "migrator_dsn": dsn,
+            "state_dir": root / "authority",
+            "journal_dir": root / "independent-journal",
+            "port": 8768,
+            "owner_id": "historical_owner",
+            "operator_token_out": root / "operator.token",
+            "deployment_id": "historical_deployment",
+        }
+    finally:
+        await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await admin.close()
+
+
+def signed_format_one(arguments):
+    settings = Settings(**{
+        name: arguments[name] for name in (
+            "deployment_id", "realm", "mode", "database_dsn", "migrator_dsn",
+            "state_dir", "journal_dir", "port",
+        )
+    })
+    request = {
+        name: str(arguments[name]) if isinstance(arguments[name], type(arguments["config_path"]))
+        else arguments[name]
+        for name in (
+            "deployment_id", "realm", "mode", "database_dsn", "migrator_dsn",
+            "state_dir", "journal_dir", "port", "owner_id", "config_path",
+            "operator_token_out",
+        )
+    }
+    value = {
+        "format": 1,
+        "intent_id": "1" * 64,
+        "fingerprint": initialization._digest(request),
+        "request": request,
+        "operator_token": "real-format-one-original-operator-" + "a" * 40,
+        "config": historical_configuration(settings).decode(),
+    }
+    raw = initialization._signed(value, value["operator_token"])
+    private_write(arguments["state_dir"] / "initialization-intent.json", raw)
+    return settings, value, raw
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("window", ("config", "completion"))
+async def test_genuine_format_one_interruption_preserves_original_authority(
+    real_initialization_arguments, monkeypatch, window,
+):
+    arguments = real_initialization_arguments
+    settings, value, original_intent = signed_format_one(arguments)
+    original_write = initialization.private_write
+    fired = False
+
+    def interrupt(path, content, **kwargs):
+        nonlocal fired
+        if window == "completion" and path.name == "initialization-result.json" and not fired:
+            fired = True
+            raise OSError("deterministic interruption before completion publication")
+        original_write(path, content, **kwargs)
+        if window == "config" and path == arguments["config_path"] and not fired:
+            fired = True
+            raise OSError("deterministic lost configuration publication response")
+
+    monkeypatch.setattr(initialization, "private_write", interrupt)
+    with pytest.raises(DomainError) as interrupted:
+        await initialize_deployment(**arguments, resume=True)
+    assert interrupted.value.code == "INIT_RECOVERY_REQUIRED"
+    assert interrupted.value.effect == (
+        EffectState.UNKNOWN if window == "config" else EffectState.COMMITTED
+    )
+    assert (arguments["state_dir"] / "initialization-intent.json").read_bytes() == original_intent
+    assert arguments["operator_token_out"].read_text() == value["operator_token"] + "\n"
+
+    result = await initialize_deployment(**arguments, resume=True)
+    assert "capability" not in result
+    assert arguments["config_path"].read_bytes() == value["config"].encode()
+    store = Store(settings, DeletionJournal(settings.journal_dir, settings.deployment_id))
+    try:
+        await store.open()
+        await store.reconcile_journal()
+        actor = await store.authenticate(value["operator_token"], (Role.OPERATOR,))
+        assert actor.id == arguments["owner_id"]
+        assert actor.credential_id == result["credential_id"]
+        async with store.pool.acquire() as connection:
+            assert await connection.fetchval("SELECT count(*) FROM am_credentials") == 1
+    finally:
+        await store.close()
+    before = snapshot(arguments)
+    assert await initialize_deployment(**arguments, resume=True) == result
+    assert snapshot(arguments) == before
+
+
+@pytest.mark.asyncio
+async def test_genuine_format_one_completed_replay_accepts_explicit_upgraded_config(
+    real_initialization_arguments,
+):
+    arguments = real_initialization_arguments
+    settings, value, original_intent = signed_format_one(arguments)
+    result = await initialize_deployment(**arguments, resume=True)
+    assert await initialize_deployment(**arguments, resume=True) == result
+
+    await ops.migrate_authority(
+        settings, arguments["operator_token_out"], settings.deployment_id,
+        config_path=arguments["config_path"], original_config=value["config"].encode(),
+    )
+    upgraded = arguments["config_path"].read_bytes()
+    inode = arguments["config_path"].stat().st_ino
+    before = snapshot(arguments)
+    assert await initialize_deployment(**arguments, resume=True) == result
+    assert arguments["config_path"].read_bytes() == upgraded
+    assert arguments["config_path"].stat().st_ino == inode
+    assert snapshot(arguments) == before
+    assert (arguments["state_dir"] / "initialization-intent.json").read_bytes() == original_intent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", (
+    {"models": {"generation_url": "https://external.example.invalid"}},
+    {"models": {"cpu_threads": False}},
+    {"models": {"embedding_dimensions": 512}},
+    {"lease_seconds": 20, "heartbeat_seconds": 10},
+    {"allowed_model_purposes": ["extraction", "extraction"]},
+))
+async def test_completed_format_one_rejects_invalid_retired_values_without_effect(
+    real_initialization_arguments, change,
+):
+    arguments = real_initialization_arguments
+    settings, value, original_intent = signed_format_one(arguments)
+    await initialize_deployment(**arguments, resume=True)
+    malformed = json.loads(value["config"])
+    malformed.update(change)
+    private_write(arguments["config_path"], json.dumps(malformed), replace=True)
+
+    store = Store(settings, DeletionJournal(settings.journal_dir, settings.deployment_id))
+    try:
+        await store.open()
+        async with store.pool.acquire() as connection:
+            epoch = await connection.fetchval("SELECT epoch FROM am_clock WHERE singleton")
+        before = snapshot(arguments)
+        with pytest.raises(DomainError) as denied:
+            await initialize_deployment(**arguments, resume=True)
+        assert denied.value.code == "INIT_SCOPE_DENIED"
+        assert denied.value.effect == EffectState.NOT_STARTED
+        assert snapshot(arguments) == before
+        async with store.pool.acquire() as connection:
+            assert await connection.fetchval("SELECT epoch FROM am_clock WHERE singleton") == epoch
+    finally:
+        await store.close()
+    assert (arguments["state_dir"] / "initialization-intent.json").read_bytes() == original_intent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ("token", "scope"))
+async def test_completed_format_one_does_not_adopt_foreign_current_authority(
+    real_initialization_arguments, change,
+):
+    arguments = real_initialization_arguments
+    settings, value, _ = signed_format_one(arguments)
+    await initialize_deployment(**arguments, resume=True)
+    if change == "token":
+        private_write(arguments["operator_token_out"], "unrelated-" + "x" * 40, replace=True)
+        requested = arguments
+    else:
+        requested = {**arguments, "owner_id": "foreign_owner"}
+    before = snapshot(arguments)
+    with pytest.raises(DomainError) as denied:
+        await initialize_deployment(**requested, resume=True)
+    assert denied.value.effect == EffectState.NOT_STARTED
+    assert snapshot(arguments) == before

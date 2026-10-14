@@ -7,22 +7,18 @@ from datetime import datetime
 from pydantic import Field, ValidationError
 
 from .domain import (
-    CitedSentence,
     Claim,
     ClaimDraft,
     Consolidation,
     DomainError,
     Extraction,
     Quote,
-    ReflectionDraft,
     Source,
     TypedModel,
 )
 from .semantic_contract import (
     AnchoredQualification,
     GeneratedExtraction,
-    GeneratedProvenanceReflection,
-    GeneratedReflection,
 )
 
 _NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-+]?\d+(?:[.,:/-]\d+)*(?:%|％)?(?![A-Za-z0-9_])")
@@ -56,7 +52,7 @@ def original_spans(source: Source) -> tuple[OriginalSpan, ...]:
         for start in range(0, len(text), 2048):
             quote = text[start:start + 2048]
             if len(result) >= 128:
-                raise DomainError("MODEL_INPUT_TOO_LARGE", "The original span manifest exceeds its bound")
+                raise DomainError("SOURCE_INPUT_TOO_LARGE", "The original span manifest exceeds its bound")
             result.append(OriginalSpan(
                 span_id=f"s{len(result):04d}", quote=quote, byte_start=offset,
             ))
@@ -77,7 +73,7 @@ def _validate_temporal_bounds(claim: ClaimDraft, evidence: Sequence[str]) -> Non
     for bound in (claim.valid_from, claim.valid_until):
         if bound is not None and bound not in dates:
             raise DomainError(
-                "MODEL_OUTPUT_INVALID", "Valid time lacks explicit original temporal evidence",
+                "GROUNDING_INVALID", "Valid time lacks explicit original temporal evidence",
             )
 
 
@@ -94,7 +90,7 @@ def _covers_qualifications(left: ClaimDraft, right: ClaimDraft) -> bool:
 
 def _require_references(references: Sequence[str], manifest: Mapping[str, object], label: str) -> None:
     if len(set(references)) != len(references) or any(ref not in manifest for ref in references):
-        raise DomainError("MODEL_OUTPUT_INVALID", f"Extraction selected invalid {label}")
+        raise DomainError("GROUNDING_INVALID", f"Extraction selected invalid {label}")
 
 
 def _qualification_span(qualification: AnchoredQualification, manifest: dict[str, OriginalSpan]) -> str:
@@ -102,11 +98,11 @@ def _qualification_span(qualification: AnchoredQualification, manifest: dict[str
         _require_references((qualification.evidence_span_id,), manifest, "span IDs")
         selected = manifest[qualification.evidence_span_id]
         if qualification.phrase not in selected.quote:
-            raise DomainError("MODEL_OUTPUT_INVALID", "A qualification is not an original evidence phrase")
+            raise DomainError("GROUNDING_INVALID", "A qualification is not an original evidence phrase")
         return selected.span_id
     matches = [ref for ref, span in manifest.items() if qualification.phrase in span.quote]
     if len(matches) != 1:
-        raise DomainError("MODEL_OUTPUT_INVALID", "A qualification has missing or ambiguous original evidence")
+        raise DomainError("GROUNDING_INVALID", "A qualification has missing or ambiguous original evidence")
     return matches[0]
 
 
@@ -114,7 +110,7 @@ def resolve_extraction(result: GeneratedExtraction, source: Source) -> Extractio
     manifest = {span.span_id: span for span in original_spans(source)}
     claims = {claim.assertion_id: claim for claim in result.claims}
     if len(claims) != len(result.claims):
-        raise DomainError("MODEL_OUTPUT_INVALID", "Extraction repeated an assertion ID")
+        raise DomainError("GROUNDING_INVALID", "Extraction repeated an assertion ID")
     evidence_ids = {ref: [claim.assertion_span_id] for ref, claim in claims.items()}
     qualifications = {ref: [] for ref in claims}
     validities = {}
@@ -133,23 +129,23 @@ def resolve_extraction(result: GeneratedExtraction, source: Source) -> Extractio
         for ref in targets:
             if any((previous.kind, previous.phrase) == (qualification.kind, qualification.phrase)
                    for previous in qualifications[ref]):
-                raise DomainError("MODEL_OUTPUT_INVALID", "Extraction repeated a qualification")
+                raise DomainError("GROUNDING_INVALID", "Extraction repeated a qualification")
             qualifications[ref].append(qualification)
             evidence_ids[ref].append(span_id)
     for validity in result.validities:
         _require_references(validity.assertion_ids, claims, "assertion IDs")
         _require_references(validity.evidence_span_ids, manifest, "span IDs")
         if validity.valid_from is None and validity.valid_until is None:
-            raise DomainError("MODEL_OUTPUT_INVALID", "Temporal evidence has no validity bound")
+            raise DomainError("GROUNDING_INVALID", "Temporal evidence has no validity bound")
         used.update(validity.evidence_span_ids)
         for ref in validity.assertion_ids:
             if ref in validities:
-                raise DomainError("MODEL_OUTPUT_INVALID", "An assertion has ambiguous validity periods")
+                raise DomainError("GROUNDING_INVALID", "An assertion has ambiguous validity periods")
             validities[ref] = validity
             evidence_ids[ref].extend(validity.evidence_span_ids)
     _require_references(result.unused_span_ids, manifest, "span IDs")
     if used.intersection(result.unused_span_ids) or used.union(result.unused_span_ids) != set(manifest):
-        raise DomainError("MODEL_OUTPUT_INVALID", "Extraction did not account for the original span manifest")
+        raise DomainError("GROUNDING_INVALID", "Extraction did not account for the original span manifest")
     drafts = []
     assertions: dict[tuple[str, str, str, str, str], list[ClaimDraft]] = {}
     for claim in result.claims:
@@ -169,7 +165,7 @@ def resolve_extraction(result: GeneratedExtraction, source: Source) -> Extractio
                 ) for identifier in ids),
             })
         except ValidationError:
-            raise DomainError("MODEL_OUTPUT_INVALID", "Extraction returned invalid claim fields") from None
+            raise DomainError("GROUNDING_INVALID", "Extraction returned invalid claim fields") from None
         temporal_ids = validity.evidence_span_ids if validity else ()
         _validate_temporal_bounds(draft, [manifest[identifier].quote for identifier in temporal_ids])
         identity = (
@@ -181,7 +177,7 @@ def resolve_extraction(result: GeneratedExtraction, source: Source) -> Extractio
             for existing in previous
         ):
             raise DomainError(
-                "MODEL_OUTPUT_INVALID", "Extraction repeated an assertion or broadened its qualifications",
+                "GROUNDING_INVALID", "Extraction repeated an assertion or broadened its qualifications",
             )
         previous.append(draft)
         drafts.append(draft)
@@ -223,14 +219,14 @@ def _timestamp_tokens(text: str) -> set[datetime | str]:
 
 def _validate_literals(text: str, evidence: str) -> None:
     if not _timestamp_tokens(text).issubset(_timestamp_tokens(evidence)):
-        raise DomainError("MODEL_OUTPUT_INVALID", "The model introduced an unsupported timestamp")
+        raise DomainError("GROUNDING_INVALID", "The judgment introduced an unsupported timestamp")
     # Dates are checked as complete instants, never as truncated numbers or code identifiers.
     text = _EXPLICIT_TIME.sub(" ", text)
     evidence = _EXPLICIT_TIME.sub(" ", evidence)
     if not set(_NUMBER.findall(text)).issubset(set(_NUMBER.findall(evidence))):
-        raise DomainError("MODEL_OUTPUT_INVALID", "The model introduced an unsupported number")
+        raise DomainError("GROUNDING_INVALID", "The judgment introduced an unsupported number")
     if any(not _contains_identifier(evidence, value) for value in _identifiers(text)):
-        raise DomainError("MODEL_OUTPUT_INVALID", "The model introduced an unsupported identifier")
+        raise DomainError("GROUNDING_INVALID", "The judgment introduced an unsupported identifier")
 
 
 def validate_extraction(result: Extraction, source: Source) -> None:
@@ -239,18 +235,18 @@ def validate_extraction(result: Extraction, source: Source) -> None:
         evidence = []
         for quote in claim.evidence:
             if quote.source_id != source.id:
-                raise DomainError("MODEL_OUTPUT_INVALID", "Extraction cites a foreign source")
+                raise DomainError("GROUNDING_INVALID", "Extraction cites a foreign source")
             encoded = quote.quote.encode("utf-8")
             if quote.byte_start is None:
                 present = encoded in original
             else:
                 present = original[quote.byte_start : quote.byte_start + len(encoded)] == encoded
             if not present:
-                raise DomainError("MODEL_OUTPUT_INVALID", "Extraction quote is not an original span")
+                raise DomainError("GROUNDING_INVALID", "Extraction quote is not an original span")
             evidence.append(quote.quote)
         for qualification in claim.conditions + claim.exceptions:
             if not any(qualification in quote for quote in evidence):
-                raise DomainError("MODEL_OUTPUT_INVALID", "A qualification is not an original evidence phrase")
+                raise DomainError("GROUNDING_INVALID", "A qualification is not an original evidence phrase")
         _validate_temporal_bounds(claim, evidence)
         _validate_literals(
             "\n".join(
@@ -263,42 +259,12 @@ def validate_extraction(result: Extraction, source: Source) -> None:
         )
 
 
-def resolve_reflection(result: GeneratedReflection, claims: Sequence[Claim]) -> ReflectionDraft:
-    if isinstance(result.answer, GeneratedProvenanceReflection):
-        draft = ReflectionDraft(sentences=tuple(
-            CitedSentence(text="인용 원문의 시간·작성자 근거입니다.", claim_ids=sentence.claim_ids)
-            for sentence in result.answer.sentences
-        ))
-    else:
-        draft = ReflectionDraft(
-            sentences=result.answer.sentences, limitations=result.answer.limitations,
-        )
-    validate_reflection(draft, claims)
-    return draft
-
-
-def validate_reflection(result: ReflectionDraft, claims: Sequence[Claim]) -> None:
-    manifest = {claim.id: claim for claim in claims}
-    if len(manifest) != len(claims):
-        raise DomainError("MODEL_INPUT_INVALID", "The input manifest repeats a claim")
-    for sentence in result.sentences:
-        if not sentence.text.strip() or len(set(sentence.claim_ids)) != len(sentence.claim_ids):
-            raise DomainError("MODEL_OUTPUT_INVALID", "Reflection has an invalid sentence citation")
-        if any(claim_id not in manifest for claim_id in sentence.claim_ids):
-            raise DomainError("MODEL_OUTPUT_INVALID", "Reflection cites outside the supplied manifest")
-        spans = tuple(
-            span for claim_id in sentence.claim_ids for span in manifest[claim_id].evidence
-        )
-        _validate_literals(sentence.text, "\n".join(span.quote for span in spans))
-    all_spans = tuple(span for claim in claims for span in claim.evidence)
-    for limitation in result.limitations:
-        _validate_literals(limitation, "\n".join(span.quote for span in all_spans))
 
 
 def validate_consolidation(result: Consolidation, claims: Sequence[Claim]) -> None:
     manifest = {claim.id: claim for claim in claims}
     if len(manifest) != len(claims):
-        raise DomainError("MODEL_INPUT_INVALID", "The input manifest repeats a claim")
+        raise DomainError("JUDGMENT_MANIFEST_INVALID", "The input manifest repeats a claim")
     pairs = set()
     for relation in result.relations:
         if (
@@ -306,14 +272,14 @@ def validate_consolidation(result: Consolidation, claims: Sequence[Claim]) -> No
             or relation.right_id not in manifest
             or relation.left_id == relation.right_id
         ):
-            raise DomainError("MODEL_OUTPUT_INVALID", "Consolidation cites an invalid pair")
+            raise DomainError("GROUNDING_INVALID", "Consolidation cites an invalid pair")
         pair = tuple(sorted((relation.left_id, relation.right_id)))
         if pair in pairs:
-            raise DomainError("MODEL_OUTPUT_INVALID", "Consolidation repeats a pair")
+            raise DomainError("GROUNDING_INVALID", "Consolidation repeats a pair")
         pairs.add(pair)
         left, right = manifest[relation.left_id], manifest[relation.right_id]
         if left.binding_id != right.binding_id:
-            raise DomainError("MODEL_OUTPUT_INVALID", "Consolidation crossed a project boundary")
+            raise DomainError("GROUNDING_INVALID", "Consolidation crossed a project boundary")
         a, b = left.draft, right.draft
         scope_equal = (
             left.snapshot == right.snapshot
@@ -325,9 +291,9 @@ def validate_consolidation(result: Consolidation, claims: Sequence[Claim]) -> No
         time_equal = a.valid_from == b.valid_from and a.valid_until == b.valid_until
         if relation.kind in {"duplicates", "supports", "contradicts", "supersedes"}:
             if not scope_equal:
-                raise DomainError("MODEL_OUTPUT_INVALID", "Consolidation lost conditions or scope")
+                raise DomainError("GROUNDING_INVALID", "Consolidation lost conditions or scope")
         if relation.kind == "duplicates" and not time_equal:
-            raise DomainError("MODEL_OUTPUT_INVALID", "Consolidation erased valid time")
+            raise DomainError("GROUNDING_INVALID", "Consolidation erased valid time")
         if relation.kind in {"supports", "contradicts"}:
             disjoint = (
                 a.valid_until is not None and b.valid_from is not None
@@ -337,6 +303,6 @@ def validate_consolidation(result: Consolidation, claims: Sequence[Claim]) -> No
                 and b.valid_until <= a.valid_from
             )
             if disjoint:
-                raise DomainError("MODEL_OUTPUT_INVALID", "Consolidation compared disjoint valid times")
+                raise DomainError("GROUNDING_INVALID", "Consolidation compared disjoint valid times")
         if relation.kind in {"duplicates", "supports"} and a.polarity != b.polarity:
-            raise DomainError("MODEL_OUTPUT_INVALID", "Consolidation erased negation")
+            raise DomainError("GROUNDING_INVALID", "Consolidation erased negation")

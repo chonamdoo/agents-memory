@@ -20,13 +20,6 @@ dependencies = [
   "starlette>=0.47,<2",
 ]
 
-[project.optional-dependencies]
-local-models = [
-  "sentence-transformers>=5.7,<6",
-  "torch>=2.7,<3",
-  "huggingface-hub>=2.2,<3",
-]
-
 [project.scripts]
 agents-memory = "agents_memory.cli:main"
 

@@ -9,8 +9,14 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .domain import DomainError, EffectState
-from .wire import decode_json
+from pydantic import ValidationError
+
+from .domain import CaptureCommand, CorrectCommand, DomainError, EffectState, FeedbackCommand
+from .private_io import private_read
+from .wire import decode_json, validate_wire
+
+# A 512-character UTF-8 token may use four bytes per character, plus a CRLF.
+_MAX_TOKEN_FILE_BYTES = 512 * 4 + 2
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -34,12 +40,29 @@ class LocalClient:
     def request(self, path: str, payload: dict | None = None) -> dict:
         if not path.startswith("/") or path.startswith("//") or ".." in path.split("/"):
             raise DomainError("DESTINATION_DENIED", "The local API path is invalid")
+        if path in {"/api/capture", "/api/correct", "/api/record", "/api/feedback"}:
+            try:
+                if path == "/api/record":
+                    from .selection import RECORD_ADAPTER
+                    validate_wire(RECORD_ADAPTER, payload)
+                elif path == "/api/correct":
+                    validate_wire(CorrectCommand, payload)
+                else:
+                    validate_wire(CaptureCommand if path == "/api/capture" else FeedbackCommand, payload)
+            except (ValidationError, ValueError, TypeError, UnicodeError):
+                raise DomainError("INPUT_INVALID", "The source command is invalid before dispatch", status=422) from None
         try:
-            token = self.token_file.read_text(encoding="utf-8").strip()
-        except (OSError, UnicodeError):
-            raise DomainError("CREDENTIAL_INVALID", "The local credential file is unavailable", status=401) from None
+            token = private_read(self.token_file, _MAX_TOKEN_FILE_BYTES).decode("utf-8").strip()
+        except (DomainError, OSError, UnicodeError):
+            raise DomainError(
+                "CREDENTIAL_INVALID", "The local credential file is unavailable",
+                status=401, effect=EffectState.NOT_STARTED,
+            ) from None
         if not token or len(token) > 512 or any(character.isspace() for character in token):
-            raise DomainError("CREDENTIAL_INVALID", "The local credential file is invalid", status=401)
+            raise DomainError(
+                "CREDENTIAL_INVALID", "The local credential file is invalid",
+                status=401, effect=EffectState.NOT_STARTED,
+            )
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         request = urllib.request.Request(
             self.base_url + path,

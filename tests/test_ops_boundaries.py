@@ -6,6 +6,7 @@ import json
 import os
 import struct
 import subprocess
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -245,6 +246,8 @@ async def live_authority(tmp_path):
     query.pop("schema", None)
     admin_dsn = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
     schema = "am_ops_test_" + uuid.uuid4().hex
+    root = tmp_path.resolve() / "ops-private"
+    root.mkdir(mode=0o700)
     admin = await asyncpg.connect(admin_dsn)
     store = None
     try:
@@ -253,14 +256,14 @@ async def live_authority(tmp_path):
         dsn = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
         await asyncio.to_thread(migrate, dsn)
         settings = Settings(deployment_id="deployment_ops", realm="personal_ops", mode="personal",
-            database_dsn=dsn, migrator_dsn=dsn, state_dir=tmp_path / "authority", journal_dir=tmp_path / "journal")
+            database_dsn=dsn, migrator_dsn=dsn, state_dir=root / "authority", journal_dir=root / "journal")
         store = Store(settings, DeletionJournal(settings.journal_dir, settings.deployment_id))
         await store.open()
         actor = await store.bootstrap(TOKEN, "owner_ops")
         binding = await store.register_binding(actor, "Synthetic ops boundary", None, "binding-ops")
         actor = await store.authenticate(TOKEN)
-        private_write(tmp_path / "operator", TOKEN)
-        yield store, actor, binding, settings, tmp_path
+        private_write(root / "operator", TOKEN)
+        yield store, actor, binding, settings, root
     finally:
         if store is not None:
             await store.close()
@@ -269,7 +272,7 @@ async def live_authority(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("archived_index", (0, 1, 2))
+@pytest.mark.parametrize("archived_index", range(len(MIGRATIONS) - 1))
 async def test_private_operator_migrates_prior_schema_without_rotating_credentials_or_resurrecting_sources(live_authority, archived_index):
     from test_store_authority import historical_schema_fixture
 
@@ -277,24 +280,75 @@ async def test_private_operator_migrates_prior_schema_without_rotating_credentia
     selected = await store.capture(actor, CaptureCommand(binding_id=binding.id,
         idempotency_key="migration-current", origin_key="migration-current",
         body="Synthetic eligible migration evidence.", speaker="human"))
+    async with store.pool.acquire() as connection:
+        await connection.execute("""INSERT INTO am_operations
+            (id,binding_id,credential_id,kind,state,source_id,error_code,epoch)
+            SELECT 'historical_failed_operation',$1,$2,'reprocess','failed',$3,'HISTORICAL_FAILURE',epoch
+            FROM am_clock WHERE singleton""", binding.id, actor.credential_id, selected.source_id)
+        await connection.execute("""INSERT INTO am_jobs
+            (id,binding_id,operation_id,credential_id,credential_generation,kind,source_ids,state,attempts,error_code)
+            VALUES('historical_failed_job',$1,'historical_failed_operation',$2,$3,'extract',$4,'failed',2,'HISTORICAL_FAILURE')""",
+            binding.id, actor.credential_id, actor.generation, [selected.source_id])
     withdrawn = await store.capture(actor, CaptureCommand(binding_id=binding.id,
         idempotency_key="migration-withdrawn", origin_key="migration-withdrawn",
         body="Synthetic withdrawn migration evidence.", speaker="human"))
     await store.retract(actor, binding.id, withdrawn.source_id, "migration-floor")
     head = store.journal.verify()["head"]
+    journal_files = {path.name: path.read_bytes() for path in settings.journal_dir.iterdir() if path.is_file()}
+    async with store.pool.acquire() as connection:
+        credentials = await connection.fetch("SELECT * FROM am_credentials ORDER BY id")
     await historical_schema_fixture(store, archived_index)
+    async with store.pool.acquire() as connection:
+        assert await connection.fetch("SELECT * FROM am_credentials ORDER BY id") == credentials
+        assert set(await connection.fetchval("""SELECT array_agg(table_name) FROM information_schema.tables
+            WHERE table_schema=current_schema() AND table_type='BASE TABLE'""")) == ops._ARCHIVE_TABLES[MIGRATIONS[archived_index]]
+        assert await connection.fetchval("""SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname=current_schema() AND c.relkind='S'""") == 0
+        columns = {(row["table_name"], row["column_name"]) for row in await connection.fetch(
+            "SELECT table_name,column_name FROM information_schema.columns WHERE table_schema=current_schema()")}
+        for table, column, introduced in (
+            ("am_feedback", "state", 1), ("am_claims", "vector_revision", 2),
+            ("am_claims", "extraction_operation_id", 2), ("am_claims", "superseded_by", 2),
+            ("am_operations", "successor_operation_id", 3), ("am_operations", "source_pointer", 4),
+            ("am_sources", "capture_coverage", 4), ("am_claims", "capability", 4),
+            ("am_admissions", "relation_ids", 4), ("am_claims", "awaiting_revalidation", 5),
+            ("am_source_selections", "reason", 5), ("am_admissions", "request_digest", 5),
+        ):
+            assert ((table, column) in columns) == (archived_index >= introduced)
+    assert journal_files == {path.name: path.read_bytes() for path in settings.journal_dir.iterdir() if path.is_file()}
     await store.close()
     with pytest.raises(DomainError) as ordinary:
         await store.open()
     assert ordinary.value.code == "MIGRATION_REQUIRED"
-    result = await ops.migrate_authority(settings, root / "operator", settings.deployment_id)
+    config = root / "legacy-deployment.json"
+    legacy = {**settings.model_dump(mode="json"), "capability": "full_semantic",
+              "models": {"generation_url": "http://127.0.0.1:8000"},
+              "allowed_model_purposes": ["extraction"], "lease_seconds": 120,
+              "heartbeat_seconds": 10, "job_attempt_limit": 4}
+    original = (json.dumps(legacy) + "\n").encode()
+    private_write(config, original)
+    result = await ops.migrate_authority(settings, root / "operator", settings.deployment_id,
+                                         config_path=config, original_config=original)
     assert result["previous_migration"] == MIGRATIONS[archived_index]
     assert result["migration"] == MIGRATION and result["application_verified"]
+    upgraded = json.loads(config.read_bytes())
+    assert upgraded["capability"] == "agent_judged" and "models" not in upgraded
+    retained = settings.state_dir / ("config-upgrade-" + hashlib.sha256(original).hexdigest() + ".json")
+    assert retained.read_bytes() == original
+    assert (root / "operator").read_text() == TOKEN
     await store.open()
     await store.reconcile_journal(head)
     current = await store.authenticate(TOKEN, (Role.OPERATOR,))
     assert current.credential_id == actor.credential_id
     assert (await store.source(current, binding.id, selected.source_id)).body == "Synthetic eligible migration evidence."
+    async with store.pool.acquire() as connection:
+        preserved = await connection.fetchrow("""SELECT r.original->>'state' AS state,
+            r.original->>'error_code' AS error_code,r.original->>'attempts' AS attempts,
+            r.original_operation->>'state' AS operation_state,j.state AS retired_state,p.state AS pending_state
+            FROM am_retired_jobs r JOIN am_jobs j ON j.id=r.job_id
+            JOIN am_pending_judgments p ON p.id=r.successor_id WHERE r.job_id='historical_failed_job'""")
+        assert dict(preserved) == {"state": "failed", "error_code": "HISTORICAL_FAILURE", "attempts": "2",
+            "operation_state": "failed", "retired_state": "retired", "pending_state": "pending"}
     retired = await store.inspect(current, binding.id, withdrawn.source_id)
     assert retired["state"] == "retracted" and retired.get("body") is None
     assert store.journal.verify()["head"] == head
@@ -310,9 +364,16 @@ async def test_private_migration_refuses_agent_credential_before_old_schema_chan
     private_write(root / "agent", agent_token)
     await historical_schema_fixture(store, 2)
     await store.close()
+    config = root / "legacy.json"
+    original = json.dumps({**settings.model_dump(mode="json"),
+                           "capability": "full_semantic", "models": {}}).encode()
+    private_write(config, original)
     with pytest.raises(DomainError) as denied:
-        await ops.migrate_authority(settings, root / "agent", settings.deployment_id)
+        await ops.migrate_authority(settings, root / "agent", settings.deployment_id,
+                                     config_path=config, original_config=original)
     assert denied.value.code == "SCOPE_DENIED" and denied.value.effect == EffectState.NOT_STARTED
+    assert config.read_bytes() == original
+    assert not list(settings.state_dir.glob("config-upgrade-*.json"))
     private = Store(settings, store.journal)
     await private.open_restore_recovery()
     try:
@@ -367,7 +428,7 @@ async def historical_encrypted_archive(store, actor, archive, recipients, runtim
                     "--recipients-file", str(recipients)], stdout=output)
                 args = ["--format=custom", "--no-owner", "--no-privileges", "--strict-names"]
                 args.extend('--table="' + value["schema"] + '"."' + name + '"'
-                    for name in sorted(ops._PRIOR_TABLES))
+                    for name in sorted(ops._ARCHIVE_TABLES[value["migration_version"]]))
                 dump = await ops._pg(processes, runtime, "dump", store.settings.database_dsn, args)
                 dump.stdin.close()
                 header = json.dumps(value).encode()
@@ -519,6 +580,8 @@ async def test_restored_old_snapshot_cannot_resurrect_a_deleted_source(live_auth
     identity, recipients = age_keys(root, keygen)
     source = await store.capture(actor, CaptureCommand(binding_id=binding.id, idempotency_key="before-backup",
         origin_key="before-backup", body="Synthetic old snapshot text.", speaker="human"))
+    async with store.pool.acquire() as connection:
+        archived_sequence = await connection.fetchval("SELECT max(sequence) FROM am_pending_judgments")
     archived = await backup(settings, root / "operator", root / "before-retract.age", recipients, runtime)
     await store.retract(actor, binding.id, source.source_id, "after-backup-retract")
     expected_head = store.journal.verify()["head"]
@@ -536,6 +599,11 @@ async def test_restored_old_snapshot_cannot_resurrect_a_deleted_source(live_auth
     with pytest.raises(DomainError):
         await store.authenticate(TOKEN)
     current = await store.authenticate((root / "operator-rotated").read_text().strip(), (Role.OPERATOR,))
+    after_restore = await store.capture(current, CaptureCommand(binding_id=binding.id, idempotency_key="after-restore",
+        origin_key="after-restore", body="Synthetic fresh post-restore evidence.", speaker="human"))
+    async with store.pool.acquire() as connection:
+        assert await connection.fetchval("SELECT sequence FROM am_pending_judgments WHERE $1=ANY(source_ids)",
+            after_restore.source_id) > archived_sequence
     with pytest.raises(DomainError):
         await store.source(current, binding.id, source.source_id)
     assert not (settings.state_dir / "restore-barrier.json").exists()
@@ -593,20 +661,144 @@ def test_ordered_migration_manifest_cannot_be_omitted_reordered_or_forged(settin
 def test_known_legacy_archive_keeps_exact_old_table_scope(settings):
     _validate_metadata(legacy_metadata(settings), settings, BackupRuntime(Path("/not-invoked/age")), "owner_ops")
     def toc(tables):
-        return "\n".join(f"{number}; 0 0 {kind} memory {table} memory"
+        entries = [f"{number}; 0 0 {kind} memory {table} memory"
             for number, (table, kind) in enumerate(
-                ((table, kind) for table in sorted(tables) for kind in ("TABLE", "TABLE DATA")), 1)).encode()
-    ops._validate_toc(toc(ops._LEGACY_TABLES), "memory", ops._LEGACY_TABLES)
-    ops._validate_toc(toc(ops._PRIOR_TABLES), "memory", ops._PRIOR_TABLES)
+                ((table, kind) for table in sorted(tables) for kind in ("TABLE", "TABLE DATA")), 1)]
+        if tables == ops._ARCHIVE_TABLES["0006_agent_judged"]:
+            entries.extend([
+                "900; 0 0 SEQUENCE memory am_pending_judgments_sequence_seq memory",
+                "901; 0 0 SEQUENCE SET memory am_pending_judgments_sequence_seq memory",
+                "902; 0 0 SEQUENCE memory am_claims_cleanup_sequence_seq memory",
+                "903; 0 0 SEQUENCE SET memory am_claims_cleanup_sequence_seq memory",
+            ])
+        return "\n".join(entries).encode()
+    legacy = ops._ARCHIVE_TABLES["0001_authority"]
+    directional = ops._ARCHIVE_TABLES["0002_directional_tombstones"]
+    ops._validate_toc(toc(legacy), "memory", legacy)
+    ops._validate_toc(toc(directional), "memory", directional)
     ops._validate_toc(toc(ops._TABLES), "memory")
     with pytest.raises(DomainError):
-        ops._validate_toc(toc(ops._TABLES), "memory", ops._LEGACY_TABLES)
+        ops._validate_toc(toc(ops._TABLES), "memory", legacy)
     with pytest.raises(DomainError):
-        ops._validate_toc(toc(ops._LEGACY_TABLES), "memory")
+        ops._validate_toc(toc(legacy), "memory")
     with pytest.raises(DomainError):
-        ops._validate_toc(toc(ops._TABLES), "memory", ops._PRIOR_TABLES)
+        ops._validate_toc(toc(ops._TABLES), "memory", directional)
     with pytest.raises(DomainError):
-        ops._validate_toc(toc(ops._PRIOR_TABLES), "memory")
+        ops._validate_toc(toc(directional), "memory")
+    selection = ops._ARCHIVE_TABLES["0005_company_selection"]
+    ops._validate_toc(toc(selection), "memory", selection)
+    with pytest.raises(DomainError):
+        ops._validate_toc(toc(selection), "memory")
+    with pytest.raises(DomainError):
+        ops._validate_toc(toc(ops._TABLES), "memory", selection)
+
+
+@pytest.mark.parametrize("revision", MIGRATIONS)
+def test_versioned_sequence_inventory_is_exact(revision):
+    tables = ops._ARCHIVE_TABLES[revision]
+    table_entries = [
+        f"{number}; 0 0 {kind} memory {table} memory"
+        for number, (table, kind) in enumerate(
+            ((table, kind) for table in sorted(tables)
+             for kind in ("TABLE", "TABLE DATA")), 1
+        )
+    ]
+    sequence_entries = [
+        "900; 0 0 SEQUENCE memory am_pending_judgments_sequence_seq memory",
+        "901; 0 0 SEQUENCE SET memory am_pending_judgments_sequence_seq memory",
+        "902; 0 0 SEQUENCE memory am_claims_cleanup_sequence_seq memory",
+        "903; 0 0 SEQUENCE SET memory am_claims_cleanup_sequence_seq memory",
+    ]
+    expected = sequence_entries if revision == "0006_agent_judged" else []
+    ops._validate_toc(
+        "\n".join([*table_entries, *expected]).encode(), "memory", tables
+    )
+    invalid = (
+        [
+            [],
+            *[
+                sequence_entries[:index] + sequence_entries[index + 1:]
+                for index in range(len(sequence_entries))
+            ],
+        ]
+        if revision == "0006_agent_judged"
+        else [
+            sequence_entries,
+            sequence_entries[:2],
+            sequence_entries[2:],
+        ]
+    )
+    for entries in invalid:
+        with pytest.raises(DomainError) as denied:
+            ops._validate_toc(
+                "\n".join([*table_entries, *entries]).encode(), "memory", tables
+            )
+        assert denied.value.code == "ARCHIVE_SCOPE_DENIED"
+        assert denied.value.effect == EffectState.NOT_STARTED
+
+
+@pytest.mark.parametrize("pollution", [
+    "904; 0 0 SEQUENCE memory unrelated_sequence memory",
+    "904; 0 0 SEQUENCE SET memory unrelated_sequence memory",
+    "904; 0 0 SEQUENCE public am_pending_judgments_sequence_seq memory",
+    "904; 0 0 SEQUENCE public am_claims_cleanup_sequence_seq memory",
+    "904; 0 0 SEQUENCE OWNED BY memory am_pending_judgments_sequence_seq memory",
+    "904; 0 0 SEQUENCE OWNED BY memory am_claims_cleanup_sequence_seq memory",
+    "904; 0 0 SEQUENCE memory am_pending_judgments_sequence_seq memory",
+    "904; 0 0 SEQUENCE SET memory am_pending_judgments_sequence_seq memory",
+    "904; 0 0 SEQUENCE memory am_claims_cleanup_sequence_seq memory",
+    "904; 0 0 SEQUENCE SET memory am_claims_cleanup_sequence_seq memory",
+])
+def test_identity_sequence_never_admits_unrelated_serial_or_duplicate_objects(pollution):
+    entries = [
+        f"{number}; 0 0 {kind} memory {table} memory"
+        for number, (table, kind) in enumerate(
+            ((table, kind) for table in sorted(ops._TABLES)
+             for kind in ("TABLE", "TABLE DATA")), 1
+        )
+    ]
+    entries.extend([
+        "900; 0 0 SEQUENCE memory am_pending_judgments_sequence_seq memory",
+        "901; 0 0 SEQUENCE SET memory am_pending_judgments_sequence_seq memory",
+        "902; 0 0 SEQUENCE memory am_claims_cleanup_sequence_seq memory",
+        "903; 0 0 SEQUENCE SET memory am_claims_cleanup_sequence_seq memory",
+        pollution,
+    ])
+    with pytest.raises(DomainError) as denied:
+        ops._validate_toc("\n".join(entries).encode(), "memory")
+    assert denied.value.code == "ARCHIVE_SCOPE_DENIED"
+
+
+@pytest.mark.parametrize("sequence", [
+    "am_pending_judgments_sequence_seq",
+    "am_claims_cleanup_sequence_seq",
+])
+@pytest.mark.parametrize("definition_owner,data_owner", [
+    ("other", "memory"), ("memory", "other"), ("other", "other"),
+])
+def test_identity_sequence_owner_must_match_its_table(
+    sequence, definition_owner, data_owner
+):
+    entries = [
+        f"{number}; 0 0 {kind} memory {table} memory"
+        for number, (table, kind) in enumerate(
+            ((table, kind) for table in sorted(ops._TABLES)
+             for kind in ("TABLE", "TABLE DATA")), 1
+        )
+    ]
+    for index, name in enumerate((
+        "am_pending_judgments_sequence_seq",
+        "am_claims_cleanup_sequence_seq",
+    )):
+        owner = definition_owner if name == sequence else "memory"
+        set_owner = data_owner if name == sequence else "memory"
+        entries.extend([
+            f"{900 + index * 2}; 0 0 SEQUENCE memory {name} {owner}",
+            f"{901 + index * 2}; 0 0 SEQUENCE SET memory {name} {set_owner}",
+        ])
+    with pytest.raises(DomainError) as denied:
+        ops._validate_toc("\n".join(entries).encode(), "memory")
+    assert denied.value.code == "ARCHIVE_SCOPE_DENIED"
 
 
 @pytest.fixture
@@ -1122,14 +1314,28 @@ async def test_oversized_restore_toc_aborts_and_drains_real_child_before_wait_de
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("revision,format_version", [(MIGRATIONS[0], 1), *((revision, 2) for revision in MIGRATIONS)])
-async def test_dump_preflight_selects_exact_archived_table_shape(settings, tmp_path, monkeypatch, revision, format_version):
+@pytest.mark.parametrize("pollution", [None, "missing_source", "foreign_table", "wrong_selection_shape"])
+async def test_dump_preflight_accepts_only_complete_revision_matched_authority(
+        settings, tmp_path, monkeypatch, revision, format_version, pollution):
     value = legacy_metadata(settings) if format_version == 1 else versioned_metadata(settings, revision)
-    tables = ops._LEGACY_TABLES if revision == MIGRATIONS[0] else (
-        ops._PRIOR_TABLES if revision == MIGRATIONS[1] else ops._TABLES
-    )
+    tables = set(ops._ARCHIVE_TABLES[revision])
+    if pollution == "missing_source":
+        tables.remove("am_sources")
+    elif pollution == "foreign_table":
+        tables.add("private_foreign_evidence")
+    elif pollution == "wrong_selection_shape":
+        if "am_source_selections" in tables:
+            tables.remove("am_source_selections")
+        else:
+            tables.add("am_source_selections")
     toc = "\n".join(f"{number}; 0 0 {kind} memory {table} memory"
         for number, (table, kind) in enumerate(
             ((table, kind) for table in sorted(tables) for kind in ("TABLE", "TABLE DATA")), 1)).encode()
+    if revision == MIGRATION:
+        toc += (b"\n900; 0 0 SEQUENCE memory am_pending_judgments_sequence_seq memory"
+            b"\n901; 0 0 SEQUENCE SET memory am_pending_judgments_sequence_seq memory"
+            b"\n902; 0 0 SEQUENCE memory am_claims_cleanup_sequence_seq memory"
+            b"\n903; 0 0 SEQUENCE SET memory am_claims_cleanup_sequence_seq memory")
     header = json.dumps(value).encode()
     envelope = _MAGIC + struct.pack("!I", len(header)) + header + framed_dump(b"PGDMPvalidated-old-shape")
     class Input:
@@ -1147,10 +1353,16 @@ async def test_dump_preflight_selects_exact_archived_table_shape(settings, tmp_p
         return SimpleNamespace(stdout=reader(toc), stdin=Input(), wait=exited)
     monkeypatch.setattr(ops, "_decrypt", decrypt)
     monkeypatch.setattr(ops, "_pg", pg)
-    archived, checked = await ops._preflight(object(), BackupRuntime(Path("/not-invoked/age")), settings,
-        tmp_path / "archive.age", b"private-identity", "owner_ops", listing=True)
-    assert archived["migration_version"] == revision
-    assert checked["dump_sha256"] == hashlib.sha256(b"PGDMPvalidated-old-shape").hexdigest()
+    if pollution is None:
+        archived, checked = await ops._preflight(object(), BackupRuntime(Path("/not-invoked/age")), settings,
+            tmp_path / "archive.age", b"private-identity", "owner_ops", listing=True)
+        assert archived == value and checked["dump_bytes"] == len(b"PGDMPvalidated-old-shape")
+        return
+    with pytest.raises(DomainError) as denied:
+        await ops._preflight(object(), BackupRuntime(Path("/not-invoked/age")), settings,
+            tmp_path / "archive.age", b"private-identity", "owner_ops", listing=True)
+    assert denied.value.code == "ARCHIVE_SCOPE_DENIED"
+    assert denied.value.effect == EffectState.NOT_STARTED
 
 
 @pytest.mark.asyncio
@@ -1242,3 +1454,503 @@ async def test_psql_version_or_executable_mismatch_is_rejected_before_restore_ex
     assert kinds == ["dump", "restore", "psql"]
     assert denied.value.code == "DATABASE_VERSION_UNSUPPORTED"
     assert denied.value.effect == EffectState.NOT_STARTED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("published", (False, True))
+async def test_explicit_cli_config_upgrade_preserves_original_when_publication_is_uncertain(
+        live_authority, monkeypatch, published):
+    from agents_memory import cli
+    from agents_memory.config import load_settings
+
+    store, actor, _, settings, root = live_authority
+    config = root / "legacy-config.json"
+    original = json.dumps({**settings.model_dump(mode="json"), "capability": "full_semantic",
+                           "models": {}, "allowed_model_purposes": []}).encode()
+    private_write(config, original)
+    head = store.journal.verify()["head"]
+    await store.close()
+    write = ops.private_write
+
+    def interrupted(path, content, **options):
+        if path == config and options.get("replace"):
+            if published:
+                write(path, content, **options)
+            raise OSError("Synthetic uncertain config publication")
+        return write(path, content, **options)
+
+    args = cli.parser().parse_args([
+        "--config", str(config), "--token-file", str(root / "operator"), "migrate",
+        "--upgrade-config", "--confirm-deployment", settings.deployment_id,
+    ])
+    monkeypatch.setattr(ops, "private_write", interrupted)
+    with pytest.raises(DomainError) as uncertain:
+        await cli.execute(args)
+    assert uncertain.value.code == "CONFIG_UPGRADE_RECOVERY_REQUIRED"
+    assert uncertain.value.effect == EffectState.UNKNOWN
+    retained = settings.state_dir / ("config-upgrade-" + hashlib.sha256(original).hexdigest() + ".json")
+    assert retained.read_bytes() == original
+    if not published:
+        assert config.read_bytes() == original
+        with pytest.raises(DomainError) as obsolete:
+            load_settings(config)
+        assert obsolete.value.code == "CONFIG_UPGRADE_REQUIRED"
+    else:
+        assert load_settings(config) == settings
+    monkeypatch.setattr(ops, "private_write", write)
+    repaired = await cli.execute(args)
+    assert repaired["effect"] == "committed" and repaired["config_upgraded"]
+    assert load_settings(config) == settings and retained.read_bytes() == original
+    await store.open()
+    current = await store.authenticate(TOKEN, (Role.OPERATOR,))
+    assert current.credential_id == actor.credential_id
+    assert store.journal.verify()["head"] == head
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protected", (
+    "authority.lock", "restore-barrier.json", "initialization-intent.json", "initialization-result.json",
+))
+async def test_config_upgrade_cannot_replace_authority_interlocks_or_initialization_evidence(settings, tmp_path, protected):
+    settings = settings.model_copy(update={"migrator_dsn": settings.database_dsn})
+    settings.state_dir.mkdir(mode=0o700)
+    path = settings.state_dir / protected
+    original = settings.model_dump_json().encode()
+    private_write(path, original)
+    with pytest.raises(DomainError) as denied:
+        await ops.migrate_authority(settings, tmp_path / "not-read-token", settings.deployment_id,
+                                     config_path=path, original_config=original)
+    assert denied.value.code == "PATH_DENIED" and denied.value.effect == EffectState.NOT_STARTED
+    assert path.read_bytes() == original
+
+
+def pending_model_approval(settings):
+    raw = (
+        json.dumps({
+            "format": 1,
+            "request": "1" * 64,
+            "before": "2" * 64,
+            "target": "3" * 64,
+        }, indent=2) + "\n"
+    ).encode()
+    private_write(settings.state_dir / "model-approval-intent.json", raw)
+    return raw, hashlib.sha256(raw).hexdigest()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("historical_index", (3, 4))
+@pytest.mark.parametrize("interruption", (None, "migration", "retirement"))
+async def test_real_historical_approval_retirement_preserves_unknown_evidence_and_restarts(
+    live_authority, monkeypatch, historical_index, interruption,
+):
+    from test_store_authority import historical_schema_fixture
+
+    from agents_memory import cli
+
+    store, actor, binding, settings, root = live_authority
+    async with store.pool.acquire() as connection:
+        await connection.execute(
+            "INSERT INTO am_routes(purpose,revision,enabled,epoch) VALUES('extraction',$1,true,7)",
+            "f" * 64,
+        )
+        credentials = await connection.fetch("SELECT * FROM am_credentials ORDER BY id")
+    raw, digest = pending_model_approval(settings)
+    await historical_schema_fixture(store, historical_index)
+    await store.close()
+
+    config = root / "deployment.json"
+    original = json.dumps({
+        **settings.model_dump(mode="json"),
+        "capability": "full_semantic",
+        "models": {},
+        "allowed_model_purposes": ["extraction"],
+        "lease_seconds": 120,
+        "heartbeat_seconds": 10,
+        "job_attempt_limit": 4,
+    }).encode()
+    private_write(config, original)
+
+    original_migrate = ops.migrate
+    original_finish = ops._finish_model_approval_recovery
+    fired = False
+
+    def interrupted_migrate(dsn):
+        nonlocal fired
+        result = original_migrate(dsn)
+        if interruption == "migration" and not fired:
+            fired = True
+            raise OSError("deterministic lost committed migration response")
+        return result
+
+    def interrupted_finish(current_settings, confirmed_digest, confirmed_raw):
+        nonlocal fired
+        original_finish(current_settings, confirmed_digest, confirmed_raw)
+        if interruption == "retirement" and not fired:
+            fired = True
+            raise OSError("deterministic lost retirement response")
+
+    monkeypatch.setattr(ops, "migrate", interrupted_migrate)
+    monkeypatch.setattr(ops, "_finish_model_approval_recovery", interrupted_finish)
+    argv = [
+        "--config", str(config), "--token-file", str(root / "operator"),
+        "migrate", "--confirm-deployment", settings.deployment_id,
+        "--upgrade-config", "--retire-model-approval-intent", digest,
+    ]
+    if interruption is not None:
+        with pytest.raises(DomainError) as uncertain:
+            await cli.execute(cli.parser().parse_args(argv))
+        assert uncertain.value.effect == EffectState.UNKNOWN
+
+    result = await cli.execute(cli.parser().parse_args(argv))
+    assert result["application_verified"] and result["model_approval_retired"]
+    assert result["historical_approval_effect"] == "unknown_not_attested"
+    assert result["routes_disabled"]
+    assert not (settings.state_dir / "model-approval-intent.json").exists()
+    retained = settings.state_dir / ("model-approval-retired-" + digest + ".json")
+    assert retained.read_bytes() == raw
+    audit = json.loads((settings.state_dir / ("model-approval-recovery-" + digest + ".json")).read_bytes())
+    assert audit["migration_before_recovery"] == MIGRATIONS[historical_index]
+    assert audit["historical_approval_effect"] == "unknown_not_attested"
+    assert audit["routes_before_recovery"] == [{
+        "purpose": "extraction", "revision": "f" * 64, "enabled": True, "epoch": 7,
+    }]
+    assert retained.stat().st_mode & 0o077 == 0
+    assert (root / "operator").read_text() == TOKEN
+
+    await store.open()
+    await store.reconcile_journal()
+    current = await store.authenticate(TOKEN, (Role.OPERATOR,))
+    assert current.credential_id == actor.credential_id
+    async with store.pool.acquire() as connection:
+        assert not await connection.fetchval("SELECT EXISTS(SELECT 1 FROM am_routes WHERE enabled)")
+        assert await connection.fetch("SELECT * FROM am_credentials ORDER BY id") == credentials
+    replay = await cli.execute(cli.parser().parse_args(argv))
+    assert replay["application_verified"] is True and replay["model_approval_retired"] is True
+    assert retained.read_bytes() == raw
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ("ordinary", "wrong_operator", "wrong_digest", "busy", "approval_busy"))
+async def test_model_approval_refusal_leaves_evidence_routes_and_revision_unchanged(
+    live_authority, case,
+):
+    from test_store_authority import historical_schema_fixture
+
+    store, actor, binding, settings, root = live_authority
+    agent_token = "approval-recovery-agent-" + "a" * 40
+    await store.issue_token(actor, Role.AGENT, (binding.id,), agent_token)
+    private_write(root / "agent", agent_token)
+    raw, digest = pending_model_approval(settings)
+    async with store.pool.acquire() as connection:
+        await connection.execute(
+            "INSERT INTO am_routes(purpose,revision,enabled,epoch) VALUES('extraction',$1,true,9)",
+            "f" * 64,
+        )
+    await historical_schema_fixture(store, 3)
+    async with store.pool.acquire() as connection:
+        routes = await connection.fetch("SELECT * FROM am_routes ORDER BY purpose")
+        epoch = await connection.fetchval("SELECT epoch FROM am_clock WHERE singleton")
+    await store.close()
+
+    kwargs = {}
+    token_file = root / "operator"
+    if case != "ordinary":
+        kwargs["retire_model_approval_intent"] = "0" * 64 if case == "wrong_digest" else digest
+    if case == "wrong_operator":
+        token_file = root / "agent"
+
+    async def refuse():
+        with pytest.raises(DomainError) as denied:
+            await ops.migrate_authority(settings, token_file, settings.deployment_id, **kwargs)
+        assert denied.value.effect == EffectState.NOT_STARTED
+        expected = {
+            "ordinary": "UPGRADE_RECOVERY_REQUIRED",
+            "wrong_operator": "SCOPE_DENIED",
+            "wrong_digest": "MODEL_APPROVAL_RECOVERY_CONFLICT",
+            "busy": "AUTHORITY_BUSY",
+            "approval_busy": "MODEL_APPROVAL_BUSY",
+        }
+        assert denied.value.code == expected[case]
+
+    if case == "busy":
+        with authority_lock(settings):
+            await refuse()
+    elif case == "approval_busy":
+        with ops._model_approval_recovery_lock(settings):
+            await refuse()
+    else:
+        await refuse()
+    assert (settings.state_dir / "model-approval-intent.json").read_bytes() == raw
+    assert not list(settings.state_dir.glob("model-approval-retired-*.json"))
+    assert not list(settings.state_dir.glob("model-approval-recovery-*.json"))
+
+    private = Store(
+        settings.model_copy(update={"database_dsn": settings.migrator_dsn}),
+        store.journal,
+    )
+    try:
+        await private.open_restore_recovery()
+        async with private.pool.acquire() as connection:
+            assert await connection.fetchval("SELECT version_num FROM alembic_version") == MIGRATIONS[3]
+            assert await connection.fetch("SELECT * FROM am_routes ORDER BY purpose") == routes
+            assert await connection.fetchval("SELECT epoch FROM am_clock WHERE singleton") == epoch
+    finally:
+        await private.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("historical_index", (3, 4))
+async def test_forward_migration_activates_only_candidate_rejection_feedback(
+    live_authority, historical_index,
+):
+    from test_store_authority import historical_schema_fixture
+
+    from agents_memory.domain import FeedbackCommand
+
+    store, actor, binding, settings, root = live_authority
+    source = await store.capture(
+        actor,
+        CaptureCommand(
+            binding_id=binding.id,
+            idempotency_key="historical-reject-source",
+            origin_key="historical-reject-source",
+            body="Original human evidence requiring rejection preservation.",
+            speaker="human",
+        ),
+    )
+    rejection = await store.feedback(
+        actor,
+        FeedbackCommand(
+            binding_id=binding.id,
+            idempotency_key="historical-reject",
+            target_ref=source.id,
+            kind="reject",
+            body="Do not reuse this original human evidence.",
+        ),
+    )
+    async with store.pool.acquire() as connection:
+        await connection.execute(
+            "UPDATE am_feedback SET state='candidate' WHERE id=$1",
+            rejection.artifact_id,
+        )
+        await connection.execute(
+            """INSERT INTO am_feedback(id,binding_id,target_ref,kind,state)
+               VALUES('historical_retracted',$1,$2,'reject','retracted')""",
+            binding.id, source.id,
+        )
+    correction = await store.feedback(actor, FeedbackCommand(
+        binding_id=binding.id, idempotency_key="historical-correction",
+        target_ref=source.id, kind="correct", body="A retained correction is not a rejection.",
+    ))
+    async with store.pool.acquire() as connection:
+        await connection.execute("UPDATE am_feedback SET state='candidate' WHERE id=$1", correction.artifact_id)
+    await historical_schema_fixture(store, historical_index)
+    await store.close()
+    result = await ops.migrate_authority(
+        settings, root / "operator", settings.deployment_id,
+    )
+    assert result["previous_migration"] == MIGRATIONS[historical_index]
+    await store.open()
+    await store.reconcile_journal()
+    async with store.pool.acquire() as connection:
+        assert await connection.fetchval(
+            "SELECT state FROM am_feedback WHERE id=$1", rejection.artifact_id,
+        ) == "active"
+        assert await connection.fetchval(
+            "SELECT state FROM am_feedback WHERE id='historical_retracted'",
+        ) == "retracted"
+        assert await connection.fetchval(
+            "SELECT state FROM am_feedback WHERE id=$1", correction.artifact_id,
+        ) == "candidate"
+        retained = await connection.fetchrow(
+            "SELECT reason,rejected_source_ids FROM am_feedback WHERE id=$1",
+            rejection.artifact_id,
+        )
+        assert retained["reason"] == "Do not reuse this original human evidence."
+        assert retained["rejected_source_ids"] == [source.source_id]
+    disclosed = await store.inspect(actor, binding.id, rejection.artifact_id)
+    assert disclosed["reason"] == retained["reason"]
+
+
+@pytest.mark.asyncio
+async def test_pending_model_approval_preflight_refusal_is_not_started(live_authority):
+    store, actor, binding, settings, root = live_authority
+    raw, _ = pending_model_approval(settings)
+    async with store.pool.acquire() as connection:
+        before = await connection.fetchval("SELECT epoch FROM am_clock WHERE singleton")
+    with pytest.raises(DomainError) as caught:
+        await ops.migrate_authority(settings, root / "operator", settings.deployment_id)
+    assert caught.value.code == "UPGRADE_RECOVERY_REQUIRED"
+    assert caught.value.effect == EffectState.NOT_STARTED
+    assert (settings.state_dir / "model-approval-intent.json").read_bytes() == raw
+    async with store.pool.acquire() as connection:
+        assert await connection.fetchval("SELECT epoch FROM am_clock WHERE singleton") == before
+
+
+@pytest.mark.asyncio
+async def test_cancelled_migration_fences_service_until_real_thread_stops_and_explicit_recovery(live_authority, monkeypatch):
+    from test_store_authority import historical_schema_fixture
+
+    store, _, _, settings, root = live_authority
+    await historical_schema_fixture(store, 4)
+    await store.close()
+    config = root / "cancelled-upgrade.json"
+    original = json.dumps({**settings.model_dump(mode="json"), "capability": "full_semantic", "models": {}}).encode()
+    private_write(config, original)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    actual_migrate = ops.migrate
+
+    def gated_migrate(dsn):
+        entered.set()
+        try:
+            if not release.wait(15):
+                raise TimeoutError("The test did not release its owned migration worker")
+            return actual_migrate(dsn)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(ops, "migrate", gated_migrate)
+    task = asyncio.create_task(ops.migrate_authority(
+        settings, root / "operator", settings.deployment_id, config_path=config, original_config=original,
+    ))
+    try:
+        assert await asyncio.to_thread(entered.wait, 15)
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0)
+            with pytest.raises(DomainError) as busy:
+                with authority_lock(settings):
+                    pytest.fail("A service entered while the cancelled migration worker was still alive")
+            assert busy.value.code == "AUTHORITY_BUSY"
+        release.set()
+        with pytest.raises(DomainError) as interrupted:
+            await task
+        assert interrupted.value.code == "MIGRATION_UNVERIFIED" and interrupted.value.effect == EffectState.UNKNOWN
+        assert finished.is_set()
+        with pytest.raises(DomainError) as fenced:
+            with authority_lock(settings):
+                pytest.fail("A service entered before the cancelled migration was verified")
+        assert fenced.value.code == "RESTORE_RECOVERY_REQUIRED"
+        assert config.read_bytes() == original
+        monkeypatch.setattr(ops, "migrate", actual_migrate)
+        recovered = await ops.migrate_authority(
+            settings, root / "operator", settings.deployment_id, config_path=config, original_config=original,
+        )
+        assert recovered["effect"] == "committed" and recovered["application_verified"]
+        with authority_lock(settings):
+            await store.open()
+            current = await store.authenticate(TOKEN, (Role.OPERATOR,))
+            assert current.realm == settings.realm
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        assert await asyncio.to_thread(finished.wait, 15)
+
+
+@pytest.mark.asyncio
+async def test_uncertain_migration_fence_refuses_other_actor_request_and_restore_recovery(live_authority, monkeypatch):
+    from test_store_authority import historical_schema_fixture
+
+    store, actor, binding, settings, root = live_authority
+    agent_token = "migration-fence-agent-" + "a" * 40
+    await store.issue_token(actor, Role.AGENT, (binding.id,), agent_token)
+    private_write(root / "agent", agent_token)
+    await historical_schema_fixture(store, 4)
+    await store.close()
+    config = root / "uncertain-upgrade.json"
+    original = json.dumps({**settings.model_dump(mode="json"), "capability": "full_semantic", "models": {}}).encode()
+    private_write(config, original)
+    actual_migrate = ops.migrate
+
+    def lost_result(dsn):
+        actual_migrate(dsn)
+        raise OSError("The committed migration response was lost")
+
+    monkeypatch.setattr(ops, "migrate", lost_result)
+    with pytest.raises(DomainError) as uncertain:
+        await ops.migrate_authority(
+            settings, root / "operator", settings.deployment_id, config_path=config, original_config=original,
+        )
+    assert uncertain.value.code == "MIGRATION_UNVERIFIED" and uncertain.value.effect == EffectState.UNKNOWN
+    with pytest.raises(DomainError) as fenced:
+        with authority_lock(settings):
+            pytest.fail("The unknown migration allowed ordinary authority use")
+    assert fenced.value.code == "RESTORE_RECOVERY_REQUIRED"
+    marker = settings.state_dir / "restore-barrier.json"
+    retained_marker = marker.read_bytes()
+    with pytest.raises(DomainError) as denied:
+        await ops.migrate_authority(
+            settings, root / "agent", settings.deployment_id, config_path=config, original_config=original,
+        )
+    assert denied.value.code == "SCOPE_DENIED" and denied.value.effect == EffectState.NOT_STARTED
+    other = root / "other-config.json"
+    private_write(other, original)
+    with pytest.raises(DomainError) as conflict:
+        await ops.migrate_authority(
+            settings, root / "operator", settings.deployment_id, config_path=other, original_config=original,
+        )
+    assert conflict.value.code == "MIGRATION_RECOVERY_CONFLICT" and conflict.value.effect == EffectState.NOT_STARTED
+    with pytest.raises(DomainError) as wrong_recovery:
+        await recover_interrupted_restore(
+            settings, root / "operator", store.journal.verify()["head"], root / "not-created-token",
+            settings.deployment_id, BackupRuntime(Path("/not-invoked/age")),
+        )
+    assert wrong_recovery.value.code == "MIGRATION_RECOVERY_REQUIRED"
+    assert wrong_recovery.value.effect == EffectState.NOT_STARTED
+    assert marker.read_bytes() == retained_marker and not (root / "not-created-token").exists()
+    assert config.read_bytes() == original and other.read_bytes() == original
+    monkeypatch.setattr(ops, "migrate", actual_migrate)
+    recovered = await ops.migrate_authority(
+        settings, root / "operator", settings.deployment_id, config_path=config, original_config=original,
+    )
+    assert recovered["application_verified"] and recovered["effect"] == "committed"
+    assert not marker.exists()
+    await store.open()
+    current = await store.authenticate(TOKEN, (Role.OPERATOR,))
+    assert current.credential_id == actor.credential_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("published", (False, True))
+async def test_uncertain_config_migration_keeps_consumer_fence_until_original_bound_recovery(
+    live_authority, monkeypatch, published,
+):
+    from agents_memory import cli
+    from agents_memory.config import load_settings
+
+    store, actor, _, settings, root = live_authority
+    await store.close()
+    config = root / "fenced-config.json"
+    original = json.dumps({**settings.model_dump(mode="json"), "capability": "full_semantic", "models": {}}).encode()
+    private_write(config, original)
+    write = ops.private_write
+
+    def interrupted(path, content, **options):
+        if path == config and options.get("replace"):
+            if published:
+                write(path, content, **options)
+            raise OSError("The configuration publication response was lost")
+        return write(path, content, **options)
+
+    arguments = cli.parser().parse_args([
+        "--config", str(config), "--token-file", str(root / "operator"), "migrate",
+        "--upgrade-config", "--confirm-deployment", settings.deployment_id,
+    ])
+    monkeypatch.setattr(ops, "private_write", interrupted)
+    with pytest.raises(DomainError) as uncertain:
+        await cli.execute(arguments)
+    assert uncertain.value.code == "CONFIG_UPGRADE_RECOVERY_REQUIRED" and uncertain.value.effect == EffectState.UNKNOWN
+    with pytest.raises(DomainError) as fenced:
+        with authority_lock(settings):
+            pytest.fail("A consumer entered after an unverified configuration publication")
+    assert fenced.value.code == "RESTORE_RECOVERY_REQUIRED"
+    retained = settings.state_dir / ("config-upgrade-" + hashlib.sha256(original).hexdigest() + ".json")
+    assert retained.read_bytes() == original
+    monkeypatch.setattr(ops, "private_write", write)
+    recovered = await cli.execute(arguments)
+    assert recovered["effect"] == "committed" and recovered["application_verified"]
+    assert load_settings(config) == settings and retained.read_bytes() == original
+    with authority_lock(settings):
+        await store.open()
+        current = await store.authenticate(TOKEN, (Role.OPERATOR,))
+        assert current.credential_id == actor.credential_id

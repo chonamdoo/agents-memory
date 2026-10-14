@@ -11,14 +11,14 @@ import stat
 import struct
 import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 from urllib.parse import parse_qsl, unquote, urlsplit
 
-from .config import Settings
+from .config import Settings, prepare_settings_upgrade
 from .domain import DomainError, EffectState, Principal, Role
 from .journal import DeletionJournal
 from .migrations import MIGRATION, MIGRATIONS, migrate, restore_preparation_sql
@@ -31,7 +31,7 @@ _MAGIC = b"agent-memory-pg-age-envelope\x00\x01"
 _CHUNK = 65536
 _HEAD = re.compile(r"[a-f0-9]{64}")
 _SCHEMA = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_TABLES = frozenset({
+_PRE_SELECTION_TABLES = frozenset({
     "alembic_version", "am_clock", "am_credentials", "am_bindings", "am_grants",
     "am_receipts", "am_operations", "am_sources", "am_floors", "am_claims",
     "am_claim_sources", "am_spans", "am_entities", "am_relations",
@@ -40,11 +40,28 @@ _TABLES = frozenset({
     "am_rule_targets", "am_feedback", "am_routes", "am_jobs", "am_admissions",
     "am_origin_reservations",
 })
+_SELECTION_TABLES = _PRE_SELECTION_TABLES | {
+    "am_selection_policies", "am_source_selections", "am_selection_sources",
+}
+_TABLES = _SELECTION_TABLES | {
+    "am_pending_judgments", "am_retired_jobs", "am_claim_judgments",
+    "am_rejection_evidence", "am_rejection_tokens",
+}
+_ARCHIVE_TABLES = {
+    "0001_authority": _PRE_SELECTION_TABLES - {"am_origin_reservations", "am_relation_claims"},
+    "0002_directional_tombstones": _PRE_SELECTION_TABLES - {"am_origin_reservations"},
+    "0003_origin_and_vector_compat": _PRE_SELECTION_TABLES,
+    "0004_operation_successors": _PRE_SELECTION_TABLES,
+    "0005_company_selection": _SELECTION_TABLES,
+    "0006_agent_judged": _TABLES,
+}
+_IDENTITY_SEQUENCES = {
+    "am_pending_judgments_sequence_seq": "am_pending_judgments",
+    "am_claims_cleanup_sequence_seq": "am_claims",
+}
 _LEGACY_FIELDS = frozenset({"format", "deployment_id", "realm", "schema", "owner_id",
     "backup_head", "postgres_version", "vector_version", "migration_version", "created_at"})
 _FIELDS = _LEGACY_FIELDS | {"migration_versions"}
-_PRIOR_TABLES = _TABLES - {"am_origin_reservations"}
-_LEGACY_TABLES = _PRIOR_TABLES - {"am_relation_claims"}
 
 
 @dataclass(frozen=True)
@@ -161,7 +178,7 @@ def authority_lock(settings: Settings, exclusive: bool = False) -> Iterator[None
             raise _error("AUTHORITY_BUSY", "Stop and drain the local service and authority commands before restore or migration") from None
         marker = settings.state_dir / "restore-barrier.json"
         if not exclusive and (marker.exists() or marker.is_symlink()):
-            raise _error("RESTORE_RECOVERY_REQUIRED", "An interrupted restore must be recovered before authority use")
+            raise _error("RESTORE_RECOVERY_REQUIRED", "An interrupted restore or migration must be recovered before authority use")
         yield
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
@@ -519,13 +536,20 @@ async def _read_frames(reader: asyncio.StreamReader, sink: Callable[[bytes], Awa
 
 def _validate_toc(raw: bytes, schema: str, tables: frozenset[str] = _TABLES) -> None:
     """Reject other schemas/objects before any destructive connection is made."""
-    found_tables: set[str] = set()
+    found_tables: dict[str, str] = {}
     data: set[str] = set()
+    sequences = (
+        _IDENTITY_SEQUENCES
+        if tables == _ARCHIVE_TABLES["0006_agent_judged"]
+        else {}
+    )
+    found_sequences: dict[str, str] = {}
+    sequence_data: dict[str, str] = {}
     try:
         for line in raw.decode("utf-8").splitlines():
             if not line or line.startswith(";"):
                 continue
-            match = re.fullmatch(r"\d+; \d+ \d+ (TABLE DATA|FK CONSTRAINT|CHECK CONSTRAINT|CONSTRAINT|TABLE|INDEX) (\S+) (.+)", line)
+            match = re.fullmatch(r"\d+; \d+ \d+ (TABLE DATA|FK CONSTRAINT|CHECK CONSTRAINT|CONSTRAINT|TABLE|INDEX|SEQUENCE SET|SEQUENCE) (\S+) (.+)", line)
             if match is None or match[2] != schema:
                 raise ValueError
             kind, _, tail = match.groups()
@@ -533,13 +557,31 @@ def _validate_toc(raw: bytes, schema: str, tables: frozenset[str] = _TABLES) -> 
             if kind == "INDEX":
                 if not (re.fullmatch(r"am_[a-z0-9_]+", name) or name == "alembic_version_pkc"):
                     raise ValueError
+            elif kind in {"SEQUENCE", "SEQUENCE SET"}:
+                if name not in sequences:
+                    raise ValueError
+                objects = found_sequences if kind == "SEQUENCE" else sequence_data
+                _, separator, owner = tail.partition(" ")
+                if not separator or not owner or name in objects:
+                    raise ValueError
+                objects[name] = owner
             elif name not in tables:
                 raise ValueError
             if kind == "TABLE":
-                found_tables.add(name)
+                _, separator, owner = tail.partition(" ")
+                if not separator or not owner or name in found_tables:
+                    raise ValueError
+                found_tables[name] = owner
             if kind == "TABLE DATA":
+                if name in data:
+                    raise ValueError
                 data.add(name)
-        if found_tables != tables or data != tables:
+        if found_tables.keys() != tables or data != tables:
+            raise ValueError
+        if found_sequences.keys() != sequences.keys() or sequence_data.keys() != sequences.keys():
+            raise ValueError
+        if any(found_sequences[name] != found_tables[table]
+                or sequence_data[name] != found_tables[table] for name, table in sequences.items()):
             raise ValueError
     except (UnicodeError, ValueError, IndexError):
         raise _error("ARCHIVE_SCOPE_DENIED", "The dump contains unsupported objects or an incomplete authority schema") from None
@@ -585,9 +627,7 @@ async def _preflight(processes: _Processes, runtime: BackupRuntime, settings: Se
         else:
             result, toc = await asyncio.gather(validation, task)
             revision = metadata["migration_version"]
-            tables = _LEGACY_TABLES if revision == MIGRATIONS[0] else (
-                _PRIOR_TABLES if revision == MIGRATIONS[1] else _TABLES
-            )
+            tables = _ARCHIVE_TABLES[revision]
             _validate_toc(toc, metadata["schema"], tables)
         return metadata, result
     finally:
@@ -726,50 +766,471 @@ async def backup(settings: Settings, operator_token_file: Path, destination: Pat
                 raise _error("BACKUP_CLEANUP_FAILED", "The private encrypted staging output could not be removed", started=publishing) from None
 
 
-async def migrate_authority(settings: Settings, operator_token_file: Path,
-        confirm_deployment: str) -> dict:
+@contextmanager
+def _model_approval_recovery_lock(settings: Settings) -> Iterator[None]:
+    path = settings.state_dir / "model-approval.lock"
+    try:
+        private_write(path, b"")
+    except FileExistsError:
+        pass
+    descriptor = _file(path, maximum=0)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise _error(
+                "MODEL_APPROVAL_BUSY",
+                "Stop and drain the historical model approval before recovery",
+            ) from None
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _retained_private(path: Path, raw: bytes, maximum: int) -> None:
+    try:
+        private_write(path, raw)
+    except FileExistsError:
+        if _read_private(path, maximum) != raw:
+            raise _error(
+                "MODEL_APPROVAL_RECOVERY_CONFLICT",
+                "The retained recovery evidence does not match",
+            )
+
+
+def _model_approval_recovery_input(settings: Settings, digest: str) -> tuple[bytes, Path]:
+    from .wire import decode_json
+
+    if not isinstance(digest, str) or _HEAD.fullmatch(digest) is None:
+        raise _error(
+            "MODEL_APPROVAL_CONFIRMATION_REQUIRED",
+            "Confirm the SHA-256 of the exact pending approval bytes",
+        )
+    intent = settings.state_dir / "model-approval-intent.json"
+    retained = settings.state_dir / ("model-approval-retired-" + digest + ".json")
+    source = intent if intent.exists() or intent.is_symlink() else retained
+    if not source.exists() and not source.is_symlink():
+        raise _error("RECOVERY_NOT_REQUIRED", "No matching approval evidence requires recovery")
+    raw = _read_private(source, 4096)
+    try:
+        value = decode_json(raw)
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"format", "request", "before", "target"}
+            or type(value["format"]) is not int
+            or value["format"] != 1
+            or any(
+                not isinstance(value[name], str)
+                or _HEAD.fullmatch(value[name]) is None
+                for name in ("request", "before", "target")
+            )
+            or hashlib.sha256(raw).hexdigest() != digest
+        ):
+            raise ValueError
+    except (DomainError, ValueError, TypeError):
+        raise _error(
+            "MODEL_APPROVAL_RECOVERY_CONFLICT",
+            "The explicit digest or historical approval shape does not match",
+        ) from None
+    return raw, retained
+
+
+async def _disable_historical_model_routes(
+    store: Store,
+    actor: Principal,
+    raw: bytes,
+    digest: str,
+    retained: Path,
+    schema: str,
+) -> None:
+    audit = store.settings.state_dir / ("model-approval-recovery-" + digest + ".json")
+    async with store._tx(barrier=False) as (connection, _):
+        current = await store._actor(connection, actor, roles=(Role.OPERATOR,))
+        routes = [dict(row) for row in await connection.fetch(
+            "SELECT purpose,revision,enabled,epoch FROM am_routes ORDER BY purpose"
+        )]
+        expected_scope = {
+            "format": 1,
+            "deployment_id": store.settings.deployment_id,
+            "realm": store.settings.realm,
+            "schema": schema,
+            "intent_sha256": digest,
+            "historical_approval_effect": "unknown_not_attested",
+        }
+        _retained_private(retained, raw, 4096)
+        if audit.exists() or audit.is_symlink():
+            from .wire import decode_json
+
+            previous = decode_json(_read_private(audit, 262144))
+            if (
+                not isinstance(previous, dict)
+                or set(previous) != set(expected_scope) | {
+                    "operator_id", "credential_id", "credential_generation",
+                    "migration_before_recovery", "routes_before_recovery",
+                }
+                or any(previous.get(name) != item for name, item in expected_scope.items())
+                or not isinstance(previous["routes_before_recovery"], list)
+            ):
+                raise _error(
+                    "MODEL_APPROVAL_RECOVERY_CONFLICT",
+                    "The preserved recovery authority does not match",
+                )
+        else:
+            record = {
+                **expected_scope,
+                "operator_id": current.id,
+                "credential_id": current.credential_id,
+                "credential_generation": current.generation,
+                "migration_before_recovery": await connection.fetchval(
+                    "SELECT version_num FROM alembic_version"
+                ),
+                "routes_before_recovery": routes,
+            }
+            _retained_private(
+                audit,
+                (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode(),
+                262144,
+            )
+        if any(row["enabled"] for row in routes):
+            epoch = await store._tick(connection)
+            await connection.execute(
+                "UPDATE am_routes SET enabled=false,epoch=$1 WHERE enabled",
+                epoch,
+            )
+
+
+def _finish_model_approval_recovery(settings: Settings, digest: str, raw: bytes) -> None:
+    retained = settings.state_dir / ("model-approval-retired-" + digest + ".json")
+    if _read_private(retained, 4096) != raw:
+        raise _error(
+            "MODEL_APPROVAL_RECOVERY_CONFLICT",
+            "The retained original approval evidence changed",
+            started=True,
+        )
+    intent = settings.state_dir / "model-approval-intent.json"
+    if intent.exists() or intent.is_symlink():
+        if _read_private(intent, 4096) != raw:
+            raise _error(
+                "MODEL_APPROVAL_RECOVERY_CONFLICT",
+                "The pending approval changed before retirement",
+                started=True,
+            )
+        intent.unlink()
+    descriptor = os.open(settings.state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+async def _migrate_in_thread(dsn: str) -> dict:
+    """Join owned DDL even on repeated cancellation before its authority lock exits."""
+    pending = asyncio.create_task(asyncio.to_thread(migrate, dsn))
+    try:
+        return await asyncio.shield(pending)
+    except asyncio.CancelledError:
+        joined = asyncio.gather(pending, return_exceptions=True)
+        while not joined.done():
+            try:
+                await asyncio.shield(joined)
+            except asyncio.CancelledError:
+                continue
+        raise
+
+
+async def migrate_authority(
+    settings: Settings,
+    operator_token_file: Path,
+    confirm_deployment: str,
+    *,
+    config_path: Path | None = None,
+    original_config: bytes | None = None,
+    retire_model_approval_intent: str | None = None,
+) -> dict:
     """Explicit private upgrade, authenticated before DDL and interlocked with serve."""
     if confirm_deployment != settings.deployment_id:
-        raise _error("MIGRATION_CONFIRMATION_REQUIRED", "Confirm the selected deployment before migration")
+        raise _error(
+            "MIGRATION_CONFIRMATION_REQUIRED",
+            "Confirm the selected deployment before migration",
+        )
     if settings.migrator_dsn is None:
-        raise _error("PRIVATE_MIGRATION_REQUIRED", "Migration requires the explicit private operator connection")
+        raise _error(
+            "PRIVATE_MIGRATION_REQUIRED",
+            "Migration requires the explicit private operator connection",
+        )
     schema, application = _dsn(settings.database_dsn)
     private_schema, migrator = _dsn(settings.migrator_dsn)
-    if schema != private_schema or any(application[key] != migrator[key]
-            for key in ("PGHOST", "PGPORT", "PGDATABASE")):
-        raise _error("MIGRATION_SCOPE_DENIED", "The private migrator must address the selected authority database and schema")
-    with authority_lock(settings, exclusive=True):
+    if schema != private_schema or any(
+        application[key] != migrator[key] for key in ("PGHOST", "PGPORT", "PGDATABASE")
+    ):
+        raise _error(
+            "MIGRATION_SCOPE_DENIED",
+            "The private migrator must address the selected authority database and schema",
+        )
+    if (config_path is None) != (original_config is None):
+        raise _error("CONFIG_INVALID", "Configuration upgrades require the exact private input")
+    upgrade_raw = original_config if original_config is not None else b""
+    supplied_config = upgrade_raw
+    target_config = (settings.model_dump_json(indent=2) + "\n").encode() if config_path is not None else None
+
+    if retire_model_approval_intent is not None and (
+        not isinstance(retire_model_approval_intent, str)
+        or _HEAD.fullmatch(retire_model_approval_intent) is None
+    ):
+        raise _error(
+            "MODEL_APPROVAL_CONFIRMATION_REQUIRED",
+            "Confirm the SHA-256 of the exact pending approval bytes",
+        )
+
+    if config_path is not None:
+        config_path = config_path.expanduser().absolute()
+        forbidden = {
+            settings.state_dir.resolve() / name for name in (
+                "authority.lock", "restore-barrier.json", "initialization-intent.json",
+                "initialization-result.json", "model-approval.lock",
+                "model-approval-intent.json",
+            )
+        }
+        if retire_model_approval_intent is not None:
+            forbidden.update({
+                settings.state_dir.resolve() / (
+                    "model-approval-retired-" + retire_model_approval_intent + ".json"
+                ),
+                settings.state_dir.resolve() / (
+                    "model-approval-recovery-" + retire_model_approval_intent + ".json"
+                ),
+            })
+        if (
+            prepare_settings_upgrade(upgrade_raw) != settings
+            or config_path == operator_token_file.expanduser().resolve()
+            or ".." in config_path.parts
+            or config_path.is_relative_to(settings.journal_dir.resolve())
+            or any(parent.is_symlink() for parent in (*config_path.parents, config_path))
+            or config_path in forbidden
+        ):
+            raise _error(
+                "PATH_DENIED",
+                "The explicit configuration upgrade cannot replace credentials or authority evidence",
+            )
+
+    with authority_lock(settings, exclusive=True), ExitStack() as recovery_locks:
         marker = settings.state_dir / "restore-barrier.json"
+        existing_fence = None
+        existing_fence_raw = None
         if marker.exists() or marker.is_symlink():
-            raise _error("RESTORE_RECOVERY_REQUIRED", "Recover the interrupted restore before migration")
-        token = _read_private(operator_token_file, 4096).decode("utf-8").strip()
+            existing_fence_raw = _read_private(marker, 8192)
+            try:
+                existing_fence = json.loads(existing_fence_raw)
+            except (ValueError, UnicodeError):
+                pass
+            if not isinstance(existing_fence, dict) or existing_fence.get("kind") != "migration":
+                raise _error("RESTORE_RECOVERY_REQUIRED", "Recover the interrupted restore before migration")
+        approval_intent = settings.state_dir / "model-approval-intent.json"
+        if (
+            approval_intent.exists() or approval_intent.is_symlink()
+        ) and retire_model_approval_intent is None:
+            raise _error(
+                "UPGRADE_RECOVERY_REQUIRED",
+                "Inspect the pending approval and explicitly retire its exact bytes before cutover",
+            )
+        init_intent = settings.state_dir / "initialization-intent.json"
+        init_result = settings.state_dir / "initialization-result.json"
+        if init_intent.exists() and not init_result.exists():
+            raise _error(
+                "INIT_RESUME_REQUIRED",
+                "Complete the owned interrupted initialization before upgrading",
+            )
+
+        token = _token(operator_token_file)
         private_settings = settings.model_copy(update={"database_dsn": settings.migrator_dsn})
-        store = Store(private_settings, DeletionJournal(settings.journal_dir, settings.deployment_id))
+        store = Store(
+            private_settings,
+            DeletionJournal(settings.journal_dir, settings.deployment_id),
+        )
+        recovery_raw = None
+        retained = None
+        started = False
         try:
-            await store.open_restore_recovery()
-            actor = await store.authenticate(token, (Role.OPERATOR,))
-            async with store.pool.acquire() as connection:
-                previous = await connection.fetchval("SELECT version_num FROM alembic_version")
-                await _require_application_defaults(settings, connection)
-        finally:
-            await store.close()
-        try:
-            result = await asyncio.to_thread(migrate, settings.migrator_dsn)
+            try:
+                await store.open_restore_recovery()
+                actor = await store.authenticate(token, (Role.OPERATOR,))
+                if existing_fence is not None and config_path is not None:
+                    original_digest = existing_fence.get("original_config_sha256")
+                    if hashlib.sha256(upgrade_raw).hexdigest() != original_digest:
+                        if (not isinstance(original_digest, str) or _HEAD.fullmatch(original_digest) is None
+                                or supplied_config != target_config):
+                            raise _error("MIGRATION_RECOVERY_CONFLICT", "Resume the exact retained migration request")
+                        upgrade_raw = _read_private(
+                            settings.state_dir / ("config-upgrade-" + original_digest + ".json"), 262144,
+                        )
+                        if (hashlib.sha256(upgrade_raw).hexdigest() != original_digest
+                                or prepare_settings_upgrade(upgrade_raw) != settings):
+                            raise _error("MIGRATION_RECOVERY_CONFLICT", "The original configuration evidence changed")
+                fence = {
+                    "format": 1, "kind": "migration", "effect": "unknown",
+                    "code": "MIGRATION_RECOVERY_REQUIRED", "target_migration": MIGRATION,
+                    "deployment_id": settings.deployment_id, "realm": settings.realm, "schema": schema,
+                    "operator_id": actor.id, "credential_id": actor.credential_id,
+                    "credential_generation": actor.generation,
+                    "settings_sha256": hashlib.sha256(json.dumps(
+                        settings.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+                    ).encode()).hexdigest(),
+                    "config_path": str(config_path) if config_path is not None else None,
+                    "original_config_sha256": hashlib.sha256(upgrade_raw).hexdigest() if config_path is not None else None,
+                    "target_config_sha256": hashlib.sha256(target_config).hexdigest() if target_config is not None else None,
+                    "retire_model_approval_intent": retire_model_approval_intent,
+                }
+                if existing_fence is not None and existing_fence != fence:
+                    raise _error("MIGRATION_RECOVERY_CONFLICT", "Resume the same authenticated migration request")
+                fence_raw = existing_fence_raw if existing_fence_raw is not None else json.dumps(
+                    fence, sort_keys=True, separators=(",", ":"),
+                ).encode()
+                if retire_model_approval_intent is not None:
+                    recovery_locks.enter_context(_model_approval_recovery_lock(settings))
+                    recovery_raw, retained = _model_approval_recovery_input(
+                        settings, retire_model_approval_intent,
+                    )
+                async with store.pool.acquire() as connection:
+                    previous = await connection.fetchval("SELECT version_num FROM alembic_version")
+                    await _require_application_defaults(settings, connection)
+                    if config_path is not None:
+                        if _read_private(config_path, 262144) != supplied_config:
+                            raise _error(
+                                "CONFIG_UPGRADE_CONFLICT",
+                                "The private configuration changed before the upgrade",
+                            )
+
+                try:
+                    if existing_fence_raw is None:
+                        private_write(marker, fence_raw)
+                finally:
+                    started = marker.exists() or marker.is_symlink()
+
+                if recovery_raw is not None:
+                    assert retire_model_approval_intent is not None and retained is not None
+                    started = True
+                    await _disable_historical_model_routes(
+                        store, actor, recovery_raw, retire_model_approval_intent,
+                        retained, schema,
+                    )
+                if config_path is not None:
+                    audit = settings.state_dir / (
+                        "config-upgrade-" + hashlib.sha256(upgrade_raw).hexdigest() + ".json"
+                    )
+                    try:
+                        private_write(audit, upgrade_raw)
+                    except FileExistsError:
+                        if _read_private(audit, 262144) != upgrade_raw:
+                            raise _error(
+                                "CONFIG_UPGRADE_CONFLICT",
+                                "The retained original configuration does not match",
+                            )
+            finally:
+                await store.close()
+
+            started = True
+            result = await _migrate_in_thread(settings.migrator_dsn)
+            application_store = Store(settings, store.journal)
+            try:
+                await application_store.open()
+                await application_store.reconcile_journal()
+                current = await application_store.authenticate(token, (Role.OPERATOR,))
+                if (
+                    current.id, current.credential_id, current.generation,
+                    current.realm, current.role,
+                ) != (
+                    actor.id, actor.credential_id, actor.generation,
+                    actor.realm, actor.role,
+                ):
+                    raise _error(
+                        "MIGRATION_UNVERIFIED",
+                        "The current operator could not be verified through the application connection",
+                        started=True,
+                    )
+                if recovery_raw is not None:
+                    async with application_store._tx() as (connection, _):
+                        await application_store._actor(
+                            connection, current, roles=(Role.OPERATOR,),
+                        )
+                        if await connection.fetchval(
+                            "SELECT EXISTS(SELECT 1 FROM am_routes WHERE enabled)"
+                        ):
+                            raise _error(
+                                "MODEL_APPROVAL_RECOVERY_REQUIRED",
+                                "An executable route remains enabled",
+                                started=True,
+                            )
+            finally:
+                await application_store.close()
+
+            if config_path is not None:
+                def unchanged_config() -> None:
+                    if _read_private(config_path, 262144) != supplied_config:
+                        raise _error(
+                            "CONFIG_UPGRADE_CONFLICT",
+                            "The private configuration changed before publication",
+                            started=True,
+                        )
+                try:
+                    private_write(
+                        config_path,
+                        target_config,
+                        replace=True,
+                        before_publish=unchanged_config,
+                    )
+                except Exception:
+                    raise _error(
+                        "CONFIG_UPGRADE_RECOVERY_REQUIRED",
+                        "The schema upgrade committed; reconcile the preserved configuration and rerun the explicit upgrade",
+                        started=True,
+                    ) from None
+
+            if recovery_raw is not None:
+                assert retire_model_approval_intent is not None
+                _finish_model_approval_recovery(
+                    settings, retire_model_approval_intent, recovery_raw,
+                )
+            if _read_private(marker, 8192) != fence_raw:
+                raise _error("MIGRATION_RECOVERY_CONFLICT", "The migration fence changed before verification finished", started=True)
+            marker.unlink()
+            descriptor = os.open(settings.state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            return {
+                **result,
+                "previous_migration": previous,
+                "deployment_id": settings.deployment_id,
+                "realm": settings.realm,
+                "application_verified": True,
+                "capability": settings.capability,
+                "config_upgraded": config_path is not None,
+                "model_approval_retired": recovery_raw is not None,
+                "historical_approval_effect": (
+                    "unknown_not_attested" if recovery_raw is not None else None
+                ),
+                "routes_disabled": recovery_raw is not None,
+                "effect": "committed",
+            }
+        except DomainError as error:
+            if started:
+                raise _error(error.code, error.message, started=True) from None
+            raise
+        except asyncio.CancelledError:
+            if started:
+                raise _error(
+                    "MIGRATION_UNVERIFIED",
+                    "Private migration or approval retirement was interrupted; retry the exact recovery",
+                    started=True,
+                ) from None
+            raise
         except Exception:
-            raise _error("MIGRATION_UNVERIFIED", "The explicit migration result is unknown; inspect the revision and rerun the idempotent operator migration", started=True) from None
-        application_store = Store(settings, store.journal)
-        try:
-            await application_store.open()
-            await application_store.reconcile_journal()
-            current = await application_store.authenticate(token, (Role.OPERATOR,))
-            if current.credential_id != actor.credential_id:
-                raise _error("MIGRATION_UNVERIFIED", "The current operator could not be verified through the application connection", started=True)
-        except Exception:
-            raise _error("MIGRATION_UNVERIFIED", "The schema upgrade committed but application authority verification failed", started=True) from None
-        finally:
-            await application_store.close()
-        return {**result, "previous_migration": previous, "deployment_id": settings.deployment_id,
-                "realm": settings.realm, "application_verified": True}
+            raise _error(
+                "MIGRATION_UNVERIFIED",
+                "The explicit migration result is unverified; inspect preserved evidence and retry",
+                started=started,
+            ) from None
 
 
 async def restore(settings: Settings, operator_token_file: Path, archive: Path,
@@ -856,7 +1317,7 @@ async def restore(settings: Settings, operator_token_file: Path, archive: Path,
                 await _docker_control(processes, runtime, settings.migrator_dsn, reserve=True)
                 restored = await _restore_transaction(processes, runtime,
                     settings.migrator_dsn, metadata, decrypt, checked)
-                migrated = await asyncio.to_thread(migrate, settings.migrator_dsn)
+                migrated = await _migrate_in_thread(settings.migrator_dsn)
                 if migrated["migration"] != MIGRATION:
                     raise _error("RESTORE_RECOVERY_REQUIRED", "The restored schema did not reach the supported authority migration", started=True)
                 private_settings = settings.model_copy(update={"database_dsn": settings.migrator_dsn})
@@ -929,12 +1390,18 @@ async def recover_interrupted_restore(settings: Settings, operator_token_file: P
             raise _error("RESTORE_SCOPE_DENIED", "The private migrator must address the selected authority database and schema")
         with authority_lock(settings, exclusive=True):
             async with asyncio.timeout(runtime.timeout_seconds), _processes() as processes:
-                _runtime(runtime)
                 marker = settings.state_dir / "restore-barrier.json"
                 if not marker.exists():
                     raise _error("RECOVERY_NOT_REQUIRED", "No interrupted local restore requires recovery")
-                # Its presence is a fence, not a source of identity or role.
-                _read_private(marker, 8192)
+                # Presence is a fence, not authentication; a migration is not a restore.
+                raw = _read_private(marker, 8192)
+                try:
+                    intent = json.loads(raw)
+                except (ValueError, UnicodeError):
+                    intent = None
+                if isinstance(intent, dict) and intent.get("kind") == "migration":
+                    raise _error("MIGRATION_RECOVERY_REQUIRED", "Use the exact authenticated migration request, not restore recovery")
+                _runtime(runtime)
                 await _docker_control(processes, runtime, settings.migrator_dsn)
                 operator_out = _destination(settings, operator_out)
                 recovery = Store(settings.model_copy(update={"database_dsn": settings.migrator_dsn}), store.journal)
@@ -946,7 +1413,7 @@ async def recover_interrupted_restore(settings: Settings, operator_token_file: P
                 await _docker_control(processes, runtime, settings.migrator_dsn)
                 await recovery.close()
                 started = True
-                migrated = await asyncio.to_thread(migrate, settings.migrator_dsn)
+                migrated = await _migrate_in_thread(settings.migrator_dsn)
                 if migrated["migration"] != MIGRATION:
                     raise _error("RESTORE_RECOVERY_REQUIRED", "Private recovery could not migrate the interrupted schema", started=True)
                 await store.open()
