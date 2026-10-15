@@ -85,14 +85,13 @@ def framed_dump(raw):
 @pytest.mark.parametrize("key,value", [
     ("deployment_id", "other_deployment"), ("realm", "company_customer"),
     ("schema", "other_schema"), ("owner_id", "self_reported_owner"),
-    ("postgres_version", "17.6"), ("vector_version", "0.8.6"),
     ("migration_version", "other_migration"),
 ])
 def test_encrypted_metadata_cannot_select_another_authority(settings, key, value):
     envelope = metadata(settings)
     envelope[key] = value
     with pytest.raises(DomainError) as denied:
-        _validate_metadata(envelope, settings, BackupRuntime(Path("/not-invoked/age")), "owner_ops")
+        _validate_metadata(envelope, settings, "owner_ops")
     assert denied.value.code == "RESTORE_SCOPE_DENIED"
     assert denied.value.effect == EffectState.NOT_STARTED
 
@@ -105,7 +104,7 @@ def test_encrypted_metadata_cannot_select_another_authority(settings, key, value
 ])
 def test_metadata_cannot_claim_a_latest_head_or_change_envelope_shape(settings, mutation):
     with pytest.raises(DomainError) as denied:
-        _validate_metadata(mutation(metadata(settings)), settings, BackupRuntime(Path("/not-invoked/age")), "owner_ops")
+        _validate_metadata(mutation(metadata(settings)), settings, "owner_ops")
     assert denied.value.code == "ARCHIVE_INVALID"
 
 
@@ -653,13 +652,13 @@ def test_ordered_migration_manifest_cannot_be_omitted_reordered_or_forged(settin
     value = metadata(settings)
     value["migration_versions"] = manifest
     with pytest.raises(DomainError) as denied:
-        _validate_metadata(value, settings, BackupRuntime(Path("/not-invoked/age")), "owner_ops")
+        _validate_metadata(value, settings, "owner_ops")
     assert denied.value.code == "RESTORE_SCOPE_DENIED"
     assert denied.value.effect == EffectState.NOT_STARTED
 
 
 def test_known_legacy_archive_keeps_exact_old_table_scope(settings):
-    _validate_metadata(legacy_metadata(settings), settings, BackupRuntime(Path("/not-invoked/age")), "owner_ops")
+    _validate_metadata(legacy_metadata(settings), settings, "owner_ops")
     def toc(tables):
         entries = [f"{number}; 0 0 {kind} memory {table} memory"
             for number, (table, kind) in enumerate(
@@ -1252,10 +1251,10 @@ async def test_authenticated_journal_extension_is_carried_to_final_restore_recei
 @pytest.mark.parametrize("revision", MIGRATIONS)
 def test_format_two_archive_accepts_exact_historical_ordered_migration_prefix(settings, revision):
     value = versioned_metadata(settings, revision)
-    _validate_metadata(value, settings, BackupRuntime(Path("/not-invoked/age")), "owner_ops")
+    _validate_metadata(value, settings, "owner_ops")
     value["migration_versions"] = list(reversed(value["migration_versions"])) + ["unrecognized"]
     with pytest.raises(DomainError) as denied:
-        _validate_metadata(value, settings, BackupRuntime(Path("/not-invoked/age")), "owner_ops")
+        _validate_metadata(value, settings, "owner_ops")
     assert denied.value.code == "RESTORE_SCOPE_DENIED"
 
 
@@ -1434,7 +1433,7 @@ async def test_streamed_sql_transaction_commits_only_after_complete_upstream_suc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("psql_identity", ["psql (PostgreSQL) 18.5", "pg_dump (PostgreSQL) 18.6"])
+@pytest.mark.parametrize("psql_identity", ["psql (PostgreSQL) 17.6", "pg_dump (PostgreSQL) 18.6"])
 async def test_psql_version_or_executable_mismatch_is_rejected_before_restore_executor(settings, monkeypatch, psql_identity):
     kinds = []
     async def pg(processes, runtime, kind, dsn, args):
@@ -1954,3 +1953,130 @@ async def test_uncertain_config_migration_keeps_consumer_fence_until_original_bo
         await store.open()
         current = await store.authenticate(TOKEN, (Role.OPERATOR,))
         assert current.credential_id == actor.credential_id
+
+
+class LiveDatabase:
+    def __init__(self, settings, version, vector):
+        self.settings, self.version, self.vector = settings, version, vector
+
+    async def fetchval(self, query):
+        if "server_version_num" in query:
+            return str(self.version)
+        if "extversion" in query:
+            return self.vector
+        return MIGRATION
+
+    async def fetchrow(self, query):
+        return {"deployment_id": self.settings.deployment_id, "realm": self.settings.realm, "journal_head": "b" * 64}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version,vector,expected", [
+    (180006, "0.8.7", ("18.6", "0.8.7")), (180007, "0.8.8", ("18.7", "0.8.8")), (180012, "0.9.0", ("18.12", "0.9.0")),
+])
+async def test_backup_accepts_the_serving_contract_and_records_live_versions(settings, version, vector, expected):
+    store = SimpleNamespace(settings=settings)
+    live = await ops._metadata(store, LiveDatabase(settings, version, vector),
+        BackupRuntime(Path("/not-invoked/age")), SimpleNamespace(id="owner_ops"))
+    assert (live["postgres_version"], live["vector_version"]) == expected
+    archived = metadata(settings) | {"postgres_version": expected[0], "vector_version": expected[1]}
+    _validate_metadata(archived, settings, "owner_ops")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version,vector", [(170009, "0.8.7"), (190000, "0.8.7"), (180006, "0.8.6"), (180006, None), (180006, "0.8")])
+async def test_unsupported_live_database_is_refused_before_backup_effects(settings, version, vector):
+    with pytest.raises(DomainError) as denied:
+        await ops._metadata(SimpleNamespace(settings=settings), LiveDatabase(settings, version, vector),
+            BackupRuntime(Path("/not-invoked/age")), SimpleNamespace(id="owner_ops"))
+    assert (denied.value.code, denied.value.effect) == ("DATABASE_VERSION_UNSUPPORTED", EffectState.NOT_STARTED)
+
+
+@pytest.mark.parametrize("key,value", [
+    ("postgres_version", "19.0"), ("postgres_version", "18"), ("postgres_version", "18.6.1"),
+    ("vector_version", "0.8.6"), ("vector_version", "0.8"),
+])
+def test_unsupported_archive_versions_are_refused_before_restore(settings, key, value):
+    with pytest.raises(DomainError) as denied:
+        _validate_metadata(metadata(settings) | {key: value}, settings, "owner_ops")
+    assert (denied.value.code, denied.value.effect) == ("DATABASE_VERSION_UNSUPPORTED", EffectState.NOT_STARTED)
+
+
+@pytest.mark.parametrize("identity,accepted", [
+    (b"pg_dump (PostgreSQL) 18.7\n", True), (b"pg_dump (PostgreSQL) 18.12 (Homebrew)\n", True),
+    (b"pg_dump (PostgreSQL) 17.6\n", False), (b"pg_restore (PostgreSQL) 18.7\n", False), (b"pg_dump (PostgreSQL) 18\n", False),
+])
+def test_operation_tools_share_the_supported_major(identity, accepted):
+    from agents_memory.database import require_tool
+    if accepted:
+        assert require_tool("pg_dump", identity).startswith("18.")
+    else:
+        with pytest.raises(DomainError) as denied:
+            require_tool("pg_dump", identity)
+        assert (denied.value.code, denied.value.effect) == ("DATABASE_VERSION_UNSUPPORTED", EffectState.NOT_STARTED)
+
+
+async def unsupported_tools(*args):
+    raise DomainError("DATABASE_VERSION_UNSUPPORTED", "synthetic unsupported tools")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unsupported", ["tools", "live_server"])
+async def test_backup_refuses_unsupported_versions_before_staging_recipients_or_journal(settings, tmp_path, monkeypatch, unsupported):
+    events = []
+
+    class Authority:
+        def __init__(self, selected, journal):
+            self.settings = selected
+
+        async def open(self):
+            events.append("open")
+            if unsupported == "live_server":
+                raise DomainError("DATABASE_VERSION_UNSUPPORTED", "synthetic unsupported live server")
+
+        async def reconcile_journal(self, expected=None):
+            events.append("journal_reconcile")
+
+        async def close(self):
+            return None
+
+    async def supported_tools(*args):
+        return None
+
+    real_staging = ops._staging
+
+    def staging(selected):
+        events.append("staging")
+        return real_staging(selected)
+
+    monkeypatch.setattr(ops, "Store", Authority)
+    monkeypatch.setattr(ops, "DeletionJournal", lambda *args: object())
+    monkeypatch.setattr(ops, "_runtime", lambda runtime: None)
+    monkeypatch.setattr(ops, "_staging", staging)
+    monkeypatch.setattr(ops, "_versions", unsupported_tools if unsupported == "tools" else supported_tools)
+    # A recipients file that does not exist would fail differently if it were read first.
+    with pytest.raises(DomainError) as denied:
+        await backup(settings, tmp_path / "operator", tmp_path / "backup.age", tmp_path / "missing-recipients",
+            BackupRuntime(Path("/not-invoked/age")))
+    assert (denied.value.code, denied.value.effect) == ("DATABASE_VERSION_UNSUPPORTED", EffectState.NOT_STARTED)
+    assert events == ([] if unsupported == "tools" else ["open"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unsupported", ["tools", "archive"])
+async def test_restore_refuses_unsupported_versions_before_journal_reconcile_or_fence(settings, tmp_path, monkeypatch, simulated_restore, unsupported):
+    if unsupported == "tools":
+        monkeypatch.setattr(ops, "_versions", unsupported_tools)
+    else:
+        async def old_archive(processes, runtime, selected, archive, identity, owner, *, listing):
+            dump = b"PGDMPsynthetic-parser-stream"
+            return metadata(settings) | {"postgres_version": "17.6"}, {
+                "dump_sha256": hashlib.sha256(dump).hexdigest(), "dump_bytes": len(dump)}
+        monkeypatch.setattr(ops, "_preflight", old_archive)
+    with pytest.raises(DomainError) as denied:
+        await restore(settings, tmp_path / "operator", tmp_path / "archive", tmp_path / "identity",
+            "a" * 64, tmp_path / "prepared-operator", settings.deployment_id, BackupRuntime(Path("/not-invoked/age")))
+    assert (denied.value.code, denied.value.effect) == ("DATABASE_VERSION_UNSUPPORTED", EffectState.NOT_STARTED)
+    assert simulated_restore.journal_rechecks == 0 and "journal_reconcile" not in simulated_restore.events
+    assert simulated_restore.pg_starts == 0
+    assert not (settings.state_dir / "restore-barrier.json").exists()

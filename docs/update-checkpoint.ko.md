@@ -1,5 +1,10 @@
 # agents-memory 업데이트 전 체크포인트 — 2026-10-12
 
+## stage-0 동시성·복구 수정 — development/20261015-043508
+
+- 사용자 승인 범위의 네 결함(MCP 세션 복구, 단일 DB 지원 계약, 창당 단일 판단 승자·응답 유실 재시도, 요청 상한·pool 기한·잠금 없는 인증)을 구현했다. 설계 근거는 `research/local-concurrency-observer-design.ko.md` P0-1..P0-4, 기록은 [이슈 #5 댓글](https://github.com/chonamdoo/agents-memory/issues/5#issuecomment-6184732526)이다.
+- 처음 추가한 회귀 37개 중 26개가 수정 전 실패했고 수정 후 모두 통과했다. 리뷰 R1–R3에서 추가한 회귀는 수정 전 코드로 실행하지 않았다(reviewer 재현에 의존). 공식 리뷰 4회(R1–R3 지적 수정, R4 Codex 6개 approve; Claude는 R2에서만 실행), 공식 QA gate 3/3, 최종 wheel `a461ac83…`의 실제 서비스 smoke를 통과했다. 상세는 [검증 기록](verification.ko.md)의 stage-0 절이다.
+
 ## 최신 전환 상태 — recovery development/20261014-154435
 
 - [이슈 #5](https://github.com/chonamdoo/agents-memory/issues/5)와 [확정 결정 댓글](https://github.com/chonamdoo/agents-memory/issues/5#issuecomment-6150124320)만 현재 작업 정본이다. 개인·회사 모두 사용 중 Claude/Codex의 MCP 판단→서버 검증으로 전환했고 Qwen 판단 경로는 제거했다. 회사 B·별도 회사 selection 승인은 없으며 lexical/entity는 후보 색인이다.

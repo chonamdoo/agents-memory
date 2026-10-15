@@ -1065,11 +1065,13 @@ async def test_capture_is_unclassified_and_only_inspected_caller_selection_publi
     pending = await store.inspect(actor, authority.binding_id, "pending")
     assert pending["items"][0]["kind"] == "source_selection"
     selected = await store.record(actor, await source_selection(authority, operation.source_id))
-    replay = await store.record(actor, await source_selection(authority, operation.source_id, "different-selection"))
-    assert selected.state == replay.state == "candidate_ready"
+    assert selected.state == "candidate_ready"
+    with pytest.raises(DomainError) as duplicate:
+        await store.record(actor, await source_selection(authority, operation.source_id, "different-selection"))
+    assert duplicate.value.code == "SELECTION_ALREADY_RECORDED"
     async with store.pool.acquire() as connection:
         assert await connection.fetchval("SELECT count(*) FROM am_jobs") == 0
-    assert (await store.stats(actor, authority.binding_id))["active_claims"] == 2
+    assert (await store.stats(actor, authority.binding_id))["active_claims"] == 1
 
 
 @pytest.mark.parametrize("change", ("source", "binding", "credential", "grant", "deletion", "deadline", "contract"))

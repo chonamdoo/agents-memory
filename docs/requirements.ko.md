@@ -74,6 +74,10 @@
 | I30 | 비밀은 저장·digest 이전 거절 | generic SOURCE_SECRET_REJECTED/not_started/422·body-free durable host gap. legacy outbox/quarantine 모두 scrub, 앞 transient 실패로 뒤 secret 잔존 금지. local invalid 판정은 읽은 key+digest+payload가 같은 row에만 적용하며 새 durably_spooled replacement와 gap/error 집계를 오염시키지 않음. body/key/digest 노출·원문 rewrite 금지 |
 | I31 | hostile exact-source와 hostnative 중복 시나리오 | architecture 9절 PMPA·secret/content reentry·native memory 공존 expected result를 실제 executor별로 확인. source-only/SDK/native proof 혼합 금지 |
 | I32 | trial/health/publication 범위 분리 | 1–2주 trial은 정의만, 시작·측정 효익 주장 없음. health metrics·native 설정 변경·commit/push/PR/merge는 별도 범위/승인 |
+| I33 | 사라진 MCP 세션의 안전한 복구 | 재시작·유휴 만료·세션 수 초과 뒤 요청은 SESSION_NOT_FOUND/404/not_started, 다른 credential 세션은 SESSION_CREDENTIAL_DENIED/403. relay는 모든 필드가 검증된 SESSION_NOT_FOUND+not_started에서만 재initialize 후 원 요청을 1회 재전송하며 unknown 효과는 재전송 금지. 재연결 실패·다른 protocol version 협상 시 요청을 보내지 않고 SESSION_NOT_FOUND/not_started |
+| I34 | 하나의 DB 지원 계약 | serve·migrate·backup·restore 모두 PostgreSQL 18.x·pgvector ≥0.8.7·같은 major PG 도구. archive는 live 버전 기록, restore는 같은 계약으로 검사. 위반은 journal reconcile·DDL·restore fence 전 DATABASE_VERSION_UNSUPPORTED/not_started(backup은 staging·recipients 전) |
+| I35 | 원문 창당 하나의 판단 승자와 응답 유실 재시도 | 같은 source revision·contract·snapshot의 겹치는 창을 잡는 active complete remember/discard는 하나뿐(SELECTION_ALREADY_RECORDED, review 예외, 거절·파생 floor 우선). 게시한 claim이 모두 철회된 remember는 창을 놓으며 파생 floor가 새 claim을 막음, claim 없이 기록한 remember는 창을 계속 잡음. 같은 admission·같은 판단의 새 key 재시도는 원래 operation, 다른 판단은 ADMISSION_CONSUMED. receipt digest 불변 |
+| I36 | 과부하의 not_started 거절 | 동시 요청 상한 초과는 인증 전 SERVICE_BUSY/503, pool 획득 기한 초과는 DATABASE_BUSY/503 모두 not_started. 인증은 전역 am_clock 잠금을 기다리지 않음 |
 
 `source_selection.coverage="complete_window"`는 판단한 원문 창의 계약이다. native capture의 전체 session·human-presence 관측 gap은 판단 완료로 없어지지 않으며, unclassified0이어도 incomplete/partial이 남을 수 있다. OMP preparation secret 거부는 source digest 이전에 body-free gap으로 durable하게 기록하고 기존 capture/offer 권한·generation은 전진시키지 않는다.
 

@@ -16,6 +16,7 @@ import asyncpg
 
 from .config import Settings, resolve_binding
 from .constants import BOUNDED_CONTEXT_MARKER, HOST_CONTEXT_BYTES
+from .database import CANDIDATE_VECTOR_SQL, INSTALLED_VECTOR_SQL, require_server
 from .domain import (
     ActiveRule,
     Binding,
@@ -101,6 +102,11 @@ def _missing() -> DomainError:
     return DomainError("NOT_FOUND", "No available resource exists in this project", status=404)
 
 
+def _connection_failed() -> DomainError:
+    return DomainError("DATABASE_UNAVAILABLE", "The authority connection failed; reconcile the durable receipt before retry",
+        status=503, effect=EffectState.UNKNOWN)
+
+
 def _connection_arguments(settings: Settings) -> tuple[str, dict]:
     parts = urlsplit(settings.database_dsn)
     query = dict(parse_qsl(parts.query))
@@ -141,10 +147,10 @@ class Store:
         pool = await asyncpg.create_pool(dsn, min_size=1, max_size=8, command_timeout=30, **options)
         try:
             async with pool.acquire() as connection:
-                version = int(await connection.fetchval("SHOW server_version_num"))
-                vector = await connection.fetchval("SELECT extversion FROM pg_extension WHERE extname='vector'")
-                if not 180000 <= version < 190000 or vector is None or tuple(map(int, vector.split('.'))) < (0, 8, 7):
-                    raise DomainError("DATABASE_VERSION_UNSUPPORTED", "PostgreSQL 18 and pgvector >=0.8.7 are required", status=503)
+                require_server(
+                    await connection.fetchval("SHOW server_version_num"),
+                    await connection.fetchval(INSTALLED_VECTOR_SQL),
+                )
                 migration = await connection.fetchval("SELECT version_num FROM alembic_version")
                 if migration != MIGRATION and not (allow_prior_migration and migration in MIGRATIONS):
                     raise DomainError("MIGRATION_REQUIRED", "Run the explicit operator migrator", status=503)
@@ -164,26 +170,33 @@ class Store:
         self._ready = False
 
     @asynccontextmanager
-    async def _tx(self, barrier: bool = True) -> AsyncIterator[tuple[asyncpg.Connection, asyncpg.Record]]:
+    async def _tx(self, barrier: bool = True, lock: bool = True) -> AsyncIterator[tuple[asyncpg.Connection, asyncpg.Record]]:
+        """Serialize writers on the global clock; ``lock=False`` is a read-only transaction that never waits for it."""
         if self.pool is None:
             raise DomainError("STORE_CLOSED", "The authority connection is not open", status=503)
         journal = await asyncio.to_thread(self.journal.verify) if barrier else None
         try:
-            async with self.pool.acquire() as connection:
-                async with connection.transaction():
-                    clock = await connection.fetchrow("SELECT * FROM am_clock WHERE singleton FOR UPDATE")
-                    if clock is None:
-                        raise DomainError("MIGRATION_REQUIRED", "The authority clock is missing", status=503)
-                    if clock["deployment_id"] is not None and (
-                        clock["deployment_id"] != self.settings.deployment_id or clock["realm"] != self.settings.realm
-                    ):
-                        raise _denied()
-                    if barrier and (not self._ready or clock["journal_head"] != journal["head"]):
-                        raise DomainError("DELETION_BARRIER", "Reconcile the independent deletion journal before use", status=503)
-                    yield connection, clock
+            connection = await self.pool.acquire(timeout=self.settings.pool_acquire_timeout_seconds)
+        except TimeoutError:
+            raise DomainError("DATABASE_BUSY", "No authority connection became available before the deadline; retry later", status=503) from None
+        except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError):
+            raise _connection_failed() from None
+        try:
+            async with connection.transaction(readonly=not lock):
+                clock = await connection.fetchrow("SELECT * FROM am_clock WHERE singleton FOR UPDATE" if lock else "SELECT * FROM am_clock WHERE singleton")
+                if clock is None:
+                    raise DomainError("MIGRATION_REQUIRED", "The authority clock is missing", status=503)
+                if clock["deployment_id"] is not None and (
+                    clock["deployment_id"] != self.settings.deployment_id or clock["realm"] != self.settings.realm
+                ):
+                    raise _denied()
+                if barrier and (not self._ready or clock["journal_head"] != journal["head"]):
+                    raise DomainError("DELETION_BARRIER", "Reconcile the independent deletion journal before use", status=503)
+                yield connection, clock
         except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError, TimeoutError):
-            from .domain import EffectState
-            raise DomainError("DATABASE_UNAVAILABLE", "The authority connection failed; reconcile the durable receipt before retry", status=503, effect=EffectState.UNKNOWN) from None
+            raise _connection_failed() from None
+        finally:
+            await self.pool.release(connection)
 
     async def _tick(self, connection) -> int:
         return await connection.fetchval("UPDATE am_clock SET epoch=epoch+1 WHERE singleton RETURNING epoch")
@@ -223,6 +236,7 @@ class Store:
             connection = await asyncpg.connect(dsn, timeout=30, command_timeout=30, **options)
             try:
                 async with connection.transaction(readonly=True):
+                    require_server(await connection.fetchval("SHOW server_version_num"), await connection.fetchval(CANDIDATE_VECTOR_SQL))
                     tables = await connection.fetch("""SELECT c.relname FROM pg_class c
                         JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema()
                         AND c.relkind IN ('r','p','v','m') AND NOT EXISTS(
@@ -289,7 +303,8 @@ class Store:
 
     async def authenticate(self, token: str, roles: tuple[Role, ...] | None = None) -> Principal:
         token_hash = self._token_hash(token)
-        async with self._tx(barrier=False) as (connection, _):
+        # Every mutating transaction rechecks the credential under the clock lock through _actor.
+        async with self._tx(barrier=False, lock=False) as (connection, _):
             credential = await connection.fetchval("SELECT id FROM am_credentials WHERE token_hash=$1 AND active AND realm=$2", token_hash, self.settings.realm)
             if credential is None:
                 raise DomainError("AUTH_DENIED", "The current credential is unavailable", status=401)
@@ -768,7 +783,8 @@ class Store:
             return self._operation(await self._operation_row(connection, binding_id, receipt["target_id"]))
         admitted = await connection.fetchrow("SELECT * FROM am_admissions WHERE id=$1 AND binding_id=$2 AND purpose='claim_judgment' AND kind='nonmodel'", command.admission_id, binding_id)
         if admitted is None:
-            raise DomainError("ADMISSION_STALE", "Inspect the bounded claim judgment manifest first")
+            return await self._consumed_admission(connection, actor, binding_id, command, digest,
+                "Inspect the bounded claim judgment manifest first")
         admission = self._nonmodel_admission(admitted)
         await self._recheck_nonmodel(connection, clock, actor, admission)
         if command.manifest_digest != admission.request_digest or [item.model_dump() for item in command.claims] != _decode(admitted["claim_revisions"]) or command.sources != admission.sources:
@@ -813,7 +829,8 @@ class Store:
             await connection.execute("""UPDATE am_pending_judgments SET state='resolved',resolved_at=clock_timestamp()
                 WHERE id=$1 AND binding_id=$2 AND kind='cleanup' AND state IN ('pending','held')""",
                 admission.pending_id, binding_id)
-        await self._save_receipt(connection, actor, binding_id, "record", command.idempotency_key, digest, operation["id"])
+        await self._save_receipt(connection, actor, binding_id, "record", command.idempotency_key, digest, operation["id"],
+            self._consumed_record(admission, command, binding_id))
         await connection.execute("DELETE FROM am_admissions WHERE id=$1", admission.id)
         return self._operation(await self._operation_row(connection, binding_id, operation["id"]))
 
@@ -824,7 +841,8 @@ class Store:
             return self._operation(await self._operation_row(connection, binding_id, receipt["target_id"]))
         admitted = await connection.fetchrow("SELECT * FROM am_admissions WHERE id=$1 AND binding_id=$2 AND purpose='source_selection' AND kind='nonmodel'", command.admission_id, binding_id)
         if admitted is None:
-            raise DomainError("ADMISSION_STALE", "Inspect the original source window before submitting its judgment")
+            return await self._consumed_admission(connection, actor, binding_id, command, digest,
+                "Inspect the original source window before submitting its judgment")
         admission = self._nonmodel_admission(admitted)
         await self._recheck_nonmodel(connection, clock, actor, admission)
         if admission.request_digest != command.window_digest or admission.snapshot != command.snapshot or admission.sources != (RevisionRef(id=command.source_id, revision=command.source_revision),):
@@ -836,6 +854,9 @@ class Store:
             connection, clock, actor, binding_id, command, admitted, source, policy)
         if extraction.claims:
             await self._derivation_allowed(connection, (source.id,))
+        # Rejection and derivation floors report their specific reason before the single-winner refusal.
+        if command.label != "review":
+            await self._refuse_decided_window(connection, binding_id, source, command, policy["revision"])
         row = await self._new_operation(connection, actor, binding_id, "source_selection",
             "candidate_ready" if extraction.claims else "selection_recorded")
         selection_id = _id("selection")
@@ -881,9 +902,54 @@ class Store:
                         AND (q.request_snapshot IS NULL OR q.request_snapshot IS NOT DISTINCT FROM p.snapshot)
                         AND q.policy_revision=$3), '{}'::int8multirange)
                         @> int8range(0,octet_length(s.body)::bigint,'[)'))""", binding_id, source.id, command.policy_revision)
-        await self._save_receipt(connection, actor, binding_id, "record", command.idempotency_key, digest, row["id"])
+        await self._save_receipt(connection, actor, binding_id, "record", command.idempotency_key, digest, row["id"],
+            self._consumed_record(admission, command, binding_id))
         await connection.execute("DELETE FROM am_admissions WHERE id=$1", admission.id)
         return self._operation(await self._operation_row(connection, binding_id, row["id"]))
+
+    @staticmethod
+    def _business_digest(command: SourceSelectionCommand | ClaimJudgmentCommand, binding_id: str) -> str:
+        """Judgment identity without the caller's idempotency key."""
+        return canonical_digest(command.model_dump(mode="json", exclude={"idempotency_key"}) | {"binding_id": binding_id})
+
+    def _consumed_record(self, admission: NonmodelAdmission, command: SourceSelectionCommand | ClaimJudgmentCommand, binding_id: str) -> dict:
+        """Durable consumed-admission record kept on the record receipt; receipt digests stay unchanged."""
+        return {"admission_id": admission.id, "purpose": command.kind, "business_digest": self._business_digest(command, binding_id)}
+
+    async def _consumed_admission(self, connection, actor: Principal, binding_id: str,
+            command: SourceSelectionCommand | ClaimJudgmentCommand, digest: str, stale_message: str) -> Operation:
+        """Return the original operation when a lost response is retried with a new key and the same admission."""
+        consumed = await connection.fetchrow("""SELECT target_id,result FROM am_receipts WHERE principal_id=$1 AND binding_id=$2
+            AND kind='record' AND result->>'admission_id'=$3 AND result->>'purpose'=$4 ORDER BY request_key LIMIT 1""",
+            actor.id, binding_id, command.admission_id, command.kind)
+        if consumed is None:
+            raise DomainError("ADMISSION_STALE", stale_message)
+        if _decode(consumed["result"])["business_digest"] != self._business_digest(command, binding_id):
+            raise DomainError("ADMISSION_CONSUMED", "This admission already recorded a different judgment; inspect again to judge anew")
+        await self._save_receipt(connection, actor, binding_id, "record", command.idempotency_key, digest, consumed["target_id"])
+        return self._operation(await self._operation_row(connection, binding_id, consumed["target_id"]))
+
+    async def _refuse_decided_window(self, connection, binding_id: str, source: Source,
+            command: SourceSelectionCommand, policy_revision: str) -> None:
+        """One complete remember/discard wins per window; a later discard does not block remember's reopen rules.
+
+        Only a remember whose published claims were all withdrawn stops holding the window; one that never
+        published claims keeps it.
+        """
+        winner = await connection.fetchval("""SELECT q.operation_id FROM am_source_selections q
+            WHERE q.binding_id=$1 AND q.source_id=$2 AND q.source_revision=$3 AND q.state='active'
+            AND q.label IN ('remember','discard') AND q.coverage='complete_window' AND q.policy_revision=$4
+            AND q.request_snapshot IS NOT DISTINCT FROM $5
+            AND int8range(q.byte_start::bigint,q.byte_end::bigint,'[)') && int8range($6::bigint,$7::bigint,'[)')
+            AND NOT (q.label='discard' AND $8='remember')
+            AND NOT (q.label='remember' AND EXISTS(SELECT 1 FROM am_claims c WHERE c.selection_id=q.id)
+                AND NOT EXISTS(SELECT 1 FROM am_claims c WHERE c.selection_id=q.id AND c.state='active'))
+            ORDER BY q.created_at,q.id LIMIT 1""",
+            binding_id, source.id, source.revision, policy_revision, command.snapshot,
+            command.byte_start, command.byte_end, command.label)
+        if winner is not None:
+            raise DomainError("SELECTION_ALREADY_RECORDED",
+                f"Operation {winner} already holds the complete judgment for an overlapping window; inspect it or retract it first")
 
     async def record(self, actor: Principal, command: RecordInput) -> Operation:
         binding_id = resolve_binding(actor, command.binding_id)

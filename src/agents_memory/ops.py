@@ -19,6 +19,13 @@ from typing import Literal
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from .config import Settings, prepare_settings_upgrade
+from .database import (
+    INSTALLED_VECTOR_SQL,
+    require_release,
+    require_server,
+    require_tool,
+    require_vector,
+)
 from .domain import DomainError, EffectState, Principal, Role
 from .journal import DeletionJournal
 from .migrations import MIGRATION, MIGRATIONS, migrate, restore_preparation_sql
@@ -85,8 +92,6 @@ class BackupRuntime:
     docker_container: str | None = None
     docker_pg_host: str = "/var/run/postgresql"
     docker_pg_port: int = 5432
-    postgres_version: str = "18.6"
-    vector_version: str = "0.8.7"
     migration_version: str = MIGRATION
     timeout_seconds: float = 3600
     max_archive_bytes: int = 64 * 1024**3
@@ -218,10 +223,9 @@ def _binary(path: Path | str) -> str:
 
 def _runtime(runtime: BackupRuntime) -> None:
     _binary(runtime.age_binary)
-    if (runtime.mode not in {"local", "docker"} or runtime.postgres_version != "18.6"
-            or runtime.vector_version != "0.8.7" or runtime.migration_version != MIGRATION
+    if (runtime.mode not in {"local", "docker"} or runtime.migration_version != MIGRATION
             or runtime.timeout_seconds <= 0 or runtime.max_archive_bytes < _CHUNK):
-        raise _error("RUNTIME_INVALID", "The operations runtime must match the supported migration and database pins")
+        raise _error("RUNTIME_INVALID", "The operations runtime must match the supported authority migration")
     if runtime.mode == "local":
         _binary(runtime.pg_dump_binary)
         _binary(runtime.pg_restore_binary)
@@ -348,9 +352,9 @@ async def _versions(processes: _Processes, runtime: BackupRuntime, dsn: str) -> 
         process = await _pg(processes, runtime, kind, dsn, ["--version"])
         process.stdin.close()
         raw = await _bounded_output(process.stdout, 1024)
-        if await process.wait() != 0 or not re.match(
-                re.escape(name) + rb" \(PostgreSQL\) " + re.escape(runtime.postgres_version.encode()) + rb"(?:\s|$)", raw):
-            raise _error("DATABASE_VERSION_UNSUPPORTED", "The selected PostgreSQL tools do not match the pinned version")
+        if await process.wait() != 0:
+            raise _error("DATABASE_VERSION_UNSUPPORTED", "The selected PostgreSQL tools are unavailable")
+        require_tool(name.decode(), raw)
 
 
 async def _restore_transaction(processes: _Processes, runtime: BackupRuntime,
@@ -461,22 +465,23 @@ def _key_material(path: Path, *, identity: bool) -> bytes:
 async def _metadata(store: Store, connection, runtime: BackupRuntime, owner: Principal) -> dict:
     # Operational metadata only. All authority mutation/recovery remains Store's.
     version = int(await connection.fetchval("SHOW server_version_num"))
-    vector = await connection.fetchval("SELECT extversion FROM pg_extension WHERE extname='vector'")
+    vector = await connection.fetchval(INSTALLED_VECTOR_SQL)
     migration = await connection.fetchval("SELECT version_num FROM alembic_version")
     clock = await connection.fetchrow("SELECT deployment_id,realm,journal_head FROM am_clock WHERE singleton")
     schema, _ = _dsn(store.settings.database_dsn)
-    if (version != 180006 or vector != runtime.vector_version or migration != runtime.migration_version):
-        raise _error("DATABASE_VERSION_UNSUPPORTED", "The live database does not match the operations pins")
+    versions = require_server(version, vector)
+    if migration != runtime.migration_version:
+        raise _error("DATABASE_VERSION_UNSUPPORTED", "The live database does not match the supported authority migration")
     if clock is None or clock["deployment_id"] != store.settings.deployment_id or clock["realm"] != store.settings.realm:
         raise _error("SCOPE_DENIED", "The live authority does not match the selected deployment and realm")
     return {"format": 2, "deployment_id": store.settings.deployment_id, "realm": store.settings.realm,
         "schema": schema, "owner_id": owner.id, "backup_head": clock["journal_head"],
-        "postgres_version": runtime.postgres_version, "vector_version": vector,
+        "postgres_version": versions.postgres, "vector_version": versions.vector,
         "migration_version": migration, "migration_versions": list(MIGRATIONS),
         "created_at": datetime.now(UTC).isoformat()}
 
 
-def _validate_metadata(metadata: dict, settings: Settings, runtime: BackupRuntime, owner_id: str) -> None:
+def _validate_metadata(metadata: dict, settings: Settings, owner_id: str) -> None:
     schema, _ = _dsn(settings.database_dsn)
     if (not isinstance(metadata, dict) or type(metadata.get("format")) is not int
             or metadata["format"] not in {1, 2}
@@ -492,11 +497,12 @@ def _validate_metadata(metadata: dict, settings: Settings, runtime: BackupRuntim
         if (archived_version not in MIGRATIONS
                 or metadata["migration_versions"] != list(MIGRATIONS[:MIGRATIONS.index(archived_version) + 1])):
             raise _error("RESTORE_SCOPE_DENIED", "The archive has an unsupported ordered authority migration manifest")
+    require_release(metadata["postgres_version"])
+    require_vector(metadata["vector_version"])
     expected = {"deployment_id": settings.deployment_id, "realm": settings.realm, "schema": schema,
-        "owner_id": owner_id, "postgres_version": runtime.postgres_version,
-        "vector_version": runtime.vector_version}
+        "owner_id": owner_id}
     if any(metadata[k] != value for k, value in expected.items()):
-        raise _error("RESTORE_SCOPE_DENIED", "The authenticated archive does not match the selected deployment, realm, owner, schema and pins")
+        raise _error("RESTORE_SCOPE_DENIED", "The authenticated archive does not match the selected deployment, realm, owner and schema")
 
 
 async def _read_header(reader: asyncio.StreamReader) -> dict:
@@ -598,7 +604,7 @@ async def _preflight(processes: _Processes, runtime: BackupRuntime, settings: Se
         identity: bytes, owner_id: str, *, listing: bool) -> tuple[dict, dict]:
     decrypt = await _decrypt(processes, runtime, archive, identity)
     metadata = await _read_header(decrypt.stdout)
-    _validate_metadata(metadata, settings, runtime, owner_id)
+    _validate_metadata(metadata, settings, owner_id)
     # --file=- traverses/decompresses all data without any database connection.
     # --list separately constrains the TOC, since list alone doesn't validate data.
     process = await _pg(processes, runtime, "restore", settings.migrator_dsn,
@@ -704,53 +710,56 @@ async def backup(settings: Settings, operator_token_file: Path, destination: Pat
     publishing = False
     try:
         with authority_lock(settings):
-            async with asyncio.timeout(runtime.timeout_seconds), _processes() as processes, _staging(settings) as staging:
+            async with asyncio.timeout(runtime.timeout_seconds), _processes() as processes:
                 _runtime(runtime)
-                schema, _ = _dsn(settings.database_dsn)
-                destination = _destination(settings, destination)
-                private_write(staging / "recipients", _key_material(recipients_file, identity=False))
-                token = _token(operator_token_file)
-                await store.open()
-                actor = await store.authenticate(token, (Role.OPERATOR,))
-                await store.reconcile_journal()
+                # The support contract (tools, then the live server at open) refuses before staging,
+                # recipients or journal reconciliation.
                 await _versions(processes, runtime, settings.database_dsn)
-                temporary = destination.parent / (".memory-encrypted-" + secrets.token_hex(16))
-                private_write(temporary, b"")
-                with temporary.open("wb") as output:
-                    encrypt = await processes.start([_binary(runtime.age_binary), "--encrypt", "--recipients-file", str(staging / "recipients")], stdout=output)
-                    async with store.pool.acquire() as connection:
-                        async with connection.transaction(isolation="repeatable_read", readonly=True):
-                            metadata = await _metadata(store, connection, runtime, actor)
-                            _validate_metadata(metadata, settings, runtime, actor.id)
-                            snapshot = await connection.fetchval("SELECT pg_export_snapshot()")
-                            args = ["--format=custom", "--no-owner", "--no-privileges", "--strict-names", "--snapshot=" + snapshot]
-                            args.extend('--table="' + schema + '"."' + name + '"' for name in sorted(_TABLES))
-                            dump = await _pg(processes, runtime, "dump", settings.database_dsn, args)
-                            dump.stdin.close()
-                            header = json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode()
-                            await _write(encrypt, _MAGIC + struct.pack("!I", len(header)) + header)
-                            digest = hashlib.sha256()
-                            size = 0
-                            while raw := await dump.stdout.read(_CHUNK):
-                                size += len(raw)
-                                if size > runtime.max_archive_bytes:
-                                    raise _error("BACKUP_TOO_LARGE", "The selected dump exceeds the local archive limit")
-                                digest.update(raw)
-                                await _write(encrypt, struct.pack("!I", len(raw)) + raw)
-                            if await dump.wait() != 0 or size < 5:
-                                raise _error("BACKUP_FAILED", "The local authority dump did not complete")
-                            await _write(encrypt, struct.pack("!I", 0) + digest.digest())
-                            await _finish(encrypt)
-                if temporary.stat().st_size > runtime.max_archive_bytes:
-                    raise _error("BACKUP_TOO_LARGE", "The encrypted archive exceeds the local archive limit")
-                # A credential revoked during the snapshot cannot publish a backup.
-                await store.authenticate(token, (Role.OPERATOR,))
-                publishing = True
-                _publish(temporary, destination)
-                return {"effect": "committed", "encrypted": "age", **_receipt(metadata,
-                    {"dump_sha256": digest.hexdigest(), "dump_bytes": size}),
-                    "journal_included": False, "plaintext_dump_persisted": False,
-                    "storage_media_erasure_claimed": False}
+                await store.open()
+                async with _staging(settings) as staging:
+                    schema, _ = _dsn(settings.database_dsn)
+                    destination = _destination(settings, destination)
+                    private_write(staging / "recipients", _key_material(recipients_file, identity=False))
+                    token = _token(operator_token_file)
+                    actor = await store.authenticate(token, (Role.OPERATOR,))
+                    await store.reconcile_journal()
+                    temporary = destination.parent / (".memory-encrypted-" + secrets.token_hex(16))
+                    private_write(temporary, b"")
+                    with temporary.open("wb") as output:
+                        encrypt = await processes.start([_binary(runtime.age_binary), "--encrypt", "--recipients-file", str(staging / "recipients")], stdout=output)
+                        async with store.pool.acquire() as connection:
+                            async with connection.transaction(isolation="repeatable_read", readonly=True):
+                                metadata = await _metadata(store, connection, runtime, actor)
+                                _validate_metadata(metadata, settings, actor.id)
+                                snapshot = await connection.fetchval("SELECT pg_export_snapshot()")
+                                args = ["--format=custom", "--no-owner", "--no-privileges", "--strict-names", "--snapshot=" + snapshot]
+                                args.extend('--table="' + schema + '"."' + name + '"' for name in sorted(_TABLES))
+                                dump = await _pg(processes, runtime, "dump", settings.database_dsn, args)
+                                dump.stdin.close()
+                                header = json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode()
+                                await _write(encrypt, _MAGIC + struct.pack("!I", len(header)) + header)
+                                digest = hashlib.sha256()
+                                size = 0
+                                while raw := await dump.stdout.read(_CHUNK):
+                                    size += len(raw)
+                                    if size > runtime.max_archive_bytes:
+                                        raise _error("BACKUP_TOO_LARGE", "The selected dump exceeds the local archive limit")
+                                    digest.update(raw)
+                                    await _write(encrypt, struct.pack("!I", len(raw)) + raw)
+                                if await dump.wait() != 0 or size < 5:
+                                    raise _error("BACKUP_FAILED", "The local authority dump did not complete")
+                                await _write(encrypt, struct.pack("!I", 0) + digest.digest())
+                                await _finish(encrypt)
+                    if temporary.stat().st_size > runtime.max_archive_bytes:
+                        raise _error("BACKUP_TOO_LARGE", "The encrypted archive exceeds the local archive limit")
+                    # A credential revoked during the snapshot cannot publish a backup.
+                    await store.authenticate(token, (Role.OPERATOR,))
+                    publishing = True
+                    _publish(temporary, destination)
+                    return {"effect": "committed", "encrypted": "age", **_receipt(metadata,
+                        {"dump_sha256": digest.hexdigest(), "dump_bytes": size}),
+                        "journal_included": False, "plaintext_dump_persisted": False,
+                        "storage_media_erasure_claimed": False}
     except DomainError as error:
         raise _error(error.code, error.message, started=publishing) from None
     except (OSError, ValueError, TimeoutError, asyncio.IncompleteReadError, ConnectionError):
@@ -1272,26 +1281,28 @@ async def restore(settings: Settings, operator_token_file: Path, archive: Path,
                 raise _error("RESTORE_RECOVERY_REQUIRED", "Recover the existing restore fence before attempting another restore")
             async with asyncio.timeout(runtime.timeout_seconds), _processes() as processes, _staging(settings) as staging:
                 _runtime(runtime)
+                # Tool and archive versions are refused before journal reconciliation or the fence;
+                # staging is private scratch removed on exit.
+                await _versions(processes, runtime, settings.migrator_dsn)
                 operator_out = _destination(settings, operator_out)
                 identity = _key_material(identity_file, identity=True)
                 token = _token(operator_token_file)
                 await store.open()
                 actor = await store.authenticate(token, (Role.OPERATOR,))
-                # Journal verification finishes/releases its flock before DB clock
-                # reconciliation. Never hold the journal lock around pg_restore.
                 await asyncio.to_thread(store.journal.verify, expected_head)
-                reconciled = await store.reconcile_journal(expected_head)
-                current_head = reconciled["head"]
                 async with store.pool.acquire() as connection:
                     live = await _metadata(store, connection, runtime, actor)
                     await _require_application_defaults(settings, connection)
-                await _versions(processes, runtime, settings.migrator_dsn)
                 encrypted = await _copy_encrypted(archive, staging / "archive.age", runtime.max_archive_bytes)
                 metadata, checked = await _preflight(processes, runtime, settings, staging / "archive.age", identity, actor.id, listing=True)
                 full_metadata, full_checked = await _preflight(processes, runtime, settings, staging / "archive.age", identity, actor.id, listing=False)
                 if metadata != full_metadata or checked != full_checked:
                     raise _error("ARCHIVE_INVALID", "The encrypted archive changed during validation")
-                _validate_metadata(metadata, settings, runtime, live["owner_id"])
+                _validate_metadata(metadata, settings, live["owner_id"])
+                # Journal verification finishes/releases its flock before DB clock
+                # reconciliation. Never hold the journal lock around pg_restore.
+                reconciled = await store.reconcile_journal(expected_head)
+                current_head = reconciled["head"]
                 await store.authenticate(token, (Role.OPERATOR,))
                 await asyncio.to_thread(store.journal.verify, current_head)
                 await _docker_control(processes, runtime, settings.migrator_dsn)
@@ -1391,17 +1402,20 @@ async def recover_interrupted_restore(settings: Settings, operator_token_file: P
         with authority_lock(settings, exclusive=True):
             async with asyncio.timeout(runtime.timeout_seconds), _processes() as processes:
                 marker = settings.state_dir / "restore-barrier.json"
-                if not marker.exists():
-                    raise _error("RECOVERY_NOT_REQUIRED", "No interrupted local restore requires recovery")
-                # Presence is a fence, not authentication; a migration is not a restore.
-                raw = _read_private(marker, 8192)
-                try:
-                    intent = json.loads(raw)
-                except (ValueError, UnicodeError):
-                    intent = None
-                if isinstance(intent, dict) and intent.get("kind") == "migration":
-                    raise _error("MIGRATION_RECOVERY_REQUIRED", "Use the exact authenticated migration request, not restore recovery")
+                present = marker.exists()
+                if present:
+                    # Presence is a fence, not authentication; a migration is not a restore.
+                    raw = _read_private(marker, 8192)
+                    try:
+                        intent = json.loads(raw)
+                    except (ValueError, UnicodeError):
+                        intent = None
+                    if isinstance(intent, dict) and intent.get("kind") == "migration":
+                        raise _error("MIGRATION_RECOVERY_REQUIRED", "Use the exact authenticated migration request, not restore recovery")
+                # An invalid explicit runtime is reported before whether recovery is needed.
                 _runtime(runtime)
+                if not present:
+                    raise _error("RECOVERY_NOT_REQUIRED", "No interrupted local restore requires recovery")
                 await _docker_control(processes, runtime, settings.migrator_dsn)
                 operator_out = _destination(settings, operator_out)
                 recovery = Store(settings.model_copy(update={"database_dsn": settings.migrator_dsn}), store.journal)

@@ -22,6 +22,8 @@ writer는 build/lint/tests/formatter·live service·native trust/설정·git pub
 
 `Settings.capability: Literal["agent_judged"] = "agent_judged"`는 개인·회사 공통이다. `cleanup_interval_seconds=3600`은1–86400, `read_admission_timeout_seconds=180`은1–3600이다. 기존 queue/source/HTTP/MCP/spool/authority bounds는 유지한다. `models`, `allowed_model_purposes`, `lease_seconds`, `heartbeat_seconds`, `job_attempt_limit`은 제거한다. empty model purposes를 다른 capability 허가로 해석하지 않는다.
 
+stage-0 run `development/20261015-043508`이 추가한 설정: `max_concurrent_requests=16`(1–256, 초과 시 인증 전 `SERVICE_BUSY`), `pool_acquire_timeout_seconds=5.0`(0 초과·60 이하, 초과 시 `DATABASE_BUSY`). 둘 다 `not_started`/503이다. DB 지원 계약은 `agents_memory.database`의 `POSTGRES_MAJOR=18`·`MINIMUM_VECTOR=(0,8,7)` 하나이며 `Store.open`/`preflight_initialization`·migrations·`ops` backup/restore가 공유한다. `BackupRuntime`에는 더 이상 PG/pgvector 버전 pin이 없고 archive metadata는 live 버전을 기록한다. 단일 승자·admission 재시도·세션 복구의 규범은 [architecture](architecture.ko.md)의 transport 절을 따른다.
+
 - `record --judgment-file`: key/binding/kind를 포함한 완전한 strict `RecordInput` JSON. 별도 `--binding/--key/--body-file/--kind`와 혼합하지 않는다. note/rule_candidate의 기존 body-file 방식은 유지한다.
 - `context --expansions-file`: bounded JSON 문자열 배열을 `query_expansions`로 읽는다.
 - `context --admission-id ... --relevance-file ...`: 첫 호출에서 저장된 admission에 대한 전체 exact relevance JSON 배열. query/path/purpose/host/snapshot/expansions의 의미는 첫 요청과 같아야 한다.
