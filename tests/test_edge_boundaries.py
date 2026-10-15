@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -1095,3 +1096,98 @@ async def test_stored_inspection_ref_window_combinations_remain_refused(company_
             }, transport)
             assert inspected["error"]["code"] == code and inspected["error"]["effect"] == "not_started"
             assert "draft_window" not in inspected
+
+
+async def legacy_session_id(edge, token=AGENT_TOKEN):
+    status, raw, headers = await request(edge, {
+        "jsonrpc": "2.0", "id": "legacy-initialize", "method": "initialize",
+        "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "session", "version": "1"}},
+    }, token=token, protocol_version="2025-11-25", include_headers=True)
+    assert status == 200 and "result" in json.loads(raw)
+    return headers[b"mcp-session-id"]
+
+
+async def session_request(edge, session, token=AGENT_TOKEN):
+    status, raw = await request(edge, {"jsonrpc": "2.0", "id": 7, "method": "tools/list"},
+        token=token, protocol_version="2025-11-25", extra_headers=((b"mcp-session-id", session),))
+    return status, json.loads(raw)
+
+
+async def test_lost_protocol_session_is_distinct_from_credential_mismatch(authority):
+    async with running(authority) as edge:
+        session = await legacy_session_id(edge)
+        other = "wire-boundary-second-agent-credential-" + "s" * 32
+        await authority.store.issue_token(authority.actor, Role.AGENT, (authority.binding_id,), other)
+        status, body = await session_request(edge, session, other)
+        assert (status, body["error"]["code"], body["error"]["effect"]) == (403, "SESSION_CREDENTIAL_DENIED", "not_started")
+        status, body = await session_request(edge, b"unknown-session")
+        assert (status, body["error"]["code"], body["error"]["effect"]) == (404, "SESSION_NOT_FOUND", "not_started")
+        status, body = await session_request(edge, session)
+        assert status == 200 and "tools" in body["result"]
+
+
+async def test_sdk_reaped_session_is_reported_as_not_found_and_forgotten(authority):
+    async with running(authority) as edge:
+        session = await legacy_session_id(edge)
+        credential_id = edge.sessions[session.decode()][0]
+        edge.sessions["sdk-reaped-session"] = (credential_id, time.monotonic())
+        status, body = await session_request(edge, b"sdk-reaped-session")
+        assert (status, body["error"]["code"], body["error"]["effect"]) == (404, "SESSION_NOT_FOUND", "not_started")
+        assert "sdk-reaped-session" not in edge.sessions
+        assert (await authority.store.stats(authority.actor, authority.binding_id))["active_sources"] == 0
+
+
+async def test_request_concurrency_cap_refuses_before_authentication_or_handler(authority):
+    await authority.store.issue_token(authority.actor, Role.AGENT, (authority.binding_id,), AGENT_TOKEN)
+    settings = Settings.model_validate({**authority.store.settings.model_dump(), "max_concurrent_requests": 1})
+    entered, release, calls = asyncio.Event(), asyncio.Event(), []
+
+    async def downstream(scope, receive, send):
+        calls.append(scope["path"])
+        entered.set()
+        await release.wait()
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode()
+        await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
+        await send({"type": "http.response.body", "body": body, "more_body": False})
+
+    application = Application(settings, authority.store)
+    edge = SecurityEdge(downstream, application, settings)
+    held = asyncio.create_task(request(edge, tool({"query": "held"})))
+    await asyncio.wait_for(entered.wait(), 5)
+    status, body = await request(edge, tool({"query": "refused"}), token="not-even-authenticated-" + "x" * 32)
+    assert (status, json.loads(body)["error"]["code"], json.loads(body)["error"]["effect"]) == (503, "SERVICE_BUSY", "not_started")
+    release.set()
+    assert (await held)[0] == 200
+    assert (await request(edge, tool({"query": "after"})))[0] == 200
+    assert calls == ["/mcp", "/mcp"]
+    assert application.inflight == 0
+
+
+async def test_legacy_stream_is_capped_while_opening_and_released_once_idle(authority):
+    await authority.store.issue_token(authority.actor, Role.AGENT, (authority.binding_id,), AGENT_TOKEN)
+    settings = Settings.model_validate({**authority.store.settings.model_dump(), "max_concurrent_requests": 1})
+    opening, opened, streaming, release = asyncio.Event(), asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def downstream(scope, receive, send):
+        if scope["method"] == "GET":
+            opening.set()
+            await opened.wait()
+            await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/event-stream")]})
+            streaming.set()
+            await release.wait()
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+            return
+        await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
+        await send({"type": "http.response.body", "body": json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode(), "more_body": False})
+
+    edge = SecurityEdge(downstream, Application(settings, authority.store), settings)
+    stream = asyncio.create_task(request(edge, b"", method="GET"))
+    await asyncio.wait_for(opening.wait(), 5)
+    status, body = await request(edge, tool({"query": "while opening"}))
+    assert (status, json.loads(body)["error"]["code"]) == (503, "SERVICE_BUSY")
+    opened.set()
+    await asyncio.wait_for(streaming.wait(), 5)
+    assert (await request(edge, tool({"query": "while streaming"})))[0] == 200
+    release.set()
+    assert (await stream)[0] == 200
+    assert edge.active == 0

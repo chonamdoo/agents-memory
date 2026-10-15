@@ -357,8 +357,9 @@ async def test_source_correction_invalidates_selection_and_next_consumer_reads_o
 @pytest.mark.parametrize("target", ("claim", "selection", "operation"))
 async def test_directional_withdrawal_preserves_upstream_and_independent_sibling(company, target):
     source, selected, claim = await candidate(company)
-    sibling = await company.store.record(company.actor, await judgment(company, source.source_id, "sibling", publish=True))
-    sibling_id = (await company.store.inspect(company.actor, company.binding_id, sibling.artifact_id))["claim_ids"][0]
+    # The independent sibling judges the same source in its own request scope; one window has one winner per scope.
+    sibling = await company.store.record(company.actor, await judgment(company, source.source_id, "sibling", publish=True, snapshot="sibling-scope"))
+    sibling_id = (await company.store.inspect(company.actor, company.binding_id, sibling.artifact_id, "sibling-scope"))["claim_ids"][0]
     ref = {"claim": claim.id, "selection": selected.artifact_id, "operation": selected.id}[target]
     await company.store.retract(company.actor, company.binding_id, ref, "withdraw")
     await company.store.purge(company.actor, company.binding_id, ref, "purge")
@@ -367,6 +368,7 @@ async def test_directional_withdrawal_preserves_upstream_and_independent_sibling
     with pytest.raises(DomainError) as withdrawn:
         await company.store.record(company.actor, await judgment(company, source.source_id, "republish", publish=True))
     assert withdrawn.value.code == "DERIVATION_RETRACTED"
+    # The withdrawn remember no longer holds the window, so the same request scope can record its discard.
     discard = await company.store.record(company.actor, await judgment(company, source.source_id, "discard", label="discard"))
     assert discard.state == "selection_recorded"
     async with company.store.pool.acquire() as connection:
@@ -651,6 +653,9 @@ async def test_forward_migration_retires_failed_model_work_without_erasing_evide
     legacy_claim = archived["am_claims"][0]
     legacy_claim.update(capability="full_semantic", interpretation_role="model_derived_candidate",
         route_revision="f" * 64, selection_id=None, policy_revision=None, extraction_operation_id=source.id)
+    # A model-era claim had no caller selection, so the restored legacy source has none either.
+    archived["am_source_selections"] = [row for row in archived["am_source_selections"] if row["source_id"] != source.source_id]
+    archived["am_selection_sources"] = [row for row in archived["am_selection_sources"] if row["source_id"] != source.source_id]
     timestamp = datetime(2026, 10, 1, tzinfo=UTC)
     original_job = {
         "id": "job_legacy_failed", "binding_id": company.binding_id, "operation_id": source.id,

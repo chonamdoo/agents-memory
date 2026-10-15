@@ -10,6 +10,8 @@ from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from ..database import CANDIDATE_VECTOR_SQL, INSTALLED_VECTOR_SQL, require_server
+
 MIGRATIONS = ("0001_authority", "0002_directional_tombstones", "0003_origin_and_vector_compat", "0004_operation_successors", "0005_company_selection", "0006_agent_judged")
 MIGRATION = MIGRATIONS[-1]
 
@@ -37,12 +39,11 @@ async def _migrate(dsn: str) -> dict:
                 {"migration_tag": ":agent-memory-explicit-migration"},
             )
             version = int((await connection.execute(text("SHOW server_version_num"))).scalar_one())
-            if not 180000 <= version < 190000:
-                raise RuntimeError("PostgreSQL 18 is required")
+            # Validate the existing or to-be-created extension version before any DDL.
+            require_server(version, (await connection.execute(text(CANDIDATE_VECTOR_SQL))).scalar_one())
             await connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public"))
-            vector = (await connection.execute(text("SELECT extversion FROM pg_extension WHERE extname='vector'"))).scalar_one()
-            if tuple(int(part) for part in vector.split(".")) < (0, 8, 7):
-                raise RuntimeError("pgvector >= 0.8.7 is required")
+            vector = (await connection.execute(text(INSTALLED_VECTOR_SQL))).scalar_one()
+            require_server(version, vector)
             configuration = Config()
             configuration.set_main_option("script_location", str(Path(__file__).parent))
             def upgrade(sync_connection) -> None:

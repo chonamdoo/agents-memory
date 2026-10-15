@@ -26,6 +26,8 @@ class Settings(TypedModel):
     max_http_body_bytes: int = Field(default=65536, ge=16384, le=262144)
     max_mcp_response_bytes: int = Field(default=16384, ge=4096, le=65536)
     spool_limit_bytes: int = Field(default=16777216, ge=65536, le=1073741824)
+    max_concurrent_requests: int = Field(default=16, ge=1, le=256)
+    pool_acquire_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     strong_shared_approval: bool = False
     approver_public_key: Path | None = None
 

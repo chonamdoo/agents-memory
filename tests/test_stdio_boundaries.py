@@ -453,3 +453,172 @@ def test_invalid_nonascii_credential_is_not_started_without_dispatch(relay):
     assert result["error"]["message"] == "RELAY_CREDENTIAL_UNAVAILABLE"
     assert result["error"]["data"] == {"effect": "not_started"}
     assert relay.opener.requests == []
+
+
+@pytest.fixture
+def scripted(relay):
+    state = SimpleNamespace(responses=[], requests=[])
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            state.requests.append({"request": request, "session": self.headers.get("Mcp-Session-Id")})
+            status, payload, session = state.responses.pop(0)
+            if callable(payload):
+                payload = payload(request)
+            body = b"" if payload is None else json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            if session:
+                self.send_header("Mcp-Session-Id", session)
+            self.end_headers()
+            self.wfile.write(body)
+            self.wfile.flush()
+            self.close_connection = True
+
+        def log_message(self, *args):
+            return None
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    relay.settings = RelayEndpoint(f"http://127.0.0.1:{server.server_port}", max_mcp_response_bytes=4096)
+    try:
+        yield state
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
+def initialized_result(request):
+    return {"jsonrpc": "2.0", "id": request["id"], "result": {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}}}}
+
+
+def edge_rejection(code, effect="not_started", status=404):
+    return (status, {"error": {"code": code, "message": "synthetic private edge detail", "effect": effect}}, None)
+
+
+def legacy_session(relay, state):
+    host_initialize = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "native-host", "version": "1"},
+    }}
+    state.responses.append((200, initialized_result, "first-session"))
+    assert relay.forward(host_initialize)["result"]["protocolVersion"] == "2025-11-25"
+    return host_initialize
+
+
+def test_lost_session_reinitializes_and_resends_once_before_any_handler(relay, scripted):
+    host_initialize = legacy_session(relay, scripted)
+    final = {"jsonrpc": "2.0", "id": 71, "result": {"content": [{"type": "text", "text": "{}"}]}}
+    scripted.responses.extend([
+        edge_rejection("SESSION_NOT_FOUND"),
+        (200, initialized_result, "second-session"),
+        (202, None, "second-session"),
+        (200, final, None),
+    ])
+    assert relay.forward(mutation()) == final
+    methods = [item["request"]["method"] for item in scripted.requests]
+    assert methods == ["initialize", "tools/call", "initialize", "notifications/initialized", "tools/call"]
+    assert [item["session"] for item in scripted.requests] == [None, "first-session", None, "second-session", "second-session"]
+    assert scripted.requests[2]["request"]["params"] == host_initialize["params"]
+    assert scripted.requests[2]["request"]["id"] != host_initialize["id"]
+    assert scripted.requests[4]["request"] == mutation()
+    assert relay.session_id == "second-session"
+
+
+@pytest.mark.parametrize("rejection", [
+    edge_rejection("SESSION_CREDENTIAL_DENIED", status=403),
+    edge_rejection("SESSION_NOT_FOUND", effect="unknown"),
+    edge_rejection("SERVICE_BUSY", status=503),
+])
+def test_other_rejections_and_possible_commits_are_never_resent(relay, scripted, rejection):
+    legacy_session(relay, scripted)
+    scripted.responses.append(rejection)
+    result = relay.forward(mutation())
+    assert result["error"]["message"] == rejection[1]["error"]["code"]
+    assert result["error"]["data"] == {"effect": rejection[1]["error"]["effect"]}
+    assert len(scripted.requests) == 2
+    assert relay.session_id == "first-session"
+
+
+def test_session_recovery_is_attempted_at_most_once(relay, scripted):
+    legacy_session(relay, scripted)
+    scripted.responses.extend([
+        edge_rejection("SESSION_NOT_FOUND"),
+        (200, initialized_result, "second-session"),
+        (202, None, "second-session"),
+        edge_rejection("SESSION_NOT_FOUND"),
+    ])
+    result = relay.forward(mutation())
+    assert result["error"]["message"] == "SESSION_NOT_FOUND"
+    assert result["error"]["data"] == {"effect": "not_started"}
+    assert len(scripted.requests) == 5
+
+
+def test_failed_reinitialize_returns_the_original_not_started_rejection(relay, scripted):
+    legacy_session(relay, scripted)
+    scripted.responses.extend([
+        edge_rejection("SESSION_NOT_FOUND"),
+        (503, {"error": {"code": "SERVICE_DRAINING", "message": "draining", "effect": "not_started"}}, None),
+    ])
+    result = relay.forward(mutation())
+    assert result["error"]["message"] == "SESSION_NOT_FOUND"
+    assert result["error"]["data"] == {"effect": "not_started"}
+    assert [item["request"]["method"] for item in scripted.requests] == ["initialize", "tools/call", "initialize"]
+    assert relay.session_id is None
+    # The next caller request recovers the session first instead of being sent without one.
+    final = {"jsonrpc": "2.0", "id": 71, "result": {"content": [{"type": "text", "text": "{}"}]}}
+    scripted.responses.extend([
+        (200, initialized_result, "recovered-session"),
+        (202, None, "recovered-session"),
+        (200, final, None),
+    ])
+    assert relay.forward(mutation()) == final
+    assert [item["request"]["method"] for item in scripted.requests[3:]] == ["initialize", "notifications/initialized", "tools/call"]
+    assert [item["session"] for item in scripted.requests[3:]] == [None, "recovered-session", "recovered-session"]
+
+
+def test_pending_recovery_that_fails_again_is_not_started_without_sending_the_request(relay, scripted):
+    legacy_session(relay, scripted)
+    scripted.responses.extend([
+        edge_rejection("SESSION_NOT_FOUND"),
+        edge_rejection("SERVICE_BUSY", status=503),
+        edge_rejection("SERVICE_BUSY", status=503),
+    ])
+    relay.forward(mutation())
+    result = relay.forward(mutation())
+    assert result["error"]["message"] == "SESSION_NOT_FOUND"
+    assert result["error"]["data"] == {"effect": "not_started"}
+    assert [item["request"]["method"] for item in scripted.requests] == ["initialize", "tools/call", "initialize", "initialize"]
+
+
+@pytest.mark.parametrize("payload", [
+    {"error": {"code": "SESSION_NOT_FOUND", "effect": "not_started"}},
+    {"error": {"code": "SESSION_NOT_FOUND", "message": "gone", "effect": "not_started"}, "extra": True},
+    {"error": {"code": "SESSION_NOT_FOUND", "message": "gone", "effect": "maybe"}},
+    {"error": "SESSION_NOT_FOUND"},
+])
+def test_malformed_session_rejection_is_unknown_and_never_resent(relay, scripted, payload):
+    legacy_session(relay, scripted)
+    scripted.responses.append((404, payload, None))
+    result = relay.forward(mutation())
+    assert result["error"]["message"] == "RPC_RESPONSE_INVALID"
+    assert result["error"]["data"] == {"effect": "unknown"}
+    assert [item["request"]["method"] for item in scripted.requests] == ["initialize", "tools/call"]
+
+
+def test_recovery_refuses_a_server_that_negotiates_another_protocol_version(relay, scripted):
+    legacy_session(relay, scripted)
+
+    def other_version(request):
+        return {"jsonrpc": "2.0", "id": request["id"], "result": {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}}}
+
+    scripted.responses.extend([edge_rejection("SESSION_NOT_FOUND"), (200, other_version, "other-version-session")])
+    result = relay.forward(mutation())
+    assert result["error"]["message"] == "SESSION_NOT_FOUND"
+    assert result["error"]["data"] == {"effect": "not_started"}
+    assert [item["request"]["method"] for item in scripted.requests] == ["initialize", "tools/call", "initialize"]
+    assert (relay.session_id, relay.protocol_version, relay.recovery_pending) == (None, "2025-11-25", True)

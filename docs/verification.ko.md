@@ -1,5 +1,53 @@
 # 실제 로컬 검증 기록
 
+## stage-0 동시성·복구 수정 — development/20261015-043508
+
+범위는 네 결함뿐이다. (1) 사라진 MCP 세션 복구 (2) serve·migrate·backup·restore의 단일 PG/pgvector 계약 (3) 원문 창당 판단 단일 승자와 응답 유실 재시도 (4) 동시 요청 상한·pool 획득 기한·전역 clock 잠금 없는 인증. cloud·새 memory block·pgvector 검색·trial·`FOR SHARE`는 범위 밖이다.
+
+- 새 회귀는 수정 전 **26 failed/11 passed**, 수정 후 **37 passed**였다(`s0-red.log`, `s0-green-first.log`). 이후 전체 suite는 **1701 passed/19 failed**(460s)였다(`s0-full-suite.log`).
+- 19개 처리: `restore-recover` 12개는 marker 확인이 명시 runtime 검증보다 먼저라 `RECOVERY_NOT_REQUIRED`가 `BINARY_REQUIRED`를 가렸다. 검증을 marker 앞으로 옮겼다. 단일 승자 검사가 거절·파생 floor보다 먼저 실행돼 `EVIDENCE_REJECTED`/`DERIVATION_RETRACTED`를 가린 2개는 검사를 floor 뒤로 옮겼다. 같은 창의 두 번째 complete remember를 허용하던 옛 동작을 고정한 테스트 5개는 새 계약으로 바꿨다: capture 테스트는 `SELECTION_ALREADY_RECORDED`와 active claim 1개를 기대하고, 독립 sibling·discard는 다른 요청 snapshot에서 판단하며, model-era migration fixture는 caller selection 없는 legacy source를 복원한다. 실패했던 19개와 새 회귀만 다시 실행해 **53 passed + 3 failed**, sibling inspect의 snapshot 인자를 고친 뒤 그 3개 **3 passed**였다(`s0-failed-rerun.log`). 이미 통과한 전체 suite는 반복하지 않았다.
+- `uv run ruff check src tests` 통과, `uv build` 통과. wheel SHA256 `7baf9a8ce2e479e0b2e003c8754d1b1f42af7cd548e15513ab6605ec12b6b09b`, sdist `7fbfeeb1d88c7d74d620ec47c557eb6238c575c29eddf172d278d5798afc7821`.
+- **실제 current-source 서비스 smoke**(임시 UUID schema·private config, PG 180006·pgvector 0.8.7, `s0-actual-service-smoke.json`): `init`→`serve`→producer HTTP capture→`stdio` relay로 공식 MCP initialize·inspect. 서비스를 재시작한 뒤 같은 relay의 `memory_record`가 자동 재연결로 `candidate_ready`였다. 같은 판단·같은 admission의 새 key는 같은 operation id, 다른 판단은 `ADMISSION_CONSUMED`, 새 inspect의 두 번째 remember는 `SELECTION_ALREADY_RECORDED`였고 source의 selection·claim은 각 1개였다. 다른 connection이 `am_clock FOR UPDATE`를 잡은 동안 `/readyz` 인증은 200/0.006s였다. `max_concurrent_requests=1`에서 미완성 요청이 슬롯을 잡은 동안 다음 요청은 `SERVICE_BUSY`/503/`not_started`, 해제 뒤 `/healthz` 200이었다. Docker ops runtime의 실제 backup receipt는 live `18.6`/`0.8.7`/`0006_agent_judged`였다. 세 service 종료·schema 삭제를 관측했고 임시 디렉터리를 지웠다.
+- smoke driver 자체 오류 3건(없는 `httpx` import, driver 직접 연결에 `schema` 파라미터 전달, 재실행 시 남은 private 파일)은 driver만 고쳤다. 제품 코드·guard·설정은 바꾸지 않았다. 첫 결과는 `s0-actual-service-smoke-driver-fault.log`에 남겼다.
+- **첫 공식 리뷰(R1)**: Claude probe가 실패해 Claude 6개는 실행되지 않았다. Codex 6개 중 state-integrity만 approve, 나머지 5개는 request-changes였다. 지적 4건을 수정했다: (a) relay 재연결이 실패하면 세션 없이 남던 문제, (b) 재전송 판단이 검증된 오류 표현을 거치지 않던 문제, (c) idle `GET /mcp` stream이 요청 상한을 점유하던 문제, (d) backup·restore의 버전 검사가 journal reconcile 뒤에 있던 문제. LOW 제안대로 동시 제출과 Store 재시작 뒤 재시도 회귀도 추가했다. 새 회귀와 바뀐 경로의 테스트 실행에서 8개가 실패했다. 6개는 JSON-RPC HTTP 오류까지 edge 형식으로 검사한 내 오류였고, 1개는 재시작 테스트의 journal reconcile 누락, 1개는 `restore-recover` 검사 순서였다. 이를 고친 뒤 실패 8개와 CLI 12개만 다시 실행해 **44 passed**였다(`s0-r1-fix-focused.log`, `s0-r1-fix-rerun.log`). 새 회귀의 수정 전 실패는 reviewer들이 각자 재현한 기록에 의존하며, 이 run에서 수정 전 코드로 다시 실행하지는 않았다.
+- R1 실제 서비스 smoke(`s0-r1-actual-service-smoke.json`, `max_concurrent_requests=1`): live 세션의 idle `GET /mcp` stream이 열려 있는 동안에도 relay의 `tools/list`가 성공했다(stream 200, 도구 4개). 슬롯이 점유된 동안 서비스를 재시작하자 첫 요청은 `SERVICE_BUSY`/`not_started`였고, 슬롯이 풀린 뒤 다음 요청은 재연결해 도구 4개를 반환했다. 실제 서비스에서 재연결 자체가 거절되는 순서는 만들지 못했으므로 그 경로는 단위 회귀만으로 확인했다. schema 삭제와 service 종료를 확인했다.
+- R1 수정 뒤 ruff 통과, `uv build` 통과(wheel `925b005e…`).
+- **두 번째 공식 리뷰(R2)**: Claude 5개 approve, Claude clean-architecture는 600초 timeout, Codex는 types·state-integrity approve, 나머지 4개 request-changes였다.
+  - must-fix 두 건을 수정했다.
+    - 모든 `GET /mcp`가 인증 전부터 상한을 우회하던 문제: 이제 응답이 시작될 때까지 슬롯을 쓴다.
+    - backup의 live server 검사가 staging 뒤에 있던 문제: `store.open`을 staging 앞으로 옮겼다.
+  - Claude should-fix도 반영했다. claim이 모두 철회된 remember는 창을 잡지 않으므로, 같은 요청 scope에서 철회 뒤 discard를 고정하던 company 회귀를 원래 형태로 되돌렸다.
+  - 새 회귀와 바뀐 경로 61개는 통과했다(`s0-r2-fix-focused.log`). reorder된 backup 경로 29개도 통과했다(`s0-r2-backup-paths.log`).
+- R2 실제 서비스 smoke(`s0-r2-actual-service-smoke.json`, `max_concurrent_requests=1`):
+  - 슬롯이 점유된 동안 세션 없는 `GET /mcp`는 503/`SERVICE_BUSY`/`not_started`였다.
+  - 열린 idle stream(200) 동안 relay `tools/list`는 도구 4개를 반환했다.
+  - Docker runtime 실제 backup은 `committed`, `18.6`/`0.8.7`/`0006_agent_judged`였다.
+  - schema 삭제와 service 종료를 확인했다.
+- R2 build: wheel `9a93d2bb813244a611b77fd252fc8ed335f1aa17a1d17066526e8e418569f9fd`, sdist `9de0153af066445c51fddb96778250478a4383fd010ee811a83905a391bb2949`.
+- 남은 비차단 위험:
+  - consumed-admission 조회에 index가 없다.
+  - `memory_context`의 앞 transaction이 read admission을 commit한 뒤 뒤 transaction이 `DATABASE_BUSY`를 받으면, 효과 표시는 `not_started`다. 남는 것은 TTL 180초의 read admission뿐이며 relay는 이 code를 자동 재전송하지 않는다.
+  - `migrate`는 버전을 정수 형식으로 보고한다.
+  - archive와 live의 버전을 서로 비교하지 않는다.
+  - 세션 수 상한(64)에 도달한 상태에서는 세션이 reap될 때까지 `SESSION_NOT_FOUND`가 반복될 수 있다(재전송은 없음).
+- **세 번째 공식 리뷰(R3)**: Claude probe가 실패해 Claude 6개는 실행되지 않았다. Codex는 state-integrity만 approve, 나머지 5개는 같은 지적으로 request-changes였다. R2의 "active claim 있는 remember만 승자" 조건이 처음부터 claim 없이 기록한 complete remember를 승자에서 빼, 같은 창에 두 번째 complete 판단이 저장될 수 있었다. 이제 게시한 claim이 모두 철회된 remember만 창을 놓는다. claim 없는 remember 뒤의 remember·discard 거절과 동시 제출 1승자 회귀를 추가했다. 해당 경로 23개가 통과했다(`s0-r3-fix-focused.log`). build wheel `a461ac83e40b470d52aa0199df68ef87828fab2dcca5c2a7104c9dc25df809d3`.
+- **네 번째 공식 리뷰(R4)**: Claude probe 실패로 Claude 6개는 실행되지 않았고 Codex 6개는 모두 approve였다. 비차단 제안(consumed-admission index, 부분 겹침·인접 창 회귀)은 위 남은 위험에 둔다.
+- **공식 QA**: `agent-flow gates --phase all --execution local`이 **3/3**(lint·test·package) 통과했다. 실제 PG·Docker ops·age 환경 변수를 준 상태에서 실행했다. gate 출력에는 pytest 개수가 나오지 않으며, 개수를 얻으려고 suite를 다시 돌리지 않았다.
+- **최종 wheel smoke**(`s0-final-wheel-smoke.json`): wheel `a461ac83…`을 격리 venv에 offline 설치한 뒤 두 smoke driver를 다시 실행했다. 서비스 재시작 뒤 relay 자동 재연결(`candidate_ready`), 새 key 재시도의 같은 operation, `ADMISSION_CONSUMED`, `SELECTION_ALREADY_RECORDED`(selection·claim 각 1개), clock 잠금 중 `/readyz` 200/0.007s, `SERVICE_BUSY`가 관측됐다. 슬롯 점유 중 `GET /mcp`는 503이었고 idle stream 중 relay 호출은 성공했다. Docker backup은 `committed` 18.6/0.8.7/0006이었다. schema·service·임시 venv를 정리했다.
+- **run 종료 뒤 코드 리뷰(Standards·Spec 두 축)**: 지적 중 아래를 반영했다.
+  - `update-checkpoint` 증거 표현을 줄였다.
+  - `_tx`의 중복 연결 실패 오류를 `_connection_failed()`로 합쳤다.
+  - relay 오류 검증을 `_verified`로 합쳤다.
+  - 재시작한 서버가 다른 protocol version을 협상하면 복구를 거절한다. 회귀 1개를 추가했다.
+  - 예외를 던지는 버전 검사를 `require_*`로 이름을 바꾸고 `INSTALLED_VECTOR_SQL`을 공유했다.
+  - I35 문구를 claim 철회 규칙에 맞췄다.
+  - CHANGELOG·README의 리뷰 이력 표현을 현재 동작 기준으로 정리했다.
+  - 빈 줄을 정리했다.
+  - 반영하지 않은 판단: `_send`의 tuple 반환 구조, edge의 별도 상한 counter, 부분 겹침·인접 창 회귀, 다른 PG patch 버전 실측.
+  - 바뀐 경로(stdio·ops·authority_concurrency·edge·CLI 전체와 preflight)는 **534 passed**였다(`s0-post-review-focused.log`). ruff 통과. 새 wheel은 `0a063e54e71edfcf7636ff44c7e464823f88754b39602118429a6d6285f5ca3f`이며, 격리 venv 설치 뒤 두 smoke driver가 앞과 같은 결과였다(`s0-post-review-wheel-smoke.json`).
+  - 공식 AF QA gate 3/3은 이 리뷰 반영 전 코드(`a461ac83…`)의 결과다.
+- 안정 개인 배포·회사 local 배포(8778)·개인 failed6/DLQ6은 건드리지 않았다. 공식 review/QA/handoff 결과는 run artifacts를 따른다.
+
 ## 공통 coding-agent 판단 전환 — development/20261013-234417
 
 정본은 [통합 이슈 #5](https://github.com/chonamdoo/agents-memory/issues/5)와 [사용자 확정 결정](https://github.com/chonamdoo/agents-memory/issues/5#issuecomment-6150124320)이다. 개인·회사는 현재 Claude/Codex가 MCP로 판단을 제출하고 서버가 원문·revision·권한을 검증하는 같은 경로다. lexical/entity는 후보 색인이며 기본 판단이 아니다. Qwen 추출·consolidation·reflection과 서버 embedding/reranking 실행 경로·설정·의존성을 제거했다.

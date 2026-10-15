@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### stage-0 동시성·복구 수정
+
+- legacy MCP 세션이 재시작·유휴 만료·세션 수 초과로 사라지면 edge가 `SESSION_NOT_FOUND`/404/`not_started`를 반환하고, 다른 credential의 세션에는 `SESSION_CREDENTIAL_DENIED`/403을 반환한다. stdio relay는 모든 필드가 검증된 `SESSION_NOT_FOUND`/`not_started`에서만 저장한 `initialize`로 다시 연결하고 원 요청을 한 번 다시 보낸다. 재연결이 실패하거나 서버가 다른 protocol version을 협상하면 요청을 보내지 않고 `SESSION_NOT_FOUND`/`not_started`를 반환하며, 다음 요청 전에 다시 연결을 시도한다.
+- serve·migrate·backup·restore가 하나의 DB 지원 계약(PostgreSQL 18.x, pgvector ≥0.8.7, 같은 major의 PG 도구)을 쓴다. backup archive는 live 버전을 기록하고 restore는 같은 계약으로 검사한다. 지원하지 않는 도구·live server·archive는 journal reconcile·DDL·restore fence 전에(backup은 staging·recipients 전에도) `DATABASE_VERSION_UNSUPPORTED`/`not_started`로 거절한다.
+- 같은 source revision·contract·요청 snapshot에서 겹치는 창은 active complete remember/discard 하나만 이긴다(`SELECTION_ALREADY_RECORDED`). 게시한 claim이 모두 철회된 remember는 창을 놓고, claim 없이 기록한 remember는 계속 잡는다. 응답을 잃은 판단은 같은 admission으로 새 key 재시도 시 원래 operation을 돌려받고, 같은 admission의 다른 판단은 `ADMISSION_CONSUMED`다. 기존 receipt digest·schema·archive 형식은 바뀌지 않는다.
+- `max_concurrent_requests`(기본16) 초과는 인증 전 `SERVICE_BUSY`, `pool_acquire_timeout_seconds`(기본5초) 초과는 `DATABASE_BUSY`로 `not_started` 거절한다. legacy `GET /mcp`는 stream이 열릴 때까지 상한에 포함된다. 인증은 전역 `am_clock` 잠금 없이 read-only로 수행하고 변경 트랜잭션이 잠금 아래에서 다시 확인한다.
+- `restore-recover`는 migration fence를 먼저 판별한 뒤 명시 runtime을 검증하고, 그다음에 복구가 필요한지 판단한다. 이전 순서에서는 marker가 없으면 `RECOVERY_NOT_REQUIRED`가 잘못된 실행 파일의 `BINARY_REQUIRED`를 가려, 기존 CLI 회귀 12개가 실패했다.
+- 업그레이드 주의: 새 설정 두 개가 `Settings` 전체 digest에 들어가므로, 이전 build가 남긴 중단된 migration fence는 이 build에서 `MIGRATION_RECOVERY_CONFLICT`로 거절된다(fail-closed). 중단된 migration은 업그레이드 전에 이전 build로 마친다.
+
 ### 공통 coding-agent 판단 전환
 
 - 개인·회사를 `agent_judged` 하나로 전환했다. 사용 중 Claude/Codex가 MCP source_selection·관계·relevance 판단을 제출하고 서버는 exact 원문·revision·권한을 검증한다. Qwen extraction/consolidation/reflection, 서버 embedding/reranking과 obsolete model 설정·명령·의존성을 제거했다. lexical/entity는 후보 색인이고 별도 회사 selection 승인은 없다.
