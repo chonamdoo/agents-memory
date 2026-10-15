@@ -207,6 +207,11 @@ def _contains_identifier(text: str, identifier: str) -> bool:
     return identifier in set(_IDENTIFIER.findall(text))
 
 
+def grounded_identifiers(text: str) -> tuple[str, ...]:
+    """Code identifiers in ``text`` that the literal grounding check accepts against the same text."""
+    return tuple(sorted(value for value in _identifiers(text) if _contains_identifier(text, value)))
+
+
 def _timestamp_tokens(text: str) -> set[datetime | str]:
     values: set[datetime | str] = set()
     for literal in _EXPLICIT_TIME.findall(text):

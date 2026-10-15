@@ -28,6 +28,22 @@ from .domain import (
     Selector,
     approval_signing_payload,
 )
+from .jev import JEV_DEFAULT_MODEL
+from .judge import (
+    PROVIDER_FILE,
+    describe,
+    grant_new_binding,
+    has_key,
+    load_state,
+    read_key,
+    read_supplied_key,
+    read_worker_token,
+    set_agent,
+    set_jev,
+    validate_key,
+    verify_key,
+    worker_snapshot,
+)
 from .private_io import private_read, private_write
 from .selection import RECORD_ADAPTER, RecordInput
 from .wire import decode_json, decode_json_value, validate_wire
@@ -106,6 +122,99 @@ def scope_choice() -> RuleScope:
     return choices[value]
 
 
+def judge_choice() -> str:
+    print("기억 판단 provider를 고르세요.\n"
+          "1) agent — 지금 쓰는 coding agent(Claude Code·Codex·OMP 구독)가 MCP로 판단 [기본]\n"
+          "2) jev — TypeSafe Jev API가 백그라운드에서 판단 (capture 원문 window가 api.typesafe.ai(미국)로 전송, API 키 필요)",
+          file=sys.stderr)
+    print("선택 [1/2, 기본 1]: ", end="", file=sys.stderr, flush=True)
+    value = sys.stdin.readline().strip() or "1"
+    choices = {"1": "agent", "agent": "agent", "2": "jev", "jev": "jev"}
+    if value not in choices:
+        raise DomainError("JUDGE_PROVIDER_REQUIRED", "Choose exactly agent or jev")
+    return choices[value]
+
+
+def jev_key(key_file: Path | None, stored=None) -> tuple[str, list[str]]:
+    """Key sources in order: an explicit file, the stored private copy, a no-echo terminal prompt."""
+    if key_file is not None:
+        return read_supplied_key(key_file)
+    if stored is not None:
+        return stored(), []
+    if not sys.stdin.isatty():
+        raise DomainError("JUDGE_KEY_REQUIRED", "Pass --key-file, or run in a terminal to enter the Jev API key without echo")
+    import getpass
+
+    return validate_key(getpass.getpass("Jev API 키 (화면에 표시되지 않음): ", stream=sys.stderr)), []
+
+
+async def init_judge_plan(args) -> tuple | None:
+    """Decide and verify the judge before any initialization effect; an existing choice is left alone."""
+    if (args.state_dir.resolve() / "judge" / PROVIDER_FILE).exists():
+        return None
+    provider = args.judge or (judge_choice() if args.mode == "personal" and sys.stdin.isatty() else "agent")
+    if provider == "agent":
+        if args.jev_key_file is not None:
+            raise DomainError("INPUT_INVALID", "--jev-key-file applies only to --judge jev")
+        return ("agent", None, [], None)
+    if args.mode != "personal":
+        raise DomainError("JUDGE_PROVIDER_FORBIDDEN",
+            "Jev judgment sends source text off this machine and is available only in personal deployments", status=403)
+    key, warnings = jev_key(args.jev_key_file)
+    return ("jev", key, warnings, await asyncio.to_thread(verify_key, key, JEV_DEFAULT_MODEL))
+
+
+async def apply_init_judge(args, result: dict, plan: tuple | None) -> dict:
+    if plan is None:
+        settings = load_settings(args.config)
+        return {**describe(settings, load_state(settings), operator=True),
+                "unchanged": "already configured; change it with agents-memory judge set"}
+    provider, key, warnings, model = plan
+    operator = argparse.Namespace(**{**vars(args), "token_file": Path(result["operator_token_file"])})
+    try:
+        async with authority(operator) as (settings, store, actor):
+            if provider == "jev":
+                outcome = await set_jev(settings, store, actor, key, verify=lambda _key, _model: model)
+            else:
+                outcome = await set_agent(settings, store, actor, forget_key=False)
+    except DomainError as error:
+        return {"error": error.public(), "next": f"agents-memory judge set {provider}"}
+    if warnings:
+        outcome["warnings"] = warnings
+    return outcome
+
+
+async def execute_judge(args, settings: Settings, store, actor) -> dict:
+    if args.judge_action == "status":
+        state = load_state(settings)
+        projects = [binding.id for binding in await store.list_bindings(actor)]
+        grants: list[str] | dict | None = None
+        if state.provider == "jev":
+            try:
+                grants = list((await store.authenticate(read_worker_token(settings), (Role.AGENT,))).bindings)
+            except DomainError as error:
+                grants = {"error": error.code}
+        return {
+            **describe(settings, state, operator=True),
+            "projects": projects,
+            "worker_grants": grants,
+            "projects_without_worker_grant": [item for item in projects if item not in grants] if isinstance(grants, list) else None,
+            "worker": worker_snapshot(settings),
+        }
+    if args.provider == "agent":
+        if args.key_file is not None or args.prompt_key:
+            raise DomainError("INPUT_INVALID", "Key options apply only to judge set jev")
+        return await set_agent(settings, store, actor, forget_key=args.forget_key)
+    if args.forget_key:
+        raise DomainError("INPUT_INVALID", "--forget-key applies only to judge set agent")
+    stored = None if args.prompt_key or not has_key(settings) else (lambda: read_key(settings))
+    key, warnings = jev_key(args.key_file, stored)
+    result = await set_jev(settings, store, actor, key, model=args.model)
+    if warnings:
+        result["warnings"] = warnings
+    return result
+
+
 def _execute_spool(args, settings: Settings) -> dict:
     from .spool import ProducerSpool
 
@@ -157,7 +266,8 @@ async def execute(args) -> dict | None:
     if args.command == "init":
         from .initialization import initialize_deployment
 
-        return await initialize_deployment(
+        plan = await init_judge_plan(args)
+        result = await initialize_deployment(
             config_path=args.config,
             realm=args.realm,
             mode=args.mode,
@@ -172,6 +282,7 @@ async def execute(args) -> dict | None:
             deployment_id=args.deployment_id,
             resume=args.resume,
         )
+        return {**result, "judge": await apply_init_judge(args, result, plan)}
     if args.command == "migrate":
         from .ops import migrate_authority
 
@@ -279,7 +390,11 @@ async def execute(args) -> dict | None:
         if args.command == "project":
             if args.project_action == "add":
                 binding = await store.register_binding(actor, args.label, str(args.locator.resolve()) if args.locator else None, args.key)
-                return binding.model_dump(mode="json")
+                result = binding.model_dump(mode="json")
+                judge = await grant_new_binding(settings, store, actor, binding.id)
+                if judge is not None:
+                    result["judge"] = judge
+                return result
             if args.project_action == "relocate":
                 try:
                     locator = args.locator.resolve(strict=True)
@@ -294,6 +409,10 @@ async def execute(args) -> dict | None:
                 )
                 return (await store.relocate_binding(actor, command)).model_dump(mode="json")
             return {"projects": [item.model_dump(mode="json") for item in await store.list_bindings(actor)], "target_set_revision": await store.target_set_revision(actor)}
+        if args.command == "judge":
+            if actor.role != Role.OPERATOR:
+                raise DomainError("ROLE_DENIED", "Only the operator can inspect or choose the judge provider", status=403)
+            return await execute_judge(args, settings, store, actor)
         if args.command == "credential":
             if actor.role != Role.OPERATOR:
                 raise DomainError("ROLE_DENIED", "Only the operator can manage authority credentials", status=403)
@@ -314,7 +433,8 @@ async def execute(args) -> dict | None:
                 "realm": settings.realm,
                 "mode": settings.mode,
                 "capability": settings.capability,
-                "memory_judgment": "current_coding_agent",
+                "memory_judgment": "current_coding_agent" if load_state(settings).provider == "agent" else "jev_background_personal_opt_in",
+                "judge": describe(settings, load_state(settings), operator=True),
                 "recall": "candidate_manifest_then_explicit_relevance",
                 "projects": len(projects),
                 "journal": store.journal.verify(),
@@ -438,6 +558,9 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--operator-token-out", type=Path)
     init.add_argument("--port", type=int, default=8768)
     init.add_argument("--resume", action="store_true", help="Resume only an authenticated matching initialization intent")
+    init.add_argument("--judge", choices=("agent", "jev"),
+                      help="Source judge provider; a personal terminal asks when omitted, otherwise agent")
+    init.add_argument("--jev-key-file", type=Path, help="Jev API key file for --judge jev; read once into private state")
     for action in ("backup", "restore", "restore-recover"):
         operation = commands.add_parser(action)
         operation.add_argument("--age-binary", type=Path, required=True)
@@ -491,6 +614,15 @@ def parser() -> argparse.ArgumentParser:
     relocate.add_argument("--expected-locator", type=Path, required=True)
     relocate.add_argument("--locator", type=Path, required=True)
     relocate.add_argument("--key", required=True)
+    judge = commands.add_parser("judge", help="Inspect or choose who judges captured sources").add_subparsers(
+        dest="judge_action", required=True)
+    judge.add_parser("status")
+    choose = judge.add_parser("set")
+    choose.add_argument("provider", choices=("agent", "jev"))
+    choose.add_argument("--key-file", type=Path, help="Jev API key file read once; the service keeps a private 0600 copy")
+    choose.add_argument("--prompt-key", action="store_true", help="Enter a new Jev API key without echo")
+    choose.add_argument("--model", default=JEV_DEFAULT_MODEL, help="Pinned Jev model ID")
+    choose.add_argument("--forget-key", action="store_true", help="With agent: delete the stored Jev API key")
     credential = commands.add_parser("credential").add_subparsers(dest="credential_action", required=True)
     issue = credential.add_parser("issue")
     issue.add_argument("--role", choices=tuple(Role), required=True)

@@ -16,7 +16,7 @@
 | U08 | 세션마다 불필요한 context 방지 | 연결 시 corpus·규칙 본문 0, 작은 고정 catalog, 요청별 bounded selection |
 | U09 | MCP 2 형태 | 공식 SDK의 modern protocol 실제 호출. legacy 동일 handler 경로 별도 확인 |
 | U10 | Python 적합성 확인 | Python 3.12·공식 SDK2 실제 wire 호출. 제품 runtime 증거는 probe와 분리 |
-| U11 | 로컬 우선 | cloud memory 없이 실제 PG·같은 MCP source_selection/claim_judgment/relevance·정정·다음 read를 실행. 서버 모델 없음 |
+| U11 | 로컬 우선 | cloud memory 없이 실제 PG·같은 MCP source_selection/claim_judgment/relevance·정정·다음 read를 실행. 기본 provider에서 서버 모델 없음(개인 opt-in Jev는 U32) |
 | U12 | 1–2주 직접 사용 후 cloud | architecture 10절의 고정 paired memory-on/off 제한 trial. 시작·지표·중단·통과 조건 제공, elapsed/효익 조작 금지 |
 | U13 | 로컬·cloud 동일 설계 | core·schema·API·rule semantics 유지. 배포·인증·network 경계만 차이 |
 | U14 | 회사 정보는 외부 memory 저장 불가 | 회사·개인·고객 deployment 분리. 회사→개인/cloud sync 없음 |
@@ -37,6 +37,7 @@
 | U29 | 최신 Agent Flow 설치 | 고정된 최신 main의 실제 version·설치 결과. 기존 global tool은 보존 |
 | U30 | 프로젝트 성질에 맞춘 AF 설정 | Python, local architecture, local verification gates, 요청된 두 native reviewer |
 | U31 | 최종안을 Agent Flow로 실행 | 실제 run·isolated worktree·phase artifact·review·QA·local handoff. PR/merge는 별도 사용자 승인 |
+| U32 | 판단 provider 선택 | 설치(`init`) 때 agent/jev 선택, operator CLI로 언제든 변경·재시작 없이 반영. jev는 개인만·회사 거절, 키는 0600 사본·argv/MCP/로그 미노출, MCP는 조회만, 자동 fallback 없음, 기록은 agent와 같은 검증 |
 
 ## 추가 필수 불변식
 

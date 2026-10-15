@@ -2,7 +2,7 @@
 
 ## 결정
 
-**Python 3.12 + 공식 MCP SDK 2.3 + PostgreSQL 18 authority + 현재 coding-agent 판단**을 사용한다. 개인·회사 모두 `agent_judged`다. Claude/Codex 등 consumer가 같은 MCP로 원문 선택·관계·relevance를 판단하고 서버는 span·revision·권한·삭제·snapshot을 검증한다. lexical/entity index는 후보 검색뿐이다. 별도 서버 LLM·모델 gateway·background API·Jev/provider fallback은 없다. Agent Flow 없이도 같은 계약을 사용하며 이후 개인 cloud는 같은 schema·handler·규칙 의미의 독립 배포다.
+**Python 3.12 + 공식 MCP SDK 2.3 + PostgreSQL 18 authority + 현재 coding-agent 판단**을 사용한다. 개인·회사 모두 MCP 계약은 `agent_judged`다. Claude/Codex 등 consumer가 같은 MCP로 원문 선택·관계·relevance를 판단하고 서버는 span·revision·권한·삭제·snapshot을 검증한다. lexical/entity index는 후보 검색뿐이다. 개인 배포에 한해 operator가 원문 선택·관계 판단 provider를 TypeSafe Jev로 바꿀 수 있다(§2a). 이 경우에도 relevance는 coding agent가 하고 기록은 같은 검증을 거친다. 로컬 모델 gateway·자동 다운로드·provider 자동 fallback은 없고 회사 배포는 Jev를 쓸 수 없다. Agent Flow 없이도 같은 계약을 사용하며 이후 개인 cloud는 같은 schema·handler·규칙 의미의 독립 배포다.
 
 Hindsight를 실행 엔진으로 감싸지 않는다. 입력 eligibility와 내부 writer fencing을 외부 wrapper로 강제하지 못하고 `processing=0`도 완전한 quiescence가 아니기 때문이다. 별도 vector DB, Neo4j, Redis, 두 번째 job owner, 외부 trace 서비스는 필요하지 않다. PostgreSQL 안의 edge table로 제한된 근거 graph를 구성한다. SQLite는 host의 임시 spool에만 사용한다.
 
@@ -28,7 +28,7 @@ Hindsight를 실행 엔진으로 감싸지 않는다. 입력 eligibility와 내�
 
 ## 2. 구조·권위
 
-Consumer의 네 MCP 도구와 인증 producer/API·operator CLI는 shared application handler를 호출한다. PostgreSQL transaction이 source/claim revision·credential/grant·receipt·admission·relation·rule approval·deletion authority를 소유한다. `CleanupScheduler(settings,store)`는 due pending을 만들 뿐 원문을 해석하지 않는다. 다음 coding agent가 bounded pending/source/claim을 inspect하고 판단을 제출한다. 결과는 bounded context composer와 final authority fence를 거쳐 돌아간다. 독립 body-free deletion journal은 restore 밖에 남는다. model gateway·leased inference worker·두 번째 판단 queue는 없다.
+Consumer의 네 MCP 도구와 인증 producer/API·operator CLI는 shared application handler를 호출한다. PostgreSQL transaction이 source/claim revision·credential/grant·receipt·admission·relation·rule approval·deletion authority를 소유한다. `CleanupScheduler(settings,store)`는 due pending을 만들 뿐 원문을 해석하지 않는다. 기본 provider에서는 다음 coding agent가 bounded pending/source/claim을 inspect하고 판단을 제출한다. 개인 배포가 `jev`를 고르면 `JudgeWorker`가 전용 agent credential로 같은 inspect/record를 호출한다(§2a). 결과는 bounded context composer와 final authority fence를 거쳐 돌아간다. 독립 body-free deletion journal은 restore 밖에 남는다. 로컬 model gateway·두 번째 판단 queue는 없다.
 
 | 경계 | 소유 |
 |---|---|
@@ -36,11 +36,18 @@ Consumer의 네 MCP 도구와 인증 producer/API·operator CLI는 shared applic
 | selection/semantic | original span inventory·qualification/literal·relation validation, 모델 호출 없음 |
 | store/migrations | PG authority·짧은 transaction·source/claim revision·receipt·admission·pending·audit |
 | jobs | periodic cleanup pending scheduling·start/status/stop |
+| judge | provider 설정 파일(`state_dir/judge`)·키·worker credential, 개인 전용 Jev worker의 pending 판단·fence·escalation, 조회 전용 `ref=judge` |
 | lexical | Hangul/code identifier/entity 후보 index, 기억·관련성 판단 아님 |
 | rules/context | exact rule approval·3 scopes·tri-state selector·2-call relevance·한 plane·budget |
 | edge | SDK2 MCP와 producer API의 strict decode/auth, business policy 복제 금지 |
 | hosts | typed capture provenance·agent/context generation·pending pointer·required first-action guard·capability |
 | ops/CLI | owned install·토큰·scope·spool·doctor·명시 config/schema upgrade·encrypted backup/restore |
+
+### 2a. 판단 provider
+
+provider는 `agent`(기본)와 `jev` 둘이다. 상태는 Settings·DB가 아니라 `state_dir/judge/provider.json`(0600)에 둔다. Settings는 frozen이며 serve가 한 번만 읽고, host receipt·init intent·migration fence가 그 digest와 capability에 묶여 있다. DB에 두면 backup/restore allowlist가 바뀌고 restore가 egress 상태를 과거로 되돌린다. operator CLI만 이 파일과 키(`jev.key`)·worker token(`jev-agent.token`)을 쓴다. MCP는 `memory_inspect(ref="judge")`로 키·fingerprint·credential 없는 view만 읽는다.
+
+`JudgeWorker`는 serve 안에서 capture 알림과 30초 주기로 깨어나 매 cycle·매 Jev 요청·매 record 직전에 provider 파일을 다시 읽는다. 전환·비활성화·company mode를 감지하면 보내기 전에 멈추고, 이미 받은 결과도 기록하지 않는다(fence). 키 거절은 revision이 바뀔 때까지 멈춘다. worker는 span별 Noul로 기억 가치를 묻고 p≥0.8 span만 원문 그대로 claim으로 쓰며, 모두 p≤0.2이면 discard한다. 불확실·주입 의심·이전 거절과 같은 내용·서버 검증 실패는 기록하지 않고 pending으로 남겨 coding agent에게 넘긴다. cleanup은 `validate_consolidation`이 받아들일 수 있는 쌍만 Choice로 묻고 p≥0.8 관계만 제출한다. 모든 기록은 single-winner·거절 비교·admission을 그대로 거치고 worker credential과 `Jev(<model>)` reason으로 출처를 남긴다. relevance는 항상 coding agent의 2-call 계약이다.
 
 ## 3. identity·인증·egress
 
@@ -48,7 +55,7 @@ Consumer의 네 MCP 도구와 인증 producer/API·operator CLI는 shared applic
 
 Agent-plane과 producer/operator-plane의 credential을 분리한다. MCP token은 read/record/feedback만 가능하며 approval·publish·migration·backup·실제 철회 권한이 없다. producer는 인증된 adapter envelope를 capture할 수 있지만 declared speaker는 사실성 보장이 아니다. credential revoke는 다음 요청과 진행 중 publication에서도 재검사한다. Legacy MCP session도 각 호출의 현재 인증을 사용하며 session ID만으로 actor를 유지하지 않는다.
 
-회사의 각 고객 및 개인은 독립 deployment다. 회사→개인/cloud memory sync·backup fallback은 없다. 현재 coding-agent의 모델 처리 허가와 memory 저장 허가는 별개다. strict no-egress는 허가된 coding-agent 경로 및 OS/network 정책을 따로 요구한다. 팀 Claude/Codex 구독을 server background inference API 허가로 간주하지 않으며 서버는 모델 route·download를 제공하지 않는다.
+회사의 각 고객 및 개인은 독립 deployment다. 회사→개인/cloud memory sync·backup fallback은 없다. 현재 coding-agent의 모델 처리 허가와 memory 저장 허가는 별개다. strict no-egress는 허가된 coding-agent 경로 및 OS/network 정책을 따로 요구한다. 팀 Claude/Codex 구독을 server background inference API 허가로 간주하지 않으며 서버는 모델 route·download를 제공하지 않는다. 유일한 서버 측 외부 판단은 개인 배포의 operator가 켠 Jev이고, 대상은 worker credential이 grant받은 project의 원문 window·기억 문장이다. TypeSafe는 미국에서 처리하며 zero data retention은 enterprise에만 제공한다.
 
 기본은 loopback HTTP+bearer와 exact Host/Origin allowlist다. token·원문·raw provider trace/추론을 로그·telemetry에 남기지 않는다. capture/record/feedback의 secret-carrying field는 digest·spool 전에 공통 `reject_source_secrets` guard를 거친다. 고신뢰 prefixed credential·완전한 private-key armor는 generic `SOURCE_SECRET_REJECTED`, `effect=not_started`, status422이며 host는 safe gap metadata만 남긴다. rejected body·digest·key를 저장하거나 derivative를 redaction/rewrite하지 않는다. 일반 code example까지 모두 비밀로 취급하지 않으며 임의 모든 비밀/PII 검출은 보장하지 않는다.
 

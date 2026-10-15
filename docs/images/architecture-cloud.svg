@@ -1,0 +1,84 @@
+<!-- render: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" -headless=new -disable-gpu -hide-scrollbars -force-device-scale-factor=2 -window-size=1700,940 -screenshot=docs/images/architecture-cloud.png file://$PWD/docs/images/architecture-cloud.svg -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1700" height="940" viewBox="0 0 1700 940">
+<style>text{font-family:"Pretendard","Apple SD Gothic Neo","Noto Sans KR",sans-serif}.t{font-size:20px;font-weight:700;fill:#e6edf3}.st{font-size:14px;fill:#9198a1}.ct{font-size:15px;font-weight:700;fill:#e6edf3}.nt{font-size:16px;font-weight:700}.ns{font-size:12.5px;fill:#9198a1}.lb{font-size:12.5px}.b{font-weight:700}.lg{font-size:13px;fill:#9198a1}</style>
+<defs><marker id="m-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/></marker><marker id="ms-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/></marker><marker id="m-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker><marker id="ms-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker><marker id="m-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f47067"/></marker><marker id="ms-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f47067"/></marker><marker id="m-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/></marker><marker id="ms-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/></marker></defs>
+<rect width="1700" height="940" fill="#0d1117"/>
+<text x="40" y="46" class="t">클라우드 환경 — 계획 (미구축)</text>
+<text x="40" y="72" class="st">1–2주 로컬 trial 뒤 개인 corpus만 같은 core·API·schema의 별도 배포로 검토한다. 배포·인증·network만 다르다. 지금 provisioning된 것은 없다.</text>
+<rect x="30" y="196" width="560" height="264" rx="12" fill="#0f1a2e" stroke="#4a7fd6" stroke-width="2"/>
+<text x="50" y="224" class="ct">개발자 PC</text>
+<rect x="30" y="590" width="560" height="128" rx="12" fill="#1a1416" stroke="#8b949e" stroke-width="2"/>
+<text x="50" y="618" class="ct">회사 로컬 배포 (별도)</text>
+<rect x="750" y="196" width="670" height="648" rx="12" fill="#0e1a12" stroke="#3fb950" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="770" y="224" class="ct">개인 클라우드 배포 (계획)</text>
+<rect x="1120" y="440" width="276" height="144" rx="12" fill="#0c1f36" stroke="#58a6ff" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1140" y="468" class="ct">PostgreSQL 18</text>
+<polyline points="262,246 262,152" fill="none" stroke="#8b949e" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#m-gray)"/>
+<polyline points="294,282 382,282" fill="none" stroke="#8b949e" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#m-gray)"/>
+<polyline points="174,318 174,386 382,386" fill="none" stroke="#8b949e" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#m-gray)"/>
+<polyline points="294,666 746,666" fill="none" stroke="#f47067" stroke-width="2.4" stroke-linejoin="round" marker-end="url(#m-red)"/>
+<polyline points="566,282 772,282" fill="none" stroke="#8b949e" stroke-width="1.8" stroke-dasharray="6 4" stroke-linejoin="round" marker-end="url(#m-gray)"/>
+<polyline points="566,386 772,386" fill="none" stroke="#8b949e" stroke-width="1.8" stroke-dasharray="6 4" stroke-linejoin="round" marker-end="url(#m-gray)"/>
+<polyline points="894,410 894,478" fill="none" stroke="#8b949e" stroke-width="1.8" stroke-dasharray="6 4" stroke-linejoin="round" marker-end="url(#m-gray)"/>
+<polyline points="894,740 894,562" fill="none" stroke="#8b949e" stroke-width="1.8" stroke-dasharray="6 4" stroke-linejoin="round" marker-end="url(#m-gray)"/>
+<polyline points="1014,520 1118,520" fill="none" stroke="#3fb950" stroke-width="1.8" stroke-dasharray="6 4" stroke-linejoin="round" marker-end="url(#m-green)"/>
+<polyline points="1014,760 1463.578947368421,760" fill="none" stroke="#a371f7" stroke-width="1.8" stroke-dasharray="6 4" stroke-linejoin="round" marker-end="url(#m-purple)"/>
+<polyline points="1463.578947368421,794 1016,794" fill="none" stroke="#3fb950" stroke-width="1.8" stroke-dasharray="6 4" stroke-linejoin="round" marker-end="url(#m-green)"/>
+<rect x="40" y="96" width="260" height="54" rx="27.0" fill="#2e2210" stroke="#d29922" stroke-width="1.6"/>
+<text x="170.0" y="118.2" class="nt" text-anchor="middle" fill="#e6edf3">Anthropic · OpenAI</text>
+<text x="170.0" y="134.7" class="ns" text-anchor="middle">구독 LLM</text>
+<rect x="54" y="246" width="240" height="72" rx="9" fill="#151b23" stroke="#4a7fd6" stroke-width="1.6"/>
+<text x="174.0" y="275.7" class="nt" text-anchor="middle" fill="#e6edf3">Claude Code · Codex · OMP</text>
+<text x="174.0" y="295.2" class="ns" text-anchor="middle">작업 세션</text>
+<rect x="384" y="246" width="182" height="72" rx="9" fill="#151b23" stroke="#4a7fd6" stroke-width="1.6"/>
+<text x="475.0" y="275.7" class="nt" text-anchor="middle" fill="#e6edf3">stdio relay</text>
+<text x="475.0" y="295.2" class="ns" text-anchor="middle">MCP → HTTPS (계획)</text>
+<rect x="384" y="350" width="182" height="72" rx="9" fill="#151b23" stroke="#4a7fd6" stroke-width="1.6"/>
+<text x="475.0" y="379.7" class="nt" text-anchor="middle" fill="#e6edf3">host adapter</text>
+<text x="475.0" y="399.2" class="ns" text-anchor="middle">hook capture → spool</text>
+<text x="272" y="178" class="lb" text-anchor="start" fill="#c9d1d9" stroke="#0d1117" stroke-width="5" paint-order="stroke" stroke-linejoin="round">작업 대화 + MCP 판단</text>
+<text x="339" y="274" class="lb" text-anchor="middle" fill="#c9d1d9" stroke="#0f1a2e" stroke-width="5" paint-order="stroke" stroke-linejoin="round">MCP</text>
+<text x="279" y="378" class="lb" text-anchor="middle" fill="#c9d1d9" stroke="#0f1a2e" stroke-width="5" paint-order="stroke" stroke-linejoin="round">hook 이벤트</text>
+<rect x="54" y="630" width="240" height="72" rx="9" fill="#151b23" stroke="#8b949e" stroke-width="1.6"/>
+<text x="174.0" y="659.7" class="nt" text-anchor="middle" fill="#e6edf3">회사 PC · 회사 PG</text>
+<text x="174.0" y="679.2" class="ns" text-anchor="middle">agent 판단만 · Jev 금지</text>
+<text x="442" y="656" class="lb b" text-anchor="middle" fill="#f47067" stroke="#1a1416" stroke-width="5" paint-order="stroke" stroke-linejoin="round">회사→개인/cloud 동기화·이동 없음</text>
+<circle cx="670" cy="666" r="16" fill="#0d1117"/>
+<path d="M659,655 L681,677 M681,655 L659,677" stroke="#f47067" stroke-width="4.5" stroke-linecap="round"/>
+<rect x="774" y="258" width="240" height="152" rx="9" fill="#151b23" stroke="#3fb950" stroke-width="1.6" stroke-dasharray="6 4"/>
+<text x="894.0" y="327.7" class="nt" text-anchor="middle" fill="#e6edf3">TLS · OAuth ingress</text>
+<text x="894.0" y="347.2" class="ns" text-anchor="middle">audience 검증 · 후보: Caddy</text>
+<text x="670" y="272" class="lb" text-anchor="middle" fill="#c9d1d9" stroke="#0d1117" stroke-width="5" paint-order="stroke" stroke-linejoin="round">MCP over HTTPS</text>
+<text x="670" y="376" class="lb" text-anchor="middle" fill="#c9d1d9" stroke="#0d1117" stroke-width="5" paint-order="stroke" stroke-linejoin="round">capture</text>
+<rect x="774" y="480" width="240" height="80" rx="9" fill="#151b23" stroke="#3fb950" stroke-width="1.6" stroke-dasharray="6 4"/>
+<text x="894.0" y="513.7" class="nt" text-anchor="middle" fill="#e6edf3">agents-memory 서비스</text>
+<text x="894.0" y="533.2" class="ns" text-anchor="middle">같은 core · API · schema · 규칙</text>
+<text x="904" y="449" class="lb" text-anchor="start" fill="#c9d1d9" stroke="#0e1a12" stroke-width="5" paint-order="stroke" stroke-linejoin="round">검증된 principal</text>
+<rect x="774" y="740" width="240" height="72" rx="9" fill="#151b23" stroke="#a371f7" stroke-width="1.6" stroke-dasharray="6 4"/>
+<text x="894.0" y="769.7" class="nt" text-anchor="middle" fill="#e6edf3">Jev 판단 worker</text>
+<text x="894.0" y="789.2" class="ns" text-anchor="middle">선택 · 개인 corpus</text>
+<text x="904" y="656" class="lb" text-anchor="start" fill="#c9d1d9" stroke="#0e1a12" stroke-width="5" paint-order="stroke" stroke-linejoin="round">inspect → record (같은 검증)</text>
+<rect x="1120" y="258" width="276" height="72" rx="9" fill="#151b23" stroke="#3fb950" stroke-width="1.6" stroke-dasharray="6 4"/>
+<text x="1258.0" y="287.7" class="nt" text-anchor="middle" fill="#e6edf3">private network</text>
+<text x="1258.0" y="307.2" class="ns" text-anchor="middle">후보: Headscale</text>
+<rect x="1138" y="488" width="240" height="72" rx="9" fill="#151b23" stroke="#58a6ff" stroke-width="1.6" stroke-dasharray="6 4"/>
+<text x="1258.0" y="517.7" class="nt" text-anchor="middle" fill="#e6edf3">개인 corpus만</text>
+<text x="1258.0" y="537.2" class="ns" text-anchor="middle">원문 · 판단 · 색인</text>
+<text x="1067" y="510" class="lb b" text-anchor="middle" fill="#56d364" stroke="#0e1a12" stroke-width="5" paint-order="stroke" stroke-linejoin="round">트랜잭션</text>
+<rect x="1120" y="614" width="276" height="72" rx="9" fill="#151b23" stroke="#3fb950" stroke-width="1.6" stroke-dasharray="6 4"/>
+<text x="1258.0" y="643.7" class="nt" text-anchor="middle" fill="#e6edf3">backup · 삭제 head witness</text>
+<text x="1258.0" y="663.2" class="ns" text-anchor="middle">후보: pgBackRest · restic</text>
+<polygon points="1560,682.0 1675.0,777 1560,872.0 1445.0,777" fill="#261a40" stroke="#a371f7" stroke-width="1.6" stroke-dasharray="6 4"/>
+<text x="1560" y="771.2" class="nt" text-anchor="middle" fill="#e6edf3">Jev API</text>
+<text x="1560" y="789.7" class="ns" text-anchor="middle">api.typesafe.ai · 미국</text>
+<text x="1200" y="750" class="lb" text-anchor="middle" fill="#c9a6ff" stroke="#0e1a12" stroke-width="5" paint-order="stroke" stroke-linejoin="round">원문 window 판단 요청</text>
+<text x="1200" y="814" class="lb b" text-anchor="middle" fill="#56d364" stroke="#0e1a12" stroke-width="5" paint-order="stroke" stroke-linejoin="round">remember/discard 확률</text>
+<line x1="40" y1="908" x2="74" y2="908" stroke="#8b949e" stroke-width="2"/>
+<text x="82" y="912" class="lg">실선=현재 구현</text>
+<line x1="210" y1="908" x2="244" y2="908" stroke="#8b949e" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="252" y="912" class="lg">점선=선택 기능 또는 계획</text>
+<line x1="446" y1="908" x2="480" y2="908" stroke="#3fb950" stroke-width="2"/>
+<text x="488" y="912" class="lg">초록=저장 흐름</text>
+<line x1="616" y1="908" x2="650" y2="908" stroke="#f47067" stroke-width="2"/>
+<text x="658" y="912" class="lg">빨강=차단</text>
+</svg>

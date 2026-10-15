@@ -396,6 +396,43 @@ class Store:
             await self._tick(connection)
             return await self._credential(connection, credential_id)
 
+    async def grant_binding(self, actor: Principal, credential_id: str, binding_id: str) -> Principal:
+        """Extend one active agent credential this operator issued to a project the operator holds."""
+        async with self._tx() as (connection, _):
+            current = await self._actor(connection, actor, binding_id, roles=(Role.OPERATOR,))
+            role = await connection.fetchval("""SELECT role FROM am_credentials WHERE id=$1 AND realm=$2
+                AND principal_id=$3 AND active""", credential_id, current.realm, current.id)
+            if role != Role.AGENT.value:
+                raise _denied()
+            await connection.execute("INSERT INTO am_grants(credential_id,binding_id) VALUES($1,$2) ON CONFLICT DO NOTHING", credential_id, binding_id)
+            await self._tick(connection)
+            return await self._credential(connection, credential_id)
+
+    async def authorize(self, actor: Principal, binding_id: str) -> Principal:
+        """Read-only grant check for responses that carry no project data."""
+        async with self._tx(lock=False) as (connection, _):
+            return await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR, Role.APPROVER))
+
+    async def pending_snapshots(self, actor: Principal, binding_id: str) -> tuple[str | None, ...]:
+        async with self._tx(lock=False) as (connection, _):
+            await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR))
+            rows = await connection.fetch("""SELECT DISTINCT snapshot FROM am_pending_judgments WHERE binding_id=$1
+                AND state='pending' AND kind IN ('source_selection','cleanup')
+                ORDER BY snapshot NULLS FIRST LIMIT 64""", binding_id)
+            return tuple(row["snapshot"] for row in rows)
+
+    async def decided_ranges(
+        self, actor: Principal, binding_id: str, source_id: str, source_revision: int, snapshot: str | None,
+    ) -> tuple[tuple[int, int], ...]:
+        """Byte ranges already holding a complete remember/discard, matching pending resolution."""
+        async with self._tx(lock=False) as (connection, _):
+            await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR))
+            rows = await connection.fetch("""SELECT byte_start,byte_end FROM am_source_selections WHERE binding_id=$1
+                AND source_id=$2 AND source_revision=$3 AND state='active' AND label IN ('remember','discard')
+                AND coverage='complete_window' AND policy_revision=$4 AND request_snapshot IS NOT DISTINCT FROM $5
+                ORDER BY byte_start""", binding_id, source_id, source_revision, selection_contract_revision(), snapshot)
+            return tuple((row["byte_start"], row["byte_end"]) for row in rows)
+
     async def _credential_revocation_impact(self, connection, actor: Principal, credential_id: str) -> dict:
         target = await connection.fetchrow("SELECT * FROM am_credentials WHERE id=$1 AND realm=$2 AND principal_id=$3", credential_id, actor.realm, actor.id)
         if target is None:
