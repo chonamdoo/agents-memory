@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 배포 환경 문서·계획 정리
+
+- 배포 위치(로컬/클라우드)·운영 주체(개인/회사)·Jev 외부 API 정책(허용/불가)을 독립 축으로 설명하고 README에 8행 사례 표를 추가했다. 개인 로컬+Jev 불가와 회사 클라우드+Jev 허용도 포함하며, 두 구조도와 본문에 Jev 허용·명시선택의 worker 경로 및 불가·미설정·미선택의 구독 coding-agent MCP 판단 경로를 표시한다. relevance는 항상 coding agent, 두 기록 경로 모두 서버 검증·불확실/실패 pending·자동 fallback 없음이다.
+- 로컬은 기본 구성 완료이며 회사 Jev 허용까지 구현된 상태는 아니다. 현행 `mode=personal`만 Jev 허용·`mode=company` 거절은 구현 제약으로 분리했다. 운영 주체 독립적 명시 외부 전송 정책으로의 전환, 개인·회사 클라우드의 서비스·연결·양 판단 경로와 사례별 검증은 통합 [이슈 #5](https://github.com/chonamdoo/agents-memory/issues/5)의 다음 구현 범위다. 제한 trial 미시작·일반 출시 미완료와 구분한다.
+- 이번 변경은 문서·그림·계획 갱신이며 코드 구현·배포·권한·egress 설정을 바꾸지 않는다. 기존 runtime 식별자, 현행 Jev 제한, corpus 격리·각 corpus의 저장/외부 전송 허가·공유 승인 계약을 유지한다. 승인된 회사 클라우드는 회사 배포이며 다른 deployment로의 자동 동기화·무승인 이전은 허용하지 않는다. 과거 변경 이력·검증 기록·연구 원문은 당시 기록으로 보존한다.
+
 ### 판단 provider 선택 (agent | Jev)
 
 - 원문 선택·관계 정리 판단 provider를 `agent`(기본, 지금 쓰는 coding agent)와 `jev`(TypeSafe Jev, 개인 배포 전용) 중에서 고른다. `init --judge`(개인 터미널에서는 대화형 질문)로 설치 때 정하고 `judge set agent|jev`·`judge status`로 언제든 바꾸고 확인한다. MCP는 `memory_inspect(ref="judge")` 조회만 하며 provider를 바꿀 수 없다. relevance는 provider와 무관하게 coding agent가 판단한다.

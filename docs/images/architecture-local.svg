@@ -1,10 +1,10 @@
-<!-- render: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" -headless=new -disable-gpu -hide-scrollbars -force-device-scale-factor=2 -window-size=1700,980 -screenshot=docs/images/architecture-local.png file://$PWD/docs/images/architecture-local.svg -->
-<svg xmlns="http://www.w3.org/2000/svg" width="1700" height="980" viewBox="0 0 1700 980">
+<!-- render: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" -headless=new -disable-gpu -hide-scrollbars -force-device-scale-factor=2 -window-size=1700,1270 -screenshot=docs/images/architecture-local.png file://$PWD/docs/images/architecture-local.svg -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1700" height="1270" viewBox="0 0 1700 1270">
 <style>text{font-family:"Pretendard","Apple SD Gothic Neo","Noto Sans KR",sans-serif}.t{font-size:20px;font-weight:700;fill:#e6edf3}.st{font-size:14px;fill:#9198a1}.ct{font-size:15px;font-weight:700;fill:#e6edf3}.nt{font-size:16px;font-weight:700}.ns{font-size:12.5px;fill:#9198a1}.lb{font-size:12.5px}.b{font-weight:700}.lg{font-size:13px;fill:#9198a1}</style>
 <defs><marker id="m-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/></marker><marker id="ms-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/></marker><marker id="m-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker><marker id="ms-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker><marker id="m-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f47067"/></marker><marker id="ms-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f47067"/></marker><marker id="m-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/></marker><marker id="ms-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/></marker></defs>
-<rect width="1700" height="980" fill="#0d1117"/>
-<text x="40" y="46" class="t">로컬 환경 — 현재 구조</text>
-<text x="40" y="72" class="st">개인·회사 모두 같은 core. 기억 판단은 지금 쓰는 coding agent(구독)가 MCP로 하고, 개인 모드에서만 Jev를 선택할 수 있다. 어느 쪽이든 서버가 원문 span·revision·권한을 검증한다.</text>
+<rect width="1700" height="1270" fill="#0d1117"/>
+<text x="40" y="46" class="t">로컬 환경 — 기본 구성 완료</text>
+<text x="40" y="72" class="st">Jev 허용·선택 여부에 따라 두 판단 경로를 사용한다. relevance 판단은 항상 coding-agent가 맡는다.</text>
 <rect x="30" y="196" width="560" height="632" rx="12" fill="#0f1a2e" stroke="#4a7fd6" stroke-width="2"/>
 <text x="50" y="224" class="ct">개발자 PC · 작업 도구</text>
 <rect x="750" y="196" width="660" height="732" rx="12" fill="#0e1a12" stroke="#3fb950" stroke-width="2"/>
@@ -27,6 +27,8 @@
 <rect x="40" y="96" width="260" height="54" rx="27.0" fill="#2e2210" stroke="#d29922" stroke-width="1.6"/>
 <text x="170.0" y="118.2" class="nt" text-anchor="middle" fill="#e6edf3">Anthropic · OpenAI</text>
 <text x="170.0" y="134.7" class="ns" text-anchor="middle">구독 LLM</text>
+<text x="400" y="116" class="ct">운영 주체: 개인 또는 회사 — 배포 위치·Jev 정책과 독립</text>
+<text x="400" y="142" class="st">현재 Jev는 mode=personal만 지원. mode=company의 Jev 허용 전환은 예정이며, 현재 호출할 수 없다.</text>
 <rect x="54" y="246" width="240" height="72" rx="9" fill="#151b23" stroke="#4a7fd6" stroke-width="1.6"/>
 <text x="174.0" y="275.7" class="nt" text-anchor="middle" fill="#e6edf3">Claude Code · Codex · OMP</text>
 <text x="174.0" y="295.2" class="ns" text-anchor="middle">작업 세션</text>
@@ -52,7 +54,7 @@
 <text x="884.0" y="539.2" class="ns" text-anchor="middle">원문 span · revision · 권한 검증</text>
 <rect x="774" y="740" width="220" height="72" rx="9" fill="#151b23" stroke="#a371f7" stroke-width="1.6" stroke-dasharray="6 4"/>
 <text x="884.0" y="769.7" class="nt" text-anchor="middle" fill="#e6edf3">Jev 판단 worker</text>
-<text x="884.0" y="789.2" class="ns" text-anchor="middle">provider=jev · 개인 모드만</text>
+<text x="884.0" y="789.2" class="ns" text-anchor="middle">provider=jev · 명시적 선택</text>
 <text x="670" y="258" class="lb" text-anchor="middle" fill="#c9d1d9" stroke="#0d1117" stroke-width="5" paint-order="stroke" stroke-linejoin="round">HTTP /mcp</text>
 <text x="670" y="274" class="lb" text-anchor="middle" fill="#c9d1d9" stroke="#0d1117" stroke-width="5" paint-order="stroke" stroke-linejoin="round">(agent token)</text>
 <text x="670" y="369" class="lb" text-anchor="middle" fill="#c9d1d9" stroke="#0d1117" stroke-width="5" paint-order="stroke" stroke-linejoin="round">capture flush</text>
@@ -93,4 +95,38 @@
 <text x="488" y="960" class="lg">초록=저장 흐름</text>
 <line x1="616" y1="956" x2="650" y2="956" stroke="#f47067" stroke-width="2"/>
 <text x="658" y="960" class="lg">빨강=차단</text>
+<rect x="30" y="990" width="1640" height="250" rx="12" fill="#111923" stroke="#4a7fd6" stroke-width="2"/>
+<text x="50" y="1020" class="ct">로컬 배포의 두 사례 · 아래 경로는 개인 운영 / 회사 운영 모두에 적용</text>
+<text x="1230" y="1020" class="ns">허용이어도 Jev 선택은 필수가 아님</text>
+<rect x="55" y="1040" width="400" height="66" rx="9" fill="#261a40" stroke="#a371f7" stroke-width="1.6"/>
+<text x="255" y="1068" class="nt" text-anchor="middle" fill="#e6edf3">A · Jev 허용 + 명시적 선택</text>
+<text x="255" y="1089" class="ns" text-anchor="middle">외부 전송 정책 · 데이터 · API 키 조건 충족</text>
+<path d="M455 1073 H550" fill="none" stroke="#a371f7" stroke-width="2" marker-end="url(#m-purple)"/>
+<rect x="550" y="1040" width="300" height="66" rx="9" fill="#151b23" stroke="#a371f7" stroke-width="1.6"/>
+<text x="700" y="1068" class="nt" text-anchor="middle" fill="#e6edf3">Jev 판단 worker</text>
+<text x="700" y="1089" class="ns" text-anchor="middle">provider=jev · inspect → record</text>
+<path d="M850 1073 H1010" fill="none" stroke="#a371f7" stroke-width="2" marker-end="url(#m-purple)"/>
+<text x="930" y="1062" class="lb" text-anchor="middle" fill="#c9a6ff">원문 window 요청</text>
+<rect x="1010" y="1040" width="300" height="66" rx="9" fill="#261a40" stroke="#a371f7" stroke-width="1.6"/>
+<text x="1160" y="1068" class="nt" text-anchor="middle" fill="#e6edf3">Jev 외부 API</text>
+<text x="1160" y="1089" class="ns" text-anchor="middle">api.typesafe.ai · 미국</text>
+<text x="1335" y="1068" class="ns">현재: mode=personal 지원</text>
+<text x="1335" y="1090" class="ns">회사 운영의 허용 전환: 예정</text>
+<rect x="55" y="1130" width="400" height="66" rx="9" fill="#0f1a2e" stroke="#58a6ff" stroke-width="1.6"/>
+<text x="255" y="1158" class="nt" text-anchor="middle" fill="#e6edf3">B · Jev 불가 · 미설정 · 미선택</text>
+<text x="255" y="1179" class="ns" text-anchor="middle">개인 / 회사 모두 구독 coding-agent 경로 사용</text>
+<path d="M455 1163 H520" fill="none" stroke="#8b949e" stroke-width="2" marker-end="url(#m-gray)"/>
+<rect x="520" y="1130" width="300" height="66" rx="9" fill="#151b23" stroke="#58a6ff" stroke-width="1.6"/>
+<text x="670" y="1158" class="nt" text-anchor="middle" fill="#e6edf3">구독 coding-agent</text>
+<text x="670" y="1179" class="ns" text-anchor="middle">Claude Code · Codex · OMP 현재 세션</text>
+<path d="M820 1163 H915" fill="none" stroke="#8b949e" stroke-width="2" marker-end="url(#m-gray)"/>
+<rect x="915" y="1130" width="230" height="66" rx="9" fill="#151b23" stroke="#58a6ff" stroke-width="1.6"/>
+<text x="1030" y="1158" class="nt" text-anchor="middle" fill="#e6edf3">MCP inspect</text>
+<text x="1030" y="1179" class="ns" text-anchor="middle">후보 · 원문 조회</text>
+<path d="M1145 1163 H1240" fill="none" stroke="#3fb950" stroke-width="2" marker-end="url(#m-green)"/>
+<rect x="1240" y="1130" width="390" height="66" rx="9" fill="#151b23" stroke="#3fb950" stroke-width="1.6"/>
+<text x="1435" y="1158" class="nt" text-anchor="middle" fill="#e6edf3">agent가 판단 → MCP record</text>
+<text x="1435" y="1179" class="ns" text-anchor="middle">source_selection · 관계 정리</text>
+<text x="55" y="1222" class="ns">두 경로 모두 서버 검증 · 실패/불확실은 pending 유지 · 자동 fallback 없음 · relevance는 항상 coding-agent</text>
+<text x="1140" y="1222" class="ns">구독은 현재 세션에서 사용하며 서버 API 키가 아님</text>
 </svg>

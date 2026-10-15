@@ -1,6 +1,8 @@
 # 요구사항·완료 계약
 
-상태: 개인·회사 공통 coding-agent 판단의 제품 요구 계약. 이전 Qwen/full-semantic 및 회사 lexical/entity 실행 결과는 해당 historical run의 [검증 기록](verification.ko.md)에만 적용한다. 현재 전환의 runtime/native proof는 별도 실행해야 하며 요구 표·시나리오 정의를 완료 주장으로 사용하지 않는다.
+상태: 배포 위치는 **로컬 환경(기본 구성 완료) / 클라우드 환경(구현 예정)**이다. 각 위치에 개인·회사 운영이 모두 가능하며 Jev 허용 정책은 운영 주체와 독립적이다. [README의 8개 사례](../README.md#배포-위치--운영-주체--jev-정책)는 개인 로컬+Jev 불가와 회사 클라우드+Jev 허용도 포함한다. 로컬 완료는 회사 Jev 허용 구현 완료나 1–2주 제한 trial 통과·일반 출시 완료가 아니다. **현행 제약: 운영 주체 독립적 egress 정책 전환 미구현**이며, 현재 `mode=company`는 Jev 설정·실행을 모두 거절한다. 개인·회사 클라우드의 서비스·원격 연결·두 판단 경로와 명시 정책 분리·사례별 검증은 통합 [이슈 #5](https://github.com/chonamdoo/agents-memory/issues/5)의 다음 구현 범위다. 이번 문서 작업으로 코드·배포·권한·egress 설정이나 기존 식별자를 바꾸지 않는다.
+
+이 문서는 공통 coding-agent 판단의 제품 요구 계약이다. 실행 결과는 해당 run의 [검증 기록](verification.ko.md)에만 적용한다. 이전 Qwen/full-semantic 및 회사 lexical/entity 기록을 다른 실행의 증거로 재사용하지 않으며 요구 표·시나리오 정의를 완료 주장으로 사용하지 않는다.
 
 ## 사용자 요구
 
@@ -16,13 +18,13 @@
 | U08 | 세션마다 불필요한 context 방지 | 연결 시 corpus·규칙 본문 0, 작은 고정 catalog, 요청별 bounded selection |
 | U09 | MCP 2 형태 | 공식 SDK의 modern protocol 실제 호출. legacy 동일 handler 경로 별도 확인 |
 | U10 | Python 적합성 확인 | Python 3.12·공식 SDK2 실제 wire 호출. 제품 runtime 증거는 probe와 분리 |
-| U11 | 로컬 우선 | cloud memory 없이 실제 PG·같은 MCP source_selection/claim_judgment/relevance·정정·다음 read를 실행. 기본 provider에서 서버 모델 없음(개인 opt-in Jev는 U32) |
-| U12 | 1–2주 직접 사용 후 cloud | architecture 10절의 고정 paired memory-on/off 제한 trial. 시작·지표·중단·통과 조건 제공, elapsed/효익 조작 금지 |
-| U13 | 로컬·cloud 동일 설계 | core·schema·API·rule semantics 유지. 배포·인증·network 경계만 차이 |
-| U14 | 회사 정보는 외부 memory 저장 불가 | 회사·개인·고객 deployment 분리. 회사→개인/cloud sync 없음 |
-| U15 | 개인도 보안 필요 | loopback·인증·권한·egress·secret·backup·삭제·복구 정책 동일 core |
-| U16 | 회사 팀 Claude/Codex 사용 | 현재 coding-agent의 모델 처리와 외부 memory 저장 허가를 구분. 구독을 background API 허가로 간주하지 않음 |
-| U17 | strict no-egress 회사도 고려 | 허가된 coding-agent 실행 경로·OS/network 경계. 서버 inference/download/provider fallback 없음 |
+| U11 | 로컬 환경 기본 구성 완료 | loopback agents-memory·PostgreSQL 18·host adapter·stdio relay 구성. 실제 PG·MCP source_selection/claim_judgment/relevance·정정·다음 read를 검증 대상으로 유지. 기본 provider에서 서버 모델 없음. 현행 `mode=personal` opt-in Jev 실행 검증은 U32이며 회사 Jev 허용 구현 완료를 뜻하지 않음 |
+| U12 | 1–2주 직접 사용 trial | architecture 10절의 고정 paired memory-on/off 제한 trial은 미시작. 로컬 구성 완료·클라우드 다음 구현 계획과 분리하고 시작·지표·중단·통과 조건 제공, elapsed/효익 조작 금지 |
+| U13 | 개인·회사 클라우드 구현 예정·동일 설계 | 같은 core·schema·API·rule semantics의 원격 배포와 개발자 PC의 안전한 연결을 #5에서 관리. 개인·회사 운영 모두 가능하며 양쪽 agent/jev 경로 모두 구현·배포·원격 실행 검증 전 |
+| U14 | corpus별 저장·외부 전송 허가와 격리 유지 | 회사·개인·고객 corpus를 독립 deployment로 격리하고 각 corpus의 명시적 허가 준수. 다른 deployment로의 자동 동기화·무승인 이전 금지. 승인된 회사 클라우드는 회사 배포이며 “회사”라는 명칭만으로 외부 memory 저장을 일괄 금지하거나 허용하지 않음 |
+| U15 | 배포 위치·운영 주체·Jev 정책의 독립 축 | 로컬/클라우드×개인/회사×Jev 허용/불가 8개 조합 명시. Jev 허용은 정책·데이터·키 조건과 명시 선택 필요. 회사 Jev 허용은 목표이며 현재 사용 불가. 기존 보안 계약 유지, TLS·OAuth·private network 등 원격 경계는 구현·검증 예정 |
+| U16 | 구독 coding-agent 판단과 허가 분리 | Jev 불가·미설정·미선택이면 Claude Code·Codex·OMP 현재 세션이 MCP inspect → source_selection·관계 판단 → record. 서버가 구독을 API 키처럼 쓰지 않음. coding-agent 모델 처리·memory 저장·Jev 외부 전송 허가는 별개이며 자동 fallback이 아님 |
+| U17 | 명시적 egress 정책·strict no-egress | 허가된 coding-agent 경로·OS/network 경계 필요. 로컬 모델 inference/download·provider 자동 fallback 없음. 현행 `mode=company` Jev 거절은 유지하되 영구 환경 정의로 삼지 않음. 운영 주체 독립적 명시 외부 전송 정책으로의 전환은 미구현이며 #5 다음 범위 |
 | U18 | review·컨벤션이 skill처럼 갱신 | candidate→exact revision 승인→active rule→조건별 선택→정정·철회 |
 | U19 | 적용 범위 정확히 세 가지 | 이 로컬 프로젝트 / 내 프로젝트들 / 팀 또는 프로젝트 공유 |
 | U20 | 개인 프로젝트는 팀 배포 불필요 | local-project 승인·적용 가능. team/Git/PR 강제 없음 |
@@ -37,14 +39,15 @@
 | U29 | 최신 Agent Flow 설치 | 고정된 최신 main의 실제 version·설치 결과. 기존 global tool은 보존 |
 | U30 | 프로젝트 성질에 맞춘 AF 설정 | Python, local architecture, local verification gates, 요청된 두 native reviewer |
 | U31 | 최종안을 Agent Flow로 실행 | 실제 run·isolated worktree·phase artifact·review·QA·local handoff. PR/merge는 별도 사용자 승인 |
-| U32 | 판단 provider 선택 | 설치(`init`) 때 agent/jev 선택, operator CLI로 언제든 변경·재시작 없이 반영. jev는 개인만·회사 거절, 키는 0600 사본·argv/MCP/로그 미노출, MCP는 조회만, 자동 fallback 없음, 기록은 agent와 같은 검증 |
+| U32 | 판단 provider 선택·동일 검증 | 설치(`init`)와 operator CLI로 agent/jev 선택·변경, 재시작 없이 반영. Jev 허용+명시선택은 worker가 source_selection·관계를 판단하고 불가·미설정·미선택은 구독 coding-agent가 MCP로 판단. relevance는 항상 coding agent, 두 기록 경로 모두 서버 검증·불확실/실패 pending·자동 fallback 없음. 현재 `mode=personal`만 jev 허용·`mode=company` 설정/실행 거절, 운영 주체 독립 정책 전환 미구현. 키 0600 사본·argv/MCP/로그 미노출, MCP 조회만. 개인·회사 클라우드 양 판단 경로는 모두 예정 |
+| U33 | 환경 현황과 다음 구현 구분 | 로컬 기본 구성 완료·회사 Jev 허용 정책 전환 미구현·trial 미시작·일반 출시 미완료·클라우드 구현 예정 명시. #5에서 원격 MCP/capture/relay, TLS/OAuth audience·principal·권한, private network/PG, secret 관리, backup/restore·삭제 head witness, stop/drain·재연결·실제 Claude/Codex 검증 관리. 운영 주체 독립적 명시 외부 전송 정책 구현과 8개 조합·허용 후 미설정/미선택 agent 경로 검증 포함. 지금 코드·배포·권한·egress 설정 변경 없음 |
 
 ## 추가 필수 불변식
 
 | ID | 계약 | 관측 가능한 실패 사례 |
 |---|---|---|
 | I01 | source·claim·조건·부정·시간·entity·evidence graph | 조건이 다른 주장을 합치거나 단순 latest-write로 삭제하지 않음 |
-| I02 | capture→원문 inspect→source_selection→claim_judgment→candidate manifest→전체 relevance→정정→next use | 개인·회사 동일한 실제 PG/MCP loop. server LLM·lexical 자동 판단·echo/mock를 대체 증거로 쓰지 않음 |
+| I02 | capture→원문 inspect→source_selection→claim_judgment→candidate manifest→전체 relevance→정정→next use | runtime `mode=personal`·`mode=company`에서 동일한 기본 `agent` provider의 실제 PG/MCP loop. server LLM·lexical 자동 판단·echo/mock를 대체 증거로 쓰지 않음 |
 | I03 | 구형 model work retirement와 pending successor | 원래 job/오류/attempt/generation/시간 audit 보존. Qwen 재시도·성공 relabel·실패 삭제 금지 |
 | I04 | caller admission와 게시/최종 전달 모두 eligibility 검사 | source/claim revision·credential/grant·binding·contract·snapshot·deadline·deletion 변경 후 stale 판단/전달 거절. 구형 NULL request_digest도 DTO 내부 오류 대신 ADMISSION_STALE/not_started이며 새 inspect로 재개 |
 | I05 | logical retract·local drain·provider unknown·physical purge 분리 | cancel/소켓 종료를 provider erasure라고 하지 않음 |
@@ -65,7 +68,7 @@
 | I20 | local restore·토큰 폐기·명시 migration | current auth·0006 forward/old archive floor·원래 private config/서명/token 보존. 실제 format-one init resume와 exact-file SHA256 명시 model-intent retirement·중단 재개. 취소된 DDL thread 종료까지 exclusive lock 유지, unknown은 request/operator-bound durable fence와 명시 복구. migration/restore intent 구분·보존 원본과 exact published target 재검증. 구형 route disable·원래 효과 unknown, live 실행 증거는 별도 |
 | I21 | 운영 보장의 한계 | 같은 UID unrestricted agent를 인간 승인으로 포장하지 않음. 별도 identity/approver는 선택적 공유 규칙 활성화 경계이며 회사 기억판단의 별도 승인 절차가 아님 |
 | I22 | proof 층위 분리 | source 사실·설계 선택·실행 결과·unverified·trial pending 별도 표기 |
-| I23 | 개인·회사 단일 `agent_judged` capability | `full_semantic`/company-only `lexical_entity` 기본·selection-policy approve/enable 제거. 모델-derived legacy claim은 원래 provenance/awaiting_revalidation 유지 |
+| I23 | runtime `mode=personal`·`mode=company`의 단일 `agent_judged` capability | 배포 환경 분류와 다른 축. `full_semantic`/company-only `lexical_entity` 기본·selection-policy approve/enable 제거. 모델-derived legacy claim은 원래 provenance/awaiting_revalidation 유지 |
 | I24 | capture ≠ 판단 ≠ candidate | capture는 `captured`, 판단은 `selection_recorded`, grounded 게시만 `candidate_ready`. discard/reject는 삭제가 아니며 오류는 판단 label이 아님 |
 | I25 | saved candidate manifest의 두 호출 relevance | 첫 응답은 전체 candidate IDs/ref·admission·required rules. wire 예산 부족은 선택적 preview만 축약/partial, ID 삭제 금지. 둘째는 같은 admission/request·전체 exact IDs의 relevant/irrelevant/reason. 후보0이면 승인 optional rule도 전달 |
 | I26 | 관계는 명시 원문 근거·complete manifest | claim_ids 공동20개·기존 logical 관계128 ref/요약8개·overflow 명시. 각 judgment의 독립 전체 dependency/edge를 보존하고 적격 logical read만 중복 제거. 공개 duplicate 정규화·조건/부정/예외 보존 |
