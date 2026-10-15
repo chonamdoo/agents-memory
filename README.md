@@ -5,12 +5,26 @@
 Python 3.12 기반의 독립적인 로컬 메모리 서비스. Agent Flow는 선택 사항이다. Claude Code, Codex, OMP, 일반 MCP client와 CLI가 같은 인증·project binding·메모리 core를 사용한다.
 
 - 정본: PostgreSQL 18. lexical/entity index는 작은 후보 목록만 찾으며 기억 채택·관계·관련성을 결정하지 않는다.
-- 판단: 현재 Claude/Codex 등 coding agent가 같은 MCP 계약으로 원문을 읽고 판단한다. 서버는 원문 UTF-8 span·revision·권한·삭제·snapshot을 검증한다. 별도 서버 LLM·모델 gateway·자동 다운로드·provider fallback은 없다.
+- 판단: 기본은 지금 쓰는 Claude/Codex 등 coding agent가 같은 MCP 계약으로 원문을 읽고 판단한다. 개인 배포에서는 operator가 TypeSafe Jev를 판단 provider로 고를 수 있다(원문 window가 `api.typesafe.ai`로 전송). 어느 쪽이든 서버가 원문 UTF-8 span·revision·권한·삭제·snapshot을 검증한다. 로컬 모델 gateway·자동 다운로드·provider 자동 fallback은 없다.
 - 파이프라인: capture → source inspect → `source_selection` → `claim_judgment` → 후보 조회 → 전체 후보 relevance 판단 → bounded context → correction/retraction → 다음 호출.
 - MCP: 공식 Python SDK `mcp==2.3.0`. `2026-07-28` stateless 호출과 기존 `2025-11-25` client가 같은 handler를 사용한다. stdio는 인증된 loopback HTTP 중계이며 별도 DB/메모리 engine이 아니다.
 - 연결 시 instructions·corpus·규칙 본문은 비어 있다. 도구는 `memory_context`, `memory_inspect`, `memory_record`, `memory_feedback` 네 개다. 선택 결과가 없으면 context 본문도 빈 문자열이다.
 
 [설계](docs/architecture.ko.md) · [요구·불변식](docs/requirements.ko.md) · [구현 API 계약](docs/implementation-plan.ko.md)
+
+## 구조
+
+### 로컬 환경 (현재)
+
+![로컬 환경 구조: 개발자 PC의 coding agent·host adapter·stdio relay가 같은 PC의 loopback agents-memory 서비스와 PostgreSQL 18에 연결되고, 개인 모드에서만 Jev 판단 worker가 TypeSafe Jev API를 호출한다](docs/images/architecture-local.png)
+
+coding agent는 stdio relay로 MCP를 호출하고, host adapter는 hook capture를 SQLite spool에 넣은 뒤 `/api/capture`로 보낸다. 서비스는 `127.0.0.1`에만 bind하며 PostgreSQL 18이 정본이다. 판단 provider가 `jev`이면 서비스 안의 Jev 판단 worker가 대기 중인 원문 window를 판단하지만, 기록은 agent와 같은 `inspect → record` 검증을 거친다. 불확실하거나 실패한 작업은 다른 provider로 넘기지 않고 pending으로 남는다.
+
+### 클라우드 환경 (계획 · 미구축)
+
+![클라우드 환경 계획: 개발자 PC가 TLS·OAuth ingress를 거쳐 개인 corpus 전용 agents-memory 배포에 연결되고, 회사 로컬 배포에서 클라우드로의 동기화는 차단된다](docs/images/architecture-cloud.png)
+
+클라우드는 같은 core·API·schema의 별도 개인 배포로만 검토한다. 지금 provisioning된 것은 없고 회사 corpus는 이동하지 않는다. 그림의 원본은 `docs/images/*.svg`이며 각 파일 첫 줄의 명령으로 PNG를 다시 만든다.
 
 ## 설치와 로컬 authority
 
@@ -52,9 +66,36 @@ uv run agents-memory --config "$CONFIG" --token-file "$OPERATOR_TOKEN_FILE" proj
 
 새 locator는 존재하는 canonical directory여야 한다. 이전 경로는 이미 삭제됐어도 exact expected locator로 검증한다. 첫 실행은 locator·revision만 변경하고 owner·label·grant·roster·memory·frozen target은 유지한다. 같은 key/인자의 replay는 같은 결과이며, 이후 다시 이전된 binding의 과거 replay는 committed conflict로 반환한다. 경로/CWD 변경 자체는 권한이나 승인이 아니다.
 
-회사·고객·개인은 서로 다른 deployment, database/schema, journal, state directory, token, port와 host 설정으로 운영한다. 회사→개인/cloud sync 경로는 없다. 개인·회사 모두 `capability: "agent_judged"`를 사용한다. 회사 coding-agent의 모델 처리 허가와 외부 memory 저장 허가는 별개이며, 구독을 background API 허가로 간주하지 않는다. strict no-egress 환경은 허가된 coding-agent 실행 경로와 OS/network 정책을 따로 구성해야 한다. 이 서버는 inference 경로를 제공하지 않는다. 같은 UID의 unrestricted agent와 private HOME만으로 악성 agent 차단이나 인간 승인을 증명하지 못한다.
+회사·고객·개인은 서로 다른 deployment, database/schema, journal, state directory, token, port와 host 설정으로 운영한다. 회사→개인/cloud sync 경로는 없다. 개인·회사 모두 MCP 계약은 `capability: "agent_judged"`다. 회사 coding-agent의 모델 처리 허가와 외부 memory 저장 허가는 별개이며, 구독을 background API 허가로 간주하지 않는다. strict no-egress 환경은 허가된 coding-agent 실행 경로와 OS/network 정책을 따로 구성해야 한다. 회사 배포에서 이 서버는 inference 경로를 제공하지 않으며 Jev 판단은 설정 단계와 실행 단계 모두에서 거절된다. 같은 UID의 unrestricted agent와 private HOME만으로 악성 agent 차단이나 인간 승인을 증명하지 못한다.
 
 `init`은 private recovery intent와 원래 operator credential을 먼저 영속화한다. bootstrap 이후 완료 receipt를 쓰지 못한 경우 같은 인자·owner·원래 token으로 `init --resume`한다. 기존 배포를 새 owner/token으로 묵시적으로 인수하지 않으며 완료 replay도 정상 변경한 설정을 초기값으로 되돌리지 않는다.
+
+### 판단 provider: agent 또는 Jev
+
+captured 원문을 기억할지 누가 판단할지 고른다. relevance(`memory_context` 두 번째 호출)는 provider와 무관하게 항상 그 기억을 쓰는 coding agent가 판단한다.
+
+| provider | 판단 주체 | 외부 전송 | 사용 가능 |
+|---|---|---|---|
+| `agent` (기본) | 지금 쓰는 Claude Code·Codex·OMP가 MCP `memory_inspect` → `memory_record`로 판단 | coding agent 자신의 모델 경로뿐 | 개인·회사 |
+| `jev` | 서비스 안 Jev 판단 worker가 pending 원문 window를 TypeSafe Jev로 판단 | 판단할 원문 window·기존 기억 문장이 `https://api.typesafe.ai/v1/systemone`(미국)로 전송 | 개인만 |
+
+`init`에서 `--judge`를 생략하면 개인 모드 터미널에서는 대화형으로 묻고, 비대화형·회사 모드는 `agent`로 설정한다. 이미 설정된 배포의 `init` replay는 판단 설정을 바꾸지 않는다. 이후에는 operator CLI로 언제든 바꾼다. 실행 중인 서비스는 다음 Jev 요청 전에 파일을 다시 읽으므로 재시작 없이 반영되고, `agent`로 바꾸면 그다음 요청부터 전송을 멈춘다.
+
+```sh
+uv run agents-memory --config "$CONFIG" init ... --judge jev --jev-key-file "$JEV_KEY_FILE"
+uv run agents-memory --config "$CONFIG" judge set jev --key-file "$JEV_KEY_FILE"   # 또는 --prompt-key
+uv run agents-memory --config "$CONFIG" judge set agent --forget-key
+uv run agents-memory --config "$CONFIG" judge status
+```
+
+- 키는 `--key-file`로 한 번 읽거나 터미널에서 화면 표시 없이 입력한다. argv·환경변수·MCP로는 받지 않는다. 서비스는 `STATE_DIR/judge/jev.key`(0600) 사본만 쓰고, 응답·상태에는 deployment별 HMAC fingerprint만 나온다. 원래 키 파일이 group/other에 읽히면 경고한다.
+- 키는 저장 전에 합성 질문 1개로 검증한다. 기억 원문은 보내지 않는다. 모델은 기본 `jev-1.13.0`으로 고정한다.
+- `judge set jev`는 Jev worker 전용 agent credential을 새로 발급해 현재 모든 project에 grant하고 이전 worker credential을 폐기한다. 이후 `project add`한 project도 자동으로 grant된다. restore는 credential을 회전하므로 restore 뒤에는 `judge set jev`를 다시 실행한다.
+- MCP에서는 `memory_inspect(ref="judge")`로 provider·egress·worker 상태만 읽는다. 키·fingerprint·credential은 나오지 않으며 MCP로 provider를 바꿀 수 없다.
+- Jev worker는 span마다 "장기 기억으로 남길 가치"를 묻고 p ≥ 0.8인 span만 원문 그대로 claim으로 기록한다(`subject="project"`, `predicate`=kind, `object`=원문 span). 모든 span이 p ≤ 0.2이면 discard한다. 그 사이이거나, tool·document 원문에 AI 지시 주입이 의심되거나, 관련 이전 거절과 같은 내용이면 기록하지 않고 pending으로 남겨 coding agent가 판단하게 한다. 정리(cleanup) 관계는 서버 검증을 통과할 수 있는 쌍만 묻고 p ≥ 0.8만 기록하며 0.5–0.8은 agent에게 남긴다.
+- 기록은 agent와 같은 `inspect → record` 검증·single-winner·거절 비교를 거치고 worker credential로 남는다. reason에는 `Jev(<model>)`와 확률·임계값이 기록된다. 다른 provider로의 자동 fallback은 없다.
+- 키 거절(401/403)이면 provider 설정이 바뀔 때까지 멈추고, 429·529·5xx·timeout은 짧게 재시도한 뒤 다음 주기로 미룬다. 요청·응답 본문은 로그·상태에 남기지 않는다.
+- TypeSafe 문서 기준 데이터는 미국에서 처리되고 입력으로 학습하지 않으며, zero data retention은 enterprise 계약에서만 제공된다. 고객 계약은 telemetry(로그·hash·통계)의 장기 보관을 허용한다. 이 조건을 받아들일 수 있는 개인 corpus에만 켠다.
 
 ### 기존 배포의 명시적 전환
 

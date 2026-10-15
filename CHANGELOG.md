@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 판단 provider 선택 (agent | Jev)
+
+- 원문 선택·관계 정리 판단 provider를 `agent`(기본, 지금 쓰는 coding agent)와 `jev`(TypeSafe Jev, 개인 배포 전용) 중에서 고른다. `init --judge`(개인 터미널에서는 대화형 질문)로 설치 때 정하고 `judge set agent|jev`·`judge status`로 언제든 바꾸고 확인한다. MCP는 `memory_inspect(ref="judge")` 조회만 하며 provider를 바꿀 수 없다. relevance는 provider와 무관하게 coding agent가 판단한다.
+- provider·키·worker token은 Settings·DB가 아니라 `state_dir/judge`의 0600 파일에 둔다. Settings digest·init intent·host receipt·backup/restore 형식은 바뀌지 않는다. 키는 `--key-file` 또는 화면 표시 없는 입력으로만 받고 합성 질문으로 검증한 뒤 저장하며, 응답에는 HMAC fingerprint만 나온다. 회사 모드는 설정과 worker 실행 모두에서 `JUDGE_PROVIDER_FORBIDDEN`이다.
+- serve 안 `JudgeWorker`는 전용 agent credential로 pending source window와 cleanup manifest를 기존 `inspect → record` 검증으로 기록한다. p≥0.8 span만 원문 그대로 claim으로 쓰고, 모두 p≤0.2면 discard한다. 불확실·주입 의심·이전 거절과 같은 내용·검증 실패는 pending으로 남겨 agent에게 넘기며 자동 fallback은 없다. 매 요청·기록 직전에 provider를 다시 읽어 전환 즉시 전송을 멈춘다. `project add`는 Jev worker grant를 함께 추가하고 restore 뒤에는 `judge set jev`를 다시 실행한다.
+- README에 로컬(현재)·클라우드(계획) 구조도 PNG와 SVG 원본(`docs/images/`)을 추가했다.
+- 검증: 새 회귀 54개와 기존 suite 1726 passed/11 skipped(age·pg_dump binary 미지정 backup 경로), ruff 통과. 사용자 키로 live Jev smoke, native Claude Code·Codex가 Jev가 넘긴 pending을 MCP로 처리하는 것을 확인했다([검증 기록](docs/verification.ko.md)).
+
 ### stage-0 동시성·복구 수정
 
 - legacy MCP 세션이 재시작·유휴 만료·세션 수 초과로 사라지면 edge가 `SESSION_NOT_FOUND`/404/`not_started`를 반환하고, 다른 credential의 세션에는 `SESSION_CREDENTIAL_DENIED`/403을 반환한다. stdio relay는 모든 필드가 검증된 `SESSION_NOT_FOUND`/`not_started`에서만 저장한 `initialize`로 다시 연결하고 원 요청을 한 번 다시 보낸다. 재연결이 실패하거나 서버가 다른 protocol version을 협상하면 요청을 보내지 않고 `SESSION_NOT_FOUND`/`not_started`를 반환하며, 다음 요청 전에 다시 연결을 시도한다.

@@ -12,6 +12,8 @@ from .domain import (
     Principal,
     canonical_digest,
 )
+from .judge import describe, load_state
+from .judge_worker import JudgeWorker, public_status
 from .lexical import tokens
 from .selection import RecordInput
 from .store import Store
@@ -24,6 +26,7 @@ class Application:
         self.store = store
         self.accepting = True
         self.inflight = 0
+        self.judge: JudgeWorker | None = None
 
     def require_accepting(self) -> None:
         if not self.accepting:
@@ -45,11 +48,21 @@ class Application:
         rejection_cursor: str | None = None,
     ) -> dict[str, Any]:
         binding = resolve_binding(actor, binding_id)
+        if ref == "judge":
+            if claim_ids is not None or rejection_cursor is not None or byte_start != 0 or max_bytes != 4096:
+                raise DomainError("INPUT_INVALID", "The judge provider view takes no window arguments", status=400)
+            await self.store.authorize(actor, binding)
+            return self.judge_view()
         return await self.store.inspect(
             actor, binding, ref, snapshot=snapshot, byte_start=byte_start, max_bytes=max_bytes,
             claim_ids=claim_ids, rejection_cursor=rejection_cursor,
             representation_bytes=self.settings.max_mcp_response_bytes, measure_json=tool_result_bytes,
         )
+
+    def judge_view(self) -> dict[str, Any]:
+        """Read-only provider view for agents: no key, fingerprint, credential or project data."""
+        return {"kind": "judge", **describe(self.settings, load_state(self.settings), operator=False),
+                "worker": public_status(self.judge)}
 
     async def context(self, actor: Principal, command: ContextCommand) -> dict[str, Any]:
         self.require_accepting()

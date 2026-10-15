@@ -1,5 +1,16 @@
 # 실제 로컬 검증 기록
 
+## 판단 provider(agent | Jev) — 2026-10-15
+
+범위는 판단 provider 선택·Jev worker·README 구조도다. Agent Flow 공식 run·native review·QA가 아니며 실제 1–2주 trial이나 cloud를 포함하지 않는다. 모든 DB 검증은 전용 test PostgreSQL container(같은 image digest)의 일회용 schema에서 했고 사용자의 기존 container·DB는 건드리지 않았다.
+
+- 새 회귀 54개(`test_jev_client` 15, `test_judge_settings` 18, `test_judge_worker` 16, `test_judge_cli` 5)가 실제 PG에서 모두 통과했다. 실제 TypeSafe는 호출하지 않고 in-process fake client·fake opener만 쓴다. 기존 suite는 **1726 passed, 11 skipped**(421s)이며 skip은 모두 명시 age/pg_dump binary 환경변수가 없는 backup/restore 경로다. ruff 통과.
+- live Jev(사용자 키, `jev-1.13.0`): 비대화형 `init --judge jev --jev-key-file`이 합성 질문으로 키를 검증한 뒤 0600 사본을 만들고, 원래 0644 키 파일 경고를 냈다. stdout/stderr에 키 문자열은 없었다. `project add`가 worker grant를 추가했다. 합성 원문 6건에서 결정 문장 2건(영어·한국어)을 원문 그대로 remember, 잡담·불확실·단순 작업 로그 3건을 discard, tool 원문의 AI 지시 주입 1건을 기록 없이 pending으로 남겼다(8 requests, 4,945 input tokens). 이후 cleanup은 kind가 달라 검증 가능한 쌍이 없어 Jev 호출 없이 관계 0개로 기록됐다. 관계 Choice를 직접 보낸 확인에서는 같은 결정 재진술이 duplicate 0.99, 버전 교체 문장이 supersedes 0.51/contradicts 0.49로 나와 worker 규칙상 agent에게 넘길 범위였다.
+- 실행 중 `judge set agent` 뒤 새 capture는 Jev 요청 수를 늘리지 않고 pending으로 남았다. 저장 키로 `judge set jev` 재활성화, `judge set agent --forget-key` 뒤 키·token 파일 삭제와 worker credential 폐기를 확인했다. agent token의 `inspect --ref judge` 응답에 키·fingerprint·credential이 없었다.
+- native Claude Code 2.1.300(구독, `--mcp-config` 세션 전용 설정, 사용자 `~/.claude.json` 무변경)이 MCP로 Jev가 남긴 주입 원문을 discard하고 새 결정 원문을 remember했다. 자기 discard가 새 rejection을 만들어 첫 remember가 `REJECTION_COMPARISON_REQUIRED`였고, 다시 inspect해 비교를 넣어 성공했다(14 turns). native Codex 0.162.1(`exec --ephemeral --ignore-user-config`, 도구별 `approval_mode="approve"`)도 같은 방식으로 remember 1건·discard 1건을 기록했다. 모든 기록 credential은 agent role이었다.
+- 터미널 경로: pty에서 `init`의 provider 질문과 화면 표시 없는 키 입력을 확인했다. 잘못된 키는 `JUDGE_KEY_REJECTED`/`not_started`였고 config·state 파일은 생기지 않았다.
+- 한계: Jev의 kind 분류는 같은 결정을 preference와 fact로 다르게 냈다(관계 후보 쌍이 줄어든다). 임계값(0.8/0.2/0.5)은 문서 권장 출발점이며 표본으로 보정하지 않았다. capture 직후 서비스가 시작된 경우 cleanup은 다음 30초 주기에 처리됐다.
+
 ## stage-0 동시성·복구 수정 — development/20261015-043508
 
 범위는 네 결함뿐이다. (1) 사라진 MCP 세션 복구 (2) serve·migrate·backup·restore의 단일 PG/pgvector 계약 (3) 원문 창당 판단 단일 승자와 응답 유실 재시도 (4) 동시 요청 상한·pool 획득 기한·전역 clock 잠금 없는 인증. cloud·새 memory block·pgvector 검색·trial·`FOR SHARE`는 범위 밖이다.
