@@ -29,6 +29,8 @@ WHEEL_SELECTORS = (
     "tests/test_remote_cancellation.py::test_already_dispatched_business_request_drains_response_without_retry",
     "tests/test_ci_accounting.py::test_cleanup_after_esrch_cannot_kill_a_reused_group[probe-native]",
     "tests/test_ci_accounting.py::test_cleanup_after_esrch_cannot_kill_a_reused_group[term-native]",
+    "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[after-probe-native]",
+    "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[already-reaped-native]",
 )
 
 

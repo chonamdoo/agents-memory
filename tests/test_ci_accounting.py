@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import time
 import xml.etree.ElementTree as ET
 from contextlib import suppress
 from pathlib import Path
@@ -50,6 +51,8 @@ def evidence(tmp_path):
         "tests/test_remote_cancellation.py::test_already_dispatched_business_request_drains_response_without_retry",
         "tests/test_ci_accounting.py::test_cleanup_after_esrch_cannot_kill_a_reused_group[probe-native]",
         "tests/test_ci_accounting.py::test_cleanup_after_esrch_cannot_kill_a_reused_group[term-native]",
+        "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[after-probe-native]",
+        "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[already-reaped-native]",
     ])
     all_ids = sorted([*(f"tests/cases.py::test_case_{index}" for index in range(64)), *wheel_ids])
     paths = []
@@ -323,20 +326,50 @@ def test_source_digest_ignores_generated_bytecode(digest_source):
     assert digest_source.digest() == before
 
 
-@pytest.mark.skipif(os.name != "posix", reason="Process-group supervision requires POSIX")
-@pytest.mark.parametrize("target", ["native", "ci"])
-@pytest.mark.parametrize("disappeared_at", ["term", "probe"])
-def test_cleanup_after_esrch_cannot_kill_a_reused_group(monkeypatch, target, disappeared_at):
-    cleanup = (native_status._stop_process_group if target == "native"
-               else runpy.run_path(str(CI / "run-checks.py"))["_stop_process_group"])
-    expired = subprocess.Popen([sys.executable, "-I", "-S", "-c", "pass"], start_new_session=True)
-    expired.wait(timeout=5)
-    unrelated = subprocess.Popen(
+@pytest.fixture
+def unreaped_leader():
+    process = subprocess.Popen([sys.executable, "-I", "-S", "-c", "pass"], start_new_session=True)
+    deadline = time.monotonic() + 5
+    try:
+        while os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+        yield process
+    finally:
+        if process.returncode is None:
+            with suppress(ProcessLookupError):
+                process.kill()
+        process.wait(timeout=5)
+
+
+@pytest.fixture
+def owned_survivor():
+    process = subprocess.Popen(
         [sys.executable, "-I", "-S", "-c",
          "import sys; print('ready', flush=True); "
          "line = sys.stdin.readline(); print('survived:' + line.strip(), flush=True)"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
     )
+    try:
+        assert select.select([process.stdout], [], [], 5)[0] == [process.stdout]
+        assert process.stdout.readline() == b"ready\n"
+        yield process
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            stream.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Process-group supervision requires POSIX")
+@pytest.mark.parametrize("target", ["native", "ci"])
+@pytest.mark.parametrize("disappeared_at", ["term", "probe"])
+def test_cleanup_after_esrch_cannot_kill_a_reused_group(monkeypatch, unreaped_leader, owned_survivor,
+                                                      target, disappeared_at):
+    cleanup = (native_status._stop_process_group if target == "native"
+               else runpy.run_path(str(CI / "run-checks.py"))["_stop_process_group"])
+    expired, unrelated = unreaped_leader, owned_survivor
     real_killpg = os.killpg
 
     def simulate_pgid_reuse(pid, sig):
@@ -350,16 +383,51 @@ def test_cleanup_after_esrch_cannot_kill_a_reused_group(monkeypatch, target, dis
             raise ProcessLookupError
         return real_killpg(unrelated.pid, sig)
 
-    try:
-        assert select.select([unrelated.stdout], [], [], 5)[0] == [unrelated.stdout]
-        assert unrelated.stdout.readline() == b"ready\n"
-        monkeypatch.setattr(os, "killpg", simulate_pgid_reuse)
-        cleanup(expired)
-        output, error = unrelated.communicate(b"ping\n", timeout=5)
-        assert (unrelated.returncode, output, error) == (0, b"survived:ping\n", b"")
-    finally:
-        if unrelated.poll() is None:
-            unrelated.kill()
-        unrelated.wait(timeout=5)
-        for stream in (unrelated.stdin, unrelated.stdout, unrelated.stderr):
-            stream.close()
+    monkeypatch.setattr(os, "killpg", simulate_pgid_reuse)
+    cleanup(expired)
+    assert expired.returncode == 0
+    output, error = unrelated.communicate(b"ping\n", timeout=5)
+    assert (unrelated.returncode, output, error) == (0, b"survived:ping\n", b"")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Process-group supervision requires POSIX")
+@pytest.mark.parametrize("target", ["native", "ci"])
+@pytest.mark.parametrize("interleaving", ["after-probe", "already-reaped"])
+def test_cleanup_retains_identity_through_the_final_group_signal(monkeypatch, unreaped_leader,
+                                                               owned_survivor, target, interleaving):
+    expired, unrelated = unreaped_leader, owned_survivor
+    if interleaving == "already-reaped":
+        expired.wait(timeout=5)
+    cleanup = (native_status._stop_process_group if target == "native"
+               else runpy.run_path(str(CI / "run-checks.py"))["_stop_process_group"])
+    clock = SimpleNamespace(now=0)
+    probed = False
+    real_killpg = os.killpg
+
+    def simulate_pgid_reuse(pid, sig):
+        nonlocal probed
+        if pid != expired.pid:
+            return real_killpg(pid, sig)
+        if interleaving == "already-reaped":
+            return real_killpg(unrelated.pid, sig)
+        if sig == signal.SIGTERM:
+            return None
+        if sig == 0:
+            probed = True
+            clock.now = 10
+            return None
+        if probed and expired.returncode is not None:
+            return real_killpg(unrelated.pid, sig)
+        return real_killpg(expired.pid, sig)
+
+    monkeypatch.setattr(os, "killpg", simulate_pgid_reuse)
+    # Advance only this cleanup's clock after the successful probe.
+    monkeypatch.setitem(cleanup.__globals__, "time", SimpleNamespace(
+        monotonic=lambda: clock.now, sleep=lambda _: None,
+    ))
+    cleanup(expired)
+    if interleaving == "after-probe":
+        assert probed
+        assert expired.returncode == 0
+    output, error = unrelated.communicate(b"ping\n", timeout=5)
+    assert (unrelated.returncode, output, error) == (0, b"survived:ping\n", b"")
