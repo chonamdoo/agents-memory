@@ -257,6 +257,12 @@ class Store:
                 raise _denied()
         return current
 
+    @asynccontextmanager
+    async def operator_authority(self, actor: Principal) -> AsyncIterator[Principal]:
+        """Serialize short synchronous file effects with revocation; never await other work inside."""
+        async with self._tx() as (connection, _):
+            yield await self._actor(connection, actor, roles=(Role.OPERATOR,))
+
     @classmethod
     async def preflight_initialization(cls, settings: Settings, operator_token: str, owner_id: str, *, resume: bool) -> Principal | None:
         store = cls(settings, DeletionJournal(settings.journal_dir, settings.deployment_id))
@@ -2743,27 +2749,40 @@ class Store:
         selected = await connection.fetch("SELECT id FROM am_claims WHERE selection_id=ANY($1::text[])", targets["selection"])
         derived = await connection.fetch("SELECT DISTINCT claim_id FROM am_claim_sources WHERE source_id=ANY($1::text[])", source_ids)
         claim_ids = sorted({*targets["claim"], *(row["id"] for row in selected), *(row["claim_id"] for row in derived)})
-        await connection.execute("UPDATE am_sources SET body=NULL,state='purged' WHERE id=ANY($1::text[]) AND state<>'active'", source_ids)
-        await connection.execute("UPDATE am_claims SET draft=NULL,embedding=NULL,lexical_tokens='{}',state='retracted' WHERE id=ANY($1::text[])", claim_ids)
-        await connection.execute("UPDATE am_spans SET quote=NULL WHERE claim_id=ANY($1::text[])", claim_ids)
+        await connection.execute("""UPDATE am_sources SET body=NULL,state='purged'
+            WHERE id=ANY($1::text[]) AND state<>'active'
+            AND (body IS NOT NULL OR state IS DISTINCT FROM 'purged')""", source_ids)
+        await connection.execute("""UPDATE am_claims SET draft=NULL,embedding=NULL,lexical_tokens='{}',state='retracted'
+            WHERE id=ANY($1::text[]) AND (draft IS NOT NULL OR embedding IS NOT NULL
+                OR lexical_tokens IS DISTINCT FROM '{}'::text[] OR state IS DISTINCT FROM 'retracted')""", claim_ids)
+        await connection.execute("UPDATE am_spans SET quote=NULL WHERE claim_id=ANY($1::text[]) AND quote IS NOT NULL", claim_ids)
         await connection.execute("DELETE FROM am_entities WHERE claim_id=ANY($1::text[])", claim_ids)
-        await connection.execute("""UPDATE am_relations SET reason=NULL,state='retracted' WHERE id=ANY($1::text[])
+        await connection.execute("""UPDATE am_relations SET reason=NULL,state='retracted' WHERE (id=ANY($1::text[])
             OR id IN (SELECT relation_id FROM am_relation_sources WHERE source_id=ANY($2::text[]))
-            OR id IN (SELECT relation_id FROM am_relation_claims WHERE claim_id=ANY($3::text[]))""", targets["relation"], source_ids, claim_ids)
-        await connection.execute("""UPDATE am_reflections SET draft=NULL,state='retracted' WHERE id=ANY($1::text[])
+            OR id IN (SELECT relation_id FROM am_relation_claims WHERE claim_id=ANY($3::text[])))
+            AND (reason IS NOT NULL OR state IS DISTINCT FROM 'retracted')""", targets["relation"], source_ids, claim_ids)
+        await connection.execute("""UPDATE am_reflections SET draft=NULL,state='retracted' WHERE (id=ANY($1::text[])
             OR id IN (SELECT reflection_id FROM am_reflection_sources WHERE source_id=ANY($2::text[]))
-            OR id IN (SELECT reflection_id FROM am_reflection_claims WHERE claim_id=ANY($3::text[]))""", targets["reflection"], source_ids, claim_ids)
+            OR id IN (SELECT reflection_id FROM am_reflection_claims WHERE claim_id=ANY($3::text[])))
+            AND (draft IS NOT NULL OR state IS DISTINCT FROM 'retracted')""", targets["reflection"], source_ids, claim_ids)
         await connection.execute("""UPDATE am_proposals SET selector='{}',exceptions='[]',state='retracted'
-            WHERE id=ANY($1::text[]) OR id IN (SELECT proposal_id FROM am_proposal_sources WHERE source_id=ANY($2::text[]))""", targets["proposal"], source_ids)
+            WHERE (id=ANY($1::text[]) OR id IN (SELECT proposal_id FROM am_proposal_sources WHERE source_id=ANY($2::text[])))
+            AND (selector IS DISTINCT FROM '{}'::jsonb OR exceptions IS DISTINCT FROM '[]'::jsonb
+                OR state IS DISTINCT FROM 'retracted')""", targets["proposal"], source_ids)
         await connection.execute("""UPDATE am_receipts SET result=result-'request' WHERE kind='reflect' AND result ? 'request'
             AND target_id IN (SELECT id FROM am_operations WHERE artifact_id IN (SELECT id FROM am_reflections WHERE draft IS NULL))""")
-        await connection.execute("""UPDATE am_claim_judgments j SET relations=NULL,reason=NULL,state='retracted' WHERE id=ANY($1::text[])
+        await connection.execute("""UPDATE am_claim_judgments j SET relations=NULL,reason=NULL,state='retracted' WHERE (id=ANY($1::text[])
             OR EXISTS(SELECT 1 FROM jsonb_array_elements(j.sources) d WHERE d->>'id'=ANY($2::text[]))
             OR EXISTS(SELECT 1 FROM jsonb_array_elements(j.claims) d WHERE d->>'id'=ANY($3::text[]))
-            OR id IN (SELECT judgment_id FROM am_relations WHERE reason IS NULL AND judgment_id IS NOT NULL)""",
+            OR id IN (SELECT judgment_id FROM am_relations WHERE reason IS NULL AND judgment_id IS NOT NULL))
+            AND (relations IS NOT NULL OR reason IS NOT NULL OR state IS DISTINCT FROM 'retracted')""",
             targets["judgment"], source_ids, claim_ids)
-        await connection.execute("UPDATE am_source_selections SET reason=NULL,rejection_comparisons='[]' WHERE id=ANY($1::text[]) OR source_id=ANY($2::text[])", targets["selection"], source_ids)
-        await connection.execute("UPDATE am_feedback SET reason=NULL WHERE id=ANY($1::text[]) OR source_id=ANY($2::text[]) OR rejected_source_ids && $2::text[]", targets["feedback"], source_ids)
+        await connection.execute("""UPDATE am_source_selections SET reason=NULL,rejection_comparisons='[]'
+            WHERE (id=ANY($1::text[]) OR source_id=ANY($2::text[]))
+            AND (reason IS NOT NULL OR rejection_comparisons IS DISTINCT FROM '[]'::jsonb)""", targets["selection"], source_ids)
+        await connection.execute("""UPDATE am_feedback SET reason=NULL
+            WHERE (id=ANY($1::text[]) OR source_id=ANY($2::text[]) OR rejected_source_ids && $2::text[])
+            AND reason IS NOT NULL""", targets["feedback"], source_ids)
 
     async def _reopen_source_work(
         self, connection, source_ids: tuple[str, ...],
@@ -2933,22 +2952,26 @@ class Store:
             OR EXISTS(SELECT 1 FROM jsonb_array_elements(j.claims) d LEFT JOIN am_claims c ON c.id=d->>'id'
                 WHERE c.id IS NULL OR c.state<>'active' OR c.draft IS NULL OR c.revision<>(d->>'revision')::bigint)
             OR EXISTS(SELECT 1 FROM am_relations r WHERE r.judgment_id=j.id AND r.state='retracted'))""")
-        await connection.execute("""UPDATE am_pending_judgments p SET
-            source_ids=ARRAY(SELECT s.id FROM unnest(p.source_ids) WITH ORDINALITY input(id,ordinal)
-                JOIN am_sources s ON s.id=input.id WHERE s.binding_id=p.binding_id AND s.realm=$1
-                AND s.state='active' AND s.body IS NOT NULL
-                AND (s.snapshot IS NULL OR s.snapshot IS NOT DISTINCT FROM p.snapshot) ORDER BY input.ordinal),
-            claim_ids=ARRAY(SELECT c.id FROM unnest(p.claim_ids) WITH ORDINALITY input(id,ordinal)
-                JOIN am_claims c ON c.id=input.id WHERE c.binding_id=p.binding_id AND c.state='active'
-                AND c.draft IS NOT NULL ORDER BY input.ordinal)
-            WHERE p.kind='legacy_revalidation' AND p.state IN ('pending','held')""", self.settings.realm)
-        await connection.execute("""UPDATE am_pending_judgments p SET state=CASE
-            WHEN cardinality(p.source_ids)=0 THEN 'retracted'
-            WHEN p.state='held' THEN 'held'
-            WHEN EXISTS(SELECT 1 FROM am_sources s WHERE s.id=ANY(p.source_ids)
-                AND s.speaker IN ('memory','agent_note')) THEN 'held'
-            ELSE 'pending' END
-            WHERE p.kind='legacy_revalidation' AND p.state IN ('pending','held')""")
+        await connection.execute("""WITH eligible AS (
+            SELECT p.id,p.state,
+                ARRAY(SELECT s.id FROM unnest(p.source_ids) WITH ORDINALITY input(id,ordinal)
+                    JOIN am_sources s ON s.id=input.id WHERE s.binding_id=p.binding_id AND s.realm=$1
+                    AND s.state='active' AND s.body IS NOT NULL
+                    AND (s.snapshot IS NULL OR s.snapshot IS NOT DISTINCT FROM p.snapshot) ORDER BY input.ordinal) AS source_ids,
+                ARRAY(SELECT c.id FROM unnest(p.claim_ids) WITH ORDINALITY input(id,ordinal)
+                    JOIN am_claims c ON c.id=input.id WHERE c.binding_id=p.binding_id AND c.state='active'
+                    AND c.draft IS NOT NULL ORDER BY input.ordinal) AS claim_ids
+            FROM am_pending_judgments p WHERE p.kind='legacy_revalidation' AND p.state IN ('pending','held')
+        ), desired AS (
+            SELECT e.id,e.source_ids,e.claim_ids,CASE
+                WHEN cardinality(e.source_ids)=0 THEN 'retracted'
+                WHEN e.state='held' THEN 'held'
+                WHEN EXISTS(SELECT 1 FROM am_sources s WHERE s.id=ANY(e.source_ids)
+                    AND s.speaker IN ('memory','agent_note')) THEN 'held'
+                ELSE 'pending' END AS state FROM eligible e
+        ) UPDATE am_pending_judgments p SET source_ids=d.source_ids,claim_ids=d.claim_ids,state=d.state
+            FROM desired d WHERE p.id=d.id AND (p.source_ids IS DISTINCT FROM d.source_ids
+                OR p.claim_ids IS DISTINCT FROM d.claim_ids OR p.state IS DISTINCT FROM d.state)""", self.settings.realm)
         await connection.execute("""UPDATE am_pending_judgments p SET state='retracted' WHERE state IN ('pending','held')
             AND p.kind<>'legacy_revalidation'
             AND (EXISTS(SELECT 1 FROM am_sources s WHERE s.id=ANY(p.source_ids) AND s.state<>'active')

@@ -257,6 +257,9 @@ def deadline_peer(monkeypatch, tmp_path):
         def settimeout(self, timeout):
             self.timeout = timeout
 
+        def setblocking(self, blocking):
+            pass
+
         def setsockopt(self, *args):
             pass
 
@@ -267,10 +270,21 @@ def deadline_peer(monkeypatch, tmp_path):
                 if failure:
                     raise OSError("synthetic connect failure")
 
+        def connect_ex(self, address):
+            self.connect(address)
+            return 0
+
+        def do_handshake(self):
+            elapse(state.tls_delay, self.timeout)
+
         def sendall(self, data):
             self.sent.extend(data)
             if state.send_delays:
                 elapse(state.send_delays.pop(0), self.timeout)
+
+        def send(self, data):
+            self.sendall(data)
+            return len(data)
 
         def makefile(self, mode, buffering=0):
             assert mode == "rb" and buffering == 0
@@ -285,12 +299,13 @@ def deadline_peer(monkeypatch, tmp_path):
         count = max(1, len(state.connect_delays))
         return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 8768))] * count
 
-    def wrap_socket(sock, *, server_hostname):
+    def wrap_socket(sock, *, server_hostname, do_handshake_on_connect=True):
         state.tls_hosts.append(server_hostname)
-        elapse(state.tls_delay, sock.timeout)
+        if do_handshake_on_connect:
+            sock.do_handshake()
         return sock
 
-    monkeypatch.setattr(connection, "_resolve_tcp", lambda host, port, deadline: addresses(host, port))
+    monkeypatch.setattr(connection, "_resolve_tcp", lambda host, port, deadline, **kwargs: addresses(host, port))
     monkeypatch.setattr(connection, "socket", SimpleNamespace(
         SOCK_STREAM=socket.SOCK_STREAM, getaddrinfo=addresses, socket=lambda *args: PeerSocket(),
     ))
@@ -328,9 +343,9 @@ def deadline_response(stage, budget, *, status=200):
     return ([(prefix, 0)] if prefix else []) + [(bytes([byte]), budget / 4) for byte in slow]
 
 
-def ready_response():
+def ready_response(*, ready=True):
     raw = json.dumps({
-        "ready": True, "db_ready": True, "deployment_id": "local-owned", "realm": "personal",
+        "ready": ready, "db_ready": True, "deployment_id": "local-owned", "realm": "personal",
     }).encode()
     return [(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(raw)).encode() + b"\r\n\r\n" + raw, 0)]
 
@@ -589,3 +604,97 @@ def test_platform_resolution_is_bounded_and_reaps_its_helper(tmp_path, monkeypat
     assert unavailable.value.effect is EffectState.NOT_STARTED
     assert elapsed < 0.75
     assert reaped
+
+
+def test_remote_readiness_backs_off_and_discards_resolution_after_its_deadline(deadline_peer, monkeypatch):
+    from agents_memory import connection
+
+    peer = deadline_peer
+    resolutions = []
+    resolve = connection._resolve_tcp
+
+    def resolving(*args, **kwargs):
+        resolutions.append(peer.now)
+        return resolve(*args, **kwargs)
+
+    monkeypatch.setattr(connection, "_resolve_tcp", resolving)
+    peer.responses.extend(ready_response(ready=False) for _ in range(4))
+    with pytest.raises(DomainError) as unavailable:
+        ensure_remote_ready(peer.profile, timeout=4)
+    assert unavailable.value.effect is EffectState.NOT_STARTED
+    assert peer.now == pytest.approx(4)
+    assert len(peer.sockets) == 4
+    assert resolutions == [0]
+    assert peer.tls_hosts == ["localhost"] * 4
+    assert all(sock.closed and sock.stream.closed for sock in peer.sockets)
+
+    peer.responses.append(ready_response())
+    assert ensure_remote_ready(peer.profile, timeout=1)["ready"] is True
+    assert resolutions == [0, 4]
+
+
+def test_validated_recovery_cycle_reuses_dns_but_rechecks_tls_and_readiness(deadline_peer, credential, monkeypatch):
+    from agents_memory import connection
+
+    peer = deadline_peer
+    resolutions = []
+    resolve = connection._resolve_tcp
+
+    def resolving(*args, **kwargs):
+        resolutions.append(peer.now)
+        return resolve(*args, **kwargs)
+
+    monkeypatch.setattr(connection, "_resolve_tcp", resolving)
+    ack = {"id": "synthetic-operation", "effect": "committed"}
+    raw = json.dumps(ack).encode()
+    peer.responses.extend([
+        ready_response(), ready_response(),
+        [(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(raw)).encode() + b"\r\n\r\n" + raw, 0)],
+        ready_response(),
+    ])
+    client = LocalClient(
+        peer.profile.base_url, credential, timeout=20, state_dir=peer.profile.state_dir,
+        deployment_id=peer.profile.deployment_id, remote_settings=peer.profile,
+    )
+    with connection.remote_connection_cycle(peer.profile, deadline=20, stop_event=threading.Event()):
+        assert ensure_remote_ready(peer.profile, timeout=20)["ready"] is True
+        assert client.request("/api/capture", capture()) == ack
+        assert len(resolutions) == 1
+        assert peer.tls_hosts == ["localhost"] * 3
+    assert ensure_remote_ready(peer.profile, timeout=1)["ready"] is True
+    assert len(resolutions) == 2
+    assert len([sock for sock in peer.sockets if bytes(sock.sent).startswith(b"POST ")]) == 1
+
+
+def test_stoppable_readiness_accepts_slow_valid_dns_and_tls_within_cycle_budget(deadline_peer):
+    from agents_memory.connection import remote_connection_cycle
+
+    peer = deadline_peer
+    peer.dns_delay = 0.75
+    peer.tls_delay = 0.75
+    peer.responses.append(ready_response())
+    with remote_connection_cycle(peer.profile, deadline=20, stop_event=threading.Event()):
+        result = ensure_remote_ready(peer.profile, timeout=20)
+    assert result["ready"] is True and result["db_ready"] is True
+    assert not any(bytes(sock.sent).startswith(b"POST ") for sock in peer.sockets)
+
+
+def test_recovery_stop_is_inherited_by_client_readiness_before_mutation(deadline_peer, credential):
+    from agents_memory.connection import remote_connection_cycle
+
+    peer = deadline_peer
+    stopped = threading.Event()
+    peer.responses.append(ready_response())
+    client = LocalClient(
+        peer.profile.base_url, credential, timeout=20, state_dir=peer.profile.state_dir,
+        deployment_id=peer.profile.deployment_id, remote_settings=peer.profile,
+    )
+    with remote_connection_cycle(peer.profile, deadline=20, stop_event=stopped):
+        assert ensure_remote_ready(peer.profile, timeout=20)["ready"] is True
+        stopped.set()
+        with pytest.raises(DomainError) as interrupted:
+            client.request("/api/capture", capture())
+    assert interrupted.value.code == "SERVICE_DRAINING"
+    assert interrupted.value.effect is EffectState.NOT_STARTED
+    assert len(peer.sockets) == 1
+    assert bytes(peer.sockets[0].sent).startswith(b"GET /readyz ")

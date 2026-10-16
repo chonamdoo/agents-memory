@@ -67,12 +67,18 @@ def tls_endpoint(tmp_path):
     class Handler(BaseHTTPRequestHandler):
         def respond(self, value, status=200, **headers):
             raw = json.dumps(value).encode()
+            if self.command == "GET" and state.get("ready_pause") == "headers":
+                state["ready_started"].set()
+                state["ready_release"].wait(5)
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(raw)))
             for name, value in headers.items():
                 self.send_header(name, value)
             self.end_headers()
+            if self.command == "GET" and state.get("ready_pause") == "body":
+                state["ready_started"].set()
+                state["ready_release"].wait(5)
             if state.get("drip_post") and self.command == "POST":
                 try:
                     for offset in range(0, len(raw), 4):
@@ -94,6 +100,12 @@ def tls_endpoint(tmp_path):
         def do_POST(self):
             message = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             state["posts"].append((self.path, message, dict(self.headers)))
+            if self.headers.get("Authorization") in state.get("denied_producers", ()):
+                self.respond({"error": {"code": "AUTH_DENIED", "effect": "not_started", "message": "refused"}}, 401)
+                return
+            if state.get("post_received") is not None:
+                state["post_received"].set()
+                state["post_release"].wait(5)
             if state.get("post_delay"):
                 time.sleep(state["post_delay"])
             if state.get("reject_credential"):
@@ -137,7 +149,7 @@ def tls_endpoint(tmp_path):
             ca_bundle=ca, ca_bundle_sha256=hashlib.sha256(ca.read_bytes()).hexdigest(),
         )
         try:
-            yield SimpleNamespace(profile=profile, token=credential, state=state)
+            yield SimpleNamespace(profile=profile, token=credential, state=state, server_key=key_file)
         finally:
             server.shutdown()
             thread.join(timeout=5)

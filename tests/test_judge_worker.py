@@ -12,6 +12,7 @@ from test_jev_client import http_error
 from test_store_authority import TOKEN
 from test_store_authority import authority as authority
 
+from agents_memory import judge as judge_module
 from agents_memory.application import Application
 from agents_memory.config import Settings
 from agents_memory.domain import CaptureCommand, DomainError, Principal, Role
@@ -379,9 +380,7 @@ async def test_unselected_jev_does_not_dispatch_any_judge(tmp_path, deployment_m
     settings = Settings(deployment_id="deployment-001", realm=deployment_mode, mode=deployment_mode,
         database_dsn="postgresql://not-used", state_dir=state_dir, journal_dir=tmp_path / "journal")
     if allowed:
-        actor = Principal(id="owner_test", credential_id="credential_operator", realm=deployment_mode,
-            role=Role.OPERATOR, generation=1, bindings=())
-        await set_egress_policy(settings, Tripwire(), actor, jev_allowed=True)
+        private_write(judge_dir(settings) / EGRESS_POLICY_FILE, EgressPolicy(jev_allowed=True).model_dump_json())
     worker = JudgeWorker(settings, Tripwire(), Tripwire(),
         client_factory=lambda *_: pytest.fail("An unselected provider constructed a client"))
     assert await worker.cycle() is False
@@ -584,3 +583,48 @@ async def test_actual_client_retry_with_unchanged_authorization_resolves_source(
     [selection] = await world.selections()
     assert selection["label"] == "discard" and selection["state"] == "active"
     assert await world.pending("source_selection") == ["resolved"]
+
+
+@pytest.mark.parametrize("fault", ["list_bindings", "retirement", "publication", "fence_crash"])
+async def test_failed_jev_replacement_fences_old_worker_retry_and_publication(world, monkeypatch, fault):
+    worker, sent, paused, release = retrying_worker(world)
+    previous = load_state(world.settings)
+    await world.capture("failed-replacement-fence", DECISION)
+    cycle = asyncio.create_task(worker.cycle())
+    save = judge_module._save_state
+
+    async def refused(*args, **kwargs):
+        raise DomainError("DATABASE_BUSY", "Synthetic replacement boundary failure", status=503)
+
+    def interrupted_save(settings, state):
+        if fault == "publication" and state.credential_id != previous.credential_id:
+            raise OSError("Synthetic failure before replacement publication")
+        save(settings, state)
+        if fault == "fence_crash":
+            raise OSError("Synthetic process exit after replacement fence")
+
+    try:
+        assert await asyncio.to_thread(paused.wait, 10)
+        with monkeypatch.context() as patcher:
+            if fault == "list_bindings":
+                patcher.setattr(world.store, "list_bindings", refused)
+            if fault == "retirement":
+                patcher.setattr(world.store, "revoke_token", refused)
+            patcher.setattr(judge_module, "_save_state", interrupted_save)
+            with pytest.raises((DomainError, OSError)):
+                await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda *_: "jev-1.13.0")
+        state = load_state(world.settings)
+        assert state.provider == "jev" and state.revision > previous.revision
+        assert state.credential_id in state.retiring_credential_ids
+    finally:
+        release.set()
+        await cycle
+    assert len(sent) == 1
+    assert await world.selections() == []
+    assert await world.pending("source_selection") == ["pending"]
+    assert await world.rows("SELECT id FROM am_claims WHERE binding_id=$1", world.binding_id) == []
+    assert worker.phase == "idle"
+    assert await worker.cycle() is False
+    assert len(sent) == 1
+    assert worker.provider == "jev" and worker.phase == "error"
+    assert worker.last_error == "JUDGE_CREDENTIAL_INVALID"

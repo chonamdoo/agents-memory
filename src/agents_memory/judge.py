@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
 from .config import Settings
 from .domain import DomainError, EffectState, Handle, Principal, Role, TypedModel
@@ -47,22 +47,36 @@ ModelId = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9
 class EgressPolicy(TypedModel):
     format: Literal[1] = 1
     jev_allowed: bool = Field(default=False, strict=True)
-    revision: int = Field(default=0, ge=0)
+    revision: int = Field(default=0, ge=0, strict=True)
     updated_at: datetime | None = None
     updated_by: Handle | None = None
+
+    @field_validator("format", mode="before")
+    @classmethod
+    def integer_format(cls, value):
+        if type(value) is not int:
+            raise ValueError("The egress policy format must be an integer")
+        return value
 
 
 class JudgeState(TypedModel):
     format: Literal[1] = 1
     provider: Literal["agent", "jev"] = "agent"
-    revision: int = Field(default=0, ge=0)
+    revision: int = Field(default=0, ge=0, strict=True)
     model: str | None = ModelId
     key_fingerprint: str | None = Field(default=None, pattern=r"^hmac-sha256:[0-9a-f]{12}$")
     credential_id: Handle | None = None
     retiring_credential_ids: tuple[Handle, ...] = ()
-    forget_key_pending: bool = False
+    forget_key_pending: bool = Field(default=False, strict=True)
     updated_at: datetime | None = None
     updated_by: Handle | None = None
+
+    @field_validator("format", mode="before")
+    @classmethod
+    def integer_format(cls, value):
+        if type(value) is not int:
+            raise ValueError("The judge state format must be an integer")
+        return value
 
     @model_validator(mode="after")
     def complete_provider(self) -> JudgeState:
@@ -196,6 +210,12 @@ def read_supplied_key(path: Path) -> tuple[str, list[str]]:
 
 
 def read_worker_token(settings: Settings) -> str:
+    state = load_state(settings)
+    if state.credential_id is not None and state.credential_id in state.retiring_credential_ids:
+        raise DomainError(
+            "JUDGE_CREDENTIAL_INVALID", "Jev replacement is incomplete; rerun judge set jev or explicitly select agent",
+            status=409,
+        )
     path = judge_dir(settings) / TOKEN_FILE
     if _absent(path):
         raise DomainError("JUDGE_CREDENTIAL_INVALID", "The Jev worker credential is missing; rerun judge set jev", status=409)
@@ -260,6 +280,7 @@ def describe(settings: Settings, state: JudgeState, *, operator: bool) -> dict:
     except DomainError as error:
         egress_policy = {"jev_allowed": False, "status": "invalid", "error": error.code}
     jev = state.provider == "jev" and egress_policy["jev_allowed"]
+    unavailable = jev and state.credential_id in state.retiring_credential_ids
     view = {
         "provider": "jev" if jev else "agent",
         "configured_provider": state.provider,
@@ -268,9 +289,9 @@ def describe(settings: Settings, state: JudgeState, *, operator: bool) -> dict:
         "mode": settings.mode,
         "egress_policy": egress_policy,
         "model": state.model if jev else None,
-        "source_judgment": "jev_background_then_server_validation" if jev else "current_coding_agent_via_mcp",
+        "source_judgment": "jev_unavailable_explicit_reselection_required" if unavailable else "jev_background_then_server_validation" if jev else "current_coding_agent_via_mcp",
         "relevance_judgment": "current_coding_agent_via_mcp",
-        "retirement_pending": bool(state.retiring_credential_ids or state.forget_key_pending),
+        "retirement_pending": bool(state.retiring_credential_ids or state.forget_key_pending or not _absent(judge_dir(settings) / ISSUING_TOKEN_FILE)),
         "egress": JEV_EGRESS if jev else None,
         "fallback": "none: unjudged work stays pending for the coding agent",
         "change": "operator CLI only: agents-memory judge set",
@@ -302,18 +323,41 @@ async def set_egress_policy(settings: Settings, store, actor: Principal, *, jev_
             if error.code != "JUDGE_EGRESS_POLICY_INVALID":
                 raise
             previous = EgressPolicy(revision=int(time.time()))
+        cleanup_committed = False
         if jev_allowed:
             state = load_state(settings)
             if not previous.jev_allowed and state.provider == "jev":
                 await _set_agent(settings, store, actor, forget_key=False)
+                cleanup_committed = True
             else:
+                cleanup_committed = bool(
+                    state.retiring_credential_ids or state.forget_key_pending
+                    or not _absent(judge_dir(settings) / ISSUING_TOKEN_FILE)
+                )
                 await _finish_retirement(settings, store, actor, state)
         policy = EgressPolicy(
             jev_allowed=jev_allowed, revision=previous.revision + 1, updated_at=_now(), updated_by=actor.id,
         )
-        private_write(judge_dir(settings) / EGRESS_POLICY_FILE, policy.model_dump_json(indent=2) + "\n", replace=True)
+        try:
+            async with store.operator_authority(actor):
+                private_write(judge_dir(settings) / EGRESS_POLICY_FILE, policy.model_dump_json(indent=2) + "\n", replace=True)
+        except DomainError as error:
+            if not cleanup_committed or error.effect == EffectState.UNKNOWN:
+                raise
+            raise DomainError(
+                error.code, "Worker cleanup is committed, but egress policy publication was refused. " + error.message,
+                status=error.status, effect=EffectState.COMMITTED,
+            ) from None
         if not policy.jev_allowed:
-            result = await _set_agent(settings, store, actor, forget_key=False)
+            try:
+                result = await _set_agent(settings, store, actor, forget_key=False)
+            except DomainError as error:
+                raise DomainError(
+                    error.code,
+                    "Jev egress denial is committed. Provider cleanup or worker retirement is incomplete or unresolved; "
+                    "inspect judge status and rerun judge policy deny-jev. " + error.message,
+                    status=error.status, effect=EffectState.UNKNOWN,
+                ) from None
         else:
             result = {**describe(settings, load_state(settings), operator=True), "effect": EffectState.COMMITTED}
         return {**result, "egress_policy": policy.model_dump(mode="json")}
@@ -338,7 +382,8 @@ async def set_jev(
             raise DomainError(
                 "JUDGE_STATE_INVALID", "Repair the provider with judge set agent before selecting Jev", status=503,
             ) from None
-        policy_revision = load_egress_policy(settings).revision
+        async with store.operator_authority(actor):
+            policy_revision = load_egress_policy(settings).revision
     def verify_authorized() -> str:
         _require_policy_revision(settings, policy_revision)
         if verify is not None:
@@ -351,26 +396,54 @@ async def set_jev(
         current = load_state(settings)
         if current != previous:
             raise DomainError("JUDGE_PROVIDER_CHANGED", "The judge provider changed during Jev setup; retry explicitly", status=409)
-        retired_before_issue = await _set_agent(settings, store, actor, forget_key=False)
-        previous = load_state(settings)
-        bindings = tuple(binding.id for binding in await store.list_bindings(actor))
-        token = secrets.token_urlsafe(48)
-        # A committed issuance with a lost response is recoverable by this token.
-        private_write(judge_dir(settings) / ISSUING_TOKEN_FILE, token + "\n")
-        principal = await store.issue_token(actor, Role.AGENT, bindings, token)
-        private_write(judge_dir(settings) / TOKEN_FILE, token + "\n", replace=True)
-        private_write(judge_dir(settings) / KEY_FILE, key + "\n", replace=True)
-        state = JudgeState(
-            provider="jev", revision=previous.revision + 1, model=model,
-            key_fingerprint=key_fingerprint(settings, key), credential_id=principal.credential_id,
-            retiring_credential_ids=previous.retiring_credential_ids,
-            updated_at=_now(), updated_by=actor.id,
-        )
-        _save_state(settings, state)
-        state, retired = await _finish_retirement(settings, store, actor, state)
+        retiring = previous.retiring_credential_ids
+        if previous.credential_id is not None and previous.credential_id not in retiring:
+            retiring = (*retiring, previous.credential_id)
+        state = previous.model_copy(update={
+            "revision": previous.revision + 1, "retiring_credential_ids": retiring,
+            "updated_at": _now(), "updated_by": actor.id,
+        })
+        async with store.operator_authority(actor):
+            _save_state(settings, state)
+        stage = "worker retirement"
+        failure_effect = EffectState.UNKNOWN
+        try:
+            async with store.operator_authority(actor):
+                _remove(settings, TOKEN_FILE)
+            state, retired_before_issue = await _finish_retirement(settings, store, actor, state)
+            stage = "binding lookup; no replacement issuance attempted"
+            failure_effect = EffectState.COMMITTED
+            bindings = tuple(binding.id for binding in await store.list_bindings(actor))
+            token = secrets.token_urlsafe(48)
+            # A committed issuance with a lost response is recoverable by this token.
+            async with store.operator_authority(actor):
+                private_write(judge_dir(settings) / ISSUING_TOKEN_FILE, token + "\n")
+            stage = "replacement issuance or publication; issuance must be reconciled"
+            failure_effect = EffectState.UNKNOWN
+            principal = await store.issue_token(actor, Role.AGENT, bindings, token)
+            async with store.operator_authority(actor):
+                private_write(judge_dir(settings) / TOKEN_FILE, token + "\n", replace=True)
+                private_write(judge_dir(settings) / KEY_FILE, key + "\n", replace=True)
+                state = JudgeState(
+                    provider="jev", revision=state.revision + 1, model=model,
+                    key_fingerprint=key_fingerprint(settings, key), credential_id=principal.credential_id,
+                    retiring_credential_ids=state.retiring_credential_ids,
+                    updated_at=_now(), updated_by=actor.id,
+                )
+                _save_state(settings, state)
+            stage = "published Jev worker retirement"
+            state, retired = await _finish_retirement(settings, store, actor, state)
+        except DomainError as error:
+            raise DomainError(
+                error.code,
+                f"The provider transition fence is committed; setup failed during {stage}. "
+                "Inspect judge status and rerun judge set jev, or explicitly select judge set agent. " + error.message,
+                status=error.status,
+                effect=EffectState.UNKNOWN if error.effect == EffectState.UNKNOWN else failure_effect,
+            ) from None
         return {
             **describe(settings, state, operator=True), "verified_model": resolved,
-            "granted_bindings": list(bindings), "retired_credential": retired or retired_before_issue["retired_credential"],
+            "granted_bindings": list(bindings), "retired_credential": retired_before_issue or retired,
             "service": "a running service applies this before its next Jev request", "effect": EffectState.COMMITTED,
         }
 
@@ -402,29 +475,52 @@ async def _set_agent(settings: Settings, store, actor: Principal, *, forget_key:
         retiring_credential_ids=retiring, forget_key_pending=forget_key,
         updated_at=_now(), updated_by=actor.id,
     )
-    _save_state(settings, state)
-    _remove(settings, TOKEN_FILE)
-    state, retired = await _finish_retirement(settings, store, actor, state)
+    async with store.operator_authority(actor):
+        _save_state(settings, state)
+    try:
+        async with store.operator_authority(actor):
+            _remove(settings, TOKEN_FILE)
+        state, retired = await _finish_retirement(settings, store, actor, state)
+    except DomainError as error:
+        raise DomainError(
+            error.code,
+            "Agent provider selection is committed. Worker retirement or key cleanup is incomplete or unresolved; "
+            "inspect judge status and rerun judge set agent. " + error.message,
+            status=error.status, effect=EffectState.UNKNOWN,
+        ) from None
     return {**describe(settings, state, operator=True), "retired_credential": retired, "effect": EffectState.COMMITTED,
             **_replacement_note(replaced)}
 
 
 async def _finish_retirement(settings: Settings, store, actor: Principal, state: JudgeState) -> tuple[JudgeState, str | None]:
     retired = None
-    pending = judge_dir(settings) / ISSUING_TOKEN_FILE
-    if not _absent(pending):
-        token = _read_private_text(pending, 4096).strip()
-        issued = await store.resolve_issued_credential(actor, token, role=Role.AGENT)
-        if issued is not None and issued != state.credential_id and issued not in state.retiring_credential_ids:
-            retired = await _retire(store, actor, issued)
-        _remove(settings, ISSUING_TOKEN_FILE)
-    for credential_id in state.retiring_credential_ids:
-        retired = await _retire(store, actor, credential_id)
-    if state.forget_key_pending:
-        _remove(settings, KEY_FILE)
-    if state.retiring_credential_ids or state.forget_key_pending:
-        state = state.model_copy(update={"retiring_credential_ids": (), "forget_key_pending": False})
-        _save_state(settings, state)
+    try:
+        pending = judge_dir(settings) / ISSUING_TOKEN_FILE
+        if not _absent(pending):
+            token = _read_private_text(pending, 4096).strip()
+            issued = await store.resolve_issued_credential(actor, token, role=Role.AGENT)
+            if issued is not None and issued != state.credential_id and issued not in state.retiring_credential_ids:
+                retired = await _retire(store, actor, issued)
+            async with store.operator_authority(actor):
+                _remove(settings, ISSUING_TOKEN_FILE)
+        for credential_id in state.retiring_credential_ids:
+            retired = await _retire(store, actor, credential_id)
+        if state.retiring_credential_ids or state.forget_key_pending:
+            async with store.operator_authority(actor):
+                if state.forget_key_pending:
+                    _remove(settings, KEY_FILE)
+                state = state.model_copy(update={
+                    "retiring_credential_ids": tuple(identifier for identifier in state.retiring_credential_ids if identifier == state.credential_id),
+                    "forget_key_pending": False,
+                })
+                _save_state(settings, state)
+    except DomainError as error:
+        raise DomainError(
+            error.code,
+            "Durable worker cleanup intent remains pending; issuance or credential retirement is unresolved. "
+            "Inspect judge status and rerun judge set jev or explicitly select judge set agent. " + error.message,
+            status=error.status, effect=EffectState.UNKNOWN,
+        ) from None
     return state, retired
 
 
@@ -458,8 +554,14 @@ async def grant_new_binding(settings: Settings, store, actor: Principal, binding
     """A project added while Jev judges joins the worker grant; agent mode leaves grants unchanged."""
     async with judge_guard(settings):
         state = load_state(settings)
-        if state.provider != "jev" or state.credential_id is None:
+        if (state.provider != "jev" or state.credential_id is None
+                or state.credential_id in state.retiring_credential_ids):
             return None
-        require_jev_allowed(settings)
+        try:
+            require_jev_allowed(settings)
+        except DomainError as error:
+            if error.code not in {"JUDGE_PROVIDER_FORBIDDEN", "JUDGE_EGRESS_POLICY_INVALID"}:
+                raise
+            return None
         await store.grant_binding(actor, state.credential_id, binding_id)
         return {"provider": "jev", "worker_grant": "added", "credential_id": state.credential_id}

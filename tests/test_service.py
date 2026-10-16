@@ -224,6 +224,7 @@ def test_stop_intent_survives_native_failure(native, deployment):
     with pytest.raises(DomainError) as failed:
         service.stop_service(settings)
     assert failed.value.code == "SERVICE_CONTROL_FAILED"
+    assert failed.value.effect == EffectState.COMMITTED
     assert "PRIVATE" not in failed.value.message
     assert receipt(settings)["enabled"] is False
     native.fail = None
@@ -236,7 +237,23 @@ def test_stop_intent_survives_native_failure(native, deployment):
     assert service.start_service(settings)["enabled"] is True
 
 
-@pytest.mark.parametrize("drift", ["config", "plist", "receipt", "public_config", "public_control", "symlink_plist", "symlink_config"])
+def test_start_intent_survives_native_failure_and_explicit_retry(native, deployment):
+    settings, config = deployment
+    service.install_service(settings, config)
+    service.stop_service(settings)
+    native.fail = "enable"
+    with pytest.raises(DomainError) as failed:
+        service.start_service(settings)
+    assert failed.value.code == "SERVICE_CONTROL_FAILED"
+    assert failed.value.effect == EffectState.COMMITTED
+    assert "PRIVATE" not in failed.value.message
+    assert receipt(settings)["enabled"] is True
+    assert not native.jobs
+    native.fail = None
+    assert service.start_service(settings)["running"] is True
+
+
+@pytest.mark.parametrize("drift", ["config", "plist", "receipt", "receipt_uid_float", "duplicate_receipt_key", "public_config", "public_control", "symlink_plist", "symlink_config"])
 def test_owned_drift_refuses_before_native_mutation(native, deployment, drift):
     settings, config = deployment
     service.install_service(settings, config)
@@ -249,6 +266,11 @@ def test_owned_drift_refuses_before_native_mutation(native, deployment, drift):
     elif drift == "receipt":
         owned["state_dir"] = str(native.home / "other")
         private_write(settings.state_dir / "service" / "receipt.json", json.dumps(owned), replace=True)
+    elif drift == "receipt_uid_float":
+        owned["uid"] = float(owned["uid"])
+        private_write(settings.state_dir / "service" / "receipt.json", json.dumps(owned), replace=True)
+    elif drift == "duplicate_receipt_key":
+        private_write(settings.state_dir / "service" / "receipt.json", json.dumps(owned)[:-1] + ',"enabled":true}', replace=True)
     elif drift == "public_config":
         config.chmod(0o644)
     elif drift == "public_control":
@@ -580,8 +602,11 @@ def test_interrupted_install_resumes_owned_native_identity(native, deployment, m
     with monkeypatch.context() as patcher:
         patcher.setattr(service, "private_write", interrupted_write)
         patcher.setattr(service.subprocess, "run", interrupted_native)
-        with pytest.raises(DomainError):
+        with pytest.raises(DomainError) as interrupted:
             service.install_service(settings, config)
+        assert interrupted.value.effect == (
+            EffectState.UNKNOWN if point in {"before_intent", "after_intent"} else EffectState.COMMITTED
+        )
     installed = service.install_service(settings, config)
     assert installed["enabled"] and installed["running"]
     assert service.service_status(settings)["running"]
@@ -593,7 +618,7 @@ def test_interrupted_install_resumes_owned_native_identity(native, deployment, m
 
 
 @pytest.mark.parametrize("point", [
-    "after_intent", "after_disable", "after_bootout",
+    "before_intent", "after_intent", "after_disable", "after_bootout",
     "before_plist_unlink", "after_plist_unlink",
     "before_receipt_unlink", "after_receipt_unlink",
 ])
@@ -608,6 +633,9 @@ def test_interrupted_uninstall_finishes_without_recreating_owned_files(native, d
 
     def interrupted_write(path, content, **options):
         nonlocal armed
+        if armed and point == "before_intent" and path == receipt_path:
+            armed = False
+            raise OSError("synthetic removal intent failure")
         result = publish(path, content, **options)
         if armed and point == "after_intent" and path == receipt_path:
             armed = False
@@ -639,8 +667,11 @@ def test_interrupted_uninstall_finishes_without_recreating_owned_files(native, d
         patcher.setattr(service, "private_write", interrupted_write)
         patcher.setattr(Path, "unlink", interrupted_unlink)
         patcher.setattr(service.subprocess, "run", interrupted_native)
-        with pytest.raises(DomainError):
+        with pytest.raises(DomainError) as interrupted:
             service.uninstall_service(settings)
+        assert interrupted.value.effect == (
+            EffectState.UNKNOWN if point in {"before_intent", "after_intent"} else EffectState.COMMITTED
+        )
     assert service.uninstall_service(settings)["managed"] is False
     assert not plist_path.exists() and not receipt_path.exists() and not native.jobs
     assert config.exists()
@@ -688,6 +719,7 @@ def test_pending_install_never_adopts_or_deletes_replaced_native_file(native, de
         with pytest.raises(DomainError) as denied:
             action()
         assert denied.value.code == "SERVICE_OWNERSHIP_INVALID"
+        assert denied.value.effect == EffectState.NOT_STARTED
         assert target.read_bytes() == b"foreign native content"
     assert not native.jobs
 
@@ -704,3 +736,48 @@ def test_native_decoding_failure_stays_body_free_and_typed(native, deployment, m
         service.service_status(settings)
     assert denied.value.code == "SERVICE_CONTROL_FAILED"
     assert "PRIVATE_NATIVE" not in str(denied.value)
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_install_activation_refusal_reports_its_durable_intent(native, deployment, pending):
+    settings, config = deployment
+    native.fail = "bootstrap"
+    if pending:
+        with pytest.raises(DomainError):
+            service.install_service(settings, config)
+        assert receipt(settings)["state"] == "installing"
+    with pytest.raises(DomainError) as refused:
+        service.install_service(settings, config)
+    assert refused.value.code == "SERVICE_CONTROL_FAILED"
+    assert refused.value.effect == EffectState.COMMITTED
+    owned = receipt(settings)
+    assert owned["enabled"] is True and owned["state"] == "installing"
+    assert Path(owned["plist_path"]).is_file()
+    native.fail = None
+    assert service.install_service(settings, config)["running"] is True
+
+
+def test_existing_enabled_install_activation_refusal_preserves_committed_intent(native, deployment):
+    settings, config = deployment
+    service.install_service(settings, config)
+    next(iter(native.jobs.values()))["running"] = False
+    native.fail = "kickstart"
+    with pytest.raises(DomainError) as refused:
+        service.install_service(settings, config)
+    assert refused.value.code == "SERVICE_CONTROL_FAILED"
+    assert refused.value.effect == EffectState.COMMITTED
+    assert receipt(settings)["enabled"] is True and receipt(settings)["state"] == "installed"
+    native.fail = None
+    assert service.install_service(settings, config)["running"] is True
+
+
+def test_control_config_preserves_the_explicit_legacy_upgrade_refusal(native, deployment):
+    settings, config = deployment
+    legacy = settings.model_dump(mode="json")
+    legacy["capability"] = "lexical_entity"
+    private_write(config, json.dumps(legacy), replace=True)
+    with pytest.raises(DomainError) as refused:
+        service.load_control_settings(config)
+    assert refused.value.code == "CONFIG_UPGRADE_REQUIRED"
+    assert refused.value.effect == EffectState.NOT_STARTED
+    assert not settings.state_dir.exists() and native.calls == []

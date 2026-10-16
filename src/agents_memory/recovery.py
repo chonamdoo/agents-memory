@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import os
+import random
 import re
 import signal
 import sqlite3
@@ -15,7 +16,7 @@ from pathlib import Path
 
 from . import hosts
 from .client import LocalClient
-from .connection import RemoteClientSettings
+from .connection import RemoteClientSettings, remote_connection_cycle
 from .domain import DomainError, EffectState
 from .private_io import private_read
 from .readiness import ensure_remote_ready
@@ -63,6 +64,8 @@ class SpoolRecovery:
         self._task = None
         self._scan = None
         self._pending = deque()
+        self._remote_failures = 0
+        self._remote_retry_at = 0.0
         self._status = {"state": "idle", "cycles": 0, "committed": 0, "failures": 0, "last_error": None}
 
     @property
@@ -77,6 +80,11 @@ class SpoolRecovery:
         if re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", code) is None:
             code = "HOST_RECOVERY_UNAVAILABLE"
         self._report(state=state, failures=self._status["failures"] + 1, last_error=code)
+
+    def _defer_remote(self) -> None:
+        self._remote_failures += 1
+        delay = min(60, 2 ** min(self._remote_failures, 6) * random.uniform(0.8, 1.2))
+        self._remote_retry_at = time.monotonic() + delay
 
     def start(self) -> None:
         if self._task is None:
@@ -96,24 +104,14 @@ class SpoolRecovery:
     async def _run(self) -> None:
         try:
             while not self._stop.is_set():
-                remote = isinstance(self.settings, RemoteClientSettings)
-                deadline = time.monotonic() + 20 if remote else None
-                if remote:
-                    try:
-                        ready = await asyncio.to_thread(
-                            ensure_remote_ready, self.settings, timeout=max(deadline - time.monotonic(), 0.001),
-                        )
-                    except DomainError as error:
-                        if error.code == "SERVICE_STOPPED":
-                            return
-                        self._failure(error, state="waiting_remote")
-                        ready = {"ready": False}
+                if isinstance(self.settings, RemoteClientSettings):
+                    await asyncio.to_thread(self.cycle)
                 else:
                     ready = await self.store.readiness()
-                if ready["ready"] and not self._stop.is_set():
-                    await asyncio.to_thread(self.cycle, deadline=deadline)
-                elif not ready["ready"] and not remote:
-                    self._report(state="waiting_database")
+                    if ready["ready"] and not self._stop.is_set():
+                        await asyncio.to_thread(self.cycle)
+                    elif not ready["ready"]:
+                        self._report(state="waiting_database")
                 try:
                     await asyncio.wait_for(self._wake.wait(), self.interval)
                 except TimeoutError:
@@ -155,10 +153,21 @@ class SpoolRecovery:
         return result
 
     def cycle(self, *, deadline: float | None = None) -> None:
+        if isinstance(self.settings, RemoteClientSettings):
+            if deadline is None:
+                deadline = time.monotonic() + 20
+            with remote_connection_cycle(self.settings, deadline=deadline, stop_event=self._stop):
+                self._cycle(deadline=deadline)
+        else:
+            self._cycle(deadline=deadline)
+
+    def _cycle(self, *, deadline: float | None) -> None:
         remote = isinstance(self.settings, RemoteClientSettings)
-        if remote and deadline is None:
-            deadline = time.monotonic() + 20
+        if remote and time.monotonic() < self._remote_retry_at:
+            self._report(state="waiting_remote", cycles=self._status["cycles"] + 1)
+            return
         self._report(state="idle", cycles=self._status["cycles"] + 1, last_error=None)
+        remote_ready = False
         try:
             receipts = self._discover()
         except (OSError, DomainError) as error:
@@ -167,8 +176,9 @@ class SpoolRecovery:
                 self._scan.close()
                 self._scan = None
             return
-        for path in receipts:
+        for index, path in enumerate(receipts):
             if self._stop.is_set() or (deadline is not None and time.monotonic() >= deadline):
+                self._pending.extendleft(reversed(receipts[index:]))
                 return
             descriptor = None
             spool = None
@@ -189,6 +199,24 @@ class SpoolRecovery:
                 current = _receipt(self.settings, path)
                 if current != receipt:
                     continue
+                spool = ProducerSpool(outbox, receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
+                if not spool.status()["pending"]:
+                    continue
+                if remote and not remote_ready:
+                    try:
+                        ensure_remote_ready(
+                            self.settings, timeout=max(deadline - time.monotonic(), 0.001),
+                            stop_event=self._stop,
+                        )
+                    except DomainError as error:
+                        if error.code == "SERVICE_STOPPED":
+                            self._stop.set()
+                        if not self._stop.is_set():
+                            self._failure(error, state="waiting_remote")
+                            self._defer_remote()
+                        self._pending.extendleft(reversed(receipts[index:]))
+                        return
+                    remote_ready = True
                 client = LocalClient(
                     receipt["base_url"], Path(receipt["producer_token_file"]),
                     timeout=max(deadline - time.monotonic(), 0.001) if remote else 1,
@@ -208,11 +236,14 @@ class SpoolRecovery:
                             client.timeout = remaining
                         return client.request(route, payload)
 
-                spool = ProducerSpool(outbox, receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
                 result = spool.flush(OwnedDelivery(), limit=self.flush_limit)
                 self._report(committed=self._status["committed"] + result["committed"])
                 for code in result["errors"]:
                     self._failure(code)
+                if remote and result["errors"]:
+                    self._defer_remote()
+                    self._pending.extendleft(reversed(receipts[index + 1:]))
+                    return
             except (OSError, ValueError, UnicodeError, DomainError, sqlite3.Error) as error:
                 # Invalid, removed, busy and unavailable receipts retain their outboxes.
                 self._failure(error)
@@ -223,6 +254,9 @@ class SpoolRecovery:
                         spool.close()
                 if descriptor is not None:
                     os.close(descriptor)
+        if remote_ready:
+            self._remote_failures = 0
+            self._remote_retry_at = 0.0
 
 
 @contextmanager

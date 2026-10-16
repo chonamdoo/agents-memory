@@ -8,12 +8,14 @@ from datetime import UTC, datetime
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
+from test_cli_boundaries import cli_files
 from test_edge_boundaries import AGENT_TOKEN, tool
 from test_store_authority import TOKEN
 from test_store_authority import authority as authority
 
+from agents_memory import cli, ingress
 from agents_memory.config import Settings
-from agents_memory.domain import DomainError, Role
+from agents_memory.domain import DomainError, EffectState, Role
 from agents_memory.edge import actor_from_scope, create_app
 from agents_memory.ingress import (
     OAUTH_METADATA_PATH,
@@ -26,6 +28,7 @@ from agents_memory.ingress import (
     load_ingress,
 )
 from agents_memory.private_io import private_write
+from agents_memory.store import Store
 
 PUBLIC_ORIGIN = "https://memory.example.test"
 ISSUER = "https://identity.example.test/tenant"
@@ -94,7 +97,7 @@ async def request(edge, payload=None, token=None, *, path="/api/client-bootstrap
         "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}, "http_version": "1.1",
         "scheme": scheme, "method": method, "path": path, "raw_path": path.encode(),
         "query_string": b"", "root_path": "", "server": ("127.0.0.1", 8768),
-        "client": (peer, 59999), "headers": headers, "state": {},
+        "client": None if peer is None else (peer, 59999), "headers": headers, "state": {},
     }
     await asyncio.wait_for(edge(scope, incoming.get, send), 10)
     starts = [item for item in messages if item["type"] == "http.response.start"]
@@ -419,3 +422,177 @@ async def test_authentication_failure_precedes_unavailable_journal(authority, mo
             assert status == 401 and body["error"]["code"] == "UNAUTHORIZED"
         status, body, _ = await request(edge, {"binding_id": authority.binding_id}, AGENT_TOKEN)
         assert status == 503 and body["error"]["code"] == "JOURNAL_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("proxy,peer,host", [
+    (None, "198.51.100.10", "127.0.0.1:8768"),
+    ("none", "2001:db8::10", "localhost:8768"),
+    ("loopback", "198.51.100.10", "localhost:8768"),
+    ("private", "172.24.0.3", "127.0.0.1:8768"),
+    ("none", None, "127.0.0.1:8768"),
+    (None, "localhost", "localhost:8768"),
+])
+async def test_local_authority_hosts_require_an_actual_loopback_peer(authority, proxy, peer, host):
+    configured = authority.store.settings
+    await authority.store.issue_token(authority.actor, Role.AGENT, (authority.binding_id,), AGENT_TOKEN)
+    if proxy is not None:
+        ingress = CloudIngressProfile.model_validate({
+            **profile(configured).model_dump(mode="python"), "tls_proxy": proxy,
+            "trusted_proxy_ip": "172.24.0.3" if proxy == "private" else None,
+        })
+        configure_ingress(configured, ingress)
+    edge = create_app(configured)
+    async with edge.inner.router.lifespan_context(edge.inner):
+        for path, method, token, payload in (
+            ("/readyz", "GET", TOKEN, None),
+            ("/api/client-bootstrap", "POST", AGENT_TOKEN, {"binding_id": authority.binding_id}),
+        ):
+            status, body, _ = await request(
+                edge, payload, token, path=path, method=method, host=host,
+                peer=peer, forwarded=(), extra_headers=((b"origin", ("http://" + host).encode()),),
+            )
+            assert status == 403
+            assert body["error"]["code"] == "HOST_ORIGIN_DENIED"
+            assert body["error"]["effect"] == "not_started"
+        status, body, _ = await request(
+            edge, token=TOKEN, path="/readyz", method="GET", host=host, peer="::1", forwarded=(),
+        )
+        assert status == 200 and body["ready"] is True and body["db_ready"] is True
+        status, body, _ = await request(
+            edge, {"binding_id": authority.binding_id}, AGENT_TOKEN, host=host, peer="127.0.0.1", forwarded=(),
+        )
+        assert status == 200 and body["role"] == "agent" and body["bindings"] == [authority.binding_id]
+
+
+async def test_no_proxy_oauth_cannot_be_downgraded_by_a_spoofed_local_host(authority, signing):
+    configured = authority.store.settings
+    agent = await authority.store.issue_token(authority.actor, Role.AGENT, (authority.binding_id,), AGENT_TOKEN)
+    ingress = profile(configured, oauth=oauth_profile(signing, agent)).model_copy(update={"tls_proxy": "none"})
+    configure_ingress(configured, ingress)
+    edge = create_app(configured)
+    async with edge.inner.router.lifespan_context(edge.inner):
+        status, body, _ = await request(
+            edge, {"binding_id": authority.binding_id}, AGENT_TOKEN, host="localhost:8768",
+            peer="198.51.100.10", forwarded=(),
+        )
+        assert status == 403 and body["error"]["code"] == "HOST_ORIGIN_DENIED"
+        status, body, _ = await request(
+            edge, token=TOKEN, path="/readyz", method="GET", host="127.0.0.1:8768",
+            peer="198.51.100.10", forwarded=(),
+        )
+        assert status == 403 and body["error"]["code"] == "HOST_ORIGIN_DENIED"
+        status, body, _ = await request(
+            edge, {"binding_id": authority.binding_id}, access_token(signing),
+            scheme="https", peer="198.51.100.10", forwarded=(),
+        )
+        assert status == 200 and body["role"] == "agent" and body["bindings"] == [authority.binding_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auth_mode", ("bearer", "oauth"))
+@pytest.mark.parametrize("mutation", ("current", "revoked", "generation"))
+@pytest.mark.parametrize("existing", (False, True))
+async def test_cli_ingress_publication_uses_current_operator(
+    authority, signing, tmp_path, monkeypatch, auth_mode, mutation, existing,
+):
+    store, actor = authority.store, authority.actor
+    configured = store.settings
+    configured.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    agent = await store.issue_token(actor, Role.AGENT, (authority.binding_id,), AGENT_TOKEN)
+    candidate = profile(configured, oauth=oauth_profile(signing, agent) if auth_mode == "oauth" else None)
+    destination = configured.state_dir / "cloud" / "ingress.json"
+    prior = None
+    if existing:
+        configure_ingress(configured, profile(configured).model_copy(update={"public_origin": "https://previous.example.test"}))
+        prior = destination.read_bytes()
+    input_file = tmp_path / "ingress-profile.json"
+    private_write(input_file, candidate.model_dump_json())
+    args = cli.parser().parse_args(cli_files(authority, tmp_path) + [
+        "cloud", "configure", "--ingress-file", str(input_file), "--ack-remote-storage",
+    ])
+    entered, release = asyncio.Event(), asyncio.Event()
+    authenticate, authenticate_external = Store.authenticate, Store.authenticate_external
+    task = None
+
+    async def pause_after_authentication(self, token):
+        current = await authenticate(self, token)
+        if auth_mode == "bearer" and asyncio.current_task() is task:
+            entered.set()
+            await release.wait()
+        return current
+
+    async def pause_after_mapping(self, *values, **options):
+        current = await authenticate_external(self, *values, **options)
+        if auth_mode == "oauth" and asyncio.current_task() is task:
+            entered.set()
+            await release.wait()
+        return current
+
+    monkeypatch.setattr(Store, "authenticate", pause_after_authentication)
+    monkeypatch.setattr(Store, "authenticate_external", pause_after_mapping)
+    task = asyncio.create_task(cli.execute(args))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        if mutation == "revoked":
+            await store.revoke_token(actor, actor.credential_id)
+        elif mutation == "generation":
+            async with store._tx() as (connection, _):
+                await connection.execute("UPDATE am_credentials SET generation=generation+1 WHERE id=$1", actor.credential_id)
+        release.set()
+        outcome = (await asyncio.gather(task, return_exceptions=True))[0]
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    if mutation == "current":
+        assert not isinstance(outcome, BaseException)
+        assert load_ingress(configured) == candidate
+    else:
+        assert isinstance(outcome, DomainError)
+        assert outcome.code == ("AUTH_DENIED" if mutation == "revoked" else "SCOPE_DENIED")
+        assert outcome.effect == EffectState.NOT_STARTED
+        assert (destination.read_bytes() if destination.exists() else None) == prior
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ("file_response", "authority_domain", "authority_os"))
+async def test_cli_ingress_publication_preserves_durable_effect(
+    authority, tmp_path, monkeypatch, failure,
+):
+    configured = authority.store.settings
+    configured.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    candidate = profile(configured)
+    destination = configured.state_dir / "cloud" / "ingress.json"
+    input_file = tmp_path / "ingress-profile.json"
+    private_write(input_file, candidate.model_dump_json())
+    args = cli.parser().parse_args(cli_files(authority, tmp_path) + [
+        "cloud", "configure", "--ingress-file", str(input_file), "--ack-remote-storage",
+    ])
+    if failure == "file_response":
+        write = ingress.private_write
+
+        def lose_file_response(path, content, **options):
+            write(path, content, **options)
+            if path == destination:
+                raise OSError("synthetic lost ingress write response")
+
+        monkeypatch.setattr(ingress, "private_write", lose_file_response)
+    else:
+        operator_authority = Store.operator_authority
+
+        @asynccontextmanager
+        async def lose_authority_response(self, actor):
+            async with operator_authority(self, actor) as current:
+                yield current
+            if failure == "authority_domain":
+                raise DomainError("DATABASE_UNAVAILABLE", "synthetic lost authority response", effect=EffectState.UNKNOWN)
+            raise OSError("synthetic lost authority release response")
+
+        monkeypatch.setattr(Store, "operator_authority", lose_authority_response)
+    with pytest.raises(DomainError) as interrupted:
+        await cli.execute(args)
+    assert load_ingress(configured) == candidate
+    assert interrupted.value.effect == (EffectState.UNKNOWN if failure == "file_response" else EffectState.COMMITTED)
+    if failure == "authority_domain":
+        assert interrupted.value.code == "DATABASE_UNAVAILABLE"

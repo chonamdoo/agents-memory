@@ -1,10 +1,39 @@
 # agents-memory 체크포인트
 
+## 현재 수정 재개 — development/20261016-110757
+
+- 네 번째 공식12개 결과는3 approve/9 request-changes였다. 정상 fix-loop 한도 뒤 사용자가 기록 보존 후 계속을 선택해 기존 run을 정상 종료하고 같은 branch/worktree에서 재개했다. 이전 판정·guard·pin을 바꾸거나 승인을 재사용하지 않는다.
+- source/test/pyproject/lock `35d854f6…422daf0`에서 operator 철회/generation과 Jev 파일 변경 직렬화·strict scalar·명시 효과, fenced readiness, 설치 효과/upgrade code, 부모 선종료 자손 정리, remote pending-only/backoff/취소와 단일 flush 경계를 수정했다.
+- wheel `5c0c838c…31abb1b`의46 source 일치와 실제 개인/회사 PG·launchd·Jev fence/unavailable·명시 stop/start·capture replay 보존 smoke를 확인했다. 합성 vendor callback이며 새 live Jev·구독 판단·native hook 보호를 뜻하지 않는다.
+- [PR #9 P1](https://github.com/chonamdoo/agents-memory/pull/9#discussion_r4293624349)은 모든 ingress mode의 실제 loopback peer 요구로 수정했다. PG/ASGI66 pass와 개인/회사 실제 nonloopback TCP8개403·loopback200·정상 Caddy HTTPS를 확인했다. README PC service 순서와 fresh 양 모드 configure→service install→host-install→doctor도 실제 통과했다. direct Docker/합성 agent 증거이지 Compose·모델·운영 배포/침해 조사 증거가 아니다.
+- 첫 fixture/OOM 실패·중간 source 변경 실행을 보존했다. frozen 새 전체 `uv run pytest -q`는 **2311 pass/skip0/573.27초**, Ruff/build·새 설치46파일 일치가 통과했다. OS network-deny sdist→동일 wheel과 hash 필수 build9/runtime34 새 consumer 설치도 통과했다. 새 공식 독립 review/QA/handoff·추가 commit/push·thread resolve·배포 완료는 아직 주장하지 않는다.
+- 상세 실행과 한계는 [검증 기록](verification.ko.md#네-번째-리뷰-후-권한복구와-pr-보안-수정--development20261016-110757)을 따른다. 아래는 각 이전 checkpoint의 이력이며 현재 새 코드의 원격 게시나 전체 #5/trial/출시 승인으로 재사용하지 않는다.
+
+
 ## 공식 리뷰 후 fix-loop 체크포인트 — development/20261015-131245
 
 ### 현재 작업 checkpoint 게시 범위 — 2026-10-16
 
 사용자가 “일단 지금까지 한 것으로 커밋·푸시·PR”을 명시 요청했다. 이전의 전체 완료 뒤에만 게시한다는 사용자 조건은 **현재 snapshot의 checkpoint commit/push와 Draft PR 게시에 한해 변경**한다. 기존 `docs/local-cloud-roadmap`→`main` PR #9을 갱신하며 native 보호·탐지 UX·공식 승인 review/QA/handoff·운영/평가/trial·merge/출시 gate를 완료 처리하지 않는다. 이 아래의 미게시 문구는 해당 실행 시점의 보존 기록이다. 실제 commit/remote HEAD·Draft 상태는 PR 기록으로 확인한다.
+
+### 세 번째 리뷰 후 남은 코드 결함 수정
+
+- genuine Opus5.5/Sol6.1 공식 결과는3 approve/8 request-changes/1 timeout이었다. 정상 fix-loop에서7개 blocking finding을 수정했고 다음 독립 리뷰·공식 QA/handoff로 진행한다. 전체 #5·trial·출시 완료는 아니다.
+- 현재 source/test fingerprint `72cdb923…225cbb7`, wheel `290b2d08…31adaa8`의 noneditable46 source 일치를 확인했다. 첫 집중831개는826 pass/5 fixture fail, private state/producer credential 준비만 수정해 해당5개 pass다. 새 단일 전체 green으로 합치지 않는다.
+- 실제 설치 launchd/PG에서 stalled/slow-drip 전체15초·408/not_started·부분 source0·회수 뒤 capture202, SIGKILL 재시작·DB ready·명시 stop/start를 확인했다. 실제 PG Jev 교체 장애는 선택 유지·구 토큰 거절·명시 재선택으로 복구했다. 합성 key/서비스/schema/실행 폴더는 제거하고 PG를 중지했다.
+- Claude force-on/settings env·doctor effective provider/project 경계·과거 strict receipt의 active 거절·service 오류 효과를 수정했다. native trust·기억 본문·사용자 원본 키를 변경하지 않았다. 이미 실행 중인 old binary나 실제 native 보호를 해결했다는 뜻은 아니다.
+- age Sigsum 검증기 실행·변조 negative, 공개213 checksum·Go module h1/license, 격리 Linux canary를 확인했다. out-of-band 키 신원·전체 P3/native 격리·copyleft/법적 배포 승인은 남는다. 상세·이전 실패 이력은 [검증 기록](verification.ko.md)을 따른다.
+
+### 남은 작업 재개 — native 진단·안정 상태 확인
+
+- `native-status`·`doctor --project`와 설치 결과의 metadata-only 공존 경고를 구현했다. 새 회귀29개와 실제 Codex CLI 진단을 실행했고, 합성 project layer disabled·project hook0/user4를 관측했다. trust를 쓰지 않았고 callback/보호는 미검증이다.
+- 안정 배포를 정상 DSN/schema 해석 후 read-only transaction으로 조회했다. 현재0004·failed6/DLQ6이며 구형 실패를 retired/성공으로 바꾸지 않았다. 기존 CLI 기본 config 경로 부재와 schema 옵션을 직접 DSN에 전달한 probe 실패는 보존했다.
+- 공식 PBS Python3.13.16/SQLite3.53.1과 build9/runtime34 hash closure로 OS network-deny sdist/wheel build·새 consumer 설치/CLI·46 source 일치·누락 wheel 거절을 실행했다. PG/vector·새 app image·age 공개 archive도 반입 자료로 보존한다. whole-OS/offline 제품 운영·법적 승인은 별도다.
+- 당시 병렬 작업자들은 worktree guard 거절로 코드를 쓰지 않았다. 실제 쓰기는 bound controller가 수행했고 guard/pin/binding을 바꾸거나 worker를 공식 reviewer로 세지 않았다. 이후 정상 unprefixed status의 불가를 뜻하지 않는다.
+- 같은 source fingerprint `7aca16e0…f5543`의 전체 첫 실행은1954 pass/235 fail/1 error였다. QA 임시 경로를 Git 밖으로 옮기고 일치 `VIRTUAL_ENV`를 준 뒤 제품/테스트 bytes 변경 없이236개 실패만 전부 통과했다. lint/build도 성공했다. 이를 단일 전체2190-pass로 합치지 않는다.
+- 실제 Opus5.5 Jev-deny/agent preflight P01/P02/R04는 각각 discard·조건/예외 claim 재조회·의미 재유입 discard를 관측했다. 중간 MCP 오류4회·다른 claim의 gold 미판정·native 소비 미관측을 남겼고 전체 품질/효익/trial로 확대하지 않는다.
+- 삭제된 #3의 보존 원문에서 A1–A7/B1–B7을 재확인해 [runbook](release-runbook.ko.md#원래-계획-리뷰14건의-증거-연결)에14개를 각각 연결했다. native/OS/stable/독립 gold·고정 workload/제한 운영의 공백을 완료로 바꾸지 않는다.
+- 별도 범위인 transcript/tool-I/O capture 확장·도구 digest P2·건강관리 writer/자동 audit·임베딩 도입은 이번 patch에 넣지 않는다. 기존4도구·원문·승인·삭제 core를 유지하며 실제 데이터/허가/평가 없이 자동 승격·추가 egress를 열지 않는다.
 
 
 ### 이슈 #5 후속 — 승인 없는 구현·검증

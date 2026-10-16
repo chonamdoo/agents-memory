@@ -1912,6 +1912,28 @@ def test_codex_strict_refusal_preserves_native_files_and_advisory_installation(i
     else:
         assert not settings.state_dir.exists()
 
+def test_legacy_codex_strict_is_cleanup_only_and_advisory_reinstallable(installation, authority):
+    project, settings, _, _, install = installation
+    receipt_path = install("codex")
+    document = json.loads(receipt_path.read_text())
+    document["strict"] = True
+    document["capabilities"] = hosts.capabilities("codex", strict=True, capability=settings.capability)
+    hosts._write_receipt(receipt_path, document)
+    before = {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()}
+    for options in ({}, {"allow_legacy": True}, {"active": False}):
+        with pytest.raises(DomainError) as caught:
+            hosts.load_receipt(receipt_path, **options)
+        assert caught.value.code == "HOST_STRICT_UNSUPPORTED"
+    passive = hosts.load_receipt(receipt_path, allow_legacy=True, active=False)
+    assert passive["installation_id"] == document["installation_id"]
+    assert not authority.calls
+    assert {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()} == before
+    assert hosts.uninstall_host(settings, project, "codex")["state"] == "uninstalled"
+    replacement = hosts.load_receipt(install("codex"))
+    assert replacement["strict"] is False
+    assert replacement["installation_id"] != document["installation_id"]
+
+
 
 @pytest.mark.parametrize("existing_configuration", [False, True])
 def test_omp_strict_refusal_precedes_every_installation_write(installation, existing_configuration):
@@ -1926,8 +1948,6 @@ def test_omp_strict_refusal_precedes_every_installation_write(installation, exis
         hosts.install_host(settings, project, "project-binding", "omp", agent, producer, strict=True)
     refusal = caught.value.public()
     assert refusal["code"] == "HOST_STRICT_UNSUPPORTED"
-    assert "no fail-closed native pre-request gate" in refusal["message"]
-    assert "before configuration writes" in refusal["message"]
     assert not settings.state_dir.exists()
     assert {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()} == before
     capability = hosts.capabilities("omp", strict=True)
@@ -3313,3 +3333,26 @@ def test_codex_child_secret_recall_persists_its_turn_without_capturing_child_evi
         project, "codex", agent_id="child-one", turn_id="recovered-turn", prompt="ordinary next child prompt",
     ))
     assert recovered["generation"] == 3 and recovered["gaps"]["SOURCE_SECRET_REJECTED"] == 1
+
+
+@pytest.mark.parametrize("host", ["claude", "codex", "omp"])
+def test_fresh_install_diagnostic_root_loss_reports_the_durable_install(installation, monkeypatch, host):
+    project, settings, agent, producer, _ = installation
+    receipt_path = hosts._receipt_path(settings, project, host)
+    moved = project.parent / "moved-after-install"
+    resume = hosts._resume
+
+    def move_after_resume(*args, **kwargs):
+        result = resume(*args, **kwargs)
+        project.rename(moved)
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(hosts, "_resume", move_after_resume)
+        with pytest.raises(DomainError) as refused:
+            hosts.install_host(settings, project, "project-binding", host, agent, producer, strict=False)
+    assert refused.value.code == "HOST_PROJECT_INVALID"
+    assert refused.value.effect == EffectState.UNKNOWN
+    assert hosts.load_receipt(receipt_path, active=False, allow_deleted_project=True)["state"] == "installed"
+    moved.rename(project)
+    assert hosts.install_host(settings, project, "project-binding", host, agent, producer, strict=False)["replay"] is True

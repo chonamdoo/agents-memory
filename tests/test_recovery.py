@@ -321,7 +321,7 @@ def test_remote_receipts_share_one_finite_delivery_cycle(remote_installed, monke
             spool.enqueue(command.model_copy(update={"idempotency_key": key, "origin_key": key}))
     finally:
         spool.close()
-    clock = SimpleNamespace(now=0.0)
+    clock = SimpleNamespace(now=recovery.time.monotonic())
     monkeypatch.setattr(recovery, "time", SimpleNamespace(monotonic=lambda: clock.now))
     request = recovery.LocalClient.request
 
@@ -336,3 +336,215 @@ def test_remote_receipts_share_one_finite_delivery_cycle(remote_installed, monke
     assert status(settings, receipt)["pending"] == 1
     assert [body["idempotency_key"] for _, body, _ in state["posts"]] == [command.idempotency_key, "second"]
     assert worker.status["last_error"] == "SERVICE_UNAVAILABLE"
+
+
+async def test_empty_remote_spool_never_probes_authority(remote_installed):
+    settings, receipt, _, state = remote_installed
+    worker = SpoolRecovery(settings, None)
+    worker.cycle()
+    assert status(settings, receipt)["pending"] == 0
+    state["gets"].clear()
+    delivered = list(state["posts"])
+    idle = SpoolRecovery(settings, None, interval=0.01)
+    idle.start()
+    try:
+        await eventually(lambda: idle.status["cycles"] >= 3)
+    finally:
+        await idle.stop()
+    assert state["gets"] == []
+    assert state["posts"] == delivered
+
+
+@pytest.mark.parametrize("jitter,delays", [
+    (0.8, [1.6, 3.2, 6.4, 12.8, 25.6, 51.2, 51.2]),
+    (1.2, [2.4, 4.8, 9.6, 19.2, 38.4, 60, 60]),
+])
+def test_pending_remote_failures_back_off_across_cycles_and_reset_after_delivery(
+    remote_installed, monkeypatch, jitter, delays,
+):
+    from types import SimpleNamespace
+
+    from agents_memory import recovery
+
+    settings, receipt, command, state = remote_installed
+    path = hosts._receipt_path(settings, Path(receipt["project_root"]), receipt["host"])
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(recovery, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(recovery.random, "uniform", lambda low, high: jitter)
+    attempts = []
+    available = False
+
+    def readiness(*args, **kwargs):
+        attempts.append(clock.now)
+        if not available:
+            raise DomainError("SERVICE_UNAVAILABLE", "Synthetic authority is offline", status=503)
+        return {"ready": True}
+
+    monkeypatch.setattr(recovery, "ensure_remote_ready", readiness)
+    monkeypatch.setattr(recovery.LocalClient, "request", lambda *args: {"id": "validated-ack", "effect": "committed"})
+    worker = SpoolRecovery(settings, None)
+    monkeypatch.setattr(worker, "_discover", lambda: [path])
+    for index, delay in enumerate(delays, start=1):
+        worker.cycle()
+        assert len(attempts) == index
+        assert status(settings, receipt)["pending"] == 1
+        clock.now += delay - 0.01
+        worker.cycle()
+        assert len(attempts) == index
+        assert worker.status["state"] == "waiting_remote"
+        assert worker.status["last_error"] == "SERVICE_UNAVAILABLE"
+        clock.now += 0.02
+    available = True
+    worker.cycle()
+    assert len(attempts) == len(delays) + 1
+    assert status(settings, receipt)["pending"] == 0
+    assert worker.status["committed"] == 1
+    worker.cycle()
+    assert len(attempts) == len(delays) + 1
+    spool = ProducerSpool(
+        Path(receipt["runtime_dir"]) / "capture.sqlite3", settings.deployment_id,
+        "binding-one", settings.spool_limit_bytes,
+    )
+    try:
+        spool.enqueue(command.model_copy(update={"idempotency_key": "new-pending", "origin_key": "new-pending"}))
+    finally:
+        spool.close()
+    available = False
+    worker.cycle()
+    assert len(attempts) == len(delays) + 2
+    clock.now += 2 * jitter - 0.01
+    worker.cycle()
+    assert len(attempts) == len(delays) + 2
+    clock.now += 0.02
+    worker.cycle()
+    assert len(attempts) == len(delays) + 3
+    assert status(settings, receipt)["pending"] == 1
+    assert state["gets"] == [] and state["posts"] == []
+
+
+def test_invalid_remote_receipt_is_not_permission_to_probe(remote_installed):
+    settings, receipt, _, state = remote_installed
+    owned = next(entry for entry in receipt["ownership"] if entry["kind"] == "file")
+    (Path(receipt["project_root"]) / owned["path"]).write_text("changed native extension")
+    worker = SpoolRecovery(settings, None)
+    worker.cycle()
+    assert worker.status["last_error"] == "HOST_OWNERSHIP_DRIFT"
+    assert status(settings, receipt)["pending"] == 1
+    assert state["gets"] == [] and state["posts"] == []
+
+
+async def test_remote_stop_interrupts_dns_and_reaps_helper_without_dispatch(remote_installed, monkeypatch):
+    import subprocess
+    import sys
+    import threading
+
+    from agents_memory import connection
+
+    settings, receipt, _, state = remote_installed
+    started = threading.Event()
+    processes = []
+    spawn = subprocess.Popen
+
+    def blocked_helper(argv, **options):
+        process = spawn(
+            [sys.executable, "-I", "-S", "-c", "import time; time.sleep(30)"], **options,
+        )
+        processes.append(process)
+        started.set()
+        return process
+
+    monkeypatch.setattr(connection.subprocess, "Popen", blocked_helper)
+    worker = SpoolRecovery(settings, None)
+    worker.start()
+    try:
+        assert await asyncio.wait_for(asyncio.to_thread(started.wait, 5), timeout=6)
+        await asyncio.wait_for(worker.stop(), timeout=1)
+        assert processes and all(process.poll() is not None for process in processes)
+    finally:
+        await worker.stop()
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+    assert worker.status["state"] == "stopped"
+    assert status(settings, receipt)["pending"] == 1
+    assert state["gets"] == [] and state["posts"] == []
+
+
+@pytest.mark.parametrize("interruption", [None, "budget", "readiness"])
+def test_remote_bad_first_outbox_cannot_starve_retained_healthy_batch(
+    remote_installed, monkeypatch, interruption,
+):
+    from types import SimpleNamespace
+
+    from agents_memory import recovery
+
+    settings, bad, command, state = remote_installed
+    project = Path(bad["project_root"]).with_name("healthy-project")
+    project.mkdir(mode=0o700)
+    producer = project / "producer.token"
+    private_write(producer, "synthetic-healthy-producer\n")
+    healthy_path = Path(hosts.install_host(
+        settings, project, "binding-one", "omp", Path(bad["agent_token_file"]), producer,
+    )["receipt"])
+    healthy = hosts.load_receipt(healthy_path)
+    spool = ProducerSpool(
+        Path(healthy["runtime_dir"]) / "capture.sqlite3", settings.deployment_id,
+        "binding-one", settings.spool_limit_bytes,
+    )
+    try:
+        spool.enqueue(command.model_copy(update={"idempotency_key": "healthy-key", "origin_key": "healthy-origin"}))
+    finally:
+        spool.close()
+    state["denied_producers"] = {"Bearer synthetic-producer-credential"}
+    root = settings.state_dir / "host-adapters"
+    bad_directory = hosts._receipt_path(settings, Path(bad["project_root"]), bad["host"]).parent.name
+    scandir = recovery.os.scandir
+
+    def bad_first(path):
+        entries = scandir(path)
+        if path != root:
+            return entries
+        with entries:
+            ordered = sorted(entries, key=lambda entry: entry.name != bad_directory)
+        return (entry for entry in ordered)
+
+    monkeypatch.setattr(recovery.os, "scandir", bad_first)
+    clock = SimpleNamespace(now=recovery.time.monotonic())
+    monkeypatch.setattr(recovery, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    worker = SpoolRecovery(settings, None)
+    try:
+        if interruption == "budget":
+            worker.cycle(deadline=clock.now - 1)
+            assert state["posts"] == []
+        elif interruption == "readiness":
+            with monkeypatch.context() as patch:
+                def unavailable(*args, **kwargs):
+                    raise DomainError("SERVICE_UNAVAILABLE", "Synthetic readiness outage", status=503)
+                patch.setattr(recovery, "ensure_remote_ready", unavailable)
+                worker.cycle()
+            assert state["posts"] == []
+            assert worker.status["last_error"] == "SERVICE_UNAVAILABLE"
+            clock.now += 61
+        worker.cycle()
+        assert [body["idempotency_key"] for _, body, _ in state["posts"]] == [command.idempotency_key]
+        assert status(settings, bad)["pending"] == status(settings, healthy)["pending"] == 1
+        assert worker.status["last_error"] == "AUTH_DENIED"
+        failures = worker.status["failures"]
+        worker.cycle()
+        assert worker.status["state"] == "waiting_remote"
+        assert worker.status["last_error"] == "AUTH_DENIED"
+        assert len(state["posts"]) == 1
+        clock.now += 61
+        worker.cycle()
+        assert status(settings, bad)["pending"] == 1
+        assert status(settings, bad)["quarantined"] == 0
+        assert status(settings, healthy)["pending"] == 0
+        assert [body["idempotency_key"] for _, body, _ in state["posts"]] == [
+            command.idempotency_key, "healthy-key",
+        ]
+        assert worker.status["committed"] == 1
+        assert worker.status["failures"] == failures
+    finally:
+        if worker._scan is not None:
+            worker._scan.close()

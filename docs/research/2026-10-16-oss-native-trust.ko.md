@@ -104,3 +104,8 @@ upstream은 고정 source와 공식 문서·이슈/PR 상태를 조사했다. up
 
 **이번 실제 적용:** source-cited 조사 노트·이전 조사 후속 링크·검증 기록의 설명만 보완했다. upstream 설치·permission 확대·native trust 기록·전역 전환·외부 전송·제품 source 변경은 하지 않았다. normal native 활성과 실제 first-action/stop/recovery 보호, 이후 공식 review/QA/handoff 및 원래 publication gate는 여전히 미완료다. MCP-only 성공을 strict native 보호 성공으로 대신하지 않는다.
 
+### 후속 구현 — 조사와 구분
+
+같은 날짜의 후속 patch에서 `native-status`와 `doctor --project`·host-install 결과의 read-only native memory 진단을 구현했다. Claude의 [memory 설정](https://code.claude.com/docs/en/memory)·[settings 계층](https://code.claude.com/docs/en/settings), Codex의 [memories](https://developers.openai.com/codex/memories/)·[config](https://developers.openai.com/codex/config-basic/)와 [고정 schema](https://github.com/openai/codex/blob/6ae8b8aa7c608730d4315d59c5c081897ae02780/codex-rs/core/config.schema.json)를 참고한다. 선택 설정·directory metadata만 제한해서 확인하며 memory 본문/auth/trust를 읽거나 바꾸지 않는다. 설정상 값·storage 존재를 runtime 활성/소비로 표시하지 않으며 Codex generation-off와 use-off를 구분한다.
+
+명시 executable을 준 Codex 진단은 정상 foreground app-server에서 config/read·hooks/list만 실행한다. 실제 새 설치 wheel도 project disabled/project0·user4를 관측했다. callback/행동 보호는 계속 미검증이다. 이는 위 consent client·folder/exact-hook 승인·실제 first-action/stop/recovery 구현 완료가 아니며 자동 trust나 사용자 native memory 비활성화도 하지 않는다. 상세 검증과 source identity는 [후속 실행 기록](../verification.ko.md#남은-작업-후속--native-진단실제-판단오프라인-반입)을 따른다.

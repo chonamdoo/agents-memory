@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 import pytest
 from test_cli_boundaries import cli_files
@@ -9,13 +10,17 @@ from test_store_authority import authority as authority
 from agents_memory import cli
 from agents_memory.domain import DomainError
 from agents_memory.judge import (
+    EGRESS_POLICY_FILE,
+    EgressPolicy,
     has_key,
     judge_dir,
     load_egress_policy,
     load_state,
+    read_worker_token,
     set_egress_policy,
     set_jev,
 )
+from agents_memory.private_io import private_write
 
 KEY = "sk-jev-TEST-qwrtyuiopZXCVNMLKJH"
 
@@ -111,21 +116,59 @@ async def test_cli_egress_grant_does_not_select_a_provider_or_create_a_key(autho
     assert not has_key(authority.store.settings)
 
 
-async def test_project_add_reports_committed_binding_when_jev_grant_is_refused(authority, tmp_path):
+async def test_project_add_without_effective_jev_is_successful_and_replayable(authority, tmp_path):
     store, settings, actor = authority.store, authority.store.settings, authority.actor
     settings.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     settings.state_dir.chmod(0o700)
     await set_egress_policy(settings, store, actor, jev_allowed=True)
     await set_jev(settings, store, actor, KEY, verify=lambda *_: "jev-1.13.0")
     (judge_dir(settings) / "egress-policy.json").unlink()
+    worker_token = read_worker_token(settings)
     args = cli.parser().parse_args(cli_files(authority, tmp_path) + [
-        "project", "add", "--label", "Committed despite grant refusal", "--key", "denied-worker-project",
+        "project", "add", "--label", "Agent-only project", "--key", "denied-worker-project",
     ])
-    with pytest.raises(DomainError) as refused:
-        await cli.execute(args)
-    assert refused.value.code == "JUDGE_PROVIDER_FORBIDDEN" and refused.value.effect.value == "committed"
+    result = await cli.execute(args)
     committed = [binding for binding in await store.list_bindings(actor) if binding.label == args.label]
     assert len(committed) == 1
-    await set_egress_policy(settings, store, actor, jev_allowed=False)
+    assert result["id"] == committed[0].id
+    assert result["id"] not in (await store.authenticate(worker_token)).bindings
+    assert load_state(settings).provider == "jev"
+    assert not load_egress_policy(settings).jev_allowed
     replay = await cli.execute(args)
     assert replay["id"] == committed[0].id
+
+
+@pytest.mark.parametrize("policy", ["absent", "denied", "invalid"])
+async def test_doctor_reports_agent_judgment_when_configured_jev_has_no_egress(authority, tmp_path, policy):
+    settings, store, actor = authority.store.settings, authority.store, authority.actor
+    settings.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    settings.state_dir.chmod(0o700)
+    await set_egress_policy(settings, store, actor, jev_allowed=True)
+    await set_jev(settings, store, actor, KEY, verify=lambda *_: "jev-1.13.0")
+    path = judge_dir(settings) / EGRESS_POLICY_FILE
+    if policy == "absent":
+        path.unlink()
+    else:
+        private_write(path, "{" if policy == "invalid" else EgressPolicy(jev_allowed=False).model_dump_json(), replace=True)
+    result = await cli.execute(cli.parser().parse_args(cli_files(authority, tmp_path) + ["doctor"]))
+    assert result["judge"]["configured_provider"] == "jev"
+    assert result["judge"]["provider"] == "agent"
+    assert result["judge"]["egress_policy"]["status"] == policy
+    assert result["memory_judgment"] == "current_coding_agent_via_mcp"
+    assert load_state(settings).provider == "jev"
+
+
+@pytest.mark.parametrize("project_kind", ["missing", "file", "loop"])
+async def test_doctor_rejects_invalid_project_before_loading_authority_configuration(tmp_path, project_kind):
+    project = tmp_path / "project"
+    if project_kind == "file":
+        project.write_text("not a project directory")
+    elif project_kind == "loop":
+        project.symlink_to(project)
+    args = cli.parser().parse_args([
+        "--config", str(tmp_path / "must-not-be-loaded.json"), "doctor", "--project", str(project),
+    ])
+    with pytest.raises(DomainError) as caught:
+        await cli.execute(args)
+    assert caught.value.code == "HOST_PROJECT_INVALID"
+    assert not Path(args.config).exists()

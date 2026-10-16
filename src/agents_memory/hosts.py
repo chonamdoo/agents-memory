@@ -37,12 +37,13 @@ from .domain import (
     canonical_digest,
     reject_source_secrets,
 )
+from .native_memory import native_memory_status
 from .private_io import private_read, private_write, sync_file
 from .spool import ProducerSpool, require_supported_sqlite
 from .wire import decode_json
 
 HOST_VERSIONS = {"claude": "2.1.296", "codex": "0.162.1", "omp": "18.9.1"}
-ADAPTER_VERSION = 5
+ADAPTER_VERSION = 6
 SERVER_NAME = "agents-memory"
 HOST_INPUT_BYTES = 16 * 1024 * 1024
 HOST_PROJECTION_BYTES = 65536
@@ -321,7 +322,7 @@ def receipt_connection(value: dict) -> RemoteClientSettings | None:
             "max_http_body_bytes": profile.max_http_body_bytes,
             "max_mcp_response_bytes": profile.max_mcp_response_bytes,
         }
-        if (value.get("adapter_version") != ADAPTER_VERSION
+        if (value.get("adapter_version") not in {5, ADAPTER_VERSION}
                 or any(value.get(key) != item for key, item in expected.items())
                 or profile.state_dir != Path(value["runtime_dir"]).parent.parent):
             raise ValueError
@@ -332,7 +333,7 @@ def receipt_connection(value: dict) -> RemoteClientSettings | None:
 
 def _validate_receipt(value: dict, *, allow_legacy: bool, allow_deleted_project: bool = False) -> None:
     version = value.get("adapter_version")
-    if type(version) is not int or version not in ({1, 2, 3, 4, ADAPTER_VERSION} if allow_legacy else {ADAPTER_VERSION}):
+    if type(version) is not int or version not in ({1, 2, 3, 4, 5, ADAPTER_VERSION} if allow_legacy else {ADAPTER_VERSION}):
         raise DomainError("HOST_RECEIPT_INVALID", "The host ownership receipt is missing or unsupported")
     if not isinstance(value.get("host"), str) or value["host"] not in HOST_VERSIONS or type(value.get("strict")) is not bool:
         raise DomainError("HOST_RECEIPT_INVALID", "The host ownership receipt is invalid")
@@ -378,18 +379,18 @@ def _validate_receipt(value: dict, *, allow_legacy: bool, allow_deleted_project:
     if not isinstance(value.get("capabilities"), dict):
         raise DomainError("HOST_RECEIPT_INVALID", "The host capability receipt is incomplete")
     capability = value.get("capability")
-    if version == ADAPTER_VERSION and capability != "agent_judged":
+    if version in {5, ADAPTER_VERSION} and capability != "agent_judged":
         raise DomainError("HOST_RECEIPT_INVALID", "The host receipt has no supported deployment capability")
     if version == 4 and "capability" in value and (
         not isinstance(capability, str) or capability not in {"full_semantic", "lexical_entity"}
     ):
         raise DomainError("HOST_RECEIPT_INVALID", "The historical host capability is invalid")
-    if version in {3, 4, ADAPTER_VERSION}:
+    if version in {3, 4, 5, ADAPTER_VERSION}:
         prompt_recall = value["capabilities"].get("prompt_context") == "bounded_opt_in"
         expected = (
             capabilities(value["host"], strict=value["strict"], prompt_recall=prompt_recall,
                          remote=receipt_connection(value) is not None)
-            if version == ADAPTER_VERSION else
+            if version in {5, ADAPTER_VERSION} else
             _historical_capabilities(value["host"], strict=value["strict"], prompt_recall=prompt_recall, capability=capability)
         )
         if version == 3:
@@ -411,8 +412,8 @@ def _validate_receipt(value: dict, *, allow_legacy: bool, allow_deleted_project:
         prior_scope = {**expected, "scope": "registered_binding_plus_cwd_locator_check_not_cwd_authority"}
         if value["capabilities"] not in (expected, prior_scope, historical_omp_strict):
             raise DomainError("HOST_RECEIPT_INVALID", "The host capability receipt does not match its configured modes")
-        if value["host"] == "omp" and value["strict"] and not allow_legacy:
-            raise DomainError("HOST_STRICT_UNSUPPORTED", "OMP has no fail-closed native pre-request gate; uninstall the historical strict adapter and reinstall without --strict")
+        if value["host"] in {"codex", "omp"} and value["strict"] and not allow_legacy:
+            raise DomainError("HOST_STRICT_UNSUPPORTED", "This host has no supported fail-closed native gate; uninstall the historical strict adapter and explicitly reinstall without --strict")
         if not isinstance(value.get("state"), str) or value["state"] not in {"pending", "installed", "removing", "native_removing", "native_finishing", "native_removed", "removed"}:
             raise DomainError("HOST_RECEIPT_INVALID", "The host ownership state is invalid")
         if not isinstance(value.get("intent_digest"), str) or len(value["intent_digest"]) != 64:
@@ -448,8 +449,8 @@ def load_receipt(receipt_path: Path, *, allow_legacy: bool = False, active: bool
     value["ownership_digest"] = digest
     if active and (value["adapter_version"] != ADAPTER_VERSION or "capability" not in value):
         raise DomainError("HOST_LEGACY_REINSTALL_REQUIRED", "Uninstall the validated owned older adapter and reinstall before execution")
-    if active and value["host"] == "omp" and value["strict"]:
-        raise DomainError("HOST_STRICT_UNSUPPORTED", "OMP has no fail-closed native pre-request gate; uninstall the historical strict adapter and reinstall without --strict")
+    if active and value["host"] in {"codex", "omp"} and value["strict"]:
+        raise DomainError("HOST_STRICT_UNSUPPORTED", "This host has no supported fail-closed native gate; the historical strict receipt is cleanup-only")
     if active and value.get("state") in ("native_removing", "native_finishing", "native_removed"):
         raise DomainError("HOST_UNINSTALL_INCOMPLETE", "Project entries were not verified after deleted-project cleanup; run host-uninstall for this project")
     if active and value.get("state") != "installed":
@@ -509,7 +510,7 @@ def _credentials(agent: Path, producer: Path, *, remote_settings: RemoteClientSe
 
 
 def _command(receipt: Path, verb: str, host: str) -> list[str]:
-    command = [sys.executable, "-m", "agents_memory.cli", verb, "--receipt", str(receipt)]
+    command = [sys.executable, "-I", "-m", "agents_memory.cli", verb, "--receipt", str(receipt)]
     if host == "claude" and os.environ.get("CLAUDE_CONFIG_DIR"):
         return ["/usr/bin/env", "CLAUDE_CONFIG_DIR=" + str(_claude_config_path().parent), *command]
     return command
@@ -1211,7 +1212,7 @@ def install_host(
                 _resume(receipt_path, receipt, root, project)
                 effect.changed = True
                 if receipt["state"] == "installed":
-                    return {"state": "installed", "host": host, "receipt": str(receipt_path), "capabilities": receipt["capabilities"], "native_trust": "not_modified"}
+                    return {"state": "installed", "host": host, "receipt": str(receipt_path), "capabilities": receipt["capabilities"], "native_trust": "not_modified", "native_memory": native_memory_status(root)}
                 if receipt["state"] == "native_removed":
                     raise DomainError("HOST_UNINSTALL_INCOMPLETE", "Run host-uninstall for this project to finish removing its owned entries before reinstalling")
             elif receipt["state"] == "installed":
@@ -1222,7 +1223,7 @@ def install_host(
                 if _intent_path(receipt).exists():
                     _intent_plan(receipt, root)
                     _unlink(_intent_path(receipt))
-                return {"state": "installed", "host": host, "receipt": str(receipt_path), "capabilities": receipt["capabilities"], "native_trust": "not_modified", "replay": True}
+                return {"state": "installed", "host": host, "receipt": str(receipt_path), "capabilities": receipt["capabilities"], "native_trust": "not_modified", "native_memory": native_memory_status(root), "replay": True}
         owner = uuid.uuid4().hex
         plan, ownership = [], []
         mcp_command = _command(receipt_path, "host-stdio", host)
@@ -1266,7 +1267,7 @@ def install_host(
         _begin_intent(receipt_path, receipt, project, plan, "pending")
         effect.changed = True
         _resume(receipt_path, receipt, root, project)
-    return {"state": "installed", "host": host, "receipt": str(receipt_path), "capabilities": receipt["capabilities"], "native_trust": "not_modified"}
+        return {"state": "installed", "host": host, "receipt": str(receipt_path), "capabilities": receipt["capabilities"], "native_trust": "not_modified", "native_memory": native_memory_status(root)}
 
 
 def _uninstall_result(receipt: dict, host: str, state: str) -> dict:
@@ -1315,12 +1316,12 @@ def uninstall_host(settings: Settings | RemoteClientSettings, project_root: Path
         if (remote is not None and remote != settings) or (remote is None and isinstance(settings, RemoteClientSettings)):
             raise DomainError("HOST_RECEIPT_INVALID", "Uninstall requires the original connection profile")
         if absent and (
-            receipt["adapter_version"] not in {3, 4, ADAPTER_VERSION} or receipt.get("legacy_digest")
+            receipt["adapter_version"] not in {3, 4, 5, ADAPTER_VERSION} or receipt.get("legacy_digest")
             or receipt.get("state") not in {"installed", "removing", "native_removing", "native_removed", "removed"}
             or (receipt.get("state") in {"removing", "native_removing"} and host != "claude")
         ):
             raise DomainError("HOST_RECEIPT_INVALID", "Deleted project cleanup requires a modern installation or exact native removal recovery")
-        if receipt["adapter_version"] not in {4, ADAPTER_VERSION}:
+        if receipt["adapter_version"] not in {4, 5, ADAPTER_VERSION}:
             receipt["adapter_version"] = ADAPTER_VERSION
             receipt["capability"] = settings.capability
             receipt["capabilities"] = capabilities(host, strict=receipt["strict"], capability=settings.capability)

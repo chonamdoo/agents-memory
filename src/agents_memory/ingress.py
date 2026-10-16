@@ -210,7 +210,7 @@ def public_request(profile: CloudIngressProfile | None, settings: Settings, scop
         address = None
     local_hosts = {f"127.0.0.1:{settings.port}".encode(), f"localhost:{settings.port}".encode()}
     if host in local_hosts:
-        if profile is not None and profile.tls_proxy == "private" and (address is None or not address.is_loopback):
+        if address is None or not address.is_loopback:
             raise DomainError("HOST_ORIGIN_DENIED", "Local authority requests require a loopback peer", status=403)
         if forwarded:
             raise DomainError("HEADERS_INVALID", "Local requests cannot use forwarded security headers", status=400)

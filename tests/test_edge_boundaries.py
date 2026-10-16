@@ -16,6 +16,7 @@ from jsonschema import Draft202012Validator
 from test_store_authority import TOKEN, command, ready_claim, source_selection
 from test_store_authority import authority as authority
 
+from agents_memory import edge as edge_module
 from agents_memory.application import Application
 from agents_memory.config import Settings
 from agents_memory.context import compose
@@ -42,7 +43,7 @@ AGENT_TOKEN = "wire-boundary-agent-credential-" + "w" * 32
 
 async def request(
     edge, payload, token=AGENT_TOKEN, *, path="/mcp", extra_headers=(), method="POST",
-    protocol_version=VERSION, include_headers=False,
+    protocol_version=VERSION, include_headers=False, body_receive=None,
 ):
     raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
     headers = [
@@ -72,7 +73,7 @@ async def request(
         "server": ("127.0.0.1", 8768), "client": ("127.0.0.1", 59999),
         "headers": headers, "state": {},
     }
-    await asyncio.wait_for(edge(scope, incoming.get, send), 10)
+    await asyncio.wait_for(edge(scope, body_receive or incoming.get, send), 10)
     starts = [item for item in messages if item["type"] == "http.response.start"]
     body = b"".join(item.get("body", b"") for item in messages if item["type"] == "http.response.body")
     assert len(starts) == 1
@@ -1220,3 +1221,80 @@ async def test_readyz_roundtrips_database_and_refuses_dispatch_on_authority_outa
         error = json.loads(body)["error"]
         assert status == 503 and error["code"] == "SERVICE_UNAVAILABLE"
         assert error["effect"] == "not_started" and "private" not in body.decode()
+
+
+@pytest.mark.parametrize("behavior", ["stalled", "slow_drip"])
+async def test_complete_post_deadline_releases_capacity_without_capturing_partial_memory(authority, monkeypatch, behavior):
+    monkeypatch.setattr(edge_module, "HTTP_BODY_SECONDS", 0.05)
+    raw = command(authority).model_dump_json().encode()
+    entered = asyncio.Event()
+    stalled = asyncio.Event()
+    offset = 0
+
+    async def receive():
+        nonlocal offset
+        entered.set()
+        if behavior == "stalled":
+            await stalled.wait()
+        else:
+            await asyncio.sleep(0.01)
+        chunk = raw[offset:offset + 1]
+        offset += 1
+        return {"type": "http.request", "body": chunk, "more_body": offset < len(raw)}
+
+    producer_token = "upload-boundary-producer-" + "u" * 32
+    async with running(authority) as edge:
+        await authority.store.issue_token(authority.actor, Role.PRODUCER, (authority.binding_id,), producer_token)
+        edge.settings = edge.settings.model_copy(update={"max_concurrent_requests": 1})
+        held = asyncio.create_task(request(edge, raw, producer_token, path="/api/capture", body_receive=receive, include_headers=True))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            status, body = await request(edge, raw, producer_token, path="/api/capture")
+            assert (status, json.loads(body)["error"]["code"], json.loads(body)["error"]["effect"]) == (
+                503, "SERVICE_BUSY", "not_started",
+            )
+            status, body, headers = await asyncio.wait_for(held, 2)
+            assert (status, json.loads(body)["error"]["code"], json.loads(body)["error"]["effect"]) == (
+                408, "REQUEST_BODY_TIMEOUT", "not_started",
+            )
+            assert headers[b"connection"] == b"close"
+            async with authority.store.pool.acquire() as connection:
+                assert await connection.fetchval("SELECT count(*) FROM am_sources") == 0
+            status, body = await request(edge, raw, producer_token, path="/api/capture")
+            assert status == 202
+            source_id = json.loads(body)["source_id"]
+            async with authority.store.pool.acquire() as connection:
+                assert await connection.fetchval("SELECT id FROM am_sources") == source_id
+        finally:
+            if not held.done():
+                held.cancel()
+            await asyncio.gather(held, return_exceptions=True)
+
+
+async def test_authenticated_readiness_preserves_the_committed_jev_replacement_fence(authority):
+    settings = authority.store.settings
+    settings.state_dir.mkdir(mode=0o700, exist_ok=True)
+    worker = await authority.store.issue_token(
+        authority.actor, Role.AGENT, (authority.binding_id,), "fenced-readiness-worker-" + "z" * 32,
+    )
+    state = edge_module.load_state(settings).model_copy(update={
+        "provider": "jev", "revision": 1, "model": "synthetic-model",
+        "key_fingerprint": "hmac-sha256:" + "a" * 12,
+        "credential_id": worker.credential_id,
+        "retiring_credential_ids": (worker.credential_id,),
+    })
+    directory = settings.state_dir / "judge"
+    directory.mkdir(parents=True, mode=0o700)
+    for name, value in (
+        ("provider.json", state.model_dump_json()),
+        ("egress-policy.json", json.dumps({"format": 1, "jev_allowed": True, "revision": 1})),
+    ):
+        path = directory / name
+        path.write_text(value)
+        path.chmod(0o600)
+    async with running(authority) as edge:
+        status, body = await request(edge, b"", token=TOKEN, path="/readyz", method="GET")
+    ready = json.loads(body)
+    assert status == 200 and ready["db_ready"] is True
+    assert ready["judgment"] == "jev_unavailable_explicit_reselection_required"
+    assert ready["server_inference"] == "unavailable"

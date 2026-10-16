@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .config import Settings, load_settings
 from .connection import RemoteClientSettings, load_remote_settings
-from .domain import DomainError
+from .domain import DomainError, EffectState
 from .private_io import private_read, private_write
 from .wire import decode_json
 
@@ -34,7 +34,9 @@ def load_control_settings(path: Path) -> Settings | RemoteClientSettings:
                 raise ValueError
             return RemoteClientSettings.model_validate(value)
         return load_settings(path)
-    except (DomainError, OSError, ValueError, TypeError):
+    except (DomainError, OSError, ValueError, TypeError) as error:
+        if isinstance(error, DomainError) and error.code == "CONFIG_UPGRADE_REQUIRED":
+            raise
         raise DomainError("CONFIG_INVALID", "The private control configuration is invalid") from None
 
 
@@ -47,6 +49,17 @@ def _error(code: str = "SERVICE_OWNERSHIP_INVALID") -> DomainError:
         "SERVICE_CONTROL_FAILED": "The per-user native service operation failed",
     }
     return DomainError(code, messages[code], status=503)
+
+
+def _intent_failure(error: DomainError | OSError, *, committed: bool) -> DomainError:
+    code = error.code if isinstance(error, DomainError) else "SERVICE_CONTROL_FAILED"
+    status = error.status if isinstance(error, DomainError) else 503
+    cause = error.message if isinstance(error, DomainError) else "The service operation failed"
+    intent = "was durably saved" if committed else "has an unconfirmed persistence outcome"
+    return DomainError(
+        code, f"{cause}. The requested service intent {intent}; native completion is unknown. Inspect service status before explicitly retrying.",
+        status=status, effect=EffectState.COMMITTED if committed else EffectState.UNKNOWN,
+    )
 
 
 def _native() -> None:
@@ -197,7 +210,7 @@ def _receipt(control: Path | None, *, settings: Settings | RemoteClientSettings 
     if not path.exists() and not path.is_symlink():
         return None
     try:
-        value = json.loads(_read(path))
+        value = decode_json(_read(path))
         fields = {"format", "uid", "deployment_id", "realm", "state_dir", "base_url", "control_dir", "label",
                   "config_path", "config_sha256", "plist_path", "plist_sha256", "executable", "import_root", "enabled"}
         if isinstance(value, dict) and value.get("format") == 2:
@@ -205,7 +218,7 @@ def _receipt(control: Path | None, *, settings: Settings | RemoteClientSettings 
         if isinstance(value, dict) and "state" in value:
             fields.add("state")
         if (not isinstance(value, dict) or set(value) != fields or type(value["format"]) is not int
-                or value["format"] not in {1, 2} or value["uid"] != os.getuid() or type(value["enabled"]) is not bool
+                or value["format"] not in {1, 2} or type(value["uid"]) is not int or value["uid"] != os.getuid() or type(value["enabled"]) is not bool
                 or any(not isinstance(value[key], str) for key in fields - {"format", "uid", "enabled"})):
             raise _error()
         if value["format"] == 2 and value["kind"] != "client":
@@ -354,11 +367,17 @@ def install_service(settings: Settings | RemoteClientSettings, config_path: Path
                         or existing["import_root"] != str(Path(__file__).resolve().parent.parent)):
                     raise _error()
                 if existing["enabled"]:
-                    _finish_install(control, existing)
-                    return _activate(existing, explicit=True)
+                    try:
+                        _finish_install(control, existing)
+                        return _activate(existing, explicit=True)
+                    except (DomainError, OSError) as error:
+                        raise _intent_failure(error, committed=True) from None
             loaded, running = _job(existing)
             if existing["enabled"] and not running:
-                return _activate(existing, explicit=True)
+                try:
+                    return _activate(existing, explicit=True)
+                except (DomainError, OSError) as error:
+                    raise _intent_failure(error, committed=True) from None
             return _state(existing, loaded=loaded, running=running)
         plist_path = _plist_path(state, settings.deployment_id)
         if plist_path.exists() or plist_path.is_symlink():
@@ -381,9 +400,15 @@ def install_service(settings: Settings | RemoteClientSettings, config_path: Path
         if _job(receipt)[0]:
             # A label without its ownership receipt is never adoptable.
             raise _error()
-        _save(control, receipt)
-        _finish_install(control, receipt)
-        return _activate(receipt, explicit=True)
+        try:
+            _save(control, receipt)
+        except (DomainError, OSError) as error:
+            raise _intent_failure(error, committed=False) from None
+        try:
+            _finish_install(control, receipt)
+            return _activate(receipt, explicit=True)
+        except (DomainError, OSError) as error:
+            raise _intent_failure(error, committed=True) from None
 
 
 def service_status(settings: Settings | RemoteClientSettings) -> dict:
@@ -410,25 +435,37 @@ def start_service(settings: Settings | RemoteClientSettings) -> dict:
         # Validate an existing loaded job before changing durable intent.
         _job(receipt)
         receipt["enabled"] = True
-        _save(control, receipt)
-        _finish_install(control, receipt)
-        return _activate(receipt, explicit=True)
+        try:
+            _save(control, receipt)
+        except (DomainError, OSError) as error:
+            raise _intent_failure(error, committed=False) from None
+        try:
+            _finish_install(control, receipt)
+            return _activate(receipt, explicit=True)
+        except (DomainError, OSError) as error:
+            raise _intent_failure(error, committed=True) from None
 
 
 def _stop(control: Path, receipt: dict) -> dict:
     loaded, _ = _job(receipt)
     receipt["enabled"] = False
-    _save(control, receipt)  # Durable stop precedes *every* native mutation.
-    if loaded or Path(receipt["plist_path"]).exists():
-        _command("disable", _target(receipt))
-    if loaded:
-        _command("bootout", _target(receipt))
-    deadline = time.monotonic() + 30
-    while True:
-        loaded, running = _job(receipt, deadline=min(deadline, time.monotonic() + 2))
-        if not loaded:
-            return _state(receipt, loaded=False, running=running)
-        time.sleep(min(0.05, _remaining(deadline)))
+    try:
+        _save(control, receipt)  # Durable stop precedes *every* native mutation.
+    except (DomainError, OSError) as error:
+        raise _intent_failure(error, committed=False) from None
+    try:
+        if loaded or Path(receipt["plist_path"]).exists():
+            _command("disable", _target(receipt))
+        if loaded:
+            _command("bootout", _target(receipt))
+        deadline = time.monotonic() + 30
+        while True:
+            loaded, running = _job(receipt, deadline=min(deadline, time.monotonic() + 2))
+            if not loaded:
+                return _state(receipt, loaded=False, running=running)
+            time.sleep(min(0.05, _remaining(deadline)))
+    except (DomainError, OSError) as error:
+        raise _intent_failure(error, committed=True) from None
 
 
 def stop_service(settings: Settings | RemoteClientSettings) -> dict:
@@ -451,9 +488,12 @@ def _unlink_synced(path: Path) -> None:
 def _uninstall(control: Path, receipt: dict, settings: Settings | RemoteClientSettings) -> dict:
     receipt["state"] = "removing"
     _stop(control, receipt)
-    _receipt(control, settings=settings)
-    _unlink_synced(Path(receipt["plist_path"]))
-    _unlink_synced(control / _RECEIPT)
+    try:
+        _receipt(control, settings=settings)
+        _unlink_synced(Path(receipt["plist_path"]))
+        _unlink_synced(control / _RECEIPT)
+    except (DomainError, OSError) as error:
+        raise _intent_failure(error, committed=True) from None
     return _state(None)
 
 

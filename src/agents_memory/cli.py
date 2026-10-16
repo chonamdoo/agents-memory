@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import secrets
+import socket
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -296,6 +297,19 @@ async def _install_remote_host(args, settings: RemoteClientSettings) -> dict:
 
 
 async def execute(args) -> dict | None:
+    if args.command == "native-status":
+        from .native_status import native_status
+
+        return await asyncio.to_thread(
+            native_status, args.project, args.host, codex_executable=args.codex_executable,
+        )
+    native_observation = None
+    if args.command == "doctor":
+        from .native_memory import native_memory_status
+
+        native_observation = await asyncio.to_thread(native_memory_status, args.project) if args.project is not None else {
+            "state": "project_not_selected", "next": "Use doctor --project or native-status with an explicit project; native memory is not disabled automatically",
+        }
     if args.command == "host-hook":
         from .hosts import HOST_INPUT_BYTES, handle_hook_input
 
@@ -435,7 +449,18 @@ async def execute(args) -> dict | None:
         bind_host = "0.0.0.0" if args.command == "serve" and app.ingress is not None and app.ingress.tls_proxy == "private" else "127.0.0.1"
         config = uvicorn.Config(app, host=bind_host, port=settings.port, access_log=False, log_level="warning", timeout_graceful_shutdown=150, proxy_headers=False)
         server = uvicorn.Server(config)
-        await server.serve()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            try:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind((bind_host, settings.port))
+                listener.listen(config.backlog)
+                listener.setblocking(False)
+            except OSError as error:
+                raise DomainError(
+                    "SERVICE_BIND_FAILED", f"The configured service address cannot be bound (errno {error.errno})",
+                    status=503, effect=EffectState.NOT_STARTED,
+                ) from None
+            await server.serve(sockets=[listener])
         if args.command == "service-run":
             try:
                 require_service_enabled(settings)
@@ -499,6 +524,7 @@ async def execute(args) -> dict | None:
                 "connection": await asyncio.to_thread(ensure_remote_ready, settings),
                 "authentication_checked": False,
                 "client_service": await asyncio.to_thread(service_status, settings),
+                "native_memory": native_observation,
             }
         raise DomainError("REMOTE_COMMAND_UNSUPPORTED", "This operation requires a server-only authority configuration", status=403)
     async with authority(args) as (settings, store, actor):
@@ -515,7 +541,21 @@ async def execute(args) -> dict | None:
                     await store.authenticate_external(
                         mapping.credential_id, mapping.generation, roles=(Role.AGENT, Role.PRODUCER),
                     )
-            path = await asyncio.to_thread(configure_ingress, settings, profile)
+            published = False
+            try:
+                async with store.operator_authority(actor):
+                    path = configure_ingress(settings, profile)
+                    published = True
+            except DomainError as error:
+                if published:
+                    error.effect = EffectState.COMMITTED
+                raise
+            except OSError:
+                raise DomainError(
+                    "INGRESS_CONFIG_INVALID",
+                    "Ingress publication completion is unconfirmed; inspect the current policy before explicitly retrying",
+                    status=503, effect=EffectState.COMMITTED if published else EffectState.UNKNOWN,
+                ) from None
             return {
                 "ingress_file": str(path), "public_origin": profile.public_origin,
                 "auth_mode": profile.auth_mode, "tls_proxy": profile.tls_proxy,
@@ -586,13 +626,14 @@ async def execute(args) -> dict | None:
             return await store.stats(actor, resolve_binding(actor, args.binding), args.snapshot)
         if args.command == "doctor":
             projects = await store.list_bindings(actor)
+            judge_view = describe(settings, load_state(settings), operator=True)
             return {
                 "deployment_id": settings.deployment_id,
                 "realm": settings.realm,
                 "mode": settings.mode,
                 "capability": settings.capability,
-                "memory_judgment": "current_coding_agent" if load_state(settings).provider == "agent" else "jev_background_explicit_egress_policy",
-                "judge": describe(settings, load_state(settings), operator=True),
+                "memory_judgment": judge_view["source_judgment"],
+                "judge": judge_view,
                 "recall": "candidate_manifest_then_explicit_relevance",
                 "projects": len(projects),
                 "journal": store.journal.verify(),
@@ -600,6 +641,7 @@ async def execute(args) -> dict | None:
                 "cleanup": "pending_work_only",
                 "host_automatic_calls": "require_opt_in_adapter",
                 "human_presence": "not_proven_by_local_bearer",
+                "native_memory": native_observation,
             }
         if args.command == "await":
             binding = resolve_binding(actor, args.binding)
@@ -682,6 +724,10 @@ def parser() -> argparse.ArgumentParser:
     hook.add_argument("--envelope", action="store_true")
     relay = commands.add_parser("host-stdio")
     relay.add_argument("--receipt", type=Path, required=True)
+    native = commands.add_parser("native-status", help="Read native activation and memory metadata; never change trust/settings or connect to the memory DB")
+    native.add_argument("--project", type=Path, required=True)
+    native.add_argument("--host", choices=("claude", "codex", "omp"), required=True)
+    native.add_argument("--codex-executable", type=Path, help="Opt into bounded config/read and hooks/list over this explicit Codex executable")
     install = commands.add_parser("host-install")
     install.add_argument("--project", type=Path, required=True)
     install.add_argument("--binding", required=True)
@@ -776,7 +822,8 @@ def parser() -> argparse.ArgumentParser:
     for action in ("install", "start", "stop", "status", "uninstall"):
         service.add_parser(action)
     commands.add_parser("stdio")
-    commands.add_parser("doctor")
+    doctor = commands.add_parser("doctor")
+    doctor.add_argument("--project", type=Path, help="Include read-only native memory coexistence metadata for this explicit project")
     stats = commands.add_parser("stats")
     stats.add_argument("--binding")
     stats.add_argument("--snapshot")

@@ -20,7 +20,7 @@
 | PG 도구 | `pg_dump`·`pg_restore`·`psql` major18 | local은 검증한 절대 경로 세 개, docker는 명시한 owned endpoint/container. PATH 추측/자동 fallback 없음 |
 | 암호화 | 지원 age 실행 파일·검토한 recipient/identity | archive 복구 가능성과 key 보관을 확인. recipient 목록이 같은 realm/corpus 저장 권한을 부여하지 않음 |
 | macOS supervisor | per-user GUI login domain의 launchd | PG/Docker 자체 시작은 관리하지 않음. Linux/Windows의 service installer로 일반화하지 않음 |
-| native host | 해당 설치 버전·지원 callback/tool | Codex/OMP 신규 `--strict`는 거절. advisory/MCP와 native 보호는 별도이며 자동 강등하지 않음 |
+| native host | 해당 설치 버전·지원 callback/tool | Codex/OMP 신규 strict와 과거 strict receipt의 active 실행은 거절. passive owned 정리·명시 advisory/MCP는 유지하며 native 보호와 구분 |
 | 원격 연결 | 검증 HTTPS + 명시 identity/auth/binding/profile | PC는 DB/operator를 갖지 않음. PC service는 cloud server/DB를 관리하지 않음 |
 
 구현 근거: `spool.py:require_supported_sqlite`, `database.py:require_server/require_tool`, `service.py`의 platform/executable/receipt 검증, `hosts.py:install_host`. 정확한 public 명령은 설치된 `--help`와 [README](../README.md)를 함께 확인한다.
@@ -34,15 +34,19 @@
 - 각 배포 dependency의 license/NOTICE·SBOM·compatibility manifest·이 runbook의 버전·검증 보고. app의 MIT를 모든 dependency license로 기입하지 않는다.
 - 깨끗한 환경·비어 있는 cache·네트워크 없는 설치와 실제 CLI/MCP 소비 실행. warmed uv cache, wheel `--no-deps` 설치, 다른 target wheel의 존재는 이 증거가 아니다.
 - Python/SQLite·PostgreSQL/pgvector·PG18 도구·age·선택한 container image는 별도 prerequisite다. Python wheelhouse만으로 OS/container까지 offline이라고 하지 않는다.
-- sdist를 offline build하려면 build backend도 반입·고정해야 한다. `hatchling>=1.27,<2` 선언과 app의 `uv.lock`만으로 전체 build toolchain이 고정됐다고 보지 않는다.
+- sdist의 build backend도 반입·고정한다. 현재 `hatchling==1.32.4`이며 실제 target의 backend/frontend 전이 closure9개는 별도 hash manifest로 고정했다. app `uv.lock`만으로 build toolchain 전체를 식별하지 않는다.
 
 개발용 `uv sync --locked`와 cloud Dockerfile의 apt/registry/uv sync는 dependency를 취득할 수 있는 **online 준비 경로**다. 이를 offline 설치 명령으로 재명명하지 않는다. source build·dependency acquisition은 별도 준비 환경에서 수행하며 모델·telemetry·Jev를 활성화하지 않는다.
 
+개발 검증의 [GitHub Actions CI](../.github/workflows/ci.yml)는 별도 online prerequisite 준비 경로다. 실제 test·collection·lint/build·추가 smoke는 현재 지시에 따라 Actions에서만 수행한다. 이 CI의 dependency 설치나 Linux wheel 소비를 offline bundle·macOS native 활성·운영 cutover 증거로 세지 않는다.
+
 ### 이번 candidate에서 실제 준비한 Python 범위
 
-2026-10-16 작업트리 candidate는 macOS arm64 / CPython3.13.16 / SQLite3.54.0에서 app wheel과 runtime dependency34개를 hash 필수 입력으로 묶었다. 새 venv에 `--no-cache-dir --no-index`·local `--find-links`만으로 설치하고 `pip check`, isolated import의 Python43파일 일치, 설치된 CLI→advisory stdio MCP→HTTP/PG를 실제 실행했다. 준비 단계의 wheel 다운로드와 Python/pip 준비는 online이며 air-gap OS 검증이 아니다.
+직전 checkpoint의 Python43파일·SQLite3.54.0 기록과 후속 candidate를 구분한다. 최신 후속 candidate는 macOS arm64 / 공식 PBS CPython3.13.16 / SQLite3.53.1이다. Python archive·build 도구9 wheels·runtime34 wheels·새 app wheel을 hash로 묶고, OS network-deny 아래 새 환경에서 sdist/wheel build→hash 필수 전체 local 설치→`pip check`→설치 native-status를 실행했다.46 package source 파일이 일치하며 의존성 누락은 offline 실패했다. 네트워크 차단은 별도 loopback positive/negative 대조로 관측했다. 준비 다운로드는 online이다.
 
-`uv0.11.8`의 experimental CycloneDX1.5 export는 lock 전체 graph이고 실제 platform closure는 wheel inventory로 따로 식별한다. app 포함35개 distribution의 declared license·license file hash를 보존했지만 license 호환성·재배포 승인으로 간주하지 않는다. Python/PG/pgvector/도구/age/OS library 반입, 다른 ABI/OS, 독립 witness와 최종 release 승인은 여전히 별도다. 이 source의 [실행·실패 이력](verification.ko.md#이슈-5-후속--승인-없는-구현과-설치-소비자-검증)과 content identity를 같이 확인한다.
+공개 PG18/vector image와 새 Linux arm64 app image도 archive로 준비했다. 해당7aca image는 Python3.13.5·PG18.6 도구·age1.2.1·35 distributions/155 Debian copyright inventory이며 network-none/read-only 실행의 CLI·합성 암복호화·46 source 일치를 확인했다. 해당 image의 SQLite3.46.1을 PC spool용으로 반입하면 안 된다. macOS age1.3.2는 OS network-deny 암복호화에 이어 별도 private Sigsum 검증기의 proof positive·변조 negative도 통과했다. 공개 키는 고정한 공식 문서의 입력이며 out-of-band 신원 확인이나 source/binary 재현성 증명이 아니다. 후속 source wheel을 이전 image와 같다고 취급하지 않는다.
+
+`uv0.11.8` experimental CycloneDX1.5 export는 lock graph이며 실제 platform closure·build closure·image provenance는 각각 inventory로 구분한다. license/NOTICE hash 보존은 재배포 승인이나 모든 copyleft source 제공 의무의 완료가 아니다. Docker/OS/native host 설치·인증·별도 독립 witness·다른 ABI·최종 release 승인은 남아 있다. 구독 coding agent와 Jev는 허가된 외부 연결을 필요로 하므로 **offline 설치 성공을 전체 제품의 offline 판단/운영 성공으로 표시하지 않는다**. 최신 [실행·실패 기록](verification.ko.md#남은-작업-후속--native-진단실제-판단오프라인-반입)과 source fingerprint·wheel hash를 같이 확인한다.
 
 이미 검토된 candidate 자료를 반입한 뒤 실행한 설치 형태는 다음과 같다. `requirements-local.txt`에는 app wheel도 정확한 version/SHA-256으로 포함돼 있어야 한다.
 
@@ -61,12 +65,19 @@
 1. 위 compatibility·소유권·저장/처리 허가·필요한 offline 자료를 확인한다. 새로운 독립 deployment만 초기화한다. 기존 배포는 §4를 따른다.
 2. 검증한 설치 entrypoint로 `init`을 실행한다. DSN은 private 파일로 전달하고 기본 판단은 `--judge agent --jev-policy deny`로 명시한다. `--resume`은 원래 owner/token·서명 intent·동일 인자로만 사용한다.
 3. 명시 project를 등록하고 agent/producer의 분리된 credential에 그 binding 하나만 grant한다. locator는 설치 귀속 확인이며 memory authority 자체가 아니다.
-4. receipt-owned macOS `service install` 또는 운영자가 관리하는 cloud 배포를 준비한다. 프로세스 존재가 아닌 **DB 왕복·배포 identity·삭제 barrier를 포함한 readiness**를 확인한다.
+4. 로컬 authority의 receipt-owned macOS `service install` 또는 운영자가 관리하는 cloud 서버를 준비하고 **DB 왕복·배포 identity·삭제 barrier를 포함한 readiness**를 확인한다. remote PC는 `client configure` 뒤 **PC의 `service install`을 먼저** 수행해야 다음 `host-install` bootstrap의 enabled-client 검사를 통과한다. PC supervisor는 outbox만 관리하며 cloud 서버/DB를 시작하지 않는다.
 5. 명시 project/host/agent-token-file/producer-token-file로 `host-install`한다. remote PC는 verified profile·현재 bootstrap과 `--ack-remote-storage`가 추가로 필요하다. Codex/OMP는 명시 advisory만 지원하며 `--strict` 요청을 성공/자동 강등으로 바꾸지 않는다.
 6. workspace/plugin/hook/MCP 도구 승인은 native host의 별도 경계다. 정확한 대상·지속 scope를 검토하고 현재 inventory/callback을 확인한다. [폰·headless 조사](research/2026-10-16-oss-native-trust.ko.md)의 API 가능성을 이미 구현된 승인 client로 표시하지 않는다.
 7. §6의 전체 흐름을 합성 corpus로 실행한다. 그 뒤에만 허가된 실제 유입을 연다. Jev는 별도의 egress allow·유효 키·명시 provider 선택이 있어야 하며 실패 시 자동 agent fallback은 없다.
 
 설치 프로그램이 접근할 수 없거나 ownership/CA/receipt drift가 있으면 거절 원인을 해결한다. 전역 권한·native trust·writable ancestry 검사를 완화하거나 다른 deployment를 fallback으로 사용하지 않는다.
+
+### ingress 배포 전 확인
+
+- local authority Host는 profile 미설정·`tls_proxy=none|loopback|private` 모두에서 실제 socket peer가 loopback이어야 한다. Host/Origin을 localhost로 바꾸거나 forwarded 주소를 주장해 local operator/bearer 경로를 선택할 수 없다. 알 수 없는 peer도 거절한다.
+- CLI의 `proxy_headers=False`를 유지한다. 다른 ASGI host가 client/scheme을 임의 forwarded 값으로 재작성하면 실제 접속 주소 검증 전제가 깨진다.
+- private proxy는 선언한 단일 IP·HTTPS 표식과 고정 public origin을 사용하고 backend port를 외부 publish하지 않는다. raw HTTP 위장 거절과 정상 loopback/TLS proxy 양쪽을 실제 격리 배포에서 확인한 뒤에만 운영 배포를 검토한다. 합성 검증은 운영 노출·침해 조사 결과가 아니다.
+
 
 ## 4. 기존 배포 전환 순서
 
@@ -81,6 +92,8 @@
 ```
 
 `stop`은 durable disabled intent를 먼저 저장하고 native unload를 최대30초 확인한다. 실패/timeout은 성공이 아니다. `status.running=false`나 job 부재만으로 application drain·외부 provider 완료를 증명하지 않는다. 실제 serve는 admission 종료→recovery/judge/scheduler join→in-flight drain→Store close 순서를 수행한다. **별도 `drain` CLI는 없다.** exclusive maintenance lock을 획득할 수 없으면 다음 단계로 강행하지 않는다. 직접 SQL client 전체를 이 lock이 차단하는 것은 아니다.
+
+`service start/stop` 오류의 `effect=committed`는 **durable enable/disable intent의 반영**을 뜻하며 native 시작/종료 성공을 뜻하지 않는다. native 완료가 불확정이면 status를 확인한 뒤 같은 명령으로 명시 재개한다. intent 저장 여부부터 불확정이면 unknown이다. receipt는 duplicate JSON key·비정수 UID를 거절한다.
 
 ### 4.2 최종 encrypted backup·복구 자료 확인
 
@@ -98,18 +111,28 @@ archive의 checksum/크기·migration/live version과 `journal_included=false`�
 
 ### 4.3 package/schema/host 전환
 
-1. 이전 설치 환경은 복구용으로 보존하고 새 검증 package를 별도 stable 경로에 반입한다. 사용 중인 venv를 덮어쓰지 않는다.
+1. 이전 설치 환경은 복구용으로 보존하고 새 검증 package를 별도 stable 경로에 반입한다. 새 검증 절대 entrypoint는 `NEXT_AM_BIN`으로 구분하며 사용 중인 venv를 덮어쓰지 않는다. 아래 owned 제거가 끝날 때까지 `AM_BIN`은 원래 설치본이다.
 2. 원래 host project·host·deployment의 owned uninstall을 수행한다. foreign hook·MCP·사용자 trust·pending spool은 보존한다. drift나 중단 intent가 있으면 같은 정확한 범위로 정상 재개한다.
-3. 현재 operator와 해당 deployment의 migrator 설정으로 명시 migrate한다.
+
+   adapter6 전환에서도 원래 v5 receipt/command를 편집하지 않는다. 원래 entrypoint의 정상 owned uninstall을 우선하며, 새 설치본도 검증된 v5를 cleanup-only로 읽는다. 재설치 전 active v5 replay는 거절되고 pending private spool은 보존한다. 생성 command의 Python `-I`는 import 격리이며 native trust/strict 지원 범위를 바꾸지 않는다.
+
+3. **config를 쓰기 전에**, 원래 entrypoint·원래 config가 receipt와 일치할 때 owned service도 제거한다. stopped 상태여도 config bytes는 pin되어 있으며 `migrate --upgrade-config` 뒤 uninstall은 serialization-only 변경에도 정상 거절된다. receipt/digest를 고치거나 ownership 검사를 우회하지 않는다.
 
 ```sh
+"$AM_BIN" --config "$CONFIG" service uninstall
+```
+
+4. 원래 owned entries 제거를 확인한 뒤 새 검증 entrypoint로 전환하고 현재 operator·해당 deployment의 migrator 설정으로 명시 migrate한다.
+
+```sh
+AM_BIN="$NEXT_AM_BIN"
 "$AM_BIN" --config "$CONFIG" --token-file "$OPERATOR_TOKEN_FILE" migrate \
   --confirm-deployment "$DEPLOYMENT_ID" --upgrade-config
 ```
 
-4. 자동 schema downgrade/구형 binary fallback을 하지 않는다. 원래 config/audit가 보존됐는지 확인한다. migration fence가 남으면 §5의 matching migrate 재개를 따른다.
-5. 새 package/executable·credential·endpoint·CA/profile이 바뀐 host/service 설정은 정확한 owned uninstall/reinstall로 갱신한다. 새 credential이 필요한 경우 명시 발급하고 구 credential을 실제 폐기한다. credential 파일만 교체해서 revoke됐다고 하지 않는다.
-6. 명시 service start와 DB-inclusive readiness 후 §6을 실행한다. **유입 재개는 검증 후 별도 명시 단계**다. 이전 explicit stop을 client/install/recovery가 자동 뒤집도록 만들지 않는다.
+5. 자동 schema downgrade/구형 binary fallback을 하지 않는다. 원래 config/audit가 보존됐는지 확인한다. migration fence가 남으면 §5의 matching migrate 재개를 따른다.
+6. 새 entrypoint·config로 service를 명시 설치하고 DB-inclusive readiness 뒤 host를 재등록한다. 새 설치 activation은 운영자의 명시 결정이며 old receipt의 사후 uninstall로 대체하지 않는다. 바뀐 credential·endpoint·CA/profile을 정확한 owned 범위에 적용하고 새 credential이 필요하면 명시 발급·구 credential 실제 폐기를 확인한다. credential 파일 교체만으로 revoke됐다고 하지 않는다.
+7. service 상태·DB-inclusive readiness와 §6을 확인한다. **유입 재개는 검증 후 별도 명시 단계**다. 이전 explicit stop을 이 명시 운영 절차 밖의 client/install replay/recovery가 자동 뒤집도록 만들지 않는다.
 
 ## 5. 장애별 대응
 
@@ -124,6 +147,11 @@ archive의 checksum/크기·migration/live version과 `journal_included=false`�
 | migration fence | 같은 current operator·배포·config·원본/목표 bytes·retirement 확인으로 **같은 migrate** 재개 | fence 삭제, `restore-recover`를 migration 복구에 사용 |
 | restore fence/중단 | 현재 operator·배포·최신 독립 head로 정상 `restore-recover`; archive 효과는 별도 unknown으로 기록 가능 | 미발급 fresh token을 현 operator처럼 사용, 복구 성공을 archive 적용 성공으로 포장 |
 | selected Jev 실패·키 유실 | pending/visible unavailable 보존, operator가 필요하면 provider를 명시 변경 | 구독 agent로 silent fallback, allow만으로 Jev 전송 |
+| Jev 교체 fence 뒤 중단 | configured Jev·unavailable·retirement/issuance pending 확인 후 명시 `judge set jev`, 또는 사용자가 `judge set agent` 선택 | 실패를 agent 자동 선택/성공으로 바꾸거나 fence·미확정 credential intent 삭제 |
+| 최초/재개 service install의 native 실패 | 저장된 installing/enabled intent와 native completion을 구분해 status·원래 인자로 명시 reconcile | durable 파일이 있는데 not_started로 취급하거나 receipt를 지워 재초기화 |
+| fenced Jev인데 DB ready | 인증된 judgment/unavailable과 retirement/issuance pending을 함께 확인 | ready/db_ready만 보고 agent 자동 fallback 또는 Jev 정상으로 판정 |
+| 빈 remote spool·원격 장애·stop | 빈 queue는 probe하지 않고 pending 실패는 cycle backoff. 준비/DNS 대기는 중단하고 이미 송신한 I/O는 원래 deadline으로 drain | 반복 TLS/DNS busy polling, 매 cycle backoff 초기화, unknown mutation 새 key 재전송 |
+| 불완전 POST upload | 전체 body15초 뒤408/not_started·HTTP/1 연결 종료. 준비된 완전 요청을 새 연결로 실행 | chunk마다 deadline 연장, 부분 source 저장, unknown mutation 자동 재전송 |
 | 삭제 journal/head 부재·불일치 | authority read 차단 유지, 독립 보존 자료·허가된 operator 절차로 복구 | DB archive의 옛 head를 최신이라고 승인하거나 삭제 floor 초기화 |
 
 ### 명시 restore
@@ -150,6 +178,28 @@ archive의 checksum/크기·migration/live version과 `journal_included=false`�
 - 지원되는 native 보호에서는 실제 첫 행동 시도·동일 action의 deny·금지 부작용0·중지 중 거절·명시 복구를 확인한다. adapter 함수/SDK 성공은 native 보호 증거가 아니다. 미지원 경로는 거절/미검증으로 남긴다.
 - native memory 공존·PMPA·semantic re-entry·frozen paired trial은 별도 acceptance다. 기존 native 설정이나 corpus를 바꿔 통과시키지 않는다.
 - actual login/reboot/sleep, clean 전체-dependency offline 설치, license/SBOM/checksum bundle, 공식 review/QA/handoff, 실제1–2주 trial, 배포 승인·publication은 각자의 증거가 필요하다. 절차·단위 테스트·합성 smoke로 이 항목들을 모두 완료 처리하지 않는다.
+- paired 평가에는 [고정 run identity·전체 attempt 분모·oracle/no-op/plausible-wrong 대조군·최종 artifact 불변](architecture.ko.md#평가-기록의-무결성)을 적용한다. busy/error/timeout·비교 불가를 primary 분모에서 빼거나 다른 remediation run의 좋은 행으로 교체하지 않는다. candidate recall·agent 판단·후속 task 성공은 별도 결과다.
+
+### 원래 계획 리뷰14건의 증거 연결
+
+[삭제된 #3의 보존 원문](https://github.com/chonamdoo/agents-memory/issues/5#issuecomment-6149015598) 기준이다. 이후 Qwen 제거·agent 기본/선택 Jev·클라우드 개발 승인으로 바뀐 계약은 현재 이슈 #5 §0이 우선이다. 항목을 문서에 연결한 것과 실제 출시 acceptance 통과를 구분한다.
+
+| ID | 현재 연결·남은 출시 조건 |
+|---|---|
+| A1 |§4.1–4.3 유입 차단/최종 backup. 안정 배포의 마지막 accepted operation→migration 실패/복구 drill 미완료 |
+| A2 |§1·§5 독립 journal/head/key와 fail-closed. 합성 warm restore 이력은 전체 디스크 손실·새 witness 복구 증명이 아님 |
+| A3 |§2·§5 로그인 의존 launchd/절대 경로/명시 stop. 실제 login/reboot/sleep·Docker 지연 운영 미완료 |
+| A4 |§5 fence/효과별 `restore-recover`·fresh credential. 합성 실행과 현재 stable cutover를 분리 |
+| A5 |§4.1·§5 runtime 차단/폐기·loaded provider unknown. 전체 native incident·host 재시작 확인 미완료 |
+| A6 |§2 hash closure·네트워크 차단 빌드/설치·이미지/도구. OS/host prerequisite·전체 offline 운영·license 승인 별도 |
+| A7 |§3·§4 단일 deployment lifecycle/foreground 운영 절차. 여러 native host의 장기 instance 관측은 trial에서 확인 |
+| B1 |§6 expected denial과 capability를 분리. Codex/OMP strict는 negative pass/unsupported이며 positive 보호로 바꾸지 않음 |
+| B2 |§6 원문 판단·전체 relevance·동일 claim 다음 read. 이전 실제3 host/HTTPS 이력과 새 Opus3사례는 전체 mode×host×transport 재검증의 대체가 아님 |
+| B3 |검증 계획의 raw/feasible recall·언어군·고정 gold. 인간 검토120 holdout 미실행 |
+| B4 |baseline/on 각각≥80%·paired CI와 matched allow. 세 판단 smoke에 causal benefit 주장을 붙이지 않음 |
+| B5 |60 task×3회·seed/10,000 cluster bootstrap 사전 freeze·1회 판정. 실제 paired 실행 미완료 |
+| B6 |busy 포함 attempt 분모·성공 terminal latency. 실제 고정 sequential/burst workload 미완료 |
+| B7 |§2 network-deny와 별도 Linux container의 HOME/socket/loopback positive·negative, filesystem/resource/PID/fsize·자식 deadline canary는 관측. 전체 P3·모든 native 환경 격리 완료는 아님 |
 
 ## 7. 제거·보관
 

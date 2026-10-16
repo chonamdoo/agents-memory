@@ -2,15 +2,53 @@
 
 ## Unreleased
 
+### CI 전용 검증 전환과 OSS 후속 보완
+
+- GitHub Actions에 실제 PG18/pgvector·지원 Python/SQLite·Node·native PG18 도구·age 준비, 전체 collection의4개 disjoint shard, lint/build·설치 wheel 소비, 누락/skip/실패/source drift·artifact mismatch를 거절하는 최종 집계를 구성했다. raw failure/captured output 대신 outcome-only JUnit을 업로드한다.
+- purge/reconcile의 동일 값 UPDATE를 null-safe 조건으로 억제했다. restore된 payload 재-scrub·삭제 floor·global clock·operation epoch 의미는 유지한다.
+- adapter6의 생성 hook/MCP에 Python `-I`를 적용하고 validated v5는 owned cleanup/reinstall만 허용한다. pending spool·foreign native/Agent Flow 설정은 보존한다.
+- serve/service-run은 lifespan 전에 configured socket을 확보하며 bind 실패를 `SERVICE_BIND_FAILED/not_started`로 반환한다. 임의 port fallback·기존 listener kill은 없다.
+- ingress 권한 재확인, stop 가능한 remote TCP/TLS/GET·최초 send, 이미 전송한 business drain, retained bad-first recovery 공정성, service uninstall 효과·upgrade 순서의 회귀를 추가/보완했다.
+- [OSS 후속 조사](docs/research/2026-10-16-oss-followup.ko.md)에서 원인·고정 PR/source·회귀·license·평가 방법과 추가 적용/기존 반영/보류/거절을 구분했다. paired 평가의 identity·전체 attempt 분모·oracle 대조군·최종 artifact 불변 계약을 보완했다.
+- 이 항목 작성 시점에는 최신 수정의 Actions 실행 증거가 없다. 로컬 test/collection/lint/build/추가 smoke는 사용자 지시로 실행하지 않았다. CI용 미검증 checkpoint 게시는 별도 명시 허용됐지만 검증 완료가 아니다. 과거 전체2311 pass·source-only 비공식 리뷰는 현재 CI·정상 독립 Opus/Sol 승인·QA/handoff를 대신하지 않는다. 실제 최신 실행은 [Actions](https://github.com/chonamdoo/agents-memory/actions/workflows/ci.yml)와 [검증 기록](docs/verification.ko.md)을 따른다.
+
+
+### 네 번째 리뷰 후 권한·복구와 PR #9 ingress 보안 수정
+
+- Jev 파일 게시를 현재 operator credential/generation과 같은 PostgreSQL clock 권한 경계로 직렬화했다. private state scalar는 strict하게 검증하고 오류 효과는 명시 상태로 선택한다.
+- fenced Jev 선택의 unavailable을 authenticated readiness에도 보존한다. 최초/재개 service install과 fresh host 진단의 durable/native 효과, `CONFIG_UPGRADE_REQUIRED` 전파를 바로잡았다.
+- 직접 부모 선종료 뒤에도 native 진단 자손·pipe를 정리한다. 원격 spool recovery는 pending-only·cycle 간 backoff·중단 가능한 준비/DNS·cycle 범위 해석 재사용을 사용하며 기존 단일 flush owner와 unknown-effect reconciliation을 유지한다.
+- localhost Host는 ingress mode와 무관하게 실제 loopback peer가 있어야 허용한다. 누락/비 loopback peer의 local operator/bearer 우회를 거절하고 정상 loopback·public OAuth 경계를 회귀로 확인했다. README의 원격 PC `service install`을 host bootstrap 앞으로 옮겼다.
+- 현재 설치본의 개인/회사 실제 PG·launchd·fenced readiness·명시 stop/start·capture 보존 smoke를 확인했다. 새 live Jev·구독 모델·native hook 보호·운영 배포의 증거는 아니다. 정확한 전체 gate와 보안 socket 검증 상태는 [검증 기록](docs/verification.ko.md)을 따른다.
+
+
+### 세 번째 공식 리뷰 — body deadline·전환 효과·진단
+
+- POST body 전체15초 deadline·408/not_started·HTTP/1 연결 종료로 slow/stalled upload의 슬롯 점유를 제한했다. 실제 설치 launchd/PG에서 부분 source0·용량 회수 뒤 capture202를 확인했다.
+- Jev 교체 fence 뒤 오류·crash에서 선택 provider를 유지하고 구 worker를 차단한다. 명시 재선택으로 복구하며 durable policy/선택과 unknown credential 폐기·pending intent를 구분한다.
+- service start/stop의 저장된 intent 뒤 native 실패를 not_started로 보고하지 않는다. strict receipt JSON/int UID, 과거 Codex strict의 cleanup-only 로딩, pending 설치 재개 경고를 보완했다.
+- Claude 환경0의 force-on·settings env unknown·진단 프로세스 provenance를 반영했다. doctor는 effective provider를 사용하고 invalid project를 조기에 거절한다. native 상태의 부작용 필드는 관측 단정이 아닌 요청 범위로 변경했다.
+- 이전 공식 wave는3 approve/8 request-changes/1 timeout이었다. 새 집중 실행826 pass/5 fixture fail 뒤 해당5개를 수정·통과했고 설치 byte46·실제 launchd crash/stop/start·PG Jev fence·CLI를 확인했다. 다음 독립 승인·공식 QA/handoff·전체 suite 결과를 대신하지 않는다.
+- age Sigsum positive/변조 negative·Go module h1/license와 공개213 checksum, 격리 Linux canary를 추가 검증했다. 전체 P3·native 보호·법적/출시 승인은 아니다.
+
+### Native 공존 진단과 offline build 준비
+
+- DB/config 없이 실행하는 `native-status`와 명시 `doctor --project`, 신규/동일 `host-install`의 metadata-only 공존 경고를 추가했다. Claude/Codex 설정 증거·storage 잔존·unknown을 분리하며 본문/auth·사용자 설정은 변경하지 않는다.
+- Codex 정상 `config/read`·`hooks/list`로 layer/hook 수를 조회하는 bounded opt-in 진단을 추가했다. native callback·실제 행동 차단·신뢰 승인을 대신하지 않는다. 새 회귀29개와 실제 Codex inventory CLI를 확인했다.
+- source-build backend를 `hatchling==1.32.4`로 고정했다. 공식 standalone Python3.13.16/SQLite3.53.1과 hash 고정 build9/runtime34 wheels로 OS network-deny sdist/wheel build·새 환경 전체 설치·CLI를 실행했고, 누락 wheel은 거절했다. 공개 PG/vector·새 app image·macOS age artifact도 별도 보존하며 offline 설치와 전체 offline 운영/법적 승인은 구분한다.
+- 안정 DB를 read-only transaction으로 관측했다: `0004_operation_successors`, failed6/DLQ6·retirement schema 없음. 현재 값이며 해결·migration 성공으로 표시하지 않는다.
+- 새 source의 첫 전체 실행은1,954 pass/235 fail/1 error였다. 제품 guard를 유지하고 저장소 내부 QA 임시 경로만 바로잡은 뒤 동일236개 실패 항목을 전부 통과했다. Ruff/build도 통과했으며 새 단일 전체-pass 실행으로 표현하지 않는다.
+- Jev deny/agent에서 실제 구독 Opus5.5가 합성 악성 원문/의미 재유입을 discard하고 정상 조건/예외 claim을 최종 MCP context로 재조회했다. 중간 MCP 오류4회와 제한된 oracle·native 소비 미관측을 기록한다. 전체 PMPA·paired 평가·trial·효익의 증명은 아니다.
+
 ### 이슈 #5 후속 — strict 설치 안전성과 삭제 재유입
 
-- 현재 source의 정확한 `uv run pytest -q`는 **2,161 pass/skip0/518.79초**다. 최초2113pass/48fail의 Homebrew symlink ownership 거절을 보존하고 private regular interpreter·정상 ownership·isolated source와69개 실패 표면을 먼저 검증했다. 제품 guard·Homebrew 권한은 변경하지 않았다.
+- 이전 checkpoint source의 정확한 `uv run pytest -q`는 **2,161 pass/skip0/518.79초**다. 최초2113pass/48fail의 Homebrew symlink ownership 거절을 보존하고 private regular interpreter·정상 ownership·isolated source와69개 실패 표면을 먼저 검증했다. 제품 guard·Homebrew 권한은 변경하지 않았다.
 
 - Codex 신규 `--strict`는 실제 native 보호 실패 상태에서 성공처럼 등록하지 않고 `HOST_STRICT_UNSUPPORTED/not_started`로 설정 쓰기 전에 거절한다. 자동 advisory downgrade는 없으며 명시 advisory/MCP·기존 owned 정리는 유지한다. Codex native 보호 구현 완료로 표시하지 않는다.
 - 삭제 identity/lineage floor와 동일 본문의 새 origin 재판단을 문서화했다. retract/purge 두 회귀와 새 설치 CLI/advisory MCP→HTTP/PG에서 기존 origin 비부활·옛 본문 부재·재판단 전 비노출·새 claim/source만 citation을 확인했다. R05의 누락 비교·잘못된 reference·비독립 근거 오류를 구분했다.
 - [설치·업그레이드·장애 복구 runbook](docs/release-runbook.ko.md)을 추가했다. 문서 절차와 실제 안정 cutover·OS login/reboot/sleep·restore 수행 증거를 혼동하지 않는다.
 - app+runtime34 wheels를 hash 필수·index/cache 비활성 local 입력으로 설치하고 `pip check`·isolated Python43파일 일치를 확인했다. lock CycloneDX와 실제 target35 distributions의 license-file inventory를 준비했다. Python/PG/tools/age/OS·build backend·다른 ABI·license/배포 승인까지 포함한 offline release 완료는 아니다.
-- 현재 source는 `744b84b1…297f15`다. 앞선2,164 pass는 이전 source 이력이며 이번 controller 실행·남은 공식/native/trial gate는 [검증 기록](docs/verification.ko.md#이슈-5-후속--승인-없는-구현과-설치-소비자-검증)을 따른다.
+- 이 checkpoint source는 `744b84b1…297f15`다. 앞선2,164 pass는 이전 source 이력이며 해당 controller 실행·남은 공식/native/trial gate는 [검증 기록](docs/verification.ko.md#이슈-5-후속--승인-없는-구현과-설치-소비자-검증)을 따른다.
 
 
 ### 두 번째 공식 리뷰 — Jev 재시도·발급 복구·readiness

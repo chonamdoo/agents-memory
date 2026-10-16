@@ -81,11 +81,11 @@ PC의 remote profile 예시는 다음과 같다. wire/spool bound를 바꾼 서�
 ```sh
 uv run agents-memory --config "$CLIENT_CONFIG" client configure \
   --profile-file "$CLIENT_PROFILE" --ca-file "$PUBLIC_CA_FILE" --ack-remote-storage
+uv run agents-memory --config "$CLIENT_CONFIG" service install
 uv run agents-memory --config "$CLIENT_CONFIG" host-install \
   --project "$PROJECT_ROOT" --binding "$BINDING_ID" --host claude \
   --agent-token-file "$AGENT_TOKEN_FILE" --producer-token-file "$PRODUCER_TOKEN_FILE" \
   --ack-remote-storage
-uv run agents-memory --config "$CLIENT_CONFIG" service install
 uv run agents-memory --config "$CLIENT_CONFIG" doctor
 ```
 
@@ -259,6 +259,21 @@ generic MCP는 자동 호출/자연어 준수를 강제하지 않는다. opt-in 
 
 **최신 native 검증 경계:** Codex0.162.1은 strict 정의 설치와 구독 MCP 성공만으로 파일 변경이 차단되지 않았다. 유효한 단일 patch가 실제 합성 파일을 변경했으므로 Codex strict 첫 행동·중지·복구 보호는 미완료다. native hook 활성·신뢰·callback 실행을 별도로 확인해야 한다. Claude의 실제 Read는 healthy/stop/recovery에서 callback·거절·무부작용을 확인했지만, provider input 소비 보장을 뜻하지 않는다. [공식 리뷰 후 실제 실행/남은 gate](docs/verification.ko.md#공식-리뷰-후-fix-loop--development20261015-131245)를 따른다.
 
+### Native 상태와 메모리 공존 진단
+
+```sh
+agents-memory native-status --project "$PROJECT_ROOT" --host codex \
+  --codex-executable "$CODEX_BIN"
+agents-memory --config "$CONFIG" doctor --project "$PROJECT_ROOT"
+```
+
+`native-status`는 config·DB·서비스 준비 없이 실행한다. `--codex-executable`을 명시할 때만 해당 Codex의 정상 stdio `config/read`·`hooks/list`를 제한된 시간/출력으로 조회한다. thread/model 시작이나 trust·enablement 변경을 요청하지 않으며, `*_requested` 필드는 이 명령의 요청 범위이지 native 프로세스 전체의 부작용 관측이 아니다. project layer와 user/project hook 수를 나눠 보여 주고 callback·실제 보호는 별도 미검증으로 남긴다. 설치·발견·신뢰를 보호 성공으로 합치지 않는다.
+
+`host-install`의 신규/동일 설치 결과와 명시 `doctor --project`에는 native memory 공존 진단이 포함된다. Claude의 `autoMemoryEnabled`·환경 disable·custom memory directory와 Codex의 memories 사용/생성 설정·custom native home을 **설정 증거**로 관측한다. 생성 중지는 기존 기억 소비 중지가 아니다. 남은 native storage·불명확한 profile/precedence·읽을 수 없는 파일은 경고/unknown이며 native 기억 본문·auth 파일을 읽거나 기존 memory·trust 설정을 바꾸지 않는다. 디렉터리 존재·설정 값은 실제 provider input 소비 증거가 아니다.
+
+Claude의 `CLAUDE_CODE_DISABLE_AUTO_MEMORY=0`은 강제 사용 설정으로 관측하며 `1`과 반대로 처리한다. 이 환경 증거는 **진단 프로세스**의 값이지 이미 실행 중인 Claude 세션의 환경이 아니다. settings의 `env` override나 읽을 수 없는 계층으로 유효 값을 확정할 수 없으면 disabled로 단정하지 않는다. `doctor --project`와 `native-status`는 존재하는 project 디렉터리만 받는다. doctor의 판단 경로는 저장된 provider 이름이 아니라 현재 유효한 Jev egress 허가·미완료 전환을 따른다.
+
+
 ## 호출 계약
 
 - capture/correct는 producer token, note/feedback/context/inspect는 agent token, approval/retract/purge/migration/restore는 operator 경계를 사용한다. agent feedback은 정정 후보이지 trusted source 교체나 irreversible 삭제가 아니다.
@@ -299,8 +314,18 @@ operator가 공급한 latest head는 외부 witness의 attestation이 아니며 
 
 기존 host 설치와 token/endpoint/path가 달라지면 `host-install`은 `HOST_ALREADY_INSTALLED`로 거절한다. 기존 설정을 임의 덮어쓰지 말고 같은 `--project`·`--host`의 `host-uninstall` 후 fresh agent/producer token으로 다시 `host-install`한다. 해제는 receipt-owned entry만 제거하고 사용자·Agent Flow entry와 pending private spool은 보존한다. CLI 기본 operator 경로가 이전 파일을 가리키면 fresh `--token-file`을 명시한다.
 
+adapter6의 생성 hook/MCP는 설치된 Python을 `-I`로 실행해 project CWD·상속 `PYTHONPATH`의 동명 module/package/stdlib shadow를 배제한다. v5는 현재 설치본에서 owned cleanup-only다. receipt나 argv를 수작업으로 고치지 말고 위 uninstall→재설치 절차를 사용한다. private pending spool과 무관한 사용자 설정은 유지한다. 이는 native trust 활성·Codex/OMP strict 보호를 새로 제공한다는 뜻이 아니다.
+
 Claude recovery intent는 canonical project의 소유한 `mcpServers.agents-memory` key만 저장·복구한다. 현재 native document에 병합하고 무관한 history/counter/trust 변경을 보존한다. 실제 native mkdir lease에 협조하며 heartbeat와 publication 직전 lease/current-bytes 검사를 수행한다. native의 모든 writer가 lock을 지키는 것은 아니므로 같은 UID의 임의 writer·정지/lease 탈취에 대한 atomic CAS 보장을 주장하지 않는다. host 설치·복구·해제는 해당 native 설정을 동시에 변경하지 않는 maintenance 구간에 실행한다.
 
 logical retraction, local drain, provider completion unknown, local row purge와 WAL/media/backup erasure는 서로 다른 상태다. socket cancel이나 row 삭제를 모든 사본 삭제로 주장하지 않는다.
 
 public/synthetic corpus의 1–2주 paired memory-on/off 제한 trial은 [설계 10절](docs/architecture.ko.md#10-12주-trialcloud-전환)의 고정 범위·기록·중단·판정 조건을 따른다. trial은 미시작이며 elapsed 기간·측정 효익·일반 출시 완료를 주장하지 않는다. 클라우드 구현·격리 합성 검증은 최신 사용자 지시로 진행하지만 실제 계정 provisioning·실제 corpus 저장/이동·egress 승인은 별개다. 전체 #5 acceptance·공식 review/QA/handoff·별도 출시 승인은 merge·일반 배포·안정 운영 전환 gate로 유지한다. 2026-10-16 사용자의 “일단 지금까지 한 것으로 커밋·푸시·PR” 지시로 현재 작업의 **checkpoint commit/push·Draft PR 게시만** 별도 허용했다. 이는 기능 완료·리뷰 승인·merge·출시 승인이 아니다. main merge 뒤의 실제 Agent Flow 폴더 설치도 별도 확인한다. 구조도 원본은 `docs/images/*.svg`다.
+
+## 개발 검증 CI
+
+현재 작업의 test·collection·ruff/lint·build·추가 smoke는 **로컬에서 실행하지 않고 GitHub Actions에서만** 수행한다. [CI workflow](.github/workflows/ci.yml)는 지원 Python/SQLite·Node·실제 PostgreSQL18/pgvector·PG18 도구·age를 준비하고, 전체 pytest collection을4개의 결정적 disjoint shard로 나눈다. 별도 lint/build job은 실제 wheel을 설치한 새 isolated process에서 생성 native command 소비도 검증한다.
+
+`Complete CI gate`는 같은 head SHA/source digest의 전체 collection·exact union·setup/call/teardown 통과·skip/xfail/수집 오류0·필수 prerequisite receipt·lint/build/wheel 실행을 함께 요구한다. 소비한 wheel SHA256과 다운로드한 distribution artifact가 다르면 거절한다. 별도 wheel 소비 테스트를 전체 suite 통과 수에 중복 합산하지 않는다. JUnit artifact에는 outcome metadata만 포함하고 private failure traceback/captured output은 포함하지 않는다.
+
+workflow 작성은 실행 성공이 아니다. 최신 수정의 실제 run URL·SHA·결과·artifact와 정상 formal review/QA 상태는 [검증 기록](docs/verification.ko.md)을 따른다. Actions 결과를 기존 Agent Flow의 local gate 통과로 위조하거나 과거 source의 green을 재사용하지 않는다.

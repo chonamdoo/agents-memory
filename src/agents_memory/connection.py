@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
 import http.client
@@ -8,13 +9,19 @@ import ipaddress
 import json
 import os
 import re
+import select
 import socket
 import ssl
 import stat
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -133,6 +140,33 @@ class RemoteClientSettings(TypedModel):
         return self
 
 
+@dataclass(frozen=True)
+class _RemoteConnectionCycle:
+    profile: RemoteClientSettings
+    deadline: float
+    stop_event: threading.Event
+    addresses: dict = field(default_factory=dict)
+
+
+_remote_cycle: ContextVar[_RemoteConnectionCycle | None] = ContextVar("remote_connection_cycle", default=None)
+
+
+def current_remote_cycle(profile: RemoteClientSettings) -> _RemoteConnectionCycle | None:
+    cycle = _remote_cycle.get()
+    return cycle if cycle is not None and cycle.profile == profile else None
+
+
+@contextmanager
+def remote_connection_cycle(
+    profile: RemoteClientSettings, *, deadline: float, stop_event: threading.Event,
+) -> Iterator[None]:
+    token = _remote_cycle.set(_RemoteConnectionCycle(profile, deadline, stop_event))
+    try:
+        yield
+    finally:
+        _remote_cycle.reset(token)
+
+
 
 
 def _ca_bytes(settings: RemoteClientSettings) -> bytes | None:
@@ -181,18 +215,51 @@ def _remaining(deadline: float) -> float:
     return remaining
 
 
+def _check_stop(stop_event: threading.Event | None) -> None:
+    if stop_event is not None and stop_event.is_set():
+        raise DomainError("SERVICE_DRAINING", "The remote connection stopped before business dispatch", status=503)
+
+
+def _wait_socket(sock, deadline: float, stop_event: threading.Event | None, *, write: bool = False) -> None:
+    while True:
+        _check_stop(stop_event)
+        readable, writable, _ = select.select(
+            [] if write else [sock], [sock] if write else [], [], min(_remaining(deadline), 0.05),
+        )
+        if readable or writable:
+            _check_stop(stop_event)
+            return
+
+
 class _DeadlineReader(io.RawIOBase):
-    def __init__(self, raw, sock, deadline: float) -> None:
+    def __init__(self, raw, sock, deadline: float, *, stop_event: threading.Event | None = None) -> None:
         self.raw = raw
         self.sock = sock
         self.deadline = deadline
+        self.stop_event = stop_event
 
     def readable(self) -> bool:
         return True
 
     def readinto(self, buffer) -> int:
-        self.sock.settimeout(_remaining(self.deadline))
-        count = self.raw.readinto(buffer)
+        if self.stop_event is None:
+            self.sock.settimeout(_remaining(self.deadline))
+            count = self.raw.readinto(buffer)
+        else:
+            while True:
+                _check_stop(self.stop_event)
+                _remaining(self.deadline)
+                self.sock.setblocking(False)
+                try:
+                    count = self.raw.readinto(buffer)
+                    if count is not None:
+                        break
+                except ssl.SSLWantWriteError:
+                    _wait_socket(self.sock, self.deadline, self.stop_event, write=True)
+                    continue
+                except (ssl.SSLWantReadError, BlockingIOError):
+                    pass
+                _wait_socket(self.sock, self.deadline, self.stop_event)
         _remaining(self.deadline)
         return count
 
@@ -204,15 +271,21 @@ class _DeadlineReader(io.RawIOBase):
 
 
 class _DeadlineSocket:
-    def __init__(self, sock, deadline: float) -> None:
+    def __init__(
+        self, sock, deadline: float, *, stop_event: threading.Event | None = None, cancel_response: bool = False,
+    ) -> None:
         self.sock = sock
         self.deadline = deadline
         self.dispatched = False
+        self.stop_event = stop_event
+        self.cancel_response = cancel_response
 
     def __getattr__(self, name):
         return getattr(self.sock, name)
 
     def sendall(self, data) -> None:
+        if not self.dispatched:
+            _check_stop(self.stop_event)
         try:
             self.sock.settimeout(_remaining(self.deadline))
         except TimeoutError:
@@ -220,15 +293,34 @@ class _DeadlineSocket:
                 raise
             raise DomainError("SERVICE_UNAVAILABLE", "The HTTP deadline expired before dispatch", status=503) from None
         self.dispatched = True
-        self.sock.sendall(data)
+        if not self.cancel_response:
+            self.sock.sendall(data)
+        else:
+            # Only read-only readiness may cancel after sending. Business I/O drains.
+            remaining = memoryview(data)
+            self.sock.setblocking(False)
+            while remaining:
+                _check_stop(self.stop_event)
+                _remaining(self.deadline)
+                try:
+                    sent = self.sock.send(remaining)
+                    if sent == 0:
+                        raise OSError("The remote readiness connection closed during dispatch")
+                    remaining = remaining[sent:]
+                except ssl.SSLWantReadError:
+                    _wait_socket(self.sock, self.deadline, self.stop_event)
+                except (ssl.SSLWantWriteError, BlockingIOError):
+                    _wait_socket(self.sock, self.deadline, self.stop_event, write=True)
         _remaining(self.deadline)
 
     def makefile(self, mode, buffering=None):
         raw = self.sock.makefile(mode, buffering=0)
-        return io.BufferedReader(_DeadlineReader(raw, self.sock, self.deadline))
+        return io.BufferedReader(_DeadlineReader(
+            raw, self.sock, self.deadline, stop_event=self.stop_event if self.cancel_response else None,
+        ))
 
 
-def _resolve_tcp(host: str, port: int, deadline: float):
+def _resolve_tcp(host: str, port: int, deadline: float, *, stop_event: threading.Event | None = None):
     try:
         ipaddress.ip_address(host)
     except ValueError:
@@ -239,6 +331,8 @@ def _resolve_tcp(host: str, port: int, deadline: float):
             "json.dump(socket.getaddrinfo(host,port,0,socket.SOCK_STREAM),sys.stdout)"
         )
         _remaining(deadline)
+        if stop_event is not None and stop_event.is_set():
+            raise DomainError("SERVICE_DRAINING", "Readiness stopped before resolution", status=503)
         with subprocess.Popen(
             [sys.executable, "-I", "-S", "-X", "utf8", "-c", command],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -246,11 +340,19 @@ def _resolve_tcp(host: str, port: int, deadline: float):
             env={"PATH": os.defpath, "LANG": "C", "LC_ALL": "C"},
         ) as process:
             try:
-                output, _ = process.communicate(json.dumps([host, port]), timeout=_remaining(deadline))
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-                raise TimeoutError("The HTTP resolution deadline expired") from None
+                pending_input = json.dumps([host, port])
+                while True:
+                    if stop_event is not None and stop_event.is_set():
+                        raise DomainError("SERVICE_DRAINING", "Readiness stopped during resolution", status=503)
+                    remaining = _remaining(deadline)
+                    try:
+                        output, _ = process.communicate(
+                            pending_input, timeout=min(remaining, 0.05) if stop_event is not None else remaining,
+                        )
+                        break
+                    except subprocess.TimeoutExpired:
+                        pending_input = None
+                        _remaining(deadline)
             except BaseException:
                 process.kill()
                 process.wait()
@@ -268,41 +370,81 @@ def _resolve_tcp(host: str, port: int, deadline: float):
     )
 
 
-def _connect_tcp(address, deadline: float, source_address=None):
+def _connect_tcp(
+    address, deadline: float, source_address=None, *,
+    stop_event: threading.Event | None = None, resolution_cache: dict | None = None,
+):
     host, port = address
     _remaining(deadline)
-    addresses = _resolve_tcp(host, port, deadline)
+    if stop_event is not None and stop_event.is_set():
+        raise DomainError("SERVICE_DRAINING", "Readiness stopped before connection", status=503)
+    addresses = resolution_cache.get(address) if resolution_cache is not None else None
+    if addresses is None:
+        addresses = (_resolve_tcp(host, port, deadline, stop_event=stop_event) if stop_event is not None
+                     else _resolve_tcp(host, port, deadline))
+        if resolution_cache is not None:
+            resolution_cache[address] = addresses
     failure = OSError("No address is available for the HTTP endpoint")
     for family, kind, protocol, _, target in addresses:
         _remaining(deadline)
+        if stop_event is not None and stop_event.is_set():
+            raise DomainError("SERVICE_DRAINING", "Readiness stopped before connection", status=503)
         sock = socket.socket(family, kind, protocol)
         try:
             sock.settimeout(_remaining(deadline))
             if source_address:
                 sock.bind(source_address)
-            sock.connect(target)
+            if stop_event is None:
+                sock.connect(target)
+            else:
+                sock.setblocking(False)
+                result = sock.connect_ex(target)
+                if result not in {0, errno.EISCONN}:
+                    if result not in {errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY, errno.EINTR}:
+                        raise OSError(result, os.strerror(result))
+                    _wait_socket(sock, deadline, stop_event, write=True)
+                    result = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                    if result:
+                        raise OSError(result, os.strerror(result))
             sock.settimeout(_remaining(deadline))
+            _check_stop(stop_event)
             return sock
         except OSError as error:
             failure = error
             sock.close()
+        except BaseException:
+            sock.close()
+            raise
     _remaining(deadline)
     raise failure
 
 
 class _DeadlineConnection:
-    def __init__(self, *args, deadline: float, **kwargs) -> None:
+    def __init__(
+        self, *args, deadline: float, stop_event: threading.Event | None = None,
+        resolution_cache: dict | None = None, cancel_response: bool = False, **kwargs,
+    ) -> None:
         self.deadline = deadline
+        self.stop_event = stop_event
+        self.resolution_cache = resolution_cache
+        self.cancel_response = cancel_response
         super().__init__(*args, **kwargs)
         self._create_connection = self._connect
 
     def _connect(self, address, timeout, source_address=None):
-        return _connect_tcp(address, self.deadline, source_address)
+        return _connect_tcp(
+            address, self.deadline, source_address,
+            stop_event=self.stop_event, resolution_cache=self.resolution_cache,
+        )
+
+    def _prepare_connection(self) -> None:
+        super().connect()
 
     def connect(self) -> None:
         try:
-            super().connect()
+            self._prepare_connection()
             _remaining(self.deadline)
+            _check_stop(self.stop_event)
         except TimeoutError:
             self.close()
             raise DomainError("SERVICE_UNAVAILABLE", "The HTTP deadline expired before dispatch", status=503) from None
@@ -315,7 +457,9 @@ class _DeadlineConnection:
         except BaseException:
             self.close()
             raise
-        self.sock = _DeadlineSocket(self.sock, self.deadline)
+        self.sock = _DeadlineSocket(
+            self.sock, self.deadline, stop_event=self.stop_event, cancel_response=self.cancel_response,
+        )
 
 
 class _DeadlineHTTPConnection(_DeadlineConnection, http.client.HTTPConnection):
@@ -323,7 +467,26 @@ class _DeadlineHTTPConnection(_DeadlineConnection, http.client.HTTPConnection):
 
 
 class _DeadlineHTTPSConnection(_DeadlineConnection, http.client.HTTPSConnection):
-    pass
+    def _prepare_connection(self) -> None:
+        if self.stop_event is None:
+            super()._prepare_connection()
+            return
+        http.client.HTTPConnection.connect(self)
+        self.sock = self._context.wrap_socket(
+            self.sock, server_hostname=self._tunnel_host or self.host, do_handshake_on_connect=False,
+        )
+        self.sock.setblocking(False)
+        while True:
+            _check_stop(self.stop_event)
+            _remaining(self.deadline)
+            try:
+                self.sock.do_handshake()
+                break
+            except ssl.SSLWantReadError:
+                _wait_socket(self.sock, self.deadline, self.stop_event)
+            except ssl.SSLWantWriteError:
+                _wait_socket(self.sock, self.deadline, self.stop_event, write=True)
+        self.sock.settimeout(_remaining(self.deadline))
 
 
 class _DeadlineHTTPHandler(urllib.request.HTTPHandler):
@@ -337,12 +500,24 @@ class _DeadlineHTTPHandler(urllib.request.HTTPHandler):
 
 
 class _DeadlineHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, *, context, stop_event=None, resolution_deadline=None, resolution_cache=None):
+        super().__init__(context=context)
+        self.stop_event = stop_event
+        self.resolution_deadline = resolution_deadline
+        self.resolution_cache = {} if resolution_cache is None else resolution_cache
+
     def https_open(self, request):
         deadline = getattr(request, "_agents_memory_deadline", None)
         if deadline is None:
             deadline = time.monotonic() + request.timeout
         return self.do_open(
-            lambda *args, **kwargs: _DeadlineHTTPSConnection(*args, deadline=deadline, **kwargs), request,
+            lambda *args, **kwargs: _DeadlineHTTPSConnection(
+                *args, deadline=deadline, stop_event=self.stop_event,
+                resolution_cache=(self.resolution_cache if self.resolution_deadline is not None
+                                  and time.monotonic() < self.resolution_deadline else None),
+                cancel_response=getattr(request, "_agents_memory_cancel_response", False),
+                **kwargs,
+            ), request,
             context=self._context,
         )
 
@@ -353,10 +528,20 @@ def local_opener(redirect_handler: urllib.request.HTTPRedirectHandler):
     )
 
 
-def remote_opener(settings: RemoteClientSettings, redirect_handler: urllib.request.HTTPRedirectHandler):
+def remote_opener(
+    settings: RemoteClientSettings, redirect_handler: urllib.request.HTTPRedirectHandler, *,
+    stop_event: threading.Event | None = None, resolution_deadline: float | None = None,
+):
+    cycle = current_remote_cycle(settings)
+    if cycle is not None:
+        stop_event = cycle.stop_event if stop_event is None else stop_event
+        resolution_deadline = min(resolution_deadline, cycle.deadline) if resolution_deadline is not None else cycle.deadline
     return urllib.request.build_opener(
         urllib.request.ProxyHandler({}), redirect_handler,
-        _DeadlineHTTPSHandler(context=remote_ssl_context(settings)),
+        _DeadlineHTTPSHandler(
+            context=remote_ssl_context(settings), stop_event=stop_event, resolution_deadline=resolution_deadline,
+            resolution_cache=cycle.addresses if cycle is not None else None,
+        ),
     )
 
 

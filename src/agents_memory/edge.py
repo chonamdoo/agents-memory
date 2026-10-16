@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -48,6 +49,8 @@ from .recovery import SpoolRecovery
 from .selection import RECORD_ADAPTER
 from .store import Store
 from .wire import decode_json, validate_wire
+
+HTTP_BODY_SECONDS = 15.0
 
 
 class InspectCommand(TypedModel):
@@ -299,15 +302,22 @@ class SecurityEdge:
                 self.sessions[session] = (owner, now)
             if scope["method"] == "POST":
                 body = bytearray()
-                while True:
-                    message = await receive()
-                    if message["type"] == "http.disconnect":
-                        return
-                    body.extend(message.get("body", b""))
-                    if len(body) > self.settings.max_http_body_bytes:
-                        raise DomainError("INPUT_TOO_LARGE", "The HTTP body exceeds its limit", status=413)
-                    if not message.get("more_body", False):
-                        break
+                try:
+                    async with asyncio.timeout(HTTP_BODY_SECONDS):
+                        while True:
+                            message = await receive()
+                            if message["type"] == "http.disconnect":
+                                return
+                            body.extend(message.get("body", b""))
+                            if len(body) > self.settings.max_http_body_bytes:
+                                raise DomainError("INPUT_TOO_LARGE", "The HTTP body exceeds its limit", status=413)
+                            if not message.get("more_body", False):
+                                break
+                except TimeoutError:
+                    raise DomainError(
+                        "REQUEST_BODY_TIMEOUT", "The complete HTTP body did not arrive within its deadline",
+                        status=408, effect=EffectState.NOT_STARTED,
+                    ) from None
                 try:
                     decoded = decode_json(bytes(body))
                 except (ValueError, UnicodeError, RecursionError):
@@ -342,6 +352,8 @@ class SecurityEdge:
                     status=503, effect=EffectState.NOT_STARTED,
                 )
             response = error_response(error)
+            if error.code == "REQUEST_BODY_TIMEOUT" and scope.get("http_version") in {"1.0", "1.1"}:
+                response.headers["Connection"] = "close"
             if public and self.oauth is not None and error.status == 401:
                 response.headers["WWW-Authenticate"] = (
                     f'Bearer resource_metadata="{self.ingress.public_origin}{OAUTH_METADATA_PATH}", error="invalid_token"'
@@ -434,7 +446,9 @@ def readiness_judgment(settings: Settings) -> dict:
         return {"judgment": "unavailable", "server_inference": "unknown", "judge_error": error.code}
     if judgment == "jev_background_then_server_validation":
         return {"judgment": judgment, "server_inference": "typesafe_jev_explicit_egress_opt_in"}
-    return {"judgment": "current_coding_agent_via_mcp", "server_inference": "absent"}
+    if judgment == "current_coding_agent_via_mcp":
+        return {"judgment": judgment, "server_inference": "absent"}
+    return {"judgment": judgment, "server_inference": "unavailable"}
 
 
 def create_app(settings: Settings):

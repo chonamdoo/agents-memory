@@ -1509,3 +1509,80 @@ def test_late_network_result_preserves_acknowledged_replacement_after_receipt_ev
     finally:
         right.close()
         left.close()
+
+
+@pytest.mark.parametrize("outcome", ["committed", "unknown"])
+def test_concurrent_producer_and_flushers_have_one_dispatch_owner(tmp_path, outcome):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "producer" / "capture.sqlite3"
+    first = envelope()
+    second = envelope(idempotency_key="capture-002", origin_key="origin-002")
+    producer = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    producer.enqueue(first)
+    entered = threading.Event()
+    release = threading.Event()
+    dispatched = []
+
+    class BlockedAuthority:
+        def request(self, route, payload):
+            dispatched.append((route, payload))
+            entered.set()
+            assert release.wait(5), "The test did not release its owned request"
+            if outcome == "unknown":
+                raise DomainError("SERVICE_UNAVAILABLE", "Synthetic response was lost", effect=EffectState.UNKNOWN)
+            return {"effect": "committed", "id": "operation-first"}
+
+    class ForbiddenCompetitor:
+        def request(self, route, payload):
+            raise AssertionError("A busy flush competitor dispatched a duplicate capture")
+
+    def owned_flush():
+        owner = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+        try:
+            return owner.flush(BlockedAuthority())
+        finally:
+            owner.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            owner = executor.submit(owned_flush)
+            try:
+                assert entered.wait(5)
+                assert producer.enqueue(second)["state"] == "durably_spooled"
+                busy = producer.flush(ForbiddenCompetitor())
+                assert busy["flush_owner"] == "busy"
+                assert busy["committed"] == 0 and busy["pending"] == 2
+                assert dispatched == [("/api/capture", first.model_dump(mode="json"))]
+            finally:
+                release.set()
+            result = owner.result(timeout=5)
+        assert dispatched == [("/api/capture", first.model_dump(mode="json"))]
+        assert producer.disposition(second.idempotency_key) == {"state": "durably_spooled"}
+        if outcome == "unknown":
+            assert result["committed"] == 0 and result["errors"] == ["SERVICE_UNAVAILABLE"]
+            assert producer.status()["pending"] == 2
+            assert producer.disposition(first.idempotency_key) == {"state": "durably_spooled"}
+            assert producer.enqueue(first)["replay"] is True
+            assert producer.status()["retained_receipts"] == 0
+        else:
+            assert result["committed"] == 1 and result["pending"] == 1
+            assert producer.disposition(first.idempotency_key) == {
+                "state": "committed", "operation_id": "operation-first",
+            }
+
+            class FollowingAuthority:
+                def request(self, route, payload):
+                    dispatched.append((route, payload))
+                    return {"effect": "committed", "id": "operation-second"}
+
+            assert producer.flush(FollowingAuthority())["committed"] == 1
+            assert dispatched == [
+                ("/api/capture", first.model_dump(mode="json")),
+                ("/api/capture", second.model_dump(mode="json")),
+            ]
+            assert producer.status()["pending"] == 0
+    finally:
+        release.set()
+        producer.close()
