@@ -48,6 +48,8 @@ def evidence(tmp_path):
         "tests/test_recovery.py::test_remote_bad_first_outbox_cannot_starve_retained_healthy_batch[None]",
         "tests/test_remote_cancellation.py::test_readonly_ready_stop_cancels_real_tls_response_before_business_dispatch[headers]",
         "tests/test_remote_cancellation.py::test_already_dispatched_business_request_drains_response_without_retry",
+        "tests/test_ci_accounting.py::test_cleanup_after_esrch_cannot_kill_a_reused_group[probe-native]",
+        "tests/test_ci_accounting.py::test_cleanup_after_esrch_cannot_kill_a_reused_group[term-native]",
     ])
     all_ids = sorted([*(f"tests/cases.py::test_case_{index}" for index in range(64)), *wheel_ids])
     paths = []
