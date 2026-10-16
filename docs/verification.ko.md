@@ -931,3 +931,7 @@ fresh native review 4차의 must-fix 2건만 수정했다. ruff 통과, 실제 P
 다운로드한 실제 `ci-summary/summary.json`은 해당 SHA의 `complete:false`, upstream job 실패를 기록했다. job/step metadata·실패 로그·aggregate artifact는 원래 값으로 보존했다. 같은 실패를 확인하려는 재실행이나 local 검증은 하지 않았다. 원래 wrapper가 public Python 설치 오류의 상세도 가렸으므로, credential 생성 전 설치 출력과 안전한 authored error 이유를 보이도록 수정했다. PG/DSN을 사용하는 명령의 raw stderr나 credential-bearing argv는 공개하지 않는다. 원인 진단과 다음 수정본 검증도 Actions에서만 수행한다.
 
 정상 재리뷰 진입 시도는 두 번 모두 `skill_scope_grew`에서 멈췄고 실제 reviewer는 아직 시작하지 않았다. 변경 경로의 provenance 순서가 document identity에 들어가는 static 원인을 확인했으며 body/digest가 같은 네 실제 required-read를 정상 계획에 따라 재사용한다. archived `fix-loop-norms-N.md`와 기존 document ID/pins를 보존하고 최종 source를 고정한 뒤 새 artifact로 정상 재진입한다. 이 중단을 새 Opus timeout이나 승인으로 기록하지 않는다.
+
+### CI 준비 실패 원인 확정
+
+진단 수정 `06bf2f5e48a21a820c9dc04ba0d99b15afcd185b`의 [run38916587827](https://github.com/chonamdoo/agents-memory/actions/runs/38916587827)도 실패했지만 실제 uv 오류를 확보했다: `--managed-python`과 환경에서 전달된 `--python-preference`는 함께 사용할 수 없다. `UV_PYTHON_PREFERENCE=only-managed`를 제거하고 install/find의 명시 `--managed-python`, owned install/bin/venv 경로·실제 binary 귀속 검사·후속 `UV_PYTHON` 절대 경로는 유지했다. Python3.13.16·SQLite 지원 하한·uv/age/image/action pin·기존 timeout은 바꾸지 않았다. 이 수정의 실제 결과는 다음 Actions source SHA로 확인하며 local 재현은 하지 않는다.

@@ -85,7 +85,6 @@ def python_runtime(state: Path) -> tuple[dict[str, str], dict]:
         "UV_PYTHON_INSTALL_DIR": str(state / "python"),
         "UV_PYTHON_BIN_DIR": str(state / "bin"),
         "UV_PROJECT_ENVIRONMENT": str(state / "venv"),
-        "UV_PYTHON_PREFERENCE": "only-managed",
     }
     env = os.environ | values
     subprocess.run(["uv", "python", "install", "--managed-python", PYTHON],
