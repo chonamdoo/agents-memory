@@ -594,5 +594,32 @@ async def test_cli_ingress_publication_preserves_durable_effect(
         await cli.execute(args)
     assert load_ingress(configured) == candidate
     assert interrupted.value.effect == (EffectState.UNKNOWN if failure == "file_response" else EffectState.COMMITTED)
-    if failure == "authority_domain":
-        assert interrupted.value.code == "DATABASE_UNAVAILABLE"
+    assert interrupted.value.code == ("INGRESS_CONFIG_INVALID" if failure == "file_response" else "DATABASE_UNAVAILABLE")
+
+
+@pytest.mark.asyncio
+async def test_cli_ingress_file_error_preserves_prior_policy(
+    authority, tmp_path, monkeypatch,
+):
+    configured = authority.store.settings
+    configured.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    previous = profile(configured).model_copy(update={"public_origin": "https://previous.example.test"})
+    destination = configure_ingress(configured, previous)
+    prior_bytes = destination.read_bytes()
+    candidate = profile(configured)
+    input_file = tmp_path / "ingress-profile.json"
+    private_write(input_file, candidate.model_dump_json())
+    args = cli.parser().parse_args(cli_files(authority, tmp_path) + [
+        "cloud", "configure", "--ingress-file", str(input_file), "--ack-remote-storage",
+    ])
+
+    def fail_publication(*args, **options):
+        raise OSError("synthetic private ingress disk failure")
+
+    monkeypatch.setattr(ingress, "private_write", fail_publication)
+    with pytest.raises(DomainError) as refused:
+        await cli.execute(args)
+    assert refused.value.code == "INGRESS_CONFIG_INVALID"
+    assert refused.value.effect == EffectState.UNKNOWN
+    assert destination.read_bytes() == prior_bytes
+    assert load_ingress(configured) == previous

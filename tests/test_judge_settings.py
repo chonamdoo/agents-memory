@@ -1033,3 +1033,95 @@ async def test_reallow_refusal_after_cleanup_reports_committed_cleanup_not_new_p
     with pytest.raises(DomainError) as retired:
         await store.authenticate(worker_token)
     assert retired.value.code == "AUTH_DENIED"
+
+
+@pytest.mark.parametrize("target", ["policy", "provider", "issuing", "token", "key", "remove_token"])
+@pytest.mark.parametrize("after", [False, True], ids=["before-effect", "lost-response"])
+async def test_judge_file_failures_keep_publication_identity_and_explicit_recovery(judged, monkeypatch, target, after):
+    store, settings, actor = judged.store, judged.store.settings, judged.actor
+    await set_jev(settings, store, actor, KEY, verify=verified)
+    previous = load_state(settings)
+    old_token = read_worker_token(settings)
+    name = {
+        "policy": EGRESS_POLICY_FILE, "provider": PROVIDER_FILE,
+        "issuing": ISSUING_TOKEN_FILE, "token": TOKEN_FILE,
+        "key": KEY_FILE, "remove_token": TOKEN_FILE,
+    }[target]
+    path = judge_dir(settings) / name
+    write, unlink = judge_module.private_write, os.unlink
+
+    def fail_write(destination, *args, **options):
+        if destination.name != name:
+            return write(destination, *args, **options)
+        if after:
+            write(destination, *args, **options)
+        raise OSError("synthetic private publication failure " + OTHER_KEY)
+
+    def fail_unlink(destination, *args, **options):
+        if os.path.basename(destination) != TOKEN_FILE:
+            return unlink(destination, *args, **options)
+        if after:
+            unlink(destination, *args, **options)
+        raise OSError("synthetic private cleanup failure " + OTHER_KEY)
+
+    async def mutate():
+        if target == "policy":
+            return await set_egress_policy(settings, store, actor, jev_allowed=False)
+        if target == "remove_token":
+            return await set_agent(settings, store, actor, forget_key=True)
+        return await set_jev(settings, store, actor, OTHER_KEY, verify=verified)
+
+    with monkeypatch.context() as patch:
+        if target == "remove_token":
+            patch.setattr(os, "unlink", fail_unlink)
+        else:
+            patch.setattr(judge_module, "private_write", fail_write)
+        with pytest.raises(DomainError) as interrupted:
+            await mutate()
+    assert interrupted.value.code == "JUDGE_PUBLICATION_UNCONFIRMED"
+    assert interrupted.value.effect == EffectState.UNKNOWN
+    assert KEY not in interrupted.value.message and OTHER_KEY not in interrupted.value.message
+    state = load_state(settings)
+    stranded_token = None
+    if target == "policy":
+        assert load_egress_policy(settings).jev_allowed == (not after)
+        assert state == previous
+    elif target == "provider":
+        if after:
+            assert previous.credential_id in state.retiring_credential_ids
+        else:
+            assert state == previous
+    elif target == "remove_token":
+        assert state.provider == "agent"
+        assert previous.credential_id in state.retiring_credential_ids
+        assert path.exists() == (not after)
+    else:
+        assert state.credential_id in state.retiring_credential_ids
+        if target in {"issuing", "token"}:
+            assert path.exists() is after
+        else:
+            assert path.read_text().strip() == (OTHER_KEY if after else KEY)
+        if target in {"token", "key"}:
+            stranded_token = (judge_dir(settings) / ISSUING_TOKEN_FILE).read_text().strip()
+            stranded = await store.authenticate(stranded_token)
+            assert stranded.credential_id != previous.credential_id
+
+    recovered = await mutate()
+    assert recovered["effect"] == EffectState.COMMITTED
+    assert not recovered["retirement_pending"]
+    assert not (judge_dir(settings) / ISSUING_TOKEN_FILE).exists()
+    if target in {"policy", "remove_token"}:
+        assert recovered["provider"] == "agent"
+        assert not (judge_dir(settings) / TOKEN_FILE).exists()
+        if target == "remove_token":
+            assert not (judge_dir(settings) / KEY_FILE).exists()
+    else:
+        assert recovered["provider"] == "jev"
+        assert (judge_dir(settings) / KEY_FILE).read_text().strip() == OTHER_KEY
+        current = await store.authenticate(read_worker_token(settings))
+        assert current.role == Role.AGENT
+    for token in (old_token, stranded_token):
+        if token is not None:
+            with pytest.raises(DomainError) as retired:
+                await store.authenticate(token)
+            assert retired.value.code == "AUTH_DENIED"

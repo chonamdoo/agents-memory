@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import runpy
+import select
+import signal
+import subprocess
+import sys
+import textwrap
 import xml.etree.ElementTree as ET
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -210,3 +217,81 @@ def test_junit_preserves_failure_without_exporting_credentials_or_captured_outpu
     assert suite.find("testcase/failure") is not None
     assert suite.findall(".//system-out") == [] and suite.findall(".//system-err") == []
     assert shard.counts()["failed"] == 1
+
+
+@pytest.mark.skipif(os.name != "posix", reason="CI process supervision requires POSIX")
+def test_timed_out_check_kills_descendant_after_parent_exits_successfully(tmp_path, monkeypatch):
+    check = runpy.run_path(str(CI / "run-checks.py"))["check"]
+    lifetime = tmp_path / "descendant-lifetime"
+    os.mkfifo(lifetime, 0o600)
+    observer = os.open(lifetime, os.O_RDONLY | os.O_NONBLOCK)
+    command = [sys.executable, "-c", textwrap.dedent(f"""
+        import os
+        import signal
+
+        signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+        if os.fork() == 0:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            lifetime = os.open({str(lifetime)!r}, os.O_WRONLY)
+            os.write(lifetime, b"R")
+            while True:
+                signal.pause()
+        while True:
+            signal.pause()
+    """)]
+    real_popen = subprocess.Popen
+    processes = []
+
+    def start(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        processes.append(process)
+        assert select.select([observer], [], [], 5)[0] == [observer]
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", start)
+    try:
+        result = check(command, timeout=1)
+        assert result["timeout"] is True
+        assert result["exit_code"] == 0
+        assert "error" not in result
+        assert processes[0].returncode == 0
+        assert os.read(observer, 1) == b"R"
+        assert select.select([observer], [], [], 2)[0] == [observer]
+        assert os.read(observer, 1) == b""
+    finally:
+        try:
+            for process in processes:
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=2)
+        finally:
+            os.close(observer)
+
+
+@pytest.fixture
+def digest_source(tmp_path, monkeypatch):
+    digest = runpy.run_path(str(CI / "run-tests.py"))["source_digest"]
+    root = CI.parents[1]
+    for name in ("pyproject.toml", "uv.lock"):
+        (tmp_path / name).write_bytes((root / name).read_bytes())
+    relative = Path("src/agents_memory/host_templates/omp.ts")
+    resource = tmp_path / relative
+    resource.parent.mkdir(parents=True)
+    resource.write_bytes((root / relative).read_bytes())
+    monkeypatch.setitem(digest.__globals__, "ROOT", tmp_path)
+    return SimpleNamespace(root=tmp_path, resource=resource, digest=digest)
+
+
+def test_source_digest_changes_when_executable_host_template_changes(digest_source):
+    before = digest_source.digest()
+    with digest_source.resource.open("a") as resource:
+        resource.write("\nthrow new Error('CI source identity changed');\n")
+    assert digest_source.digest() != before
+
+
+def test_source_digest_ignores_generated_bytecode(digest_source):
+    before = digest_source.digest()
+    generated = digest_source.root / "src/agents_memory/__pycache__/hosts.cpython-313.pyc"
+    generated.parent.mkdir()
+    generated.write_bytes(b"generated interpreter output")
+    assert digest_source.digest() == before

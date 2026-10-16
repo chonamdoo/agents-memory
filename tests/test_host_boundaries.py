@@ -3356,3 +3356,49 @@ def test_fresh_install_diagnostic_root_loss_reports_the_durable_install(installa
     assert hosts.load_receipt(receipt_path, active=False, allow_deleted_project=True)["state"] == "installed"
     moved.rename(project)
     assert hosts.install_host(settings, project, "project-binding", host, agent, producer, strict=False)["replay"] is True
+
+
+@pytest.mark.parametrize("host", ["claude", "codex", "omp"])
+@pytest.mark.parametrize("retained_intent", [False, True])
+def test_installed_replay_diagnostic_root_loss_reports_only_its_recovery_mutation(
+    installation, monkeypatch, host, retained_intent,
+):
+    project, settings, agent, producer, install = installation
+    receipt_path = hosts._receipt_path(settings, project, host)
+    if retained_intent:
+        _abrupt_process(
+            hosts.install_host, settings, project, "project-binding", host, agent, producer,
+            strict=False, crash_path=receipt_path, crash_state="installed",
+        )
+    else:
+        assert install(host, strict=False) == receipt_path
+    receipt = hosts.load_receipt(receipt_path)
+    assert receipt["state"] == "installed"
+    intent = hosts._intent_path(receipt)
+    assert intent.exists() is retained_intent
+    receipt_before = receipt_path.read_bytes()
+    owned_before = {
+        path: path.read_bytes()
+        for path in (hosts._owned_path(project, entry["path"]) for entry in receipt["ownership"])
+    }
+    moved = project.parent / "moved-after-installed-replay"
+    status = hosts.native_memory_status
+
+    def move_before_status(root):
+        assert not intent.exists()
+        project.rename(moved)
+        return status(root)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(hosts, "native_memory_status", move_before_status)
+        with pytest.raises(DomainError) as refused:
+            hosts.install_host(settings, project, "project-binding", host, agent, producer, strict=False)
+    assert refused.value.code == "HOST_PROJECT_INVALID"
+    assert refused.value.effect == (EffectState.UNKNOWN if retained_intent else EffectState.NOT_STARTED)
+    assert not project.exists() and moved.is_dir()
+    assert not intent.exists()
+    assert receipt_path.read_bytes() == receipt_before
+    assert hosts.load_receipt(receipt_path, active=False, allow_deleted_project=True)["state"] == "installed"
+    moved.rename(project)
+    assert all(path.read_bytes() == content for path, content in owned_before.items())
+    assert hosts.install_host(settings, project, "project-binding", host, agent, producer, strict=False)["replay"] is True
