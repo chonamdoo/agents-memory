@@ -16,6 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from agents_memory import native_status
+
 CI = Path(__file__).resolve().parents[1] / ".github" / "ci"
 
 
@@ -295,3 +297,44 @@ def test_source_digest_ignores_generated_bytecode(digest_source):
     generated.parent.mkdir()
     generated.write_bytes(b"generated interpreter output")
     assert digest_source.digest() == before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Process-group supervision requires POSIX")
+@pytest.mark.parametrize("target", ["native", "ci"])
+@pytest.mark.parametrize("disappeared_at", ["term", "probe"])
+def test_cleanup_after_esrch_cannot_kill_a_reused_group(monkeypatch, target, disappeared_at):
+    cleanup = (native_status._stop_process_group if target == "native"
+               else runpy.run_path(str(CI / "run-checks.py"))["_stop_process_group"])
+    expired = subprocess.Popen([sys.executable, "-I", "-S", "-c", "pass"], start_new_session=True)
+    expired.wait(timeout=5)
+    unrelated = subprocess.Popen(
+        [sys.executable, "-I", "-S", "-c",
+         "import sys; print('ready', flush=True); "
+         "line = sys.stdin.readline(); print('survived:' + line.strip(), flush=True)"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+    )
+    real_killpg = os.killpg
+
+    def simulate_pgid_reuse(pid, sig):
+        if pid != expired.pid:
+            return real_killpg(pid, sig)
+        if sig == signal.SIGTERM:
+            if disappeared_at == "term":
+                raise ProcessLookupError
+            return None
+        if sig == 0:
+            raise ProcessLookupError
+        return real_killpg(unrelated.pid, sig)
+
+    try:
+        assert unrelated.stdout.readline() == b"ready\n"
+        monkeypatch.setattr(os, "killpg", simulate_pgid_reuse)
+        cleanup(expired)
+        output, error = unrelated.communicate(b"ping\n", timeout=5)
+        assert (unrelated.returncode, output, error) == (0, b"survived:ping\n", b"")
+    finally:
+        if unrelated.poll() is None:
+            unrelated.kill()
+        unrelated.wait(timeout=5)
+        for stream in (unrelated.stdin, unrelated.stdout, unrelated.stderr):
+            stream.close()

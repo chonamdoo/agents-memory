@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import plistlib
@@ -781,3 +782,29 @@ def test_control_config_preserves_the_explicit_legacy_upgrade_refusal(native, de
     assert refused.value.code == "CONFIG_UPGRADE_REQUIRED"
     assert refused.value.effect == EffectState.NOT_STARTED
     assert not settings.state_dir.exists() and native.calls == []
+
+
+def test_managed_readiness_preserves_the_owned_config_upgrade_refusal(native, deployment):
+    settings, config = deployment
+    service.install_service(settings, config)
+    owned = receipt(settings)
+    legacy = settings.model_dump(mode="json")
+    legacy["capability"] = "lexical_entity"
+    config_bytes = json.dumps(legacy).encode()
+    private_write(config, config_bytes, replace=True)
+    owned["config_sha256"] = hashlib.sha256(config_bytes).hexdigest()
+    receipt_path = settings.state_dir / "service" / "receipt.json"
+    private_write(receipt_path, json.dumps(owned), replace=True)
+    paths = (config, receipt_path, Path(owned["plist_path"]))
+    before = {path: path.read_bytes() for path in paths}
+    native_before = mutations(native)
+    jobs_before = {name: dict(job) for name, job in native.jobs.items()}
+
+    with pytest.raises(DomainError) as refused:
+        service.ensure_started(settings.base_url, settings.state_dir, settings.deployment_id)
+
+    assert refused.value.code == "CONFIG_UPGRADE_REQUIRED"
+    assert refused.value.effect == EffectState.NOT_STARTED
+    assert {path: path.read_bytes() for path in paths} == before
+    assert mutations(native) == native_before
+    assert native.jobs == jobs_before
