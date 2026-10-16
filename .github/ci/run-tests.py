@@ -15,7 +15,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def source_digest() -> str:
     paths = {ROOT / "pyproject.toml", ROOT / "uv.lock"}
-    for pattern in ("src/**/*.py", "tests/**/*.py", ".github/ci/*.py", ".github/workflows/*.yml"):
+    for pattern in (
+        "src/**/*.py", "src/agents_memory/host_templates/*.ts",
+        "tests/**/*.py", ".github/ci/*.py", ".github/workflows/*.yml",
+    ):
         paths.update(ROOT.glob(pattern))
     digest = hashlib.sha256()
     for path in sorted(paths):

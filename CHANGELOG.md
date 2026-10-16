@@ -10,7 +10,8 @@
 - serve/service-run은 lifespan 전에 configured socket을 확보하며 bind 실패를 `SERVICE_BIND_FAILED/not_started`로 반환한다. 임의 port fallback·기존 listener kill은 없다.
 - ingress 권한 재확인, stop 가능한 remote TCP/TLS/GET·최초 send, 이미 전송한 business drain, retained bad-first recovery 공정성, service uninstall 효과·upgrade 순서의 회귀를 추가/보완했다.
 - [OSS 후속 조사](docs/research/2026-10-16-oss-followup.ko.md)에서 원인·고정 PR/source·회귀·license·평가 방법과 추가 적용/기존 반영/보류/거절을 구분했다. paired 평가의 identity·전체 attempt 분모·oracle 대조군·최종 artifact 불변 계약을 보완했다.
-- 이 항목 작성 시점에는 최신 수정의 Actions 실행 증거가 없다. 로컬 test/collection/lint/build/추가 smoke는 사용자 지시로 실행하지 않았다. CI용 미검증 checkpoint 게시는 별도 명시 허용됐지만 검증 완료가 아니다. 과거 전체2311 pass·source-only 비공식 리뷰는 현재 CI·정상 독립 Opus/Sol 승인·QA/handoff를 대신하지 않는다. 실제 최신 실행은 [Actions](https://github.com/chonamdoo/agents-memory/actions/workflows/ci.yml)와 [검증 기록](docs/verification.ko.md)을 따른다.
+- 첫 실제 두 CI 준비 실패와 uv selector 충돌 원인을 보존했다. `c59377e`의 [실제 Actions](https://github.com/chonamdoo/agents-memory/actions/runs/38917025242)는 전체2408/skip0·lint/build·설치 wheel subset31을 통과했다. 이는 해당 source의 CI 증거이며 이후 수정·native acceptance·정상 QA/handoff·release 승인이 아니다. 로컬 test/collection/lint/build/추가 smoke는 실행하지 않았다.
+- 그 source의 정상 공식 리뷰는 request-changes를 유지했다. README를 원래 owned service uninstall→새 entrypoint의 config migration 순서로 맞추고, installed replay의 durable intent 제거 효과와 CI timeout의 잔존 process-group 정리를 보완했다. file publication 오류는 DB 장애로 바꾸기 전에 구분하며 실행 host template도 CI source digest에 포함한다. 새 회귀는 수정 전/후 GitHub Actions에서만 검증한다. 원본 reviewer timeout과 외부18개 acceptance는 별도 보존한다. 정확한 source·실행·리뷰 상태는 [검증 기록](docs/verification.ko.md)을 따른다.
 
 
 ### 네 번째 리뷰 후 권한·복구와 PR #9 ingress 보안 수정

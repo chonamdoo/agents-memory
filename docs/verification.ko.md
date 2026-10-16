@@ -905,7 +905,7 @@ fresh native review 4차의 must-fix 2건만 수정했다. ruff 통과, 실제 P
 
 `w18:pE`가 기존 dirty worktree와 모든 증거·잔여 요청을 인수했다. 정상 installed Agent Flow status/continue로 동일 `development/20261016-110757`의 fix-loop/awaiting_host에 재개했다. 원본 `w18:pA`가 pane 목록에서 사라지고 목적지 `w18:pE`만 살아 있음을 실제 관측해 private transfer receipt에 기록했다. receiver가 shared Herdr server/workspace/tab·VM/daemon/LSP를 종료하지 않았다. 이 항목의 완료는 제품 완료/QA handoff가 아니다.
 
-### 작성한 코드·회귀, 실행하지 않은 검증
+### 최초 인수 시 작성 범위·당시 미검증 상태
 
 - CI environment는 Actions-only·job-owned private state/label/name을 사용한다. Python3.13.16의 실제 SQLite≥3.51.3, Node24+, 고정 age1.3.2 archive, 공식 PG18 client와 digest 고정 pgvector image의 실제 server/vector를 검사하도록 구성했다. Docker는 CI fixture 준비/정리용이며 제품 operations는 native PG18 도구의 local mode다. daemon 권한이나 제품 Docker socket guard를 완화하지 않았다.
 - 전체 pytest collection의 sorted node ID·source digest·결정적 SHA256 partition과 실제 setup/call/teardown 보고를4개 shard로 기록한다. aggregate는 exact disjoint union·동일 SHA/source·실패/skip/xfail/수집 오류0·upstream job 성공과 각 prerequisite receipt를 요구한다.
@@ -914,15 +914,15 @@ fresh native review 4차의 must-fix 2건만 수정했다. ruff 통과, 실제 P
 - 새 회귀는 실제 TLS slow headers/body·pending TCP·business TLS handshake·첫 send 전 stop·전송 후 business drain·DNS 전체 cycle budget, bad-first retained recovery와 backoff 뒤 healthy 전달을 다룬다. 기존 ingress 권한·service uninstall 효과·upgrade 순서 수정도 그대로 보존했다.
 - OSS 후속으로 no-op purge/reconcile UPDATE 억제, adapter6 import isolation/owned-v5 cleanup, lifespan 전 listen 확보를 적용했다. 실제 PG row-version/restore repair·생성 command shadow imports·실제 CLI DB readiness/port 회수 회귀를 작성했다. source-only 비공식 검토는 formal Opus/Sol 승인이나 실행 증거가 아니다.
 
-**로컬 실행0:** 이 재개 후 test·collect-only·ruff/lint·build·추가 smoke를 실행하지 않았다. **현재 수정의 Actions run도 아직 없다.** workflow/회귀/consumer 작성만으로 green·전체 통과·release 완료를 주장하지 않는다. 이전2311 pass/skip0의 고정 source/wheel과 기존 before/after 실패·성공 자료는 원래 층위로 보존한다.
+**로컬 실행0:** 이 재개 후 test·collect-only·ruff/lint·build·추가 smoke를 실행하지 않았다. 최초 인수 시에는 수정본의 Actions run도 없었다. 아래 실제 실행 기록이 그 이후 상태를 구분한다. 이전2311 pass/skip0의 고정 source/wheel과 기존 before/after 자료는 원래 층위로 보존한다.
 
 ### 정상 workflow·게시 의존성
 
-마지막 게시 checkpoint는 `6a93cb55d7e22d9b3b17199ce18b8e5ba1c8ef51`이고 이후 수정은 미커밋·미push다. 실제 GitHub 조회에서 repository Actions run은0, PR #9의 head는 이 checkpoint·base는main·상태는open이었다. API의 `draft`는 **false**여서 의도한 Draft 상태라고 단정하지 않으며 receiver가 PR 상태를 변경하지 않았다.
+최초 수신 관측의 마지막 게시 checkpoint는 `6a93cb55d7e22d9b3b17199ce18b8e5ba1c8ef51`이었고 당시 후속 수정은 미커밋·미push였다. 그때 GitHub Actions run은0, PR #9의 head는 해당 checkpoint·base는main·상태는open이었다. API의 `draft`는 **false**여서 Draft로 단정하지 않았고 receiver가 PR 상태를 변경하지 않았다. 이후 게시는 아래 source별 기록을 따른다.
 
 현재 pinned profile의 lint/test/package는 `execution: local`이다. `gates --execution ci`는 선언된 CI gate만 선택할 뿐 기존 local gate를 Actions로 바꾸지 않는다. 빈 CI 선택을 QA 완료로 표시하지 않는다. 정상 hosted review는 fresh 독립 reviewer 실행 뒤 review/awaiting_host에서 멈추는 지원 경계가 있으나, 실제 Actions 결과를 local gate 통과로 import하는 지원 경로는 확인되지 않았다. pins/settings/guard·판정·기존 timeout을 바꾸지 않는다. 이후 사용자가 **최신 CI·보안·복구·OSS 수정의 CI 검증용 미검증 checkpoint commit/push만** 명시 허용했다. 정상 guard 경로만 사용하며 QA 위조·merge·출시 승인은 아니다. 위 미커밋/미push·run0은 이 허용 전 관측이고 실제 게시/실행은 별도 증거가 필요하다.
 
-원래 Opus timeout/나머지 skipped와 Sol request-changes는 보존한다. 새 formal 양 모델 리뷰·실제 CI·정상 QA/handoff·commit/push/PR 갱신은 여전히 별도 완료 조건이다. [OSS 후속 조사](research/2026-10-16-oss-followup.ko.md)의 보류 위험과 원래18개 native/평가/운영/권한/반입/trial/release/미귀속 volume acceptance도 인수했으며 코드 작성만으로 완료 처리하지 않았다.
+원래 Opus timeout/나머지 skipped와 Sol request-changes는 보존한다. 실제 CI 성공과 formal 승인·정상 QA/handoff·최종 게시를 분리한다. [OSS 후속 조사](research/2026-10-16-oss-followup.ko.md)의 보류 위험과 원래18개 native/평가/운영/권한/반입/trial/release/미귀속 volume acceptance도 인수했으며 코드 작성만으로 완료 처리하지 않았다.
 
 ### 첫 실제 CI checkpoint 실행 — 실패 증거 보존
 
@@ -935,3 +935,45 @@ fresh native review 4차의 must-fix 2건만 수정했다. ruff 통과, 실제 P
 ### CI 준비 실패 원인 확정
 
 진단 수정 `06bf2f5e48a21a820c9dc04ba0d99b15afcd185b`의 [run38916587827](https://github.com/chonamdoo/agents-memory/actions/runs/38916587827)도 실패했지만 실제 uv 오류를 확보했다: `--managed-python`과 환경에서 전달된 `--python-preference`는 함께 사용할 수 없다. `UV_PYTHON_PREFERENCE=only-managed`를 제거하고 install/find의 명시 `--managed-python`, owned install/bin/venv 경로·실제 binary 귀속 검사·후속 `UV_PYTHON` 절대 경로는 유지했다. Python3.13.16·SQLite 지원 하한·uv/age/image/action pin·기존 timeout은 바꾸지 않았다. 이 수정의 실제 결과는 다음 Actions source SHA로 확인하며 local 재현은 하지 않는다.
+
+### 실제 병렬 CI 성공 — c59377e
+
+[Actions run38917025242](https://github.com/chonamdoo/agents-memory/actions/runs/38917025242)는 `c59377e290943a1d4238e7146d45024c2486a551`에서 성공했다. 네 test job과 checks job은 같은 UTC14:35:45에 시작했다. 다운로드한 aggregate는 `complete:true`, full collection2408의 disjoint union, failed/skip/xfail/xpass0을 기록했다.
+
+| 실제 단계 | passed | 실행 시간(초) |
+|---|---:|---:|
+| Tests0 | 636 | 178.651 |
+| Tests1 | 581 | 177.471 |
+| Tests2 | 615 | 170.194 |
+| Tests3 | 576 | 91.649 |
+| 설치 wheel consumer 별도 subset | 31 | 12.690 |
+
+lint는 exit0/0.064초, build는 exit0/1.166초였다. wheel subset은 전체 suite에 **합산하지 않는다**. 실제 artifact wheel을 재설치하고 새 `-I` process에서 생성 command의 shadow import·validated-v5 cleanup/pending 보존·점유 port CLI를 실행했다. 설치된 Python module45개의 bytes가 소비 wheel과 일치했다.
+
+- 당시 Python/CI 입력·lock 기준 source digest: `f8999a916c9363a760db1cd792b32df148a344938a4b582746afb433af8325a7`.
+- 소비하고 공개 distribution과 대조한 wheel SHA256: `9a3bde9b38267ef9e5eec0c3c0df4f2b8a1f9aff4e0ac32f24bdb1367cf46e89`.
+- 실제 prerequisite: Python3.13.16/SQLite3.53.1, Node24.21.0, uv0.13.0, PostgreSQL18.6/pgvector0.8.7, native PG18.6 도구, age/age-keygen1.3.2. 각 job의 owned cleanup도 성공했다.
+
+원본 job metadata·각 shard의 전체 node ID/phase receipt·outcome-only JUnit·checks/wheel receipt·distribution·aggregate를 보존했다. [PR9 실제 결과](https://github.com/chonamdoo/agents-memory/pull/9#issuecomment-6218011455)와 [issue5 근거](https://github.com/chonamdoo/agents-memory/issues/5#issuecomment-6218014268)도 게시했다. 앞선 두 준비 실패는 삭제하거나 성공 분모에서 숨기지 않는다.
+
+범위는 Linux amd64 online Actions와 실제 PG·합성 TLS/생성 command/CLI 회귀다. actual native callback·첫 보호 행동, 전 OS/ABI offline 반입, live model 판단, 안정 cutover·paired trial·출시 승인이 아니다. c59377e 뒤 수정본의 성공 증거로 재사용하지 않는다.
+
+### c59377e의 정상 독립 Opus/Sol 재리뷰
+
+정상 runner의 입력 patch·metrics·manifest·12개 angle 원본을 SHA256 inventory와 함께 보존했다. source-only reviewer는 로컬 test/collection/lint/build/reproduction을 실행하지 않았다고 기록했다. timeout600초·xhigh·모델 pin은 그대로다.
+
+| angle | Opus5.5 | Sol6.1 |
+|---|---|---|
+| generalist | request-changes | approve |
+| types | TIMEOUT601.91초·판정 없음 | approve |
+| architecture-design | approve | approve |
+| state-integrity | TIMEOUT601.48초·판정 없음 | approve |
+| clean-architecture | approve | request-changes |
+| io-safety | TIMEOUT600.99초·판정 없음 | request-changes |
+
+aggregate는 **request-changes**로 기록하고 정상 fix-loop로 전환했다. CI green으로 지적이나 timeout을 승인으로 바꾸지 않았다. must-fix는 README의 owned service 제거 전 config rewrite 지시, installed replay가 남은 ownership intent를 삭제한 뒤 진단 실패를 not_started로 보고하는 경로, CI timeout에서 부모가 먼저 종료하면 저항하는 자손이 남는 경로다. should-fix는 filesystem publication 오류의 DB 오분류와 실행 resource `omp.ts`의 source digest 누락이다.
+
+spool의 `test_concurrent_producer_and_flushers_have_one_dispatch_owner`는 별도 SQLite 연결과 `ThreadPoolExecutor`를 사용한다. 독립 OS process 경합의 증거로 세지 않는다. 이전 `slice-plan.md:16`의 stronger claim은 과거 artifact로 보존하고 현재 근거를 이렇게 한정한다.
+
+회귀-only checkpoint `fe44a63181843ed9194d68f03541b85400ff7d4f`의 [수정 전 Actions run38920768944](https://github.com/chonamdoo/agents-memory/actions/runs/38920768944)는 실제2430 collected/2410 passed/20 failed/skip0이었다. 제품/CI 수정은 worktree에 보존하고 새 회귀만 먼저 게시했다. 실패는 retained-intent replay3, resistant descendant1, executable resource digest1, Jev file publication/cleanup12, ingress file/authority 오류 구분3이다. 실제 로그에서 not_started/unknown 불일치, 잔존 writer의 FIFO EOF 부재, resource 변경 뒤 동일 digest, filesystem 오류의 DATABASE_UNAVAILABLE 오분류를 확인했다. lint/build와 별도 wheel 소비는 통과했지만 aggregate는 `complete:false`로 거절했다. 원본 logs·job metadata·phase receipts·distribution·실패 집계를 보존했으며 후속 push로 run을 취소하거나 결과를 green으로 바꾸지 않았다. 수정본의 성공은 별도 source SHA/receipt가 필요하고 local 재현으로 대체하지 않는다.
+

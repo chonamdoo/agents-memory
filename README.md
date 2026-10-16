@@ -184,10 +184,13 @@ uv run agents-memory --config "$CONFIG" service uninstall
 
 ### 기존 배포의 명시적 전환
 
-서비스를 정상 중지한 뒤 current operator와 명시 migrator DSN으로 실행한다. 이 문서는 live upgrade를 실행했다는 기록이 아니다.
+유입을 정상 중지하고 [runbook §4.3](docs/release-runbook.ko.md#43-packageschemahost-전환)에 따라 원래 owned host와 service를 제거한 뒤 전환한다. service는 stopped 상태에서도 config bytes를 pin하므로 **원래 entrypoint·원래 config가 일치할 때 `service uninstall`을 먼저 완료**한다. config를 쓴 뒤 receipt/digest를 고쳐 제거하거나 ownership 검사를 우회하지 않는다. 이 문서는 live upgrade를 실행했다는 기록이 아니다.
 
 ```sh
-uv run agents-memory --config "$CONFIG" --token-file "$OPERATOR_TOKEN_FILE" migrate \
+# AM_BIN은 원래 설치본, NEXT_AM_BIN은 별도 stable 경로의 검증된 새 설치본이다.
+"$AM_BIN" --config "$CONFIG" service uninstall
+AM_BIN="$NEXT_AM_BIN"
+"$AM_BIN" --config "$CONFIG" --token-file "$OPERATOR_TOKEN_FILE" migrate \
   --confirm-deployment "$DEPLOYMENT_ID" --upgrade-config
 ```
 

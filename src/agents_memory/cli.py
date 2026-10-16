@@ -544,7 +544,14 @@ async def execute(args) -> dict | None:
             published = False
             try:
                 async with store.operator_authority(actor):
-                    path = configure_ingress(settings, profile)
+                    try:
+                        path = configure_ingress(settings, profile)
+                    except OSError:
+                        raise DomainError(
+                            "INGRESS_CONFIG_INVALID",
+                            "Ingress publication completion is unconfirmed; inspect the current policy before explicitly retrying",
+                            status=503, effect=EffectState.UNKNOWN,
+                        ) from None
                     published = True
             except DomainError as error:
                 if published:
@@ -552,8 +559,8 @@ async def execute(args) -> dict | None:
                 raise
             except OSError:
                 raise DomainError(
-                    "INGRESS_CONFIG_INVALID",
-                    "Ingress publication completion is unconfirmed; inspect the current policy before explicitly retrying",
+                    "DATABASE_UNAVAILABLE",
+                    "Authority completion is unconfirmed; inspect the published ingress policy before explicitly retrying",
                     status=503, effect=EffectState.COMMITTED if published else EffectState.UNKNOWN,
                 ) from None
             return {

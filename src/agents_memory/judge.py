@@ -132,6 +132,21 @@ def _save_state(settings: Settings, state: JudgeState) -> None:
 
 
 @asynccontextmanager
+async def _publication_authority(store, actor: Principal) -> AsyncIterator[None]:
+    """Classify file failures before the database transaction translates OSError."""
+    async with store.operator_authority(actor):
+        try:
+            yield
+        except OSError:
+            raise DomainError(
+                "JUDGE_PUBLICATION_UNCONFIRMED",
+                "Private judge file publication or cleanup is unconfirmed; inspect judge status and "
+                "rerun the same explicit command without changing retained recovery evidence",
+                status=503, effect=EffectState.UNKNOWN,
+            ) from None
+
+
+@asynccontextmanager
 async def judge_guard(settings: Settings) -> AsyncIterator[None]:
     """Keep policy/provider changes linearizable with the entire publication commit.
 
@@ -339,7 +354,7 @@ async def set_egress_policy(settings: Settings, store, actor: Principal, *, jev_
             jev_allowed=jev_allowed, revision=previous.revision + 1, updated_at=_now(), updated_by=actor.id,
         )
         try:
-            async with store.operator_authority(actor):
+            async with _publication_authority(store, actor):
                 private_write(judge_dir(settings) / EGRESS_POLICY_FILE, policy.model_dump_json(indent=2) + "\n", replace=True)
         except DomainError as error:
             if not cleanup_committed or error.effect == EffectState.UNKNOWN:
@@ -403,12 +418,12 @@ async def set_jev(
             "revision": previous.revision + 1, "retiring_credential_ids": retiring,
             "updated_at": _now(), "updated_by": actor.id,
         })
-        async with store.operator_authority(actor):
+        async with _publication_authority(store, actor):
             _save_state(settings, state)
         stage = "worker retirement"
         failure_effect = EffectState.UNKNOWN
         try:
-            async with store.operator_authority(actor):
+            async with _publication_authority(store, actor):
                 _remove(settings, TOKEN_FILE)
             state, retired_before_issue = await _finish_retirement(settings, store, actor, state)
             stage = "binding lookup; no replacement issuance attempted"
@@ -416,12 +431,12 @@ async def set_jev(
             bindings = tuple(binding.id for binding in await store.list_bindings(actor))
             token = secrets.token_urlsafe(48)
             # A committed issuance with a lost response is recoverable by this token.
-            async with store.operator_authority(actor):
+            async with _publication_authority(store, actor):
                 private_write(judge_dir(settings) / ISSUING_TOKEN_FILE, token + "\n")
             stage = "replacement issuance or publication; issuance must be reconciled"
             failure_effect = EffectState.UNKNOWN
             principal = await store.issue_token(actor, Role.AGENT, bindings, token)
-            async with store.operator_authority(actor):
+            async with _publication_authority(store, actor):
                 private_write(judge_dir(settings) / TOKEN_FILE, token + "\n", replace=True)
                 private_write(judge_dir(settings) / KEY_FILE, key + "\n", replace=True)
                 state = JudgeState(
@@ -475,10 +490,10 @@ async def _set_agent(settings: Settings, store, actor: Principal, *, forget_key:
         retiring_credential_ids=retiring, forget_key_pending=forget_key,
         updated_at=_now(), updated_by=actor.id,
     )
-    async with store.operator_authority(actor):
+    async with _publication_authority(store, actor):
         _save_state(settings, state)
     try:
-        async with store.operator_authority(actor):
+        async with _publication_authority(store, actor):
             _remove(settings, TOKEN_FILE)
         state, retired = await _finish_retirement(settings, store, actor, state)
     except DomainError as error:
@@ -501,12 +516,12 @@ async def _finish_retirement(settings: Settings, store, actor: Principal, state:
             issued = await store.resolve_issued_credential(actor, token, role=Role.AGENT)
             if issued is not None and issued != state.credential_id and issued not in state.retiring_credential_ids:
                 retired = await _retire(store, actor, issued)
-            async with store.operator_authority(actor):
+            async with _publication_authority(store, actor):
                 _remove(settings, ISSUING_TOKEN_FILE)
         for credential_id in state.retiring_credential_ids:
             retired = await _retire(store, actor, credential_id)
         if state.retiring_credential_ids or state.forget_key_pending:
-            async with store.operator_authority(actor):
+            async with _publication_authority(store, actor):
                 if state.forget_key_pending:
                     _remove(settings, KEY_FILE)
                 state = state.model_copy(update={

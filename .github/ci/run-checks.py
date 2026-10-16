@@ -7,7 +7,25 @@ import runpy
 import signal
 import subprocess
 import time
+from contextlib import suppress
 from pathlib import Path
+
+
+def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
+    try:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                process.poll()
+                os.killpg(process.pid, 0)
+                time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+    finally:
+        try:
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+        finally:
+            process.wait()
 
 
 def check(command: list[str], timeout: int) -> dict:
@@ -19,12 +37,7 @@ def check(command: list[str], timeout: int) -> dict:
             result["exit_code"] = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             result["timeout"] = True
-            os.killpg(process.pid, signal.SIGTERM)
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
+            _stop_process_group(process)
             result["exit_code"] = process.returncode
     except OSError as error:
         result["error"] = type(error).__name__

@@ -1222,6 +1222,7 @@ def install_host(
                     raise DomainError("HOST_CONFIG_DRIFT", "A changed owned configuration entry was preserved")
                 if _intent_path(receipt).exists():
                     _intent_plan(receipt, root)
+                    effect.changed = True  # Unlink can precede a failed directory fsync.
                     _unlink(_intent_path(receipt))
                 return {"state": "installed", "host": host, "receipt": str(receipt_path), "capabilities": receipt["capabilities"], "native_trust": "not_modified", "native_memory": native_memory_status(root), "replay": True}
         owner = uuid.uuid4().hex
