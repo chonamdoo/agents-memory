@@ -327,6 +327,7 @@ def test_cleanup_after_esrch_cannot_kill_a_reused_group(monkeypatch, target, dis
         return real_killpg(unrelated.pid, sig)
 
     try:
+        assert select.select([unrelated.stdout], [], [], 5)[0] == [unrelated.stdout]
         assert unrelated.stdout.readline() == b"ready\n"
         monkeypatch.setattr(os, "killpg", simulate_pgid_reuse)
         cleanup(expired)

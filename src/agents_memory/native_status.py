@@ -26,18 +26,22 @@ def _failure() -> DomainError:
 
 
 def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
+    group_missing = False
     try:
-        with suppress(ProcessLookupError):
+        try:
             os.killpg(process.pid, signal.SIGTERM)
             deadline = time.monotonic() + _CLEANUP_SECONDS
             while time.monotonic() < deadline:
                 process.poll()
                 os.killpg(process.pid, 0)
                 time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+        except ProcessLookupError:
+            group_missing = True
     finally:
         try:
-            with suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
+            if not group_missing:
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
         finally:
             process.wait(timeout=_CLEANUP_SECONDS)
 

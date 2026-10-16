@@ -992,3 +992,29 @@ spool의 `test_concurrent_producer_and_flushers_have_one_dispatch_owner`는 별�
 
 수정 전20개 실패와 기존5개 assertion 실패를 없던 일로 만들지 않고 동일 전체 collection의 passing-after와 구분했다. 모든 job/run metadata·전체 phase receipt·outcome-only JUnit·checks/wheel receipt·distribution·aggregate를 다운로드해 보존했다. 이 source의 실제 코드 실행 증거이며 로컬 검증은0이다. 다음 문서-only checkpoint의 정확한 head 결과는 [Actions](https://github.com/chonamdoo/agents-memory/actions/workflows/ci.yml)의 해당 SHA와 source/wheel receipt를 따른다. 새 formal Opus/Sol 판정·정상 QA/handoff와 원래18개 acceptance는 이 CI 성공으로 완료되지 않는다.
 
+### 정확한 문서 head CI와 양 모델 재리뷰 — 134b096
+
+`134b0960228934e6409bf62bb272ae48ac218d91`의 [Actions38923278738](https://github.com/chonamdoo/agents-memory/actions/runs/38923278738)는 `complete:true`, 전체2430/skip0·lint/build·별도 installed-wheel31을 통과했다. 실제 source/resource digest와 소비 wheel SHA256은 앞 절의 bc30804와 같았다. 이 결과는 해당 head에만 적용한다.
+
+같은 소스를 고정하고 정상 `status`→`continue`로 재시도했다. 모델·xhigh·600초 timeout·guard·trust·pin·현재 host identity는 바꾸지 않았다. 첫 시도의 timeout과 skipped를 승인으로 바꾸거나 다음 시도의 승인으로 재사용하지 않았다.
+
+| 실제 시도 | 모델 | approve | timeout·판정 없음 | skipped |
+|---|---|---:|---:|---:|
+| 1 | Opus5.5 | 0 | 1 | 5 |
+| 1 | Sol6.1 | 6 | 0 | 0 |
+| 2 | Opus5.5 | 6 | 0 | 0 |
+| 2 | Sol6.1 | 6 | 0 | 0 |
+
+두 번째 시도의 measurement는 `2571b024d94b4d468dc658a82053a142`다. runner가 만든12개 실제 report의 SHA256이 current manifest와 일치했다. 전체 입력·출력·metrics·원본 판정은 run context에 보존했다. source-only 재리뷰를 실제 native/model/trial acceptance로 세지 않는다. Opus state는 제공 patch 외에 read-only git diff도 사용했다고 공개했고, 원문에 그 이탈을 남겼다.
+
+개별 판정은 모두 approve였지만 controller aggregate는 다음 두 실제 지적을 수용해 **request-changes**로 기록했다. 독립 reviewer의 approve를 수정한 것이 아니다. 정상 review route는 controller의 보수적 request-changes를 허용하며 실제 fix-loop 전환을 확인했다.
+
+- Opus types: `service._receipt`가 owned config의 `CONFIG_UPGRADE_REQUIRED`를 `SERVICE_OWNERSHIP_INVALID`로 덮는다. direct config loader가 아닌 `ensure_started`/client readiness 경계의 누락이며 원래 actionable upgrade error 요구 범위다.
+- Opus IO: native/CI cleanup이 PGID 소멸을 확인한 뒤에도 KILL을 보낸다. 숫자 PGID가 재사용될 때 다른 프로세스를 신호할 가능성은 source 추론이며 실제 kernel PID wraparound를 관측한 주장이 아니다.
+
+새 회귀만 먼저 게시한 checkpoint `fbf958d2b7573dc9a25cc54e6d779973825958d6`의 [Actions38929053615](https://github.com/chonamdoo/agents-memory/actions/runs/38929053615)는 실제 **2435 collected/2430 passed/5 failed/skip0**, aggregate `complete:false`였다. owned config의 upgrade 오류가 ownership 오류로 바뀌는1건과 native/CI의 TERM·존재 확인 시점 PGID 소멸4건이 실패했다. 후자에서는 signal 경계에 재사용을 주입했을 때 실제 별도 소유 child가 `-9`로 종료되어 응답하지 못했다. 실제 kernel PID wraparound나 공유 프로세스 피해를 주장하지 않는다. lint/build와 별도 wheel31은 통과했으나 전체 run은 실패다. 모든 job·phase receipt·logs·distribution·실패 aggregate를 보존했다.
+
+수정은 기존 control loader와 같은 whitelist로 `CONFIG_UPGRADE_REQUIRED`만 보존한다. 다른 invalid config·ownership 실패는 계속 거절한다. 두 cleanup 경계는 `ProcessLookupError`를 관측하면 최종 KILL을 생략하되 parent wait는 유지한다. 살아 있는 group에는 원래 TERM/grace/KILL을 적용하며 deadline·reviewer timeout은 바꾸지 않는다. 새 survivor fixture는 bounded readiness/응답과 owned child cleanup을 사용한다. 수정 후 성공은 새 source의 Actions로 따로 확인하며 이 수정 전 실패를 green으로 바꾸지 않는다.
+
+로컬 test/collection/ruff/build/syntax check/추가 smoke는 실행하지 않는다. 공식 QA/handoff와 원래18개 acceptance는 여전히 별도 미완료다.
+

@@ -264,7 +264,9 @@ def _receipt(control: Path | None, *, settings: Settings | RemoteClientSettings 
         elif value["state"] not in {"installing", "removing"}:
             raise _error()
         return value
-    except (OSError, ValueError, TypeError, DomainError):
+    except (OSError, ValueError, TypeError, DomainError) as error:
+        if isinstance(error, DomainError) and error.code == "CONFIG_UPGRADE_REQUIRED":
+            raise
         raise _error() from None
 
 
