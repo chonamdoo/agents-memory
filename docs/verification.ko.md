@@ -1018,3 +1018,14 @@ spool의 `test_concurrent_producer_and_flushers_have_one_dispatch_owner`는 별�
 
 로컬 test/collection/ruff/build/syntax check/추가 smoke는 실행하지 않는다. 공식 QA/handoff와 원래18개 acceptance는 여전히 별도 미완료다.
 
+### 후속 경계 수정의 실제 전체 Actions 성공 — 877a56d
+
+`877a56d5fce5078f8f3b83e8173f32d2fbc77576`의 [Actions38929819006](https://github.com/chonamdoo/agents-memory/actions/runs/38929819006)는 `complete:true`, **2435 collected/2435 passed**, failed/skip/xfail/xpass0이었다. checks와 네 shard는 UTC16:10:22–23에 시작했고 각각 owned prerequisites cleanup도 성공했다. lint exit0/0.064초, build exit0/1.016초, 별도 installed-wheel31/10.183초다. installed subset을 전체 suite에 더하지 않는다.
+
+수정 전 실패한5건은 같은 node ID의 setup/call/teardown이 모두 통과했다. 실제 owned legacy config의 upgrade 거절은 코드·effect를 보존하고 config/receipt/plist·native job 상태를 바꾸지 않았다. PGID 소멸에 재사용을 주입한4건에서 별도 소유 child가 살아서 ping에 응답했다. 살아 있는 TERM-resistant descendant 정리 등 기존 전체 회귀도 함께 통과했다. 이 결과는 actual Codex startup·kernel PID wraparound·사용자 macOS lifecycle의 증거가 아니다.
+
+- source/resource digest: `d1f671adc962c125922d6d899666b6379027b494d82526aa0ca6e98843a5b738`.
+- 실제 소비·공개 distribution 대조 wheel SHA256: `10e52bce0bdc6c4345adac6153f76f5a8ff65382b6f1c2a2c8f58bc078045061`; 설치 Python module45개를 대조했다.
+
+모든 원본 job/run metadata·phase receipt·outcome-only JUnit·checks/wheel·distribution·aggregate와 five-case 전후 대조를 보존했다. 로컬 검증은0이다. 후속 문서-only head의 정확한 CI 결과는 해당 SHA의 Actions/receipts를 따른다. 134b096의12개 approve를 이 새 소스의 승인으로 재사용하지 않으며 fresh normal Opus/Sol review→QA→handoff와 원래18개 acceptance는 별도로 유지한다.
+
