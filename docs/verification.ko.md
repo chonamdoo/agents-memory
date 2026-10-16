@@ -983,3 +983,12 @@ spool의 `test_concurrent_producer_and_flushers_have_one_dispatch_owner`는 별�
 
 실제 로그와 기존 assertion을 대조하니, 그 회귀는 DomainError이면 주입한 DB 오류 `DATABASE_BUSY`를 모두 그대로 기대했다. 이제 파일 실패가 명시 DomainError가 되어 그 가정이 깨졌다. 제품 오류를 다시 DB로 바꾸지 않는다. 해당 mock-echo assertion을 삭제하고, 모든 fault가 DomainError로 보고되어야 한다는 조건과 COMMITTED/UNKNOWN·provider fence·미완료 issuance·명시 복구·old/orphan credential 폐기의 행동 검증은 유지한다. 실제 PG의 새12건은 파일 오류의 고유 분류와 복구를 따로 검증한다. 이 실패도 원래 source·로그·receipts와 함께 보존하고 수정된 회귀의 새 Actions 결과를 기다린다.
 
+### 정정 후 전체 Actions 성공 — bc30804
+
+`bc3080497c75ade81d2e51b54f8c112ab0ef9434`의 [run38922413453](https://github.com/chonamdoo/agents-memory/actions/runs/38922413453)는 `complete:true`, **2430 collected/2430 passed**, failed/skip/xfail/xpass0이었다. 네 shard와 checks job은 같은 UTC15:15:19에 시작했다. lint exit0/0.064초, build exit0/1.016초, 별도 installed-wheel consumer31/12.190초였으며 subset을 전체 suite에 합산하지 않았다. 각 owned cleanup도 성공했다.
+
+- TypeScript 실행 resource를 포함하는 source digest: `44a70344578382aa7de2c139d35d86067bba3ffd7171f05044b68eac81916e05`.
+- 실제 소비·공개 distribution 대조 wheel SHA256: `3cf5de78d0f9e9e7086a70fe388b3d74eb36ca7ddf4ea4297976bc1d2c695edc`; 설치 Python module45개를 대조했다.
+
+수정 전20개 실패와 기존5개 assertion 실패를 없던 일로 만들지 않고 동일 전체 collection의 passing-after와 구분했다. 모든 job/run metadata·전체 phase receipt·outcome-only JUnit·checks/wheel receipt·distribution·aggregate를 다운로드해 보존했다. 이 source의 실제 코드 실행 증거이며 로컬 검증은0이다. 다음 문서-only checkpoint의 정확한 head 결과는 [Actions](https://github.com/chonamdoo/agents-memory/actions/workflows/ci.yml)의 해당 SHA와 source/wheel receipt를 따른다. 새 formal Opus/Sol 판정·정상 QA/handoff와 원래18개 acceptance는 이 CI 성공으로 완료되지 않는다.
+
