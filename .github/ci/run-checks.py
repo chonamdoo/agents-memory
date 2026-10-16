@@ -12,13 +12,15 @@ from pathlib import Path
 
 
 def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
+    if process.returncode is not None:
+        return
+    # Keep the leader unreaped until the final group signal.
     group_missing = False
     try:
         try:
             os.killpg(process.pid, signal.SIGTERM)
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
-                process.poll()
                 os.killpg(process.pid, 0)
                 time.sleep(min(0.05, max(0, deadline - time.monotonic())))
         except ProcessLookupError:
