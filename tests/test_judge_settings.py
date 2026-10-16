@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import stat
 import uuid
+from contextlib import asynccontextmanager
+from threading import Barrier, Event
 
 import pytest
 import pytest_asyncio
@@ -11,21 +14,28 @@ from pydantic import ValidationError
 from test_store_authority import TOKEN
 from test_store_authority import authority as authority
 
+from agents_memory import judge as judge_module
 from agents_memory.config import Settings
 from agents_memory.domain import DomainError, Principal, Role
 from agents_memory.judge import (
+    EGRESS_POLICY_FILE,
+    ISSUING_TOKEN_FILE,
     KEY_FILE,
     PROVIDER_FILE,
     TOKEN_FILE,
+    EgressPolicy,
     JudgeState,
     describe,
     grant_new_binding,
     judge_dir,
     key_fingerprint,
+    load_egress_policy,
     load_state,
     read_supplied_key,
     read_worker_token,
+    require_jev_allowed,
     set_agent,
+    set_egress_policy,
     set_jev,
     validate_key,
 )
@@ -85,10 +95,6 @@ def test_key_fingerprint_is_deployment_salted_and_reveals_no_key_text(tmp_path):
     assert key_fingerprint(personal(tmp_path / "a", deployment_id="deployment-001"), KEY) == first
 
 
-def test_load_state_defaults_to_agent_when_absent(tmp_path):
-    state = load_state(personal(tmp_path))
-    assert state.provider == "agent" and state.revision == 0
-
 
 @pytest.mark.parametrize(("content", "mode"), [
     ("{not json", 0o600),
@@ -127,6 +133,7 @@ def test_read_supplied_key_warns_on_shared_file_and_refuses_symlink(tmp_path):
 def test_describe_hides_identifiers_from_agents_and_key_from_everyone(tmp_path):
     settings = personal(tmp_path)
     private_file(judge_dir(settings) / KEY_FILE, KEY + "\n")
+    private_file(judge_dir(settings) / EGRESS_POLICY_FILE, EgressPolicy(jev_allowed=True).model_dump_json())
     fingerprint = key_fingerprint(settings, KEY)
     state = JudgeState(provider="jev", revision=2, model="jev-1.13.0", key_fingerprint=fingerprint,
         credential_id="credential_worker")
@@ -143,18 +150,65 @@ def test_describe_hides_identifiers_from_agents_and_key_from_everyone(tmp_path):
 
 class Tripwire:
     def __getattr__(self, name):
-        pytest.fail(f"Company Jev refusal touched store.{name}")
+        pytest.fail(f"Denied Jev egress touched store.{name}")
 
 
-async def test_set_jev_in_company_mode_refuses_before_store_verify_or_files(tmp_path):
-    settings = personal(tmp_path, mode="company")
+@pytest.mark.parametrize("mode", ["company", "personal"])
+@pytest.mark.parametrize("policy", ["absent", "denied"])
+async def test_set_jev_without_authorization_refuses_before_store_verify_or_files(tmp_path, mode, policy):
+    settings = personal(tmp_path, mode=mode)
+    if policy == "denied":
+        private_file(judge_dir(settings) / EGRESS_POLICY_FILE, EgressPolicy(jev_allowed=False).model_dump_json())
 
     def unexpected_verify(key, model):
-        pytest.fail("Company Jev refusal verified the key")
+        pytest.fail("Denied Jev egress verified the key")
 
     with pytest.raises(DomainError) as caught:
         await set_jev(settings, Tripwire(), operator_principal(), KEY, verify=unexpected_verify)
     assert caught.value.code == "JUDGE_PROVIDER_FORBIDDEN"
+    assert load_state(settings).provider == "agent"
+    assert not (judge_dir(settings) / KEY_FILE).exists()
+    assert not (judge_dir(settings) / TOKEN_FILE).exists()
+    if policy == "absent":
+        assert not judge_dir(settings).exists()
+
+
+@pytest.mark.parametrize("mode", ["company", "personal"])
+async def test_allowing_egress_is_independent_of_mode_and_does_not_select_or_contact_jev(tmp_path, mode):
+    settings = personal(tmp_path, mode=mode)
+    assert load_egress_policy(settings).jev_allowed is False
+    result = await set_egress_policy(settings, Tripwire(), operator_principal(), jev_allowed=True)
+    assert load_egress_policy(settings).jev_allowed is True
+    require_jev_allowed(settings)
+    assert result["provider"] == "agent"
+    assert result["source_judgment"] == "current_coding_agent_via_mcp"
+    assert result["egress_policy"]["jev_allowed"] is True
+    assert mode_of(judge_dir(settings) / EGRESS_POLICY_FILE) == 0o600
+    assert not (judge_dir(settings) / PROVIDER_FILE).exists()
+    assert not (judge_dir(settings) / KEY_FILE).exists()
+    assert not (judge_dir(settings) / TOKEN_FILE).exists()
+
+
+@pytest.mark.parametrize(("content", "permissions"), [
+    ("{bad json", 0o600),
+    ('{"jev_allowed": "true"}', 0o600),
+    (EgressPolicy(jev_allowed=True).model_dump_json(), 0o644),
+])
+def test_egress_policy_invalid_or_exposed_fails_closed(tmp_path, content, permissions):
+    settings = personal(tmp_path)
+    private_file(judge_dir(settings) / EGRESS_POLICY_FILE, content, permissions)
+    with pytest.raises(DomainError) as caught:
+        require_jev_allowed(settings)
+    assert caught.value.code == "JUDGE_EGRESS_POLICY_INVALID"
+
+
+async def test_only_operator_can_change_egress_policy(tmp_path):
+    settings = personal(tmp_path)
+    agent = operator_principal().model_copy(update={"role": Role.AGENT})
+    for allowed in (True, False):
+        with pytest.raises(DomainError) as caught:
+            await set_egress_policy(settings, Tripwire(), agent, jev_allowed=allowed)
+        assert caught.value.code == "ROLE_DENIED"
     assert not judge_dir(settings).exists()
 
 
@@ -163,10 +217,11 @@ async def judged(authority):
     state = authority.store.settings.state_dir
     state.mkdir(parents=True, exist_ok=True)
     state.chmod(0o700)
+    await set_egress_policy(authority.store.settings, authority.store, authority.actor, jev_allowed=True)
     return authority
 
 
-def mode(path):
+def mode_of(path):
     return stat.S_IMODE(os.lstat(path).st_mode)
 
 
@@ -174,18 +229,20 @@ async def operator_again(store):
     return await store.authenticate(TOKEN)
 
 
-async def test_set_jev_publishes_private_files_and_rotates_the_worker_credential(judged):
-    store, settings = judged.store, judged.store.settings
+@pytest.mark.parametrize("deployment_mode", ["personal", "company"])
+async def test_set_jev_publishes_private_files_and_rotates_the_worker_credential(judged, deployment_mode):
+    store = judged.store
+    settings = store.settings.model_copy(update={"mode": deployment_mode})
     second = await store.register_binding(judged.actor, "Second project", None, "second-binding")
     actor = await operator_again(store)
 
     result = await set_jev(settings, store, actor, KEY, verify=verified)
     directory = judge_dir(settings)
-    assert mode(directory) == 0o700
+    assert mode_of(directory) == 0o700
     for name in (PROVIDER_FILE, KEY_FILE, TOKEN_FILE):
-        assert mode(directory / name) == 0o600
+        assert mode_of(directory / name) == 0o600
     assert KEY not in json.dumps(result, default=str)
-    assert result["provider"] == "jev" and result["revision"] == 1
+    assert result["provider"] == "jev"
     first_token = read_worker_token(settings)
     worker = await store.authenticate(first_token, (Role.AGENT,))
     assert worker.role == Role.AGENT and worker.id == actor.id
@@ -193,7 +250,7 @@ async def test_set_jev_publishes_private_files_and_rotates_the_worker_credential
     assert worker.credential_id == load_state(settings).credential_id != actor.credential_id
 
     rotated = await set_jev(settings, store, actor, OTHER_KEY, verify=verified)
-    assert rotated["revision"] == 2 and rotated["retired_credential"] == worker.credential_id
+    assert rotated["retired_credential"] == worker.credential_id
     with pytest.raises(DomainError) as caught:
         await store.authenticate(first_token, (Role.AGENT,))
     assert caught.value.code == "AUTH_DENIED"
@@ -211,7 +268,7 @@ async def test_set_agent_retires_worker_and_optionally_forgets_key(judged):
 
     kept = await set_agent(settings, store, actor, forget_key=False)
     state = load_state(settings)
-    assert state.provider == "agent" and state.revision == 2 and state.credential_id is None
+    assert state.provider == "agent" and state.credential_id is None
     assert state.key_fingerprint == fingerprint and (directory / KEY_FILE).exists()
     assert not (directory / TOKEN_FILE).exists()
     assert KEY not in json.dumps(kept, default=str)
@@ -223,7 +280,7 @@ async def test_set_agent_retires_worker_and_optionally_forgets_key(judged):
     token = read_worker_token(settings)
     await set_agent(settings, store, actor, forget_key=True)
     state = load_state(settings)
-    assert state.provider == "agent" and state.revision == 4 and state.key_fingerprint is None
+    assert state.provider == "agent" and state.key_fingerprint is None
     assert not (directory / KEY_FILE).exists() and not (directory / TOKEN_FILE).exists()
     with pytest.raises(DomainError) as caught:
         await store.authenticate(token)
@@ -263,3 +320,270 @@ async def test_grant_binding_refuses_non_agent_or_foreign_credentials(judged):
         with pytest.raises(DomainError) as caught:
             await store.grant_binding(actor, credential_id, binding)
         assert caught.value.code == "SCOPE_DENIED"
+
+
+async def test_deny_policy_selects_current_agent_and_retires_worker_without_forgetting_key(judged):
+    store, settings, actor = judged.store, judged.store.settings, judged.actor
+    await set_jev(settings, store, actor, KEY, verify=verified)
+    worker_state = load_state(settings)
+    token = read_worker_token(settings)
+
+    result = await set_egress_policy(settings, store, actor, jev_allowed=False)
+
+    assert load_egress_policy(settings).jev_allowed is False
+    state = load_state(settings)
+    assert state.provider == "agent" and state.revision > worker_state.revision
+    assert state.credential_id is None
+    assert not (judge_dir(settings) / TOKEN_FILE).exists()
+    assert (judge_dir(settings) / KEY_FILE).exists()
+    assert result["retired_credential"] == worker_state.credential_id
+    assert result["source_judgment"] == "current_coding_agent_via_mcp"
+    assert KEY not in json.dumps(result, default=str)
+    with pytest.raises(DomainError) as caught:
+        await store.authenticate(token)
+    assert caught.value.code == "AUTH_DENIED"
+    with pytest.raises(DomainError) as caught:
+        await set_jev(settings, Tripwire(), actor, KEY, verify=lambda *_: pytest.fail("Denied key verification"))
+    assert caught.value.code == "JUDGE_PROVIDER_FORBIDDEN"
+
+
+async def test_revocation_during_key_verification_does_not_publish_provider_or_credentials(judged):
+    settings, actor = judged.store.settings, judged.actor
+
+    def revoke_during_verify(key, model):
+        policy = load_egress_policy(settings)
+        private_file(judge_dir(settings) / EGRESS_POLICY_FILE,
+            EgressPolicy(jev_allowed=False, revision=policy.revision + 1).model_dump_json())
+        return "jev-1.13.0"
+
+    with pytest.raises(DomainError) as caught:
+        await set_jev(settings, Tripwire(), actor, KEY, verify=revoke_during_verify)
+    assert caught.value.code == "JUDGE_PROVIDER_FORBIDDEN"
+    assert load_state(settings).provider == "agent"
+    assert not (judge_dir(settings) / KEY_FILE).exists()
+    assert not (judge_dir(settings) / TOKEN_FILE).exists()
+
+
+async def test_completed_deny_then_allow_cannot_resurrect_inflight_setup(judged):
+    store, settings, actor = judged.store, judged.store.settings, judged.actor
+    entered, released = Event(), Event()
+
+    def blocked_verify(key, model):
+        entered.set()
+        assert released.wait(5), "Verification was not released"
+        return "jev-1.13.0"
+
+    setup = asyncio.create_task(set_jev(settings, store, actor, KEY, verify=blocked_verify))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        await set_egress_policy(settings, store, actor, jev_allowed=False)
+        await set_egress_policy(settings, store, actor, jev_allowed=True)
+    finally:
+        released.set()
+        [outcome] = await asyncio.gather(setup, return_exceptions=True)
+    assert isinstance(outcome, DomainError)
+    assert outcome.code == "JUDGE_EGRESS_POLICY_CHANGED"
+    assert load_egress_policy(settings).jev_allowed
+    assert load_state(settings).provider == "agent"
+    assert not (judge_dir(settings) / TOKEN_FILE).exists()
+
+
+async def test_concurrent_verified_setups_do_not_overwrite_a_new_selection(judged):
+    store, settings, actor = judged.store, judged.store.settings, judged.actor
+    entered, released = Barrier(3), Event()
+
+    def blocked_verify(key, model):
+        entered.wait(5)
+        assert released.wait(5), "Concurrent verification was not released"
+        return "jev-1.13.0"
+
+    setups = [asyncio.create_task(set_jev(settings, store, actor, key, verify=blocked_verify))
+              for key in (KEY, OTHER_KEY)]
+    try:
+        await asyncio.to_thread(entered.wait, 5)
+    finally:
+        released.set()
+        outcomes = await asyncio.gather(*setups, return_exceptions=True)
+    successful = [value for value in outcomes if isinstance(value, dict)]
+    refused = [value for value in outcomes if isinstance(value, DomainError)]
+    assert len(successful) == len(refused) == 1
+    assert refused[0].code == "JUDGE_PROVIDER_CHANGED"
+    state = load_state(settings)
+    assert state.credential_id == successful[0]["credential_id"]
+    worker = await store.authenticate(read_worker_token(settings), (Role.AGENT,))
+    assert worker.credential_id == state.credential_id
+
+
+@pytest.mark.parametrize("lost_response", [False, True])
+async def test_retirement_retry_preserves_exact_authority_and_forget_intent(judged, monkeypatch, lost_response):
+    store, settings, actor = judged.store, judged.store.settings, judged.actor
+    await set_jev(settings, store, actor, KEY, verify=verified)
+    previous = load_state(settings)
+    token = read_worker_token(settings)
+    revoke = store.revoke_token
+
+    async def interrupted_retirement(principal, credential_id):
+        if lost_response:
+            await revoke(principal, credential_id)
+        raise DomainError("AUTHORITY_UNAVAILABLE", "Synthetic retirement response loss", status=503)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(store, "revoke_token", interrupted_retirement)
+        with pytest.raises(DomainError):
+            await set_agent(settings, store, actor, forget_key=True)
+    pending = load_state(settings)
+    assert pending.provider == "agent" and pending.retiring_credential_ids == (previous.credential_id,)
+    assert pending.forget_key_pending
+    assert not (judge_dir(settings) / TOKEN_FILE).exists()
+    assert (judge_dir(settings) / KEY_FILE).exists()
+    result = await set_agent(settings, store, actor, forget_key=False)
+    assert result["retirement_pending"] is False
+    assert load_state(settings).retiring_credential_ids == ()
+    assert not (judge_dir(settings) / KEY_FILE).exists()
+    with pytest.raises(DomainError) as denied:
+        await store.authenticate(token)
+    assert denied.value.code == "AUTH_DENIED"
+    await set_egress_policy(settings, store, actor, jev_allowed=True)
+    assert load_state(settings).provider == "agent"
+
+
+async def test_reallow_completes_deny_interrupted_before_provider_transition(judged, monkeypatch):
+    store, settings, actor = judged.store, judged.store.settings, judged.actor
+    await set_jev(settings, store, actor, KEY, verify=verified)
+    token = read_worker_token(settings)
+
+    async def interrupted(*args, **kwargs):
+        raise OSError("Synthetic process exit after the durable deny")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(judge_module, "_set_agent", interrupted)
+        with pytest.raises(OSError):
+            await set_egress_policy(settings, store, actor, jev_allowed=False)
+    assert not load_egress_policy(settings).jev_allowed
+    assert load_state(settings).provider == "jev"
+    result = await set_egress_policy(settings, store, actor, jev_allowed=True)
+    assert result["provider"] == "agent"
+    assert load_state(settings).provider == "agent"
+    with pytest.raises(DomainError) as retired:
+        await store.authenticate(token)
+    assert retired.value.code == "AUTH_DENIED"
+
+
+@pytest.mark.parametrize("fault", ["lost_response", "token_write", "key_write", "provider_publish", "after_publication"])
+async def test_interrupted_issuance_is_retired_or_adopted_only_after_publication(judged, monkeypatch, fault):
+    store, settings, actor = judged.store, judged.store.settings, judged.actor
+    issued_tokens = []
+    issue, write, save = store.issue_token, judge_module.private_write, judge_module._save_state
+
+    async def tracked_issue(principal, role, bindings, token):
+        issued = await issue(principal, role, bindings, token)
+        issued_tokens.append(token)
+        if fault == "lost_response":
+            raise DomainError("DATABASE_UNAVAILABLE", "Synthetic committed issuance with lost response", status=503)
+        return issued
+
+    def failed_write(path, *args, **kwargs):
+        if (fault == "token_write" and path.name == TOKEN_FILE) or (fault == "key_write" and path.name == KEY_FILE):
+            raise OSError("Synthetic private publication failure")
+        return write(path, *args, **kwargs)
+
+    def failed_save(deployment, state):
+        if state.provider == "jev" and fault == "provider_publish":
+            raise OSError("Synthetic failure before provider publication")
+        save(deployment, state)
+        if state.provider == "jev" and fault == "after_publication":
+            raise OSError("Synthetic failure after provider publication")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(store, "issue_token", tracked_issue)
+        patcher.setattr(judge_module, "private_write", failed_write)
+        patcher.setattr(judge_module, "_save_state", failed_save)
+        with pytest.raises((OSError, DomainError)):
+            await set_jev(settings, store, actor, KEY, verify=verified)
+    [token] = issued_tokens
+    result = await set_egress_policy(settings, store, actor, jev_allowed=True)
+    if fault == "after_publication":
+        active = await store.authenticate(token, (Role.AGENT,))
+        assert result["provider"] == "jev"
+        assert active.credential_id == load_state(settings).credential_id
+    else:
+        assert result["provider"] == "agent"
+        with pytest.raises(DomainError) as retired:
+            await store.authenticate(token)
+        assert retired.value.code == "AUTH_DENIED"
+    assert not (judge_dir(settings) / ISSUING_TOKEN_FILE).exists()
+
+
+async def test_uncertain_issuance_recovery_waits_for_its_database_commit(judged, monkeypatch):
+    store, settings, actor = judged.store, judged.store.settings, judged.actor
+    before_commit, finish_commit = asyncio.Event(), asyncio.Event()
+    original_tx, original_issue = store._tx, store.issue_token
+    issue_task = recovery = None
+    token_value = []
+
+    @asynccontextmanager
+    async def held_transaction(*args, **kwargs):
+        async with original_tx(*args, **kwargs) as value:
+            yield value
+            if asyncio.current_task() is issue_task:
+                before_commit.set()
+                await finish_commit.wait()
+
+    async def uncertain_issue(principal, role, bindings, token):
+        nonlocal issue_task
+        token_value.append(token)
+        issue_task = asyncio.create_task(original_issue(principal, role, bindings, token))
+        await before_commit.wait()
+        raise DomainError("DATABASE_UNAVAILABLE", "Synthetic issuance still committing", status=503)
+
+    try:
+        with monkeypatch.context() as patcher:
+            patcher.setattr(store, "_tx", held_transaction)
+            patcher.setattr(store, "issue_token", uncertain_issue)
+            with pytest.raises(DomainError):
+                await set_jev(settings, store, actor, KEY, verify=verified)
+            recovery = asyncio.create_task(set_agent(settings, store, actor, forget_key=True))
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(recovery), 0.03)
+            finish_commit.set()
+            await issue_task
+            await recovery
+    finally:
+        finish_commit.set()
+        await asyncio.gather(*(task for task in (issue_task, recovery) if task is not None), return_exceptions=True)
+    [token] = token_value
+    with pytest.raises(DomainError) as retired:
+        await store.authenticate(token)
+    assert retired.value.code == "AUTH_DENIED"
+    assert load_state(settings).provider == "agent"
+
+
+async def test_invalid_provider_requires_explicit_agent_repair_before_key_verification(judged):
+    store, settings, actor = judged.store, judged.store.settings, judged.actor
+    private_file(judge_dir(settings) / PROVIDER_FILE, "{not valid JSON")
+
+    def unexpected_verification(*args):
+        pytest.fail("Invalid provider state reached network verification")
+
+    with pytest.raises(DomainError) as blocked:
+        await set_jev(settings, Tripwire(), actor, KEY, verify=unexpected_verification)
+    assert blocked.value.code == "JUDGE_STATE_INVALID"
+    await set_agent(settings, store, actor, forget_key=True)
+    selected = await set_jev(settings, store, actor, KEY, verify=verified)
+    assert selected["provider"] == "jev"
+    assert (await store.authenticate(read_worker_token(settings))).credential_id == selected["credential_id"]
+
+
+@pytest.mark.parametrize("mode", ["personal", "company"])
+@pytest.mark.parametrize("policy", ["absent", "denied", "invalid"])
+def test_describe_never_claims_jev_egress_without_effective_permission(tmp_path, mode, policy):
+    settings = personal(tmp_path, mode=mode)
+    state = JudgeState(provider="jev", model="jev-1.13.0", key_fingerprint=key_fingerprint(settings, KEY),
+                       credential_id="credential_worker")
+    if policy != "absent":
+        private_file(judge_dir(settings) / EGRESS_POLICY_FILE,
+                     "{invalid" if policy == "invalid" else EgressPolicy(jev_allowed=False).model_dump_json())
+    view = describe(settings, state, operator=False)
+    assert view["provider"] == "agent" and view["configured_provider"] == "jev"
+    assert view["source_judgment"] == "current_coding_agent_via_mcp" and view["egress"] is None
+    assert view["egress_policy"]["jev_allowed"] is False

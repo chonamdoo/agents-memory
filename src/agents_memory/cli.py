@@ -13,13 +13,20 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from .client import LocalClient
+from .client import client_from_settings
 from .config import Settings, load_settings, prepare_settings_upgrade, resolve_binding
+from .connection import (
+    RemoteClientSettings,
+    configure_remote_client,
+    load_connection_settings,
+    validate_remote_project,
+)
 from .domain import (
     BindingRelocation,
     CaptureCommand,
     ContextCommand,
     DomainError,
+    EffectState,
     FeedbackCommand,
     Role,
     RuleApproval,
@@ -38,7 +45,9 @@ from .judge import (
     read_key,
     read_supplied_key,
     read_worker_token,
+    require_jev_allowed,
     set_agent,
+    set_egress_policy,
     set_jev,
     validate_key,
     verify_key,
@@ -149,19 +158,27 @@ def jev_key(key_file: Path | None, stored=None) -> tuple[str, list[str]]:
 
 
 async def init_judge_plan(args) -> tuple | None:
-    """Decide and verify the judge before any initialization effect; an existing choice is left alone."""
+    """Obtain separate egress consent and verify the choice before initialization effects."""
     if (args.state_dir.resolve() / "judge" / PROVIDER_FILE).exists():
         return None
-    provider = args.judge or (judge_choice() if args.mode == "personal" and sys.stdin.isatty() else "agent")
+    allowed = args.jev_policy == "allow"
+    if allowed and not args.ack_jev_egress:
+        raise DomainError("JUDGE_EGRESS_ACK_REQUIRED",
+            "Allowing Jev requires --ack-jev-egress: source windows are sent to api.typesafe.ai in the US", status=403)
+    provider = args.judge or (judge_choice() if sys.stdin.isatty() else "agent")
     if provider == "agent":
         if args.jev_key_file is not None:
             raise DomainError("INPUT_INVALID", "--jev-key-file applies only to --judge jev")
-        return ("agent", None, [], None)
-    if args.mode != "personal":
+        return ("agent", None, [], None, allowed)
+    if not allowed and args.jev_policy is None and sys.stdin.isatty():
+        print("이 배포의 원문을 api.typesafe.ai(미국)로 전송하도록 별도로 허용합니까? [yes/기본 no]: ",
+              end="", file=sys.stderr, flush=True)
+        allowed = sys.stdin.readline().strip().lower() == "yes"
+    if not allowed:
         raise DomainError("JUDGE_PROVIDER_FORBIDDEN",
-            "Jev judgment sends source text off this machine and is available only in personal deployments", status=403)
+            "Jev requires an independent egress grant: --jev-policy allow --ack-jev-egress", status=403)
     key, warnings = jev_key(args.jev_key_file)
-    return ("jev", key, warnings, await asyncio.to_thread(verify_key, key, JEV_DEFAULT_MODEL))
+    return ("jev", key, warnings, await asyncio.to_thread(verify_key, key, JEV_DEFAULT_MODEL), True)
 
 
 async def apply_init_judge(args, result: dict, plan: tuple | None) -> dict:
@@ -169,10 +186,11 @@ async def apply_init_judge(args, result: dict, plan: tuple | None) -> dict:
         settings = load_settings(args.config)
         return {**describe(settings, load_state(settings), operator=True),
                 "unchanged": "already configured; change it with agents-memory judge set"}
-    provider, key, warnings, model = plan
+    provider, key, warnings, model, allowed = plan
     operator = argparse.Namespace(**{**vars(args), "token_file": Path(result["operator_token_file"])})
     try:
         async with authority(operator) as (settings, store, actor):
+            await set_egress_policy(settings, store, actor, jev_allowed=allowed)
             if provider == "jev":
                 outcome = await set_jev(settings, store, actor, key, verify=lambda _key, _model: model)
             else:
@@ -201,12 +219,20 @@ async def execute_judge(args, settings: Settings, store, actor) -> dict:
             "projects_without_worker_grant": [item for item in projects if item not in grants] if isinstance(grants, list) else None,
             "worker": worker_snapshot(settings),
         }
+    if args.judge_action == "policy":
+        allowed = args.policy == "allow-jev"
+        if allowed and not args.ack_egress:
+            raise DomainError("JUDGE_EGRESS_ACK_REQUIRED",
+                "Pass --ack-egress only after approving this deployment's source transfer to api.typesafe.ai in the US",
+                status=403)
+        return await set_egress_policy(settings, store, actor, jev_allowed=allowed)
     if args.provider == "agent":
         if args.key_file is not None or args.prompt_key:
             raise DomainError("INPUT_INVALID", "Key options apply only to judge set jev")
         return await set_agent(settings, store, actor, forget_key=args.forget_key)
     if args.forget_key:
         raise DomainError("INPUT_INVALID", "--forget-key applies only to judge set agent")
+    require_jev_allowed(settings)
     stored = None if args.prompt_key or not has_key(settings) else (lambda: read_key(settings))
     key, warnings = jev_key(args.key_file, stored)
     result = await set_jev(settings, store, actor, key, model=args.model)
@@ -215,7 +241,7 @@ async def execute_judge(args, settings: Settings, store, actor) -> dict:
     return result
 
 
-def _execute_spool(args, settings: Settings) -> dict:
+def _execute_spool(args, settings: Settings | RemoteClientSettings) -> dict:
     from .spool import ProducerSpool
 
     spool = ProducerSpool(args.file, settings.deployment_id, args.binding, settings.spool_limit_bytes)
@@ -223,7 +249,7 @@ def _execute_spool(args, settings: Settings) -> dict:
         if args.spool_action == "enqueue":
             return spool.enqueue(validate_wire(CaptureCommand, json_file(args.envelope_file)))
         if args.spool_action == "flush":
-            return spool.flush(LocalClient(settings.base_url, token_path(args)), limit=args.limit)
+            return spool.flush(client_from_settings(settings, token_path(args)), limit=args.limit)
         if args.spool_action == "inspect":
             return spool.inspect(args.key, args.limit)
         if args.spool_action in {"retry", "discard"}:
@@ -231,6 +257,42 @@ def _execute_spool(args, settings: Settings) -> dict:
         return spool.status()
     finally:
         spool.close()
+
+
+async def _install_remote_host(args, settings: RemoteClientSettings) -> dict:
+    from .hosts import install_host
+    from .ingress import ClientBootstrapRequest, ClientBootstrapResult
+
+    if not args.ack_remote_storage:
+        raise DomainError("REMOTE_STORAGE_ACK_REQUIRED", "Explicitly approve capture and memory storage at the configured remote authority", status=403)
+    project = args.project.resolve(strict=True)
+    validate_remote_project(settings, project)
+    request = ClientBootstrapRequest(binding_id=args.binding).model_dump(mode="json")
+    grants = []
+    for path, role in ((args.agent_token_file, "agent"), (args.producer_token_file, "producer")):
+        result = await client_from_settings(settings, path).call("/api/client-bootstrap", request)
+        try:
+            grant = validate_wire(ClientBootstrapResult, result)
+        except (ValueError, TypeError):
+            raise DomainError("BOOTSTRAP_INVALID", "The server did not return an exact bounded client grant", status=503) from None
+        if (grant.deployment_id != settings.deployment_id or grant.realm != settings.realm
+                or grant.mode != settings.mode or grant.capability != settings.capability
+                or grant.auth_mode != settings.auth_mode or grant.role != role
+                or grant.binding_id != args.binding or grant.bindings != (args.binding,)
+                or any(getattr(grant.bounds, key) != getattr(settings, key) for key in (
+                    "max_capture_bytes", "max_http_body_bytes", "max_mcp_response_bytes", "spool_limit_bytes",
+                ))):
+            raise DomainError("HOST_SCOPE_DENIED", "The current remote grant does not match this connection and binding", status=403)
+        grants.append(grant)
+    if grants[0].credential_id == grants[1].credential_id:
+        raise DomainError("HOST_CREDENTIAL_SEPARATION_REQUIRED", "Agent and producer must use separate remote principals", status=403)
+    if grants[0].binding_revision != grants[1].binding_revision:
+        raise DomainError("HOST_SCOPE_DENIED", "The binding changed during remote installation", status=403)
+    return await asyncio.to_thread(
+        install_host, settings, project, args.binding, args.host,
+        args.agent_token_file.resolve(), args.producer_token_file.resolve(),
+        strict=args.strict, prompt_recall=args.prompt_recall,
+    )
 
 
 async def execute(args) -> dict | None:
@@ -248,7 +310,7 @@ async def execute(args) -> dict | None:
             print(result["stderr"], file=sys.stderr)
         raise SystemExit(result.get("exit_code", 0))
     if args.command == "host-stdio":
-        from .hosts import load_receipt
+        from .hosts import load_receipt, receipt_connection
         from .stdio import RelayEndpoint, run_stdio
 
         receipt = load_receipt(args.receipt)
@@ -256,13 +318,21 @@ async def execute(args) -> dict | None:
             base_url=receipt["base_url"],
             max_http_body_bytes=receipt["max_http_body_bytes"],
             max_mcp_response_bytes=receipt["max_mcp_response_bytes"],
+            state_dir=Path(receipt["runtime_dir"]).parent.parent,
+            deployment_id=receipt["deployment_id"],
+            remote_settings=receipt_connection(receipt),
         )
         await run_stdio(endpoint, Path(receipt["agent_token_file"]))
         return None
     if args.command == "host-uninstall":
         from .hosts import uninstall_host
-
-        return await asyncio.to_thread(uninstall_host, load_settings(args.config), args.project, args.host, project_deleted=args.project_deleted)
+        from .service import load_control_settings
+        return await asyncio.to_thread(uninstall_host, load_control_settings(args.config), args.project, args.host, project_deleted=args.project_deleted)
+    if args.command == "client":
+        if not args.ack_remote_storage:
+            raise DomainError("REMOTE_STORAGE_ACK_REQUIRED", "Explicitly approve capture and memory storage at this remote authority", status=403)
+        profile = validate_wire(RemoteClientSettings, decode_json(private_read(args.profile_file, 262144)))
+        return await asyncio.to_thread(configure_remote_client, args.config, profile, ca_source=args.ca_file)
     if args.command == "init":
         from .initialization import initialize_deployment
 
@@ -304,8 +374,36 @@ async def execute(args) -> dict | None:
             args.confirm_deployment,
             retire_model_approval_intent=args.retire_model_approval_intent,
         )
-    settings = load_settings(args.config)
+    if args.command == "service":
+        from .service import load_control_settings
+
+        settings = load_control_settings(args.config)
+    else:
+        settings = load_connection_settings(args.config)
+    if args.command == "service":
+        from .service import (
+            install_service,
+            service_status,
+            start_service,
+            stop_service,
+            uninstall_service,
+        )
+
+        if args.service_action == "install":
+            return await asyncio.to_thread(install_service, settings, args.config)
+        action = {"start": start_service, "stop": stop_service, "status": service_status,
+                  "uninstall": uninstall_service}[args.service_action]
+        return await asyncio.to_thread(action, settings)
+    if args.command == "client-run":
+        from .recovery import run_client_recovery
+
+        if not isinstance(settings, RemoteClientSettings):
+            raise DomainError("CLIENT_PROFILE_REQUIRED", "PC recovery requires a remote client profile", status=422)
+        await run_client_recovery(settings)
+        return None
     if args.command in {"backup", "restore", "restore-recover"}:
+        if not isinstance(settings, Settings):
+            raise DomainError("REMOTE_COMMAND_UNSUPPORTED", "This operation requires a server-only authority configuration", status=403)
         from .ops import backup, recover_interrupted_restore, restore
 
         if args.command == "restore-recover":
@@ -322,21 +420,44 @@ async def execute(args) -> dict | None:
         )
     if args.command == "spool":
         return await asyncio.to_thread(_execute_spool, args, settings)
-    if args.command == "serve":
+    if args.command in {"serve", "service-run"}:
+        if not isinstance(settings, Settings):
+            raise DomainError("REMOTE_COMMAND_UNSUPPORTED", "This operation requires a server-only authority configuration", status=403)
         import uvicorn
 
         from .edge import create_app
 
-        config = uvicorn.Config(create_app(settings), host="127.0.0.1", port=settings.port, access_log=False, log_level="warning", timeout_graceful_shutdown=150)
-        await uvicorn.Server(config).serve()
+        if args.command == "service-run":
+            from .service import require_service_enabled
+
+            require_service_enabled(settings)
+        app = create_app(settings)
+        bind_host = "0.0.0.0" if args.command == "serve" and app.ingress is not None and app.ingress.tls_proxy == "private" else "127.0.0.1"
+        config = uvicorn.Config(app, host=bind_host, port=settings.port, access_log=False, log_level="warning", timeout_graceful_shutdown=150, proxy_headers=False)
+        server = uvicorn.Server(config)
+        await server.serve()
+        if args.command == "service-run":
+            try:
+                require_service_enabled(settings)
+            except DomainError as error:
+                if error.code != "SERVICE_STOPPED":
+                    raise
+            else:
+                raise DomainError("SERVICE_UNAVAILABLE",
+                    "The managed authority exited before an explicit service stop", status=503)
         return None
     if args.command == "stdio":
-        from .stdio import run_stdio
+        from .stdio import RelayEndpoint, run_stdio
 
-        await run_stdio(settings, token_path(args))
+        endpoint = RelayEndpoint(
+            base_url=settings.base_url, state_dir=settings.state_dir, deployment_id=settings.deployment_id,
+            max_http_body_bytes=settings.max_http_body_bytes,
+            max_mcp_response_bytes=settings.max_mcp_response_bytes, remote_settings=settings,
+        ) if isinstance(settings, RemoteClientSettings) else settings
+        await run_stdio(endpoint, token_path(args))
         return None
     if args.command in {"context", "record", "feedback", "capture", "inspect", "correct"}:
-        client = LocalClient(settings.base_url, token_path(args))
+        client = client_from_settings(settings, token_path(args))
         if args.command == "context":
             command = ContextCommand(
                 binding_id=args.binding,
@@ -367,7 +488,40 @@ async def execute(args) -> dict | None:
             if args.command == "correct":
                 return await client.call("/api/correct", {"target_ref": args.ref, "source": command.model_dump(mode="json")})
         return await client.call("/api/" + args.command, command.model_dump(mode="json"))
+    if isinstance(settings, RemoteClientSettings):
+        if args.command == "host-install":
+            return await _install_remote_host(args, settings)
+        if args.command == "doctor":
+            from .readiness import ensure_remote_ready
+            from .service import service_status
+
+            return {
+                "connection": await asyncio.to_thread(ensure_remote_ready, settings),
+                "authentication_checked": False,
+                "client_service": await asyncio.to_thread(service_status, settings),
+            }
+        raise DomainError("REMOTE_COMMAND_UNSUPPORTED", "This operation requires a server-only authority configuration", status=403)
     async with authority(args) as (settings, store, actor):
+        if args.command == "cloud":
+            from .ingress import INGRESS_MAX_BYTES, CloudIngressProfile, configure_ingress
+
+            if actor.role != Role.OPERATOR:
+                raise DomainError("ROLE_DENIED", "Only the server operator can configure public ingress", status=403)
+            if not args.ack_remote_storage:
+                raise DomainError("REMOTE_STORAGE_ACK_REQUIRED", "Explicitly approve this authority serving authorized remote clients", status=403)
+            profile = validate_wire(CloudIngressProfile, decode_json(private_read(args.ingress_file, INGRESS_MAX_BYTES)))
+            if profile.oauth is not None:
+                for mapping in profile.oauth.mappings:
+                    await store.authenticate_external(
+                        mapping.credential_id, mapping.generation, roles=(Role.AGENT, Role.PRODUCER),
+                    )
+            path = await asyncio.to_thread(configure_ingress, settings, profile)
+            return {
+                "ingress_file": str(path), "public_origin": profile.public_origin,
+                "auth_mode": profile.auth_mode, "tls_proxy": profile.tls_proxy,
+                "deployment_id": settings.deployment_id, "realm": settings.realm,
+                "activation": "next_service_start",
+            }
         if args.command == "host-install":
             from .hosts import install_host
 
@@ -391,7 +545,11 @@ async def execute(args) -> dict | None:
             if args.project_action == "add":
                 binding = await store.register_binding(actor, args.label, str(args.locator.resolve()) if args.locator else None, args.key)
                 result = binding.model_dump(mode="json")
-                judge = await grant_new_binding(settings, store, actor, binding.id)
+                try:
+                    judge = await grant_new_binding(settings, store, actor, binding.id)
+                except DomainError as error:
+                    error.effect = EffectState.COMMITTED
+                    raise
                 if judge is not None:
                     result["judge"] = judge
                 return result
@@ -433,7 +591,7 @@ async def execute(args) -> dict | None:
                 "realm": settings.realm,
                 "mode": settings.mode,
                 "capability": settings.capability,
-                "memory_judgment": "current_coding_agent" if load_state(settings).provider == "agent" else "jev_background_personal_opt_in",
+                "memory_judgment": "current_coding_agent" if load_state(settings).provider == "agent" else "jev_background_explicit_egress_policy",
                 "judge": describe(settings, load_state(settings), operator=True),
                 "recall": "candidate_manifest_then_explicit_relevance",
                 "projects": len(projects),
@@ -530,8 +688,9 @@ def parser() -> argparse.ArgumentParser:
     install.add_argument("--host", choices=("claude", "codex", "omp"), required=True)
     install.add_argument("--agent-token-file", type=Path, required=True)
     install.add_argument("--producer-token-file", type=Path, required=True)
-    install.add_argument("--strict", action="store_true")
+    install.add_argument("--strict", action="store_true", help="Require supported native protection; Codex and OMP refuse installation, never downgrade")
     install.add_argument("--prompt-recall", action="store_true", help="Opt into bounded candidate retrieval before each native prompt")
+    install.add_argument("--ack-remote-storage", action="store_true", help="Approve native capture storage at the explicit remote authority; does not enable Jev")
     uninstall = commands.add_parser("host-uninstall")
     uninstall.add_argument("--project", type=Path, required=True)
     uninstall.add_argument("--host", choices=("claude", "codex", "omp"), required=True)
@@ -559,8 +718,12 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--port", type=int, default=8768)
     init.add_argument("--resume", action="store_true", help="Resume only an authenticated matching initialization intent")
     init.add_argument("--judge", choices=("agent", "jev"),
-                      help="Source judge provider; a personal terminal asks when omitted, otherwise agent")
+                      help="Source judge provider; an interactive terminal asks when omitted, otherwise agent")
     init.add_argument("--jev-key-file", type=Path, help="Jev API key file for --judge jev; read once into private state")
+    init.add_argument("--jev-policy", choices=("allow", "deny"),
+                      help="Independent Jev egress policy; denied unless explicitly allowed")
+    init.add_argument("--ack-jev-egress", action="store_true",
+                      help="Acknowledge approved source transfer to api.typesafe.ai in the US")
     for action in ("backup", "restore", "restore-recover"):
         operation = commands.add_parser(action)
         operation.add_argument("--age-binary", type=Path, required=True)
@@ -597,6 +760,21 @@ def parser() -> argparse.ArgumentParser:
         if action in {"retry", "discard"}:
             operation.add_argument("--key", required=True)
     commands.add_parser("serve")
+    commands.add_parser("service-run", help="Internal entrypoint for the owned login service")
+    commands.add_parser("client-run", help="Run the PC-owned remote capture recovery loop")
+    client = commands.add_parser("client").add_subparsers(dest="client_action", required=True)
+    configure = client.add_parser("configure")
+    configure.add_argument("--profile-file", type=Path, required=True)
+    configure.add_argument("--ca-file", type=Path)
+    configure.add_argument("--ack-remote-storage", action="store_true")
+    cloud = commands.add_parser("cloud").add_subparsers(dest="cloud_action", required=True)
+    ingress = cloud.add_parser("configure")
+    ingress.add_argument("--ingress-file", type=Path, required=True)
+    ingress.add_argument("--ack-remote-storage", action="store_true")
+    service = commands.add_parser("service", help="Manage the owned macOS login service without needing a live DB").add_subparsers(
+        dest="service_action", required=True)
+    for action in ("install", "start", "stop", "status", "uninstall"):
+        service.add_parser(action)
     commands.add_parser("stdio")
     commands.add_parser("doctor")
     stats = commands.add_parser("stats")
@@ -617,6 +795,10 @@ def parser() -> argparse.ArgumentParser:
     judge = commands.add_parser("judge", help="Inspect or choose who judges captured sources").add_subparsers(
         dest="judge_action", required=True)
     judge.add_parser("status")
+    policy = judge.add_parser("policy", help="Grant or revoke independent Jev source-egress permission")
+    policy.add_argument("policy", choices=("allow-jev", "deny-jev"))
+    policy.add_argument("--ack-egress", action="store_true",
+                        help="Acknowledge approved source transfer to api.typesafe.ai in the US")
     choose = judge.add_parser("set")
     choose.add_argument("provider", choices=("agent", "jev"))
     choose.add_argument("--key-file", type=Path, help="Jev API key file read once; the service keeps a private 0600 copy")

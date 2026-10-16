@@ -13,8 +13,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from jsonschema import Draft202012Validator
+from test_store_authority import TOKEN, command, ready_claim, source_selection
 from test_store_authority import authority as authority
-from test_store_authority import command, ready_claim, source_selection
 
 from agents_memory.application import Application
 from agents_memory.config import Settings
@@ -47,7 +47,7 @@ async def request(
     raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
     headers = [
         (b"host", b"127.0.0.1:8768"),
-        (b"authorization", f"Bearer {token}".encode()),
+        *([(b"authorization", f"Bearer {token}".encode())] if token is not None else []),
         (b"content-type", b"application/json"),
         (b"accept", b"application/json, text/event-stream"),
         (b"mcp-protocol-version", protocol_version.encode()),
@@ -1191,3 +1191,32 @@ async def test_legacy_stream_is_capped_while_opening_and_released_once_idle(auth
     release.set()
     assert (await stream)[0] == 200
     assert edge.active == 0
+
+
+async def test_readyz_roundtrips_database_and_refuses_dispatch_on_authority_outage(authority, monkeypatch):
+    async with running(authority) as edge:
+        status, body = await request(edge, b"", token=None, path="/readyz", method="GET")
+        ready = json.loads(body)
+        assert status == 200 and ready["ready"] is True and ready["db_ready"] is True
+        assert ready["deployment_id"] == authority.store.settings.deployment_id
+        assert ready["realm"] == authority.store.settings.realm
+        assert set(ready) == {"ready", "db_ready", "deployment_id", "realm", "accepting"}
+        status, body = await request(edge, b"", path="/readyz", method="GET")
+        assert status == 403
+        assert "judge_worker" not in json.loads(body) and "cleanup_scheduler" not in json.loads(body)
+        status, body = await request(edge, b"", token=TOKEN, path="/readyz", method="GET")
+        assert status == 200 and "judge_worker" in json.loads(body)
+
+        @asynccontextmanager
+        async def disconnected(*args, **kwargs):
+            raise OSError("private database outage diagnostic")
+            yield
+
+        monkeypatch.setattr(edge.application.store, "_tx", disconnected)
+        status, body = await request(edge, b"", token=None, path="/readyz", method="GET")
+        ready = json.loads(body)
+        assert status == 503 and ready["ready"] is False and ready["db_ready"] is False
+        status, body = await request(edge, tool({"binding_id": authority.binding_id, "query": "required facts"}))
+        error = json.loads(body)["error"]
+        assert status == 503 and error["code"] == "SERVICE_UNAVAILABLE"
+        assert error["effect"] == "not_started" and "private" not in body.decode()

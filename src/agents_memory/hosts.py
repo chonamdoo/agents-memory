@@ -26,6 +26,7 @@ from pydantic import ValidationError
 
 from .client import LocalClient
 from .config import Settings
+from .connection import RemoteClientSettings, read_remote_credential, validate_remote_project
 from .constants import BOUNDED_CONTEXT_MARKER, HOST_CONTEXT_BYTES
 from .domain import (
     CaptureCommand,
@@ -37,7 +38,7 @@ from .domain import (
     reject_source_secrets,
 )
 from .private_io import private_read, private_write, sync_file
-from .spool import ProducerSpool
+from .spool import ProducerSpool, require_supported_sqlite
 from .wire import decode_json
 
 HOST_VERSIONS = {"claude": "2.1.296", "codex": "0.162.1", "omp": "18.9.1"}
@@ -72,14 +73,15 @@ def _host(host: str) -> None:
         raise DomainError("HOST_UNSUPPORTED", "Choose claude, codex or omp")
 
 
-def capabilities(host: str, *, strict: bool = False, prompt_recall: bool = False, capability: str = "agent_judged") -> dict:
+def capabilities(host: str, *, strict: bool = False, prompt_recall: bool = False,
+                 capability: str = "agent_judged", remote: bool = False) -> dict:
     _host(host)
     if capability != "agent_judged":
         raise DomainError("HOST_CAPABILITY_UNSUPPORTED", "The host requires common caller judgment")
     return {
         "native_version": HOST_VERSIONS[host],
         "evidence": "source_contract_not_runtime_acceptance",
-        "mcp": "same_loopback_core_stdio_relay",
+        "mcp": "same_https_core_stdio_relay" if remote else "same_loopback_core_stdio_relay",
         "prompt_context": "bounded_opt_in" if prompt_recall else "disabled",
         "provider_input": "unobservable_final_subsequent_input",
         "provider_hook_is_consumption": False,
@@ -262,10 +264,18 @@ def _claude_writer_lock(path: Path):
             pass
 
 @contextmanager
-def _ownership_lock(settings: Settings, root: Path, host: str):
+def _ownership_lock(settings: Settings | RemoteClientSettings, root: Path, host: str):
     with _lock(_install_lock(settings, root)):
         if host == "claude":
-            native_path = _owned_path(root, str(_claude_config_path()))
+            native_path = _claude_config_path()
+            saved_path = _receipt_path(settings, root, host)
+            if saved_path.exists():
+                saved = load_receipt(saved_path, allow_legacy=True, active=False, allow_deleted_project=not root.exists())
+                if saved.get("state") != "removed":
+                    native_entry = next((entry for entry in saved["ownership"] if entry["kind"] == "local_mcp"), None)
+                    if native_entry is not None:
+                        native_path = Path(native_entry["path"])
+            native_path = _owned_path(root, str(native_path))
             if native_path.is_relative_to(root) or native_path.is_relative_to(Path(_claude_project_key(root))):
                 raise DomainError("HOST_NATIVE_CONFIG_PROJECT_DENIED", "Private native local configuration must remain outside the consumer project")
             with _lock(_safe_path(native_path.parent, ".agents-memory-install.lock")):
@@ -274,7 +284,7 @@ def _ownership_lock(settings: Settings, root: Path, host: str):
             yield
 
 
-def _runtime_dir(settings: Settings, root: Path, binding_id: str, host: str) -> Path:
+def _runtime_dir(settings: Settings | RemoteClientSettings, root: Path, binding_id: str, host: str) -> Path:
     state_key = canonical_digest({"deployment": settings.deployment_id, "binding": binding_id, "root": str(root), "host": host})
     state = settings.state_dir.resolve()
     if state.is_relative_to(root):
@@ -282,12 +292,12 @@ def _runtime_dir(settings: Settings, root: Path, binding_id: str, host: str) -> 
     return _safe_path(state, f"host-adapters/{state_key}")
 
 
-def _install_lock(settings: Settings, root: Path) -> Path:
+def _install_lock(settings: Settings | RemoteClientSettings, root: Path) -> Path:
     key = canonical_digest({"deployment": settings.deployment_id, "root": str(root)})
     return _safe_path(settings.state_dir.resolve(), f"host-adapters/{key}/.install.lock")
 
 
-def _receipt_path(settings: Settings, root: Path, host: str) -> Path:
+def _receipt_path(settings: Settings | RemoteClientSettings, root: Path, host: str) -> Path:
     if settings.state_dir.resolve().is_relative_to(root):
         raise DomainError("HOST_RUNTIME_PROJECT_DENIED", "Private adapter receipts must be outside the consumer project")
     return _install_lock(settings, root).parent / f"{host}.json"
@@ -295,6 +305,29 @@ def _receipt_path(settings: Settings, root: Path, host: str) -> Path:
 
 def _legacy_receipt_path(root: Path, host: str) -> Path:
     return _safe_path(root, f".agents-memory/hosts/{host}.json")
+
+
+def receipt_connection(value: dict) -> RemoteClientSettings | None:
+    raw = value.get("remote_settings")
+    if raw is None:
+        return None
+    try:
+        profile = RemoteClientSettings.model_validate(raw)
+        expected = {
+            "deployment_id": profile.deployment_id, "realm": profile.realm,
+            "base_url": profile.base_url, "capability": profile.capability,
+            "spool_limit_bytes": profile.spool_limit_bytes,
+            "max_capture_bytes": min(profile.max_capture_bytes, 32768),
+            "max_http_body_bytes": profile.max_http_body_bytes,
+            "max_mcp_response_bytes": profile.max_mcp_response_bytes,
+        }
+        if (value.get("adapter_version") != ADAPTER_VERSION
+                or any(value.get(key) != item for key, item in expected.items())
+                or profile.state_dir != Path(value["runtime_dir"]).parent.parent):
+            raise ValueError
+        return profile
+    except (DomainError, OSError, ValueError, TypeError, KeyError):
+        raise DomainError("HOST_RECEIPT_INVALID", "The frozen remote connection does not match its native receipt") from None
 
 
 def _validate_receipt(value: dict, *, allow_legacy: bool, allow_deleted_project: bool = False) -> None:
@@ -326,7 +359,9 @@ def _validate_receipt(value: dict, *, allow_legacy: bool, allow_deleted_project:
             raise DomainError("HOST_RECEIPT_INVALID", "The host ownership manifest has an invalid path")
         if entry["kind"] == "local_mcp":
             native_project = entry.get("project")
-            if (value["host"] != "claude" or entry["path"] != str(_claude_config_path()) or entry.get("key") != SERVER_NAME
+            native_path = Path(entry["path"])
+            if (value["host"] != "claude" or not native_path.is_absolute() or native_path.name != ".claude.json"
+                    or str(native_path) != entry["path"] or entry.get("key") != SERVER_NAME
                     or not isinstance(native_project, str) or not Path(native_project).is_absolute()
                     or (value.get("state") not in ("removed", "native_removing", "native_finishing", "native_removed") and not allow_deleted_project
                         and native_project != _claude_project_key(Path(value["project_root"])))):
@@ -352,7 +387,8 @@ def _validate_receipt(value: dict, *, allow_legacy: bool, allow_deleted_project:
     if version in {3, 4, ADAPTER_VERSION}:
         prompt_recall = value["capabilities"].get("prompt_context") == "bounded_opt_in"
         expected = (
-            capabilities(value["host"], strict=value["strict"], prompt_recall=prompt_recall)
+            capabilities(value["host"], strict=value["strict"], prompt_recall=prompt_recall,
+                         remote=receipt_connection(value) is not None)
             if version == ADAPTER_VERSION else
             _historical_capabilities(value["host"], strict=value["strict"], prompt_recall=prompt_recall, capability=capability)
         )
@@ -418,6 +454,18 @@ def load_receipt(receipt_path: Path, *, allow_legacy: bool = False, active: bool
         raise DomainError("HOST_UNINSTALL_INCOMPLETE", "Project entries were not verified after deleted-project cleanup; run host-uninstall for this project")
     if active and value.get("state") != "installed":
         raise DomainError("HOST_INSTALLATION_INCOMPLETE", "Reconcile the pending host ownership intent")
+    if active:
+        runtime = Path(value["runtime_dir"])
+        state = runtime.parent.parent
+        expected_runtime = canonical_digest({
+            "deployment": value["deployment_id"], "binding": value["binding_id"],
+            "root": value["project_root"], "host": value["host"],
+        })
+        receipt_key = canonical_digest({"deployment": value["deployment_id"], "root": value["project_root"]})
+        if (runtime.parent.name != "host-adapters" or runtime.name != expected_runtime
+                or receipt_path != state / "host-adapters" / receipt_key / f"{value['host']}.json"):
+            raise DomainError("HOST_RECEIPT_INVALID", "The private runtime layout does not match its ownership")
+        _safe_path(state, f"host-adapters/{expected_runtime}")
     return value
 
 
@@ -440,16 +488,19 @@ def _unlink(path: Path, *, directory: int | None = None) -> None:
         os.close(descriptor)
 
 
-def _credentials(agent: Path, producer: Path) -> tuple[Path, Path]:
+def _credentials(agent: Path, producer: Path, *, remote_settings: RemoteClientSettings | None = None) -> tuple[Path, Path]:
     selected = []
     values = []
     for path in (agent, producer):
         if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077:
             raise DomainError("HOST_CREDENTIAL_INVALID", "Use separate existing private credential files")
-        raw = _read_bytes(path, 1024)
-        value = raw.strip() if raw is not None else b""
-        if not value or len(value) > 512 or any(chr(ch).isspace() for ch in value):
-            raise DomainError("HOST_CREDENTIAL_INVALID", "The host credential file is invalid")
+        if remote_settings is not None:
+            value = read_remote_credential(path, remote_settings).encode("utf-8")
+        else:
+            raw = _read_bytes(path, 1024)
+            value = raw.strip() if raw is not None else b""
+            if not value or len(value) > 512 or any(chr(ch).isspace() for ch in value):
+                raise DomainError("HOST_CREDENTIAL_INVALID", "The host credential file is invalid")
         selected.append(path.resolve())
         values.append(value)
     if selected[0] == selected[1] or values[0] == values[1]:
@@ -457,8 +508,11 @@ def _credentials(agent: Path, producer: Path) -> tuple[Path, Path]:
     return selected[0], selected[1]
 
 
-def _command(receipt: Path, verb: str) -> list[str]:
-    return [sys.executable, "-m", "agents_memory.cli", verb, "--receipt", str(receipt)]
+def _command(receipt: Path, verb: str, host: str) -> list[str]:
+    command = [sys.executable, "-m", "agents_memory.cli", verb, "--receipt", str(receipt)]
+    if host == "claude" and os.environ.get("CLAUDE_CONFIG_DIR"):
+        return ["/usr/bin/env", "CLAUDE_CONFIG_DIR=" + str(_claude_config_path().parent), *command]
+    return command
 
 
 def _claude_project_key(root: Path) -> str:
@@ -500,8 +554,9 @@ def _claude_config_path() -> Path:
 
 def _owned_path(root: Path, locator: str) -> Path:
     if Path(locator).is_absolute():
-        path = _claude_config_path()
-        if locator != str(path) or path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
+        path = Path(locator)
+        if (path.name != ".claude.json" or str(path) != locator or ".." in path.parts
+                or path.is_symlink() or any(parent.is_symlink() for parent in path.parents)):
             raise DomainError("HOST_PATH_DENIED", "The private native configuration locator changed")
         return path
     return _safe_path(root, locator)
@@ -665,7 +720,7 @@ def _hooks(plan: list, ownership: list, root: Path, relative: str, command: list
                 handler["onFailure"] = "block"
         elif event == "SessionEnd":
             handler["timeout"] = 3
-        else:
+        elif event in {"UserPromptSubmit", "PreToolUse"}:
             handler["additionalContextLimit"] = HOST_CONTEXT_BYTES
         group = {"hooks": [handler]}
         if event == "PreToolUse" and not strict:
@@ -1095,18 +1150,27 @@ def _publish_replay(receipt_path: Path, receipt: dict, root: Path, project: _Pro
 
 
 def install_host(
-    settings: Settings, project_root: Path, binding_id: str, host: str,
+    settings: Settings | RemoteClientSettings, project_root: Path, binding_id: str, host: str,
     agent_token_file: Path, producer_token_file: Path, *, strict: bool = False, prompt_recall: bool = False,
 ) -> dict:
     """Install only owned per-project entries; never approve native hook trust."""
     _host(host)
     if host == "omp" and strict:
         raise DomainError("HOST_STRICT_UNSUPPORTED", "OMP has no fail-closed native pre-request gate; strict installation is refused before configuration writes. Uninstall any historical strict adapter and reinstall without --strict")
+    if host == "codex" and strict:
+        raise DomainError("HOST_STRICT_UNSUPPORTED", "Codex strict native protection failed actual protected-action verification; strict installation is refused before configuration writes. Existing owned adapters can be uninstalled; advisory installation requires an explicit request without --strict")
+    require_supported_sqlite()
+    remote = settings if isinstance(settings, RemoteClientSettings) else None
     root = Path(project_root).resolve(strict=True)
     if not root.is_dir():
         raise DomainError("HOST_PROJECT_INVALID", "The selected project is not a directory")
+    if remote is not None:
+        validate_remote_project(remote, root)
     ContextCommand(binding_id=binding_id, query="installation", host=host)
-    agent, producer = _credentials(Path(agent_token_file), Path(producer_token_file))
+    agent, producer = _credentials(
+        Path(agent_token_file), Path(producer_token_file),
+        remote_settings=remote,
+    )
     receipt_path = _receipt_path(settings, root, host)
     with _pinned_project(root) as project, _ownership_lock(settings, root, host), _CommandEffect() as effect:
         project.check()
@@ -1121,6 +1185,9 @@ def install_host(
                     if host == "omp" and receipt["strict"]:
                         raise DomainError("HOST_STRICT_UNSUPPORTED", "Uninstall the historical strict adapter before reinstalling") from None
                     raise DomainError("HOST_LEGACY_REINSTALL_REQUIRED", "Uninstall the validated owned older adapter before reinstalling") from None
+            if (host == "claude" and receipt.get("state") != "removed"
+                    and any(entry["path"] != str(_claude_config_path()) for entry in receipt["ownership"] if entry["kind"] == "local_mcp")):
+                raise DomainError("HOST_ALREADY_INSTALLED", "Uninstall the frozen native installation before changing its configuration directory")
             if receipt["state"] in {"native_removing", "native_finishing", "native_removed"}:
                 raise DomainError("HOST_UNINSTALL_INCOMPLETE", "Run host-uninstall for this project to finish removing its owned entries before reinstalling")
             expected = {
@@ -1128,13 +1195,16 @@ def install_host(
                 "binding_id": binding_id, "realm": settings.realm, "base_url": settings.base_url,
                 "agent_token_file": str(agent), "producer_token_file": str(producer), "strict": strict,
                 "capability": settings.capability,
-                "capabilities": capabilities(host, strict=strict, prompt_recall=prompt_recall, capability=settings.capability),
+                "capabilities": capabilities(host, strict=strict, prompt_recall=prompt_recall,
+                                             capability=settings.capability, remote=remote is not None),
                 "runtime_dir": str(_runtime_dir(settings, root, binding_id, host)),
                 "spool_limit_bytes": settings.spool_limit_bytes,
                 "max_capture_bytes": min(settings.max_capture_bytes, 32768),
                 "max_http_body_bytes": settings.max_http_body_bytes,
                 "max_mcp_response_bytes": settings.max_mcp_response_bytes,
             }
+            if remote is not None:
+                expected["remote_settings"] = remote.model_dump(mode="json")
             if receipt["state"] in {"pending", "removing"}:
                 if any(receipt[key] != value for key, value in expected.items()):
                     raise DomainError("HOST_RECOVERY_SCOPE_CONFLICT", "Retry ownership recovery with the original deployment and install parameters")
@@ -1155,8 +1225,8 @@ def install_host(
                 return {"state": "installed", "host": host, "receipt": str(receipt_path), "capabilities": receipt["capabilities"], "native_trust": "not_modified", "replay": True}
         owner = uuid.uuid4().hex
         plan, ownership = [], []
-        mcp_command = _command(receipt_path, "host-stdio")
-        hook_command = _command(receipt_path, "host-hook")
+        mcp_command = _command(receipt_path, "host-stdio", host)
+        hook_command = _command(receipt_path, "host-hook", host)
         server = {"type": "stdio", "command": mcp_command[0], "args": mcp_command[1:]}
         if host == "claude":
             _claude_entry(plan, ownership, root, server)
@@ -1188,8 +1258,11 @@ def install_host(
             "max_http_body_bytes": settings.max_http_body_bytes,
             "max_mcp_response_bytes": settings.max_mcp_response_bytes,
             "context_budget_bytes": HOST_CONTEXT_BYTES,
-            "capabilities": capabilities(host, strict=strict, prompt_recall=prompt_recall, capability=settings.capability), "ownership": ownership,
+            "capabilities": capabilities(host, strict=strict, prompt_recall=prompt_recall,
+                                         capability=settings.capability, remote=remote is not None), "ownership": ownership,
         }
+        if remote is not None:
+            receipt["remote_settings"] = remote.model_dump(mode="json")
         _begin_intent(receipt_path, receipt, project, plan, "pending")
         effect.changed = True
         _resume(receipt_path, receipt, root, project)
@@ -1203,7 +1276,7 @@ def _uninstall_result(receipt: dict, host: str, state: str) -> dict:
     return result
 
 
-def uninstall_host(settings: Settings, project_root: Path, host: str, *, project_deleted: bool = False) -> dict:
+def uninstall_host(settings: Settings | RemoteClientSettings, project_root: Path, host: str, *, project_deleted: bool = False) -> dict:
     """Remove exact owned entries only; any owned drift cancels the whole removal.
 
     An absent project is cleaned up only on explicit operator acknowledgement. That
@@ -1238,6 +1311,9 @@ def uninstall_host(settings: Settings, project_root: Path, host: str, *, project
             or receipt["runtime_dir"] != str(_runtime_dir(settings, root, receipt["binding_id"], host))
         ):
             raise DomainError("HOST_RECEIPT_INVALID", "The receipt belongs to another project, deployment or host")
+        remote = receipt_connection(receipt)
+        if (remote is not None and remote != settings) or (remote is None and isinstance(settings, RemoteClientSettings)):
+            raise DomainError("HOST_RECEIPT_INVALID", "Uninstall requires the original connection profile")
         if absent and (
             receipt["adapter_version"] not in {3, 4, ADAPTER_VERSION} or receipt.get("legacy_digest")
             or receipt.get("state") not in {"installed", "removing", "native_removing", "native_removed", "removed"}
@@ -1451,7 +1527,10 @@ def _scoped_cwd(receipt: dict, event: dict) -> Path:
     if not isinstance(value, str) or not value or not Path(value).is_absolute():
         raise DomainError("HOST_SCOPE_UNRESOLVED", "The native event has no scoped absolute cwd")
     root = Path(receipt["project_root"])
-    cwd = Path(value).resolve()
+    try:
+        cwd = Path(value).resolve(strict=True)
+    except FileNotFoundError:
+        raise DomainError("HOST_SCOPE_UNRESOLVED", "The native cwd no longer exists") from None
     if not cwd.is_relative_to(root):
         raise DomainError("HOST_SCOPE_UNRESOLVED", "The native event is outside the registered project")
     return cwd
@@ -1471,6 +1550,10 @@ def _footprint(receipt: dict, event: dict, cwd: Path) -> tuple[str, ...]:
     for raw in raw_paths:
         if not isinstance(raw, str) or not raw or "\x00" in raw or "://" in raw:
             raise DomainError("HOST_FOOTPRINT_UNKNOWN", "The action does not expose a local path")
+        try:
+            (cwd / raw).stat()
+        except FileNotFoundError:
+            pass
         path = (cwd / raw).resolve()
         if not path.is_relative_to(root):
             raise DomainError("HOST_SCOPE_UNRESOLVED", "The action leaves the registered project")
@@ -1550,7 +1633,11 @@ def _context(receipt: dict, query: str, paths: tuple[str, ...] | None, *, requir
         binding_id=receipt["binding_id"], query=query, paths=paths,
         host=receipt["host"], max_bytes=service_budget,
     )
-    result = LocalClient(receipt["base_url"], Path(receipt["agent_token_file"]), timeout=4).request(
+    result = LocalClient(
+        receipt["base_url"], Path(receipt["agent_token_file"]), timeout=4,
+        state_dir=Path(receipt["runtime_dir"]).parent.parent, deployment_id=receipt["deployment_id"],
+        remote_settings=receipt_connection(receipt),
+    ).request(
         "/api/required-context" if required else "/api/context", command.model_dump(mode="json"),
     )
     text, stamp, rules = result.get("context"), result.get("stamp"), result.get("required")
@@ -1626,7 +1713,11 @@ def _capture(receipt: dict, event: dict, identity: dict, event_name: str) -> dic
         except DomainError as error:
             enqueue_error = error
             accepted = {"state": "gap", "code": error.code}
-        result = spool.flush(LocalClient(receipt["base_url"], Path(receipt["producer_token_file"]), timeout=1), limit=4)
+        result = spool.flush(LocalClient(
+            receipt["base_url"], Path(receipt["producer_token_file"]), timeout=1,
+            state_dir=Path(receipt["runtime_dir"]).parent.parent, deployment_id=receipt["deployment_id"],
+            remote_settings=receipt_connection(receipt),
+        ), limit=4)
         delivery = {"state": "gap"} if enqueue_error else spool.disposition(command.idempotency_key)
         return {
             **accepted, **result,
@@ -1648,7 +1739,11 @@ def _capture_replay(receipt: dict, key: str) -> dict:
     spool = None
     try:
         spool = ProducerSpool(Path(receipt["runtime_dir"]) / "capture.sqlite3", receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
-        spool.flush(LocalClient(receipt["base_url"], Path(receipt["producer_token_file"]), timeout=1), limit=4)
+        spool.flush(LocalClient(
+            receipt["base_url"], Path(receipt["producer_token_file"]), timeout=1,
+            state_dir=Path(receipt["runtime_dir"]).parent.parent, deployment_id=receipt["deployment_id"],
+            remote_settings=receipt_connection(receipt),
+        ), limit=4)
         return spool.disposition(key)
     except (sqlite3.Error, OSError):
         return {"state": "gap", "code": "HOST_SPOOL_UNAVAILABLE", "gaps": {"HOST_SPOOL_UNAVAILABLE": 1}}

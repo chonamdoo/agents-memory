@@ -7,6 +7,7 @@ enter Settings, the database, backups, MCP responses, argv or logs.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import hashlib
 import hmac
 import json
@@ -14,7 +15,8 @@ import os
 import secrets
 import stat
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -27,8 +29,10 @@ from .jev import JEV_DEFAULT_MODEL, JEV_ENDPOINT, JevClient, JevFailure
 from .private_io import private_read, private_write
 
 PROVIDER_FILE = "provider.json"
+EGRESS_POLICY_FILE = "egress-policy.json"
 KEY_FILE = "jev.key"
 TOKEN_FILE = "jev-agent.token"
+ISSUING_TOKEN_FILE = "issuing-agent.token"
 WORKER_FILE = "worker.json"
 JEV_EGRESS = {
     "endpoint": JEV_ENDPOINT,
@@ -40,6 +44,14 @@ JEV_EGRESS = {
 ModelId = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
 
 
+class EgressPolicy(TypedModel):
+    format: Literal[1] = 1
+    jev_allowed: bool = Field(default=False, strict=True)
+    revision: int = Field(default=0, ge=0)
+    updated_at: datetime | None = None
+    updated_by: Handle | None = None
+
+
 class JudgeState(TypedModel):
     format: Literal[1] = 1
     provider: Literal["agent", "jev"] = "agent"
@@ -47,6 +59,8 @@ class JudgeState(TypedModel):
     model: str | None = ModelId
     key_fingerprint: str | None = Field(default=None, pattern=r"^hmac-sha256:[0-9a-f]{12}$")
     credential_id: Handle | None = None
+    retiring_credential_ids: tuple[Handle, ...] = ()
+    forget_key_pending: bool = False
     updated_at: datetime | None = None
     updated_by: Handle | None = None
 
@@ -85,8 +99,57 @@ def load_state(settings: Settings) -> JudgeState:
         raise _invalid() from None
 
 
+def load_egress_policy(settings: Settings) -> EgressPolicy:
+    path = judge_dir(settings) / EGRESS_POLICY_FILE
+    if _absent(path):
+        return EgressPolicy()
+    try:
+        return EgressPolicy.model_validate_json(private_read(path, 4096))
+    except (DomainError, ValidationError, ValueError):
+        raise DomainError(
+            "JUDGE_EGRESS_POLICY_INVALID",
+            "The private egress policy is invalid; rerun judge policy deny-jev or explicitly authorize Jev",
+            status=503,
+        ) from None
+
+
 def _save_state(settings: Settings, state: JudgeState) -> None:
     private_write(judge_dir(settings) / PROVIDER_FILE, state.model_dump_json(indent=2) + "\n", replace=True)
+
+
+@asynccontextmanager
+async def judge_guard(settings: Settings) -> AsyncIterator[None]:
+    """Keep policy/provider changes linearizable with the entire publication commit.
+
+    Vendor calls stay outside this guard. Nonblocking attempts let an existing
+    publisher finish awaited database work without blocking its event loop.
+    """
+    directory = judge_dir(settings)
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    descriptor = -1
+    try:
+        info = os.fstat(directory_fd)
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise DomainError("PATH_DENIED", "The judge authority directory must be private and owned")
+        descriptor = os.open(
+            "authority.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+            0o600, dir_fd=directory_fd,
+        )
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise DomainError("PATH_DENIED", "The judge authority lock must be a private owned regular file")
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                await asyncio.sleep(0.01)
+        yield
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory_fd)
 
 
 def validate_key(raw: str) -> str:
@@ -151,17 +214,20 @@ def _remove(settings: Settings, name: str) -> None:
 
 
 def require_jev_allowed(settings: Settings) -> None:
-    if settings.mode != "personal":
+    if not load_egress_policy(settings).jev_allowed:
         raise DomainError(
             "JUDGE_PROVIDER_FORBIDDEN",
-            "Jev judgment sends source text off this machine and is available only in personal deployments",
+            "Jev egress is denied; explicitly authorize it with judge policy allow-jev --ack-egress before selecting Jev",
             status=403,
         )
 
 
-def verify_key(key: str, model: str, client_factory: Callable[[str, str], JevClient] = JevClient) -> str:
+def verify_key(
+    key: str, model: str, client_factory: Callable[[str, str], JevClient] = JevClient, *,
+    before_attempt: Callable[[], None] | None = None,
+) -> str:
     try:
-        return client_factory(key, model).verify()
+        return client_factory(key, model).verify(before_attempt=before_attempt)
     except JevFailure as failure:
         if failure.kind == "auth":
             raise DomainError("JUDGE_KEY_REJECTED", "TypeSafe rejected the Jev API key", status=401) from None
@@ -187,14 +253,24 @@ def save_worker_snapshot(settings: Settings, value: dict) -> None:
 
 def describe(settings: Settings, state: JudgeState, *, operator: bool) -> dict:
     """Body- and key-free provider view; operator views add identifiers that agents do not need."""
-    jev = state.provider == "jev"
+    try:
+        policy = load_egress_policy(settings)
+        policy_status = "absent" if _absent(judge_dir(settings) / EGRESS_POLICY_FILE) else "allowed" if policy.jev_allowed else "denied"
+        egress_policy = {"jev_allowed": policy.jev_allowed, "status": policy_status}
+    except DomainError as error:
+        egress_policy = {"jev_allowed": False, "status": "invalid", "error": error.code}
+    jev = state.provider == "jev" and egress_policy["jev_allowed"]
     view = {
-        "provider": state.provider,
+        "provider": "jev" if jev else "agent",
+        "configured_provider": state.provider,
+        "configured_model": state.model,
         "revision": state.revision,
         "mode": settings.mode,
-        "model": state.model,
+        "egress_policy": egress_policy,
+        "model": state.model if jev else None,
         "source_judgment": "jev_background_then_server_validation" if jev else "current_coding_agent_via_mcp",
         "relevance_judgment": "current_coding_agent_via_mcp",
+        "retirement_pending": bool(state.retiring_credential_ids or state.forget_key_pending),
         "egress": JEV_EGRESS if jev else None,
         "fallback": "none: unjudged work stays pending for the coding agent",
         "change": "operator CLI only: agents-memory judge set",
@@ -203,6 +279,8 @@ def describe(settings: Settings, state: JudgeState, *, operator: bool) -> dict:
         view.update(
             key={"stored": has_key(settings), "fingerprint": state.key_fingerprint},
             credential_id=state.credential_id,
+            retiring_credential_ids=list(state.retiring_credential_ids),
+            forget_key_pending=state.forget_key_pending,
             updated_at=state.updated_at.isoformat() if state.updated_at else None,
             updated_by=state.updated_by,
         )
@@ -213,59 +291,141 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+async def set_egress_policy(settings: Settings, store, actor: Principal, *, jev_allowed: bool) -> dict:
+    """Authorize independently of provider choice; revoke before retiring any worker authority."""
+    if actor.role != Role.OPERATOR:
+        raise DomainError("ROLE_DENIED", "Only the operator can authorize Jev egress", status=403)
+    async with judge_guard(settings):
+        try:
+            previous = load_egress_policy(settings)
+        except DomainError as error:
+            if error.code != "JUDGE_EGRESS_POLICY_INVALID":
+                raise
+            previous = EgressPolicy(revision=int(time.time()))
+        if jev_allowed:
+            state = load_state(settings)
+            if not previous.jev_allowed and state.provider == "jev":
+                await _set_agent(settings, store, actor, forget_key=False)
+            else:
+                await _finish_retirement(settings, store, actor, state)
+        policy = EgressPolicy(
+            jev_allowed=jev_allowed, revision=previous.revision + 1, updated_at=_now(), updated_by=actor.id,
+        )
+        private_write(judge_dir(settings) / EGRESS_POLICY_FILE, policy.model_dump_json(indent=2) + "\n", replace=True)
+        if not policy.jev_allowed:
+            result = await _set_agent(settings, store, actor, forget_key=False)
+        else:
+            result = {**describe(settings, load_state(settings), operator=True), "effect": EffectState.COMMITTED}
+        return {**result, "egress_policy": policy.model_dump(mode="json")}
+
+
 async def set_jev(
     settings: Settings, store, actor: Principal, key: str, *, model: str = JEV_DEFAULT_MODEL,
     verify: Callable[[str, str], str] | None = None,
 ) -> dict:
-    """Verify first, then issue a fresh worker credential, publish files, and retire the old credential."""
+    """Verify outside the guard; publish only a durably tracked new worker credential."""
     require_jev_allowed(settings)
     if actor.role != Role.OPERATOR:
         raise DomainError("ROLE_DENIED", "Only the operator can choose the judge provider", status=403)
     key = validate_key(key)
-    previous, replaced = _previous(settings)
-    resolved = await asyncio.to_thread(verify or verify_key, key, model)
-    bindings = tuple(binding.id for binding in await store.list_bindings(actor))
-    token = secrets.token_urlsafe(48)
-    principal = await store.issue_token(actor, Role.AGENT, bindings, token)
-    private_write(judge_dir(settings) / TOKEN_FILE, token + "\n", replace=True)
-    private_write(judge_dir(settings) / KEY_FILE, key + "\n", replace=True)
-    state = JudgeState(
-        provider="jev", revision=previous.revision + 1, model=model,
-        key_fingerprint=key_fingerprint(settings, key), credential_id=principal.credential_id,
-        updated_at=_now(), updated_by=actor.id,
-    )
-    _save_state(settings, state)
-    retired = None
-    if previous.credential_id is not None and previous.credential_id != principal.credential_id:
-        retired = await _retire(store, actor, previous.credential_id)
-    return {
-        **describe(settings, state, operator=True), "verified_model": resolved,
-        "granted_bindings": list(bindings), "retired_credential": retired,
-        "service": "a running service applies this before its next Jev request", "effect": EffectState.COMMITTED,
-        **_replacement_note(replaced),
-    }
+    async with judge_guard(settings):
+        require_jev_allowed(settings)
+        try:
+            previous = load_state(settings)
+        except DomainError as error:
+            if error.code != "JUDGE_STATE_INVALID":
+                raise
+            raise DomainError(
+                "JUDGE_STATE_INVALID", "Repair the provider with judge set agent before selecting Jev", status=503,
+            ) from None
+        policy_revision = load_egress_policy(settings).revision
+    def verify_authorized() -> str:
+        _require_policy_revision(settings, policy_revision)
+        if verify is not None:
+            return verify(key, model)
+        return verify_key(key, model, before_attempt=lambda: _require_policy_revision(settings, policy_revision))
+
+    resolved = await asyncio.to_thread(verify_authorized)
+    async with judge_guard(settings):
+        _require_policy_revision(settings, policy_revision)
+        current = load_state(settings)
+        if current != previous:
+            raise DomainError("JUDGE_PROVIDER_CHANGED", "The judge provider changed during Jev setup; retry explicitly", status=409)
+        retired_before_issue = await _set_agent(settings, store, actor, forget_key=False)
+        previous = load_state(settings)
+        bindings = tuple(binding.id for binding in await store.list_bindings(actor))
+        token = secrets.token_urlsafe(48)
+        # A committed issuance with a lost response is recoverable by this token.
+        private_write(judge_dir(settings) / ISSUING_TOKEN_FILE, token + "\n")
+        principal = await store.issue_token(actor, Role.AGENT, bindings, token)
+        private_write(judge_dir(settings) / TOKEN_FILE, token + "\n", replace=True)
+        private_write(judge_dir(settings) / KEY_FILE, key + "\n", replace=True)
+        state = JudgeState(
+            provider="jev", revision=previous.revision + 1, model=model,
+            key_fingerprint=key_fingerprint(settings, key), credential_id=principal.credential_id,
+            retiring_credential_ids=previous.retiring_credential_ids,
+            updated_at=_now(), updated_by=actor.id,
+        )
+        _save_state(settings, state)
+        state, retired = await _finish_retirement(settings, store, actor, state)
+        return {
+            **describe(settings, state, operator=True), "verified_model": resolved,
+            "granted_bindings": list(bindings), "retired_credential": retired or retired_before_issue["retired_credential"],
+            "service": "a running service applies this before its next Jev request", "effect": EffectState.COMMITTED,
+        }
+
+
+def _require_policy_revision(settings: Settings, revision: int) -> None:
+    require_jev_allowed(settings)
+    if load_egress_policy(settings).revision != revision:
+        raise DomainError("JUDGE_EGRESS_POLICY_CHANGED", "The egress policy changed during Jev setup; retry explicitly", status=409)
 
 
 async def set_agent(settings: Settings, store, actor: Principal, *, forget_key: bool) -> dict:
     """Stop egress first, then retire the worker credential and optionally the stored key."""
     if actor.role != Role.OPERATOR:
         raise DomainError("ROLE_DENIED", "Only the operator can choose the judge provider", status=403)
+    async with judge_guard(settings):
+        return await _set_agent(settings, store, actor, forget_key=forget_key)
+
+
+async def _set_agent(settings: Settings, store, actor: Principal, *, forget_key: bool) -> dict:
     previous, replaced = _previous(settings)
     stored = has_key(settings)
+    forget_key = forget_key or previous.forget_key_pending
+    retiring = previous.retiring_credential_ids
+    if previous.credential_id is not None and previous.credential_id not in retiring:
+        retiring = (*retiring, previous.credential_id)
     state = JudgeState(
         provider="agent", revision=previous.revision + 1,
         key_fingerprint=None if forget_key or not stored else previous.key_fingerprint,
+        retiring_credential_ids=retiring, forget_key_pending=forget_key,
         updated_at=_now(), updated_by=actor.id,
     )
     _save_state(settings, state)
     _remove(settings, TOKEN_FILE)
-    retired = None
-    if previous.credential_id is not None:
-        retired = await _retire(store, actor, previous.credential_id)
-    if forget_key:
-        _remove(settings, KEY_FILE)
+    state, retired = await _finish_retirement(settings, store, actor, state)
     return {**describe(settings, state, operator=True), "retired_credential": retired, "effect": EffectState.COMMITTED,
             **_replacement_note(replaced)}
+
+
+async def _finish_retirement(settings: Settings, store, actor: Principal, state: JudgeState) -> tuple[JudgeState, str | None]:
+    retired = None
+    pending = judge_dir(settings) / ISSUING_TOKEN_FILE
+    if not _absent(pending):
+        token = _read_private_text(pending, 4096).strip()
+        issued = await store.resolve_issued_credential(actor, token, role=Role.AGENT)
+        if issued is not None and issued != state.credential_id and issued not in state.retiring_credential_ids:
+            retired = await _retire(store, actor, issued)
+        _remove(settings, ISSUING_TOKEN_FILE)
+    for credential_id in state.retiring_credential_ids:
+        retired = await _retire(store, actor, credential_id)
+    if state.forget_key_pending:
+        _remove(settings, KEY_FILE)
+    if state.retiring_credential_ids or state.forget_key_pending:
+        state = state.model_copy(update={"retiring_credential_ids": (), "forget_key_pending": False})
+        _save_state(settings, state)
+    return state, retired
 
 
 def _previous(settings: Settings) -> tuple[JudgeState, bool]:
@@ -296,9 +456,10 @@ async def _retire(store, actor: Principal, credential_id: str) -> str:
 
 async def grant_new_binding(settings: Settings, store, actor: Principal, binding_id: str) -> dict | None:
     """A project added while Jev judges joins the worker grant; agent mode leaves grants unchanged."""
-    state = load_state(settings)
-    if state.provider != "jev" or state.credential_id is None:
-        return None
-    require_jev_allowed(settings)
-    await store.grant_binding(actor, state.credential_id, binding_id)
-    return {"provider": "jev", "worker_grant": "added", "credential_id": state.credential_id}
+    async with judge_guard(settings):
+        state = load_state(settings)
+        if state.provider != "jev" or state.credential_id is None:
+            return None
+        require_jev_allowed(settings)
+        await store.grant_binding(actor, state.credential_id, binding_id)
+        return {"provider": "jev", "worker_grant": "added", "credential_id": state.credential_id}

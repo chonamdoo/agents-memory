@@ -131,6 +131,7 @@ class Store:
         self.journal = journal
         self.pool: asyncpg.Pool | None = None
         self._ready = False
+        self._journal_check: asyncio.Task[dict] | None = None
 
     async def open(self) -> None:
         await self._open()
@@ -163,7 +164,36 @@ class Store:
         self.pool = pool
         self._ready = False
 
+    async def _verified_journal(self) -> dict:
+        """Share the one live verification, including after a caller's timeout."""
+        check = self._journal_check
+        if check is None or check.done():
+            check = asyncio.create_task(asyncio.to_thread(self.journal.verify))
+            self._journal_check = check
+        return await asyncio.shield(check)
+
+    async def readiness(self, *, timeout: float = 2) -> dict:
+        """Round-trip identity and the deletion barrier without spawning work per probe."""
+        result = {
+            "ready": False, "db_ready": False,
+            "deployment_id": self.settings.deployment_id, "realm": self.settings.realm,
+        }
+        try:
+            async with asyncio.timeout(timeout):
+                async with self._tx(lock=False) as (_, clock):
+                    if clock["deployment_id"] != self.settings.deployment_id or clock["realm"] != self.settings.realm:
+                        raise DomainError("AUTHORITY_UNAVAILABLE", "The authority identity does not match", status=503)
+        except Exception:
+            return result
+        return {**result, "ready": True, "db_ready": True}
+
     async def close(self) -> None:
+        # Cancelling a probe must not cancel its thread and release ownership.
+        # Drain that owned work before the store disappears; failure remains
+        # visible to transaction/readiness callers, not a shutdown operation.
+        if self._journal_check is not None:
+            await asyncio.gather(self._journal_check, return_exceptions=True)
+            self._journal_check = None
         if self.pool is not None:
             await self.pool.close()
             self.pool = None
@@ -174,7 +204,7 @@ class Store:
         """Serialize writers on the global clock; ``lock=False`` is a read-only transaction that never waits for it."""
         if self.pool is None:
             raise DomainError("STORE_CLOSED", "The authority connection is not open", status=503)
-        journal = await asyncio.to_thread(self.journal.verify) if barrier else None
+        journal = await self._verified_journal() if barrier else None
         try:
             connection = await self.pool.acquire(timeout=self.settings.pool_acquire_timeout_seconds)
         except TimeoutError:
@@ -301,6 +331,21 @@ class Store:
         self._ready = True
         return actor
 
+    async def resolve_issued_credential(self, actor: Principal, token: str, *, role: Role) -> str | None:
+        """Resolve an uncertain issuance after its clock-locked commit or rollback."""
+        token_hash = self._token_hash(token)
+        async with self._tx() as (connection, _):
+            current = await self._actor(connection, actor, roles=(Role.OPERATOR,))
+            row = await connection.fetchrow(
+                "SELECT id,role FROM am_credentials WHERE token_hash=$1 AND active AND realm=$2",
+                token_hash, current.realm,
+            )
+            if row is None:
+                return None
+            if row["role"] != role:
+                raise _denied()
+            return row["id"]
+
     async def authenticate(self, token: str, roles: tuple[Role, ...] | None = None) -> Principal:
         token_hash = self._token_hash(token)
         # Every mutating transaction rechecks the credential under the clock lock through _actor.
@@ -312,6 +357,29 @@ class Store:
             if roles is not None and actor.role not in roles:
                 raise _denied()
             return actor
+
+    async def authenticate_external(
+        self, credential_id: str, generation: int, roles: tuple[Role, ...] | None = None,
+    ) -> Principal:
+        async with self._tx(barrier=False, lock=False) as (connection, _):
+            actor = await self._credential(connection, credential_id)
+            if type(generation) is not int or actor.generation != generation:
+                raise DomainError("AUTH_DENIED", "The current credential generation is unavailable", status=401)
+            if roles is not None and actor.role not in roles:
+                raise _denied()
+            return actor
+
+    async def client_bootstrap(self, actor: Principal, binding_id: str) -> tuple[Principal, int]:
+        async with self._tx(lock=False) as (connection, _):
+            current = await self._actor(connection, actor, binding_id, (Role.AGENT, Role.PRODUCER))
+            if current.bindings != (binding_id,):
+                raise _denied()
+            revision = await connection.fetchval(
+                "SELECT revision FROM am_bindings WHERE id=$1 AND realm=$2", binding_id, current.realm,
+            )
+            if revision is None:
+                raise _denied()
+            return current, revision
 
     async def _receipt(self, connection, actor: Principal, binding_id: str, kind: str, key: str, digest: str):
         if not key:

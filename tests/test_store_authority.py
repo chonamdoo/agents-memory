@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1614,3 +1615,67 @@ async def test_actual_agent_note_does_not_consume_human_capture_capacity(authori
     with pytest.raises(DomainError) as full:
         await store.capture(actor, command(authority, "human-backlog-overflow"))
     assert full.value.code == "QUEUE_FULL"
+
+
+async def test_readiness_timeouts_share_one_live_verifier_then_recover(authority, monkeypatch):
+    store = authority.store
+    entered, release = threading.Event(), threading.Event()
+    mutex = threading.Lock()
+    original = store.journal.verify
+    calls = 0
+
+    def held_verification():
+        nonlocal calls
+        with mutex:
+            calls += 1
+        entered.set()
+        assert release.wait(10), "The test did not release journal verification"
+        return original()
+
+    monkeypatch.setattr(store.journal, "verify", held_verification)
+    try:
+        first = await asyncio.gather(*(store.readiness(timeout=0.02) for _ in range(8)))
+        assert entered.is_set()
+        second = await asyncio.gather(*(store.readiness(timeout=0.02) for _ in range(8)))
+        assert all(result["ready"] is False and result["db_ready"] is False for result in (*first, *second))
+        assert calls == 1
+    finally:
+        release.set()
+    recovered = await store.readiness()
+    assert recovered["ready"] is True and recovered["db_ready"] is True
+    assert recovered["deployment_id"] == store.settings.deployment_id
+
+
+async def test_readiness_rechecks_completed_verification_after_journal_corruption(authority):
+    store = authority.store
+    assert (await store.readiness())["ready"] is True
+    (store.journal.directory / "metadata").write_bytes(b"{}")
+    unavailable = await store.readiness()
+    assert unavailable["ready"] is False and unavailable["db_ready"] is False
+    with pytest.raises(DomainError) as blocked:
+        await store.list_bindings(authority.actor)
+    assert blocked.value.code == "DELETION_BARRIER"
+
+
+async def test_close_drains_owned_verification_after_probe_timeout(authority, monkeypatch):
+    store = authority.store
+    entered, release = threading.Event(), threading.Event()
+    original = store.journal.verify
+
+    def held_verification():
+        entered.set()
+        assert release.wait(10), "The test did not release journal verification"
+        return original()
+
+    monkeypatch.setattr(store.journal, "verify", held_verification)
+    closing = None
+    try:
+        assert (await store.readiness(timeout=0.02))["ready"] is False
+        assert entered.is_set()
+        closing = asyncio.create_task(store.close())
+        await asyncio.sleep(0)
+        assert not closing.done()
+    finally:
+        release.set()
+        if closing is not None:
+            await closing

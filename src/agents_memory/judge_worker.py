@@ -1,4 +1,4 @@
-"""Background Jev judge for personal deployments.
+"""Background Jev judge for explicitly authorized deployments.
 
 The worker judges pending captured sources and cleanup manifests through the same
 ``inspect`` → ``record`` validation a coding agent uses over MCP, under its own agent credential.
@@ -16,7 +16,16 @@ from typing import Any
 from .config import Settings
 from .domain import Claim, DomainError, Role
 from .jev import JevClient, JevFailure, JevResult, SystemOneClient
-from .judge import JudgeState, load_state, read_key, read_worker_token, save_worker_snapshot
+from .judge import (
+    JudgeState,
+    judge_guard,
+    load_egress_policy,
+    load_state,
+    read_key,
+    read_worker_token,
+    require_jev_allowed,
+    save_worker_snapshot,
+)
 from .selection import ClaimJudgmentCommand, SourceSelectionCommand
 from .semantic import grounded_identifiers
 
@@ -82,6 +91,10 @@ RELATION_CRITERIA = {
 
 class ProviderChanged(Exception):
     """The operator changed or disabled the judge; stop before sending or recording anything else."""
+
+    def __init__(self, code: str | None = None) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 class Escalated(Exception):
@@ -193,6 +206,7 @@ class JudgeWorker:
         self._wake = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._paused_revision: int | None = None
+        self._policy_revision: int | None = None
         self._skipped: set[tuple] = set()
         self.counts = WorkerCounts()
         self.phase = "idle"
@@ -256,8 +270,13 @@ class JudgeWorker:
             logger.warning("Jev judge status could not be persisted")
 
     def _current(self, expected: JudgeState) -> None:
+        try:
+            require_jev_allowed(self.settings)
+            policy = load_egress_policy(self.settings)
+        except DomainError as error:
+            raise ProviderChanged(error.code) from None
         state = load_state(self.settings)
-        if state.provider != "jev" or state.revision != expected.revision or self.settings.mode != "personal":
+        if state.provider != "jev" or state.revision != expected.revision or policy.revision != self._policy_revision:
             raise ProviderChanged()
 
     async def cycle(self) -> bool:
@@ -272,8 +291,11 @@ class JudgeWorker:
         if state.provider != "jev":
             self.phase, self.last_error, self._paused_revision = "idle", None, None
             return False
-        if self.settings.mode != "personal":
-            self.phase, self.last_error = "refused", "JUDGE_PROVIDER_FORBIDDEN"
+        try:
+            require_jev_allowed(self.settings)
+            self._policy_revision = load_egress_policy(self.settings).revision
+        except DomainError as error:
+            self.phase, self.last_error = "refused", error.code
             return False
         if self._paused_revision == state.revision:
             return False
@@ -292,8 +314,8 @@ class JudgeWorker:
                     await self._binding(actor, binding_id, snapshot, client, state, budget)
                     if self._stop.is_set() or budget.windows <= 0:
                         return budget.windows <= 0 and not self._stop.is_set()
-        except ProviderChanged:
-            self.phase = "idle"
+        except ProviderChanged as change:
+            self.phase, self.last_error = ("refused", change.code) if change.code else ("idle", None)
             return False
         except JevFailure as failure:
             if failure.kind == "auth":
@@ -339,7 +361,10 @@ class JudgeWorker:
         for chunk in _chunks(identifiers, QUESTIONS_PER_REQUEST):
             self._current(state)
             selected = {identifier: questions[identifier] for identifier in chunk}
-            result: JevResult = await asyncio.to_thread(client.system_one, payload, selected)
+            result: JevResult = await asyncio.to_thread(
+                client.system_one, payload, selected, before_attempt=lambda: self._current(state),
+            )
+            self._current(state)
             self.counts.requests += 1
             self.counts.input_tokens += result.input_tokens or 0
             answers.update(result.answers)
@@ -476,7 +501,9 @@ class JudgeWorker:
             "reason": reason, "rejection_comparisons": list(comparisons),
         })
         try:
-            await self.application.record(actor, command)
+            async with judge_guard(self.settings):
+                self._current(state)
+                await self.application.record(actor, command)
         except DomainError as error:
             if error.code == "SELECTION_ALREADY_RECORDED":
                 return "already_judged"
@@ -556,7 +583,9 @@ class JudgeWorker:
                        f"recorded {len(relations)} relation(s) with p ≥ {RELATION_AT:.2f}; other pairs stay unrelated."),
         })
         try:
-            await self.application.record(actor, command)
+            async with judge_guard(self.settings):
+                self._current(state)
+                await self.application.record(actor, command)
         except DomainError as error:
             if error.code in {"JUDGMENT_RELATION_INVALID", "JUDGMENT_MANIFEST_INVALID", "INPUT_INVALID"}:
                 self._escalate(key, "record_" + error.code.lower())

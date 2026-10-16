@@ -36,7 +36,17 @@ stage-0 run `development/20261015-043508`이 추가한 설정: `max_concurrent_r
 
 ## 네 MCP 도구·strict 입력
 
-modern/legacy official SDK edge·private API·CLI는 같은 typed handler/decoder를 사용한다. `memory_context`, `memory_inspect`, `memory_record`, `memory_feedback`만 agent-plane에 노출한다. 연결 instructions/corpus/rule body는0이며 직접 만든 `CallToolResult`의 TextContent 한 plane으로 반환한다. stdio/client는 인증 HTTP relay이고 별도 DB/engine을 만들지 않는다.
+modern/legacy official SDK edge·private API·CLI는 같은 typed handler/decoder를 사용한다. `memory_context`, `memory_inspect`, `memory_record`, `memory_feedback`만 agent-plane에 노출한다. 연결 instructions/corpus/rule body는0이며 직접 만든 `CallToolResult`의 TextContent 한 plane으로 반환한다. stdio/client는 loopback HTTP 또는 explicit verified HTTPS relay이며 별도 DB/engine을 만들지 않는다.
+
+### 원격 authority·PC client
+
+- 서버 ingress profile은0600 별도 파일이다. canonical HTTPS origin·deployment/realm·bearer 또는 고정 issuer/audience/public JWKS/scope/subject/client_id→현재 PG credential generation 매핑을 검증한다. 매 요청/session의 role/grant를 재인증하며 remote operator bootstrap은 없다.
+- Compose는 독립 Caddy/app namespace와 private backend network를 사용한다. private mode의 `serve`만 backend에 bind하고 exact RFC1918 `trusted_proxy_ip`+XFPhttps를 요구한다. Caddy 외 peer의 local Host 위조도 차단한다. backend 미publish·Caddy의 app state/journal/DB socket 미mount·기존 Unix socket SCRAM 권한을 유지한다.
+- PC `RemoteClientSettings`는 `kind=remote_client,version=1`과 HTTPS origin/identity/mode/bounds/private state/auth mode/public CA digest만 가진다. DSN/operator를 금지한다. private CA·no proxy/redirect·absolute body deadline·DB/identity readiness 이후 token을 전송한다.
+- `/api/client-bootstrap`은 현재 agent/producer의 분리된 credential·role·one-binding grant/revision·bounds만 반환한다. 같은 operator가 발급한 두 credential은 `Store.issue_token` 계약상 같은 `principal_id`를 가지므로 credential 분리를 독립 principal identity로 표현하지 않는다. host-install은 두 응답을 대조하고 remote receipt에 profile을 고정한다. cloud는 PC locator를 stat하지 않는다.
+- remote `service`는 PC capture recovery만 관리한다. stop intent·unsafe SQLite·CA drift를 전송/enable 전에 검사하고 새 event 없이 bounded spool을 비운다. offline stop/uninstall은 server token/CA/network 없이 owned 설정만 제거하고 pending/foreign native entry를 보존한다.
+- `SESSION_NOT_FOUND/404/not_started`만 reinitialize+원 요청1회 재전송한다. unknown/dispatched write는 자동 재전송하지 않는다. selected Jev 실패는 pending·visible unavailable이며 coding-agent 자동 fallback이 아니다.
+
 
 ### source_selection
 
@@ -50,7 +60,7 @@ modern/legacy official SDK edge·private API·CLI는 같은 typed handler/decode
 - `rejection_comparisons` 최대16개: unique `{rejection_id,decision:"unrelated"|"reopen",reason}`. 직접 비교는 현재 inspected IDs이며 reopen 집합만 그 command의 prior_rejection_ids와 같아야 한다. 기본 필수 관련 후보는 최대8개이고 전체 history 순회는 게시 조건이 아니다. 선택적 `rejection_cursor="history"`는 raw32개/eligible8개 이내 live page이며 empty page도 next cursor가 있으면 계속한다. 같은 원문 window/snapshot의 review selection을 최대16개 rejection_review_ids로 연결할 수 있다. remember는 필수 후보+explicit prior를 직접/receipt로 덮고 receipt의 reopening ref는 최종 prior에 재나열하지 않는다. 모든 label의 metadata·fingerprint를 검증하고 무관한 신규 history로 과거 비교를 무효화하지 않는다.
 - optional `extraction: GeneratedExtraction`; remember만 extraction을 받을 수 있다. remember-only 또는 zero-claim은 selection_recorded, 유효 claim 게시만 candidate_ready다.
 
-`GeneratedExtraction`은 `claims`(최대32), `individual_qualifications`/`shared_qualifications`(각64), `validities`(32), `unused_span_ids`(128)를 갖는다. assertion은 assertion ID와 original span ID를 사용하고 condition/exception/context 및 validity의 evidence span을 명시한다. `resolve_selection()`은 exact source/binding/snapshot/contract/window digest·original UTF-8·inventory/qualification/literal grounding을 검증하고 absolute original offsets로 바꾼다. 누락/원문 없는 숫자·identifier·qualification은 거절하며 window/policy 변경은 SELECTION_STALE다. 원문 정규화/derivative rewrite·사실 entailment 보장·모델 호출은 없다.
+`GeneratedExtraction`은 `claims`(최대32), `individual_qualifications`/`shared_qualifications`(각64), `validities`(32), `unused_span_ids`(128)를 갖는다. assertion ID는 `a0000`처럼 `a`+숫자4자리다. 단일 assertion의 condition/exception은 individual qualification이고 shared는 적어도2개 assertion을 요구한다. 검색 가능한 기억은 remember와 extraction을 원자적으로 제출해야 한다. complete remember-only는 claim 없이 창을 점유하며 나중에 extraction을 덧붙이지 못한다. `resolve_selection()`은 exact source/binding/snapshot/contract/window digest·원래 UTF-8·inventory/qualification/literal grounding을 검증하고 absolute original offsets로 바꾼다. 조건·예외·validity·unused original span을 보존한다. 근거 없는 새 숫자·identifier·qualification은 거절하며 window/policy 변경은 `SELECTION_STALE`다. 원문 normalization/derivative rewrite·사실 entailment 보장·모델 호출은 없다.
 
 speaker `agent_note`는 raw log/inspection만 보존하고 새 source-selection admission·pending·독립 backlog를 만들지 않는다. note-only 기억과 memory/injected echo는 독립 grounding이 아니며 과거 note discard도 인간 근거의 필수 비교를 오염시키지 않는다. human/tool/document 역시 declared provenance이지 인간 현존·진실성·approval의 보장은 아니다.
 

@@ -1,13 +1,13 @@
 # agents-memory
 
-**로컬 환경은 기본 구성 완료, 클라우드 환경은 구현 예정**이다. 배포 위치(로컬/클라우드), 운영 주체(개인/회사), Jev 외부 API 허용 정책은 서로 다른 축이다. 로컬 구성 완료는 회사 운영의 Jev 허용 경로까지 구현됐다는 뜻도, 1–2주 제한 trial 통과나 일반 출시 완료라는 뜻도 아니다. 다음 클라우드 구현과 운영 주체 독립적 외부 전송 정책 전환은 기존 통합 [이슈 #5](https://github.com/chonamdoo/agents-memory/issues/5)에서 관리한다. 이번 변경은 문서·그림·계획만 정리하며 코드·배포·권한·egress 설정을 바꾸지 않는다. 실행 증거는 [검증 기록](docs/verification.ko.md)의 해당 run과 범위에만 적용한다.
+**로컬 기본 구성과 클라우드 원격 경로를 작업트리에 구현했다.** 배포 위치(로컬/클라우드), 운영 주체(개인/회사), Jev 허용 정책과 명시적 provider 선택은 독립적이다. 실제 Jev API와 격리된 HTTPS·PostgreSQL·native coding-agent 실행은 [검증 기록](docs/verification.ko.md)의 해당 배포·모델·범위에만 적용한다. 작업트리 구현을 PR #9에 push된 코드나 병합·운영 배포 완료로 바꾸지 않는다. 사용자 지시에 따라 클라우드 구현·합성 검증은 trial과 별도로 진행하며 실제 cloud provisioning·실제 corpus 이동·일반 출시는 승인하지 않는다. 실제 1–2주 trial과 전체 #5 acceptance·공식 review/QA/handoff·publication gate는 별개다.
 
-Python 3.12 기반의 독립적인 로컬 메모리 서비스. Agent Flow는 선택 사항이다. Claude Code, Codex, OMP, 일반 MCP client와 CLI가 같은 인증·project binding·메모리 core를 사용한다.
+Python 3.12 이상 기반의 독립적인 메모리 서비스다. PC capture spool은 Python 버전과 별도로 안전한 SQLite runtime을 요구한다. Agent Flow는 선택 사항이다. Claude Code, Codex, OMP, 일반 MCP client와 CLI가 같은 인증·project binding·메모리 core를 사용한다.
 
 - 정본: PostgreSQL 18. lexical/entity index는 작은 후보 목록만 찾으며 기억 채택·관계·관련성을 결정하지 않는다.
-- 판단: 기본은 지금 쓰는 Claude Code·Codex·OMP 등 구독 coding agent가 MCP로 원문 선택(`source_selection`)·관계를 판단한다. Jev 외부 전송이 허용되고 operator가 명시 선택한 경우에는 TypeSafe Jev worker가 판단한다. 불가·미설정·미선택이면 `agent` 경로를 사용하며 실패 시 자동 fallback은 없다. relevance는 항상 coding agent가 판단하고, 두 경로 모두 서버가 원문 UTF-8 span·revision·권한·삭제·snapshot을 검증한다. 로컬 모델 gateway·자동 다운로드는 없다. 현행 runtime mode의 Jev 제약은 아래 지원 상태와 구분해 설명한다.
+- 판단: 기본은 지금 쓰는 Claude Code·Codex·OMP 등 구독 coding agent가 MCP로 원문 선택(`source_selection`)·관계를 판단한다. Jev 외부 전송이 허용되고 operator가 명시 선택한 경우에는 TypeSafe Jev worker가 판단한다. 불가·미설정·미선택이면 `agent` 경로를 사용하며 실패 시 자동 fallback은 없다. relevance는 항상 coding agent가 판단하고, 두 경로 모두 서버가 원문 UTF-8 span·revision·권한·삭제·snapshot을 검증한다. 로컬 모델 gateway·자동 다운로드는 없다. Jev 허가는 운영 주체와 독립적인 default-deny 정책이다.
 - 파이프라인: capture → source inspect → `source_selection` → `claim_judgment` → 후보 조회 → 전체 후보 relevance 판단 → bounded context → correction/retraction → 다음 호출.
-- MCP: 공식 Python SDK `mcp==2.3.0`. `2026-07-28` stateless 호출과 기존 `2025-11-25` client가 같은 handler를 사용한다. stdio는 인증된 loopback HTTP 중계이며 별도 DB/메모리 engine이 아니다.
+- MCP: 공식 Python SDK `mcp==2.3.0`. `2026-07-28` stateless 호출과 기존 `2025-11-25` client가 같은 handler를 사용한다. stdio는 로컬 loopback HTTP 또는 명시 remote profile의 검증된 HTTPS 중계이며 별도 DB/메모리 engine이 아니다.
 - 연결 시 instructions·corpus·규칙 본문은 비어 있다. 도구는 `memory_context`, `memory_inspect`, `memory_record`, `memory_feedback` 네 개다. 선택 결과가 없으면 context 본문도 빈 문자열이다.
 
 [설계](docs/architecture.ko.md) · [요구·불변식](docs/requirements.ko.md) · [구현 API 계약](docs/implementation-plan.ko.md)
@@ -18,33 +18,78 @@ Python 3.12 기반의 독립적인 로컬 메모리 서비스. Agent Flow는 선
 
 로컬과 클라우드는 모두 개인 또는 회사가 운영할 수 있다. 개인 로컬에서도 데이터·정책 때문에 Jev가 불가할 수 있고, 승인된 회사 클라우드에서는 Jev를 허용할 수 있다. **허용은 자동 선택이 아니다.** 각 corpus의 저장·외부 전송 허가와 키 조건을 충족하고 Jev를 명시 선택해야 `jev`를 쓴다. 허용돼도 선택하지 않거나 설정하지 않으면 `agent`를 쓴다.
 
-| 배포 위치 | 운영 주체 | Jev 정책 | 판단 provider·경로 | 현재 지원 / 남은 구현 |
+| 배포 위치 | 운영 주체 | Jev 허가·선택 | 실제 판단 경로 | 합성 실행 증거 |
 |---|---|---|---|---|
-| 로컬 | 개인 | 허용 | 명시 선택 시 `jev`, 미설정·미선택 시 `agent` | 기본 구성 완료. 현행 `mode=personal`에서 두 경로 실행 검증 존재 |
-| 로컬 | 개인 | 불가 | `agent`: 구독 coding-agent의 MCP 판단 | 기본 구성 완료. Jev 없이 inspect → 판단·record |
-| 로컬 | 회사 | 허용 | 목표: 명시 선택 시 `jev`, 미설정·미선택 시 `agent` | `agent` 경로 지원. 현행 `mode=company`는 Jev 거절; 운영 주체 독립적 정책 전환 미구현 |
-| 로컬 | 회사 | 불가 | `agent`: 구독 coding-agent의 MCP 판단 | 기본 구성 완료. 현행 `mode=company`에서도 Jev 없이 판단 |
-| 클라우드 | 개인 | 허용 | 목표: 명시 선택 시 `jev`, 미설정·미선택 시 `agent` | 원격 서비스·연결·두 판단 경로 모두 구현 예정, 미배포·미검증 |
-| 클라우드 | 개인 | 불가 | 목표: `agent`의 원격 MCP 판단 | 구현 예정, 미배포·미검증 |
-| 클라우드 | 회사 | 허용 | 목표: 명시 선택 시 `jev`, 미설정·미선택 시 `agent` | 원격 서비스·연결·두 판단 경로 및 운영 주체 독립적 정책 전환 구현 예정, 미배포·미검증 |
-| 클라우드 | 회사 | 불가 | 목표: `agent`의 원격 MCP 판단 | 구현 예정, 미배포·미검증 |
+| 로컬 | 개인 | 불가 | 구독 coding agent → MCP | 실제 Codex의 새 claim 저장·동일 기억 재조회 |
+| 로컬 | 개인 | 허용·미선택 | 구독 coding agent → MCP | 실제 OMP의 저장·재조회, 보정된 Jev 요청 시도 증가 0 |
+| 로컬 | 개인 | 허용·명시선택 | Jev worker → 같은 서버 검증 | 실제 vendor remember·원문 span·동일 claim 재조회 |
+| 로컬 | 회사 | 불가 | 구독 coding agent → MCP | 실제 Claude의 새 claim 저장·동일 기억 재조회 |
+| 로컬 | 회사 | 허용·미선택 | 구독 coding agent → MCP | 실제 Codex의 저장·재조회, 보정된 Jev 요청 시도 증가 0 |
+| 로컬 | 회사 | 허용·명시선택 | Jev worker → 같은 서버 검증 | 실제 vendor remember·원문 span·동일 claim 재조회 |
+| 클라우드 | 개인 | 불가 | 구독 coding agent → 검증된 HTTPS MCP | 실제 OMP의 저장·재조회, 보정된 외부 API 트래픽 증가 0 |
+| 클라우드 | 개인 | 허용·미선택 | 구독 coding agent → 검증된 HTTPS MCP | 실제 Claude Opus5.5의 저장·재조회, 보정된 외부 API 트래픽 증가 0 |
+| 클라우드 | 개인 | 허용·명시선택 | 원격 Jev worker → 같은 서버 검증 | 실제 vendor remember·원문 span·동일 claim 재조회 |
+| 클라우드 | 회사 | 불가 | 구독 coding agent → 검증된 HTTPS MCP | 실제 Codex의 저장·재조회, 보정된 외부 API 트래픽 증가 0 |
+| 클라우드 | 회사 | 허용·미선택 | 구독 coding agent → 검증된 HTTPS MCP | 실제 OMP의 저장·재조회, 보정된 외부 API 트래픽 증가 0 |
+| 클라우드 | 회사 | 허용·명시선택 | 원격 Jev worker → 같은 서버 검증 | 실제 vendor remember·원문 span·동일 claim 재조회 |
+
+표의 실행은 전용 합성 배포 증거이며 운영 계정·실제 corpus 배포 완료가 아니다. 로컬의 CPython 요청 시도 계수와 클라우드의 TCP443 전송 계수는 관측 범위가 다르다. 외부 전송 0을 Python 내부의 연결 전 시도까지 관측한 결과로 표현하지 않는다. 실제 OMP 18.11.1의 MCP 실행은 advisory 경로 증거이며 strict 보호 지원을 뜻하지 않는다.
 
 `agent`는 memory 서버가 구독을 API 키처럼 쓰는 방식이 아니다. Claude Code·Codex·OMP의 현재 세션이 `memory_inspect`로 원문·기억을 읽고 `source_selection`·관계를 판단해 `memory_record`로 제출한다. `jev`는 서비스의 worker가 같은 검증 경로로 기록한다. 두 경로 모두 relevance는 현재 coding agent가 판단한다. 불확실·실패는 pending이며 다른 provider를 자동 호출하지 않는다.
 
-**현행 구현 제약:** 지금 코드는 `mode=personal`에서만 Jev를 허용하고 `mode=company`는 설정·실행 모두에서 거절한다. 이는 현재 구현 제약이지 “회사는 Jev 불가”라는 환경 정의가 아니다. 회사 운영+Jev 허용은 목표 구성이며 아직 사용할 수 없다. 운영 주체와 독립적인 egress 정책으로의 전환은 다음 구현 범위이고, 새 CLI flag나 기존 권한 변경이 이번 문서 작업에 포함된 것은 아니다.
+**허가와 선택은 별도다.** 개인·회사 모두 `state_dir/judge/egress-policy.json`이 없으면 Jev 불가다. operator의 명시 허가·egress 확인 뒤에도 기본 provider는 `agent`이며, 유효 키 검증과 `judge set jev`가 추가로 필요하다. 기존 Jev 설정이 있어도 새 허가가 없으면 전송·게시를 차단한다. 이전 개인 전용 live API 증거를 새 정책의 실행 증거로 재사용하지 않는다.
 
 
 ### 로컬 환경 (기본 구성 완료)
 
-![로컬 환경 기본 구성 완료: 개인 또는 회사가 운영하는 PC의 coding agent·host adapter·stdio relay가 loopback agents-memory·PostgreSQL 18에 연결한다. Jev 불가·미설정·미선택은 구독 coding-agent의 MCP inspect→판단·record, 허용·명시선택은 Jev worker 경로다. 현행 mode=personal만 Jev 지원하며 회사 Jev 허용 정책 전환은 미구현이다](docs/images/architecture-local.png)
+![로컬 환경: 개인·회사 운영 모두 독립 default-deny Jev 정책을 사용한다. 불가·미설정·미선택은 구독 coding-agent의 MCP 판단, 허용·명시선택은 Jev worker다. macOS launchd 자동 시작·장애 복구, DB readiness, bounded spool 자동 전송과 명시적 중지를 표시한다](docs/images/architecture-local.png)
 
-coding agent는 stdio relay로 MCP를 호출하고, host adapter는 hook capture를 SQLite spool에 넣은 뒤 `/api/capture`로 보낸다. 서비스는 `127.0.0.1`에만 bind하며 PostgreSQL 18이 정본이다. Jev 불가·미설정·미선택인 로컬 환경에서도 구독 coding agent가 `memory_inspect` → 원문 선택·관계 판단 → `memory_record`로 기억을 관리한다. Jev 허용·명시선택 시 worker가 pending 원문 window와 관계를 판단해 같은 서버 검증으로 기록한다(현행 지원은 `mode=personal`만). relevance는 양쪽 모두 coding agent의 몫이며, 불확실·실패는 pending으로 남고 자동 fallback은 없다.
+coding agent는 stdio relay로 MCP를 호출하고, host adapter는 hook capture를 SQLite spool에 넣은 뒤 `/api/capture`로 보낸다. 서비스는 `127.0.0.1`에만 bind하며 PostgreSQL 18이 정본이다. Jev 불가·미설정·미선택인 로컬 환경에서도 구독 coding agent가 `memory_inspect` → 원문 선택·관계 판단 → `memory_record`로 기억을 관리한다. 개인·회사 모두 Jev 허용·명시선택 시 worker가 pending 원문 window와 관계를 판단해 같은 서버 검증으로 기록한다. relevance는 양쪽 모두 coding agent의 몫이며, 불확실·실패는 pending으로 남고 자동 fallback은 없다.
 
-### 클라우드 환경 (구현 예정)
+### 클라우드 환경 (원격 경로 구현·격리 합성 검증)
 
-![클라우드 환경 구현 예정: 개인 또는 회사가 운영하는 원격 agents-memory·private PostgreSQL에 개발자 PC가 TLS·OAuth로 연결한다. Jev 허용·명시선택의 worker 경로와 불가·미설정·미선택의 구독 coding-agent MCP inspect→판단·record 경로 모두 예정이며, 회사 Jev 허용에는 정책 전환도 필요하다. 현재 구축·배포·실행 검증은 미완료다](docs/images/architecture-cloud.png)
+![클라우드 환경: 개인·회사 운영 모두 가능하다. PC의 구독 agent와 bounded spool이 검증된 HTTPS로 연결하고, Jev는 별도 허용·명시선택일 때만 호출한다. 실제 계정 provisioning과 corpus 이동은 별도다](docs/images/architecture-cloud.png)
 
-클라우드는 개인 또는 회사가 같은 core·API·schema를 원격에 배포하고 개발자 PC에서 안전하게 연결하는 다음 구현 작업이다. Jev 허용·명시선택이면 원격 worker가 원문 선택·관계를 판단하고, 불가·미설정·미선택이면 PC의 구독 coding agent가 원격 MCP `memory_inspect` → 판단 → `memory_record`로 처리하도록 구현한다. relevance는 항상 coding agent가 판단하며, **개인·회사 클라우드 모두 두 판단 경로가 구현 예정**이다. 원격 MCP·capture·relay transport, TLS·OAuth audience/principal·권한, private network·PostgreSQL, secret 관리, backup/restore·삭제 head witness, stop/drain·재연결, 운영 주체 독립적 명시 외부 전송 정책과 위 8개 사례 검증을 [이슈 #5](https://github.com/chonamdoo/agents-memory/issues/5)에서 관리한다. 실제 Claude/Codex 원격 실행 검증도 남아 있다. Caddy·Headscale·pgBackRest·restic은 후보이며 확정하거나 구축하지 않았다. 그림의 원본은 `docs/images/*.svg`이며 각 파일 첫 줄의 명령으로 PNG를 다시 만든다.
+클라우드는 개인 또는 회사가 같은 core·API·schema·규칙을 원격에 배포한다. PC는 DB DSN·operator credential을 갖지 않는다. 원격 MCP/capture, bearer 또는 issuer·audience·scope·현재 PG 권한을 검증하는 OAuth, one-binding bootstrap, private CA, bounded spool과 durable PC 중지·재연결을 구현했다. `deploy/cloud/`는 기존 PostgreSQL 18 Unix socket·SCRAM 인증을 사용하는 non-root 배포다. Caddy와 app은 독립 컨테이너이며 backend port는 publish하지 않는다. app은 선언한 private proxy IP 하나와 `X-Forwarded-Proto=https`만 신뢰한다. Caddy는 app state·journal·DB socket을 mount하지 않는다.
+
+서버 operator는 기존 `init`·project·credential CLI를 사용한 뒤 다음을 실행한다. ingress JSON은 `version`, `deployment_id`, `realm`, canonical `public_origin`, `auth_mode`를 명시한다. 이 Compose 배포에서는 `tls_proxy: "private"`, RFC1918 단일 `trusted_proxy_ip`를 지정하고 `AM_PROXY_IP`와 일치시킨다. `AM_BACKEND_SUBNET`은 그 주소를 포함하는 전용 subnet이다. OAuth는 public JWKS와 exact identity→현재 credential/generation 매핑을 추가하며 자동 discovery·issuer provisioning·token refresh는 하지 않는다.
+
+```sh
+uv run agents-memory --config "$SERVER_CONFIG" --token-file "$SERVER_OPERATOR_TOKEN_FILE" \
+  cloud configure --ingress-file "$INGRESS_FILE" --ack-remote-storage
+docker --context "$DOCKER_CONTEXT" compose --env-file "$CLOUD_ENV" \
+  -f deploy/cloud/compose.yaml up --detach --build
+```
+
+`CLOUD_ENV`는 Compose의 필수 `AM_*` 입력을 제공한다. state·journal·Caddy data는 각각 기존 private durable directory, config·DSN·token은0600이다. DB socket은 같은 cloud host의 기존 password-authenticated PostgreSQL 18에 연결하며 read-only socket mount가 DB read-only 권한을 뜻하지 않는다. public DNS·ACME 발급·IdP·private overlay network·외부 backup/삭제 head witness는 이 명령이 provision하지 않는다.
+
+PC의 remote profile 예시는 다음과 같다. wire/spool bound를 바꾼 서버는 `/api/client-bootstrap`이 반환한 bounds를 profile에도 명시한다. 서버 설정 파일이나 DSN을 PC에 복사하지 않는다.
+
+```json
+{
+  "kind": "remote_client",
+  "version": 1,
+  "deployment_id": "deployment_cloud",
+  "realm": "personal",
+  "mode": "personal",
+  "base_url": "https://memory.example.com",
+  "state_dir": "/home/user/.agents-memory/cloud-client",
+  "auth_mode": "bearer"
+}
+```
+
+```sh
+uv run agents-memory --config "$CLIENT_CONFIG" client configure \
+  --profile-file "$CLIENT_PROFILE" --ca-file "$PUBLIC_CA_FILE" --ack-remote-storage
+uv run agents-memory --config "$CLIENT_CONFIG" host-install \
+  --project "$PROJECT_ROOT" --binding "$BINDING_ID" --host claude \
+  --agent-token-file "$AGENT_TOKEN_FILE" --producer-token-file "$PRODUCER_TOKEN_FILE" \
+  --ack-remote-storage
+uv run agents-memory --config "$CLIENT_CONFIG" service install
+uv run agents-memory --config "$CLIENT_CONFIG" doctor
+```
+
+공인 CA를 쓰면 `--ca-file`을 생략한다. agent·producer는 별도 private credential이고 각 principal은 현재 one-binding grant를 가져야 한다. `doctor`는 TLS·DB readiness·identity를 확인할 뿐 credential 인증 완료를 주장하지 않는다. `host-install`이 실제 두 principal의 bootstrap·role·binding·bounds를 검증한다. macOS remote `service`는 PC outbox recovery만 관리하고 cloud server나 DB를 자동 시작하지 않는다. 구현은 corpus 저장·Jev 전송 승인이나 기존 배포 간 동기화를 만들지 않는다.
 
 ## 설치와 로컬 authority
 
@@ -86,7 +131,7 @@ uv run agents-memory --config "$CONFIG" --token-file "$OPERATOR_TOKEN_FILE" proj
 
 새 locator는 존재하는 canonical directory여야 한다. 이전 경로는 이미 삭제됐어도 exact expected locator로 검증한다. 첫 실행은 locator·revision만 변경하고 owner·label·grant·roster·memory·frozen target은 유지한다. 같은 key/인자의 replay는 같은 결과이며, 이후 다시 이전된 binding의 과거 replay는 committed conflict로 반환한다. 경로/CWD 변경 자체는 권한이나 승인이 아니다.
 
-배포 위치와 별개로 회사·고객·개인 corpus의 보안 경계는 유지한다. 서로 다른 deployment, database/schema, journal, state directory, token, port와 host 설정으로 격리한다. 다른 deployment로의 자동 동기화·무승인 이전 경로는 없으며, 승인된 회사 클라우드는 회사 배포다. 각 corpus의 명시적 저장·외부 전송 허가를 준수해야 하며 “회사”라는 이름만으로 클라우드 저장이나 Jev 허용 여부를 정하지 않는다. 기존 runtime 설정 `mode=personal|company`와 두 mode의 `capability: "agent_judged"` 식별자는 유지한다. 회사 coding-agent의 모델 처리 허가와 memory 저장·Jev 외부 전송 허가는 별개이며, 구독을 background API 허가로 간주하지 않는다. strict no-egress는 허가된 coding-agent 실행 경로와 OS/network 정책을 따로 구성해야 한다. 현행 `mode=company`는 Jev 설정·실행을 모두 거절하므로 허용된 회사 Jev 목표 구성을 지금 사용할 수는 없다. 같은 UID의 unrestricted agent와 private HOME만으로 악성 agent 차단이나 인간 승인을 증명하지 못한다.
+배포 위치와 별개로 회사·고객·개인 corpus의 보안 경계는 유지한다. 서로 다른 deployment, database/schema, journal, state directory, token, port와 host 설정으로 격리한다. 다른 deployment로의 자동 동기화·무승인 이전 경로는 없으며 승인된 회사 클라우드는 회사 배포다. 각 corpus의 명시적 저장·외부 전송 허가를 준수해야 하며 “회사”라는 이름만으로 클라우드 저장이나 Jev 허용 여부를 정하지 않는다. 기존 `mode=personal|company`와 두 mode의 `capability: "agent_judged"` 식별자는 유지한다. coding-agent 모델 처리·memory 저장·Jev 외부 전송 허가는 별개이며 구독을 background API 허가로 간주하지 않는다. strict no-egress는 허가된 coding-agent 실행 경로와 OS/network 정책을 따로 구성해야 한다. OS 파일 소유권과 operator bearer는 악성 same-UID agent 차단이나 인간/회사 승인의 증명이 아니다.
 
 `init`은 private recovery intent와 원래 operator credential을 먼저 영속화한다. bootstrap 이후 완료 receipt를 쓰지 못한 경우 같은 인자·owner·원래 token으로 `init --resume`한다. 기존 배포를 새 owner/token으로 묵시적으로 인수하지 않으며 완료 replay도 정상 변경한 설정을 초기값으로 되돌리지 않는다.
 
@@ -94,16 +139,19 @@ uv run agents-memory --config "$CONFIG" --token-file "$OPERATOR_TOKEN_FILE" proj
 
 captured 원문을 기억할지 누가 판단할지 고른다. relevance(`memory_context` 두 번째 호출)는 provider와 무관하게 항상 그 기억을 쓰는 coding agent가 판단한다.
 
-| provider | 판단 주체 | 외부 전송 | 현행 허용 runtime mode |
+| provider | 판단 주체 | 외부 전송 | 사용 조건 |
 |---|---|---|---|
-| `agent` (기본) | 지금 쓰는 Claude Code·Codex·OMP가 MCP `memory_inspect` → `memory_record`로 판단 | coding agent 자신의 모델 경로뿐 | `personal`·`company` |
-| `jev` | 서비스 안 Jev 판단 worker가 pending 원문 window를 TypeSafe Jev로 판단 | 판단할 원문 window·기존 기억 문장이 `https://api.typesafe.ai/v1/systemone`(미국)로 전송 | `personal`만 |
+| `agent` (기본) | 지금 쓰는 Claude Code·Codex·OMP가 MCP `memory_inspect` → `memory_record`로 판단 | coding agent 자신의 모델 경로뿐 | `personal`·`company` 모두 기본 |
+| `jev` | 서비스 안 Jev 판단 worker | 판단할 원문 window·기존 기억 문장이 `https://api.typesafe.ai/v1/systemone`(미국)로 전송 | 두 mode 모두 별도 명시 허가·선택·키 검증 필요 |
 
-`init`에서 `--judge`를 생략하면 `mode=personal` 터미널에서는 대화형으로 묻고, 비대화형·`mode=company`는 `agent`로 설정한다. 이미 설정된 배포의 `init` replay는 판단 설정을 바꾸지 않는다. 이후에는 operator CLI로 언제든 바꾼다. 실행 중인 서비스는 다음 Jev 요청 전에 파일을 다시 읽으므로 재시작 없이 반영되고, `agent`로 바꾸면 그다음 요청부터 전송을 멈춘다.
+`init`에서 `--judge`를 생략하면 개인·회사 모두 터미널에서는 대화형으로 묻고 비대화형에서는 `agent`로 설정한다. Jev는 별도 허가와 전송 확인이 필요하며 키 존재나 운영 주체로 허가를 추론하지 않는다. 기존 배포의 `init` replay는 현재 설정이나 명시적 중지를 초기화하지 않는다.
 
 ```sh
-uv run agents-memory --config "$CONFIG" init ... --judge jev --jev-key-file "$JEV_KEY_FILE"
+uv run agents-memory --config "$CONFIG" init ... --judge jev \
+  --jev-policy allow --ack-jev-egress --jev-key-file "$JEV_KEY_FILE"
+uv run agents-memory --config "$CONFIG" judge policy allow-jev --ack-egress
 uv run agents-memory --config "$CONFIG" judge set jev --key-file "$JEV_KEY_FILE"   # 또는 --prompt-key
+uv run agents-memory --config "$CONFIG" judge policy deny-jev
 uv run agents-memory --config "$CONFIG" judge set agent --forget-key
 uv run agents-memory --config "$CONFIG" judge status
 ```
@@ -115,7 +163,24 @@ uv run agents-memory --config "$CONFIG" judge status
 - Jev worker는 span마다 "장기 기억으로 남길 가치"를 묻고 p ≥ 0.8인 span만 원문 그대로 claim으로 기록한다(`subject="project"`, `predicate`=kind, `object`=원문 span). 모든 span이 p ≤ 0.2이면 discard한다. 그 사이이거나, tool·document 원문에 AI 지시 주입이 의심되거나, 관련 이전 거절과 같은 내용이면 기록하지 않고 pending으로 남겨 coding agent가 판단하게 한다. 정리(cleanup) 관계는 서버 검증을 통과할 수 있는 쌍만 묻고 p ≥ 0.8만 기록하며 0.5–0.8은 agent에게 남긴다.
 - 기록은 agent와 같은 `inspect → record` 검증·single-winner·거절 비교를 거치고 worker credential로 남는다. reason에는 `Jev(<model>)`와 확률·임계값이 기록된다. 다른 provider로의 자동 fallback은 없다.
 - 키 거절(401/403)이면 provider 설정이 바뀔 때까지 멈추고, 429·529·5xx·timeout은 짧게 재시도한 뒤 다음 주기로 미룬다. 요청·응답 본문은 로그·상태에 남기지 않는다.
-- TypeSafe 문서 기준 데이터는 미국에서 처리되고 입력으로 학습하지 않으며, zero data retention은 enterprise 계약에서만 제공된다. 고객 계약은 telemetry(로그·hash·통계)의 장기 보관을 허용한다. `mode=personal`에서 이 조건을 받아들일 수 있는 corpus에만 켠다.
+- TypeSafe 문서 기준 데이터는 미국에서 처리되고 입력으로 학습하지 않으며 zero data retention은 enterprise 계약에서만 제공된다. 고객 계약은 telemetry(로그·hash·통계)의 장기 보관을 허용한다. 운영 주체와 관계없이 이 조건에 대한 해당 corpus의 명시 허가가 있어야 한다. deny는 먼저 영속화하고 provider를 agent로 돌리며 worker credential을 폐기한다. 요청·응답·게시 시 policy/provider revision을 재검사하고 이미 전송된 데이터의 회수를 보장하지 않는다.
+
+### macOS 로컬 서비스 운영
+
+```sh
+uv run agents-memory --config "$CONFIG" service install
+uv run agents-memory --config "$CONFIG" service status
+uv run agents-memory --config "$CONFIG" service stop
+uv run agents-memory --config "$CONFIG" service start
+uv run agents-memory --config "$CONFIG" service uninstall
+```
+
+- per-user launchd 등록은 로그인 시 시작(`RunAtLoad`)과 비정상 종료 재시작을 설정한다. PostgreSQL·Docker 자체의 시작/복구는 관리하지 않으며 DB 중단은 readiness 실패로 표시한다. 로그인 동작 자체의 실측과 native 등록 설정 확인은 검증 기록에서 구분한다.
+- MCP/client는 process 존재가 아니라 DB 왕복·배포 identity·삭제 barrier를 포함한 `/readyz`를 통과해야 연결한다. native 시작·HTTP 대기를 하나의 전체 기한으로 제한하며 살아 있지만 DB-unready인 process를 강제 재시작하지 않는다.
+- capture는 기존 bounded·24시간 TTL spool에 남고 서비스가 준비되면 background recovery가 새 host event 없이 전송한다. 초과·만료·확정 거절·미확정 효과는 기존 gap/quarantine/idempotency 계약을 유지한다. operator readiness의 `spool_recovery`는 본문 없는 상태만 노출한다.
+- 장애는 빈 기억으로 바꾸지 않는다. 지원되는 strict protected action은 unavailable/unknown에서 차단한다. OMP strict 불가 등 기존 host capability gap은 이 서비스 관리로 해소되지 않는다.
+- `stop`은 먼저 durable disabled intent를 저장하고 launchd job 제거를 최대30초 확인한다. native 제거가 끝나지 않으면 성공으로 반환하지 않는다. 이후 client·spool recovery·install replay도 되살리지 않고 명시 `start`만 재개한다. job 제거와 모든 외부 요청·provider 효과의 확정은 별개다.
+- private config·code root·plist·receipt 소유권/변경을 검사하고 다른 deployment나 foreign job을 인수하지 않는다. 설치 package/venv는 삭제되는 임시 checkout 밖에 유지한다.
 
 ### 기존 배포의 명시적 전환
 
@@ -164,6 +229,10 @@ expansions JSON은 최대8개, 각512 UTF-8 bytes/합계4096 bytes의 문자열 
 
 같은 source의 겹친 discard span·새 origin의 동일 본문 remember는 `EVIDENCE_REJECTED`다. reject feedback은 연결 원문 전체에 대한 durable 차단이며 질의 한정 무관함은 context relevance로 제출한다. 독립적인 새 human/tool/document 근거와 실제 prior rejection·이유가 있어야 reopening할 수 있다. 서버는 paraphrase의 의미 동등성을 추론하지 않는다. snapshot·파생 target의 현재 전체 dependency는 별도 feedback/reason-source 읽기에도 적용한다. global claim은 scoped audit에서 생겼다는 이유만으로 private claim이 되지 않는다. `agent_note`는 raw log/inspection만 남기고 판단 admission·신규 pending·독립 수집 backlog를 만들지 않으며 memory echo도 새 독립 근거가 아니다.
 
+여기서 durable 차단은 **미래 remember 재게시**에 대한 것이다. `reject`는 operator 철회가 아니므로 기존 claim이 recall 후보에서 즉시 사라진다고 보장하지 않는다. 또한 backup 이후 PG에만 기록한 reject/discard는 restore로 되돌아갈 수 있다. 독립 삭제 journal의 retract/purge floor와 다른 계약이다. 이유/최소 metadata 보존·복원과 건강도 UX의 별도 제안은 [건강 관리 적대적 리뷰](docs/research/2026-10-15-memory-health-adversarial.ko.md), 실제 성장 대책은 [OSS DB 조사](docs/research/2026-10-15-oss-db-growth.ko.md)를 따른다. 새 health 기능·자동 삭제/전송은 구현하지 않았다.
+
+삭제의 범위는 content blacklist가 아니라 **source/origin identity와 그 파생 lineage**다. retract/purge 뒤 같은 origin을 replay하면 기존 철회 identity를 반환하며 본문·옛 claim을 되살리지 않는다. 같은 본문이라도 새 origin으로 독립 수집하면 새 source로 받아 다시 판단할 수 있지만, 판단 전에는 recall되지 않고 옛 claim·승인·lineage를 승계하지 않는다. 살아 있는 discard/reject 근거의 독립성·reopening 검증은 그대로 적용한다.
+
 Raw note·feedback reason·memory echo는 미판단 coverage에 포함하지 않는다. 이 로그만 남았다는 이유로 recall을 계속 `partial`로 표시하지 않지만, 미해결 human·일반 assistant·tool·document 원문과 불완전 capture coverage는 그대로 `partial`에 반영한다.
 
 ## Agent Flow 없이도 사용
@@ -186,7 +255,9 @@ host-install에 사용한 package/venv도 삭제될 임시 checkout 밖에 유�
 
 native workspace/MCP/hook 승인은 별도다. installer는 trust를 위조하지 않는다. Claude는 native MCP 승인이 필요할 수 있고 Codex project 설정은 trusted project에서만 로드된다. Codex noninteractive `exec`의 approval=never가 MCP 호출을 차단할 수 있다. 사용자가 검토한 선택 MCP 도구에만 per-tool `approval_mode="approve"`를 적용할 수 있으며 전체 permissions/hook trust를 bypass하지 않는다. `memory_context`는 durable admission을 만들므로 단순 무상태 read로 취급하지 않는다. [Codex 공식 MCP 설정](https://developers.openai.com/codex/mcp)을 확인한다.
 
-generic MCP는 자동 호출/자연어 준수를 강제하지 않는다. opt-in native adapter의 capture·context·lifecycle 지원 범위도 다르다. Claude 일반 prompt의 원본 attribution, OMP print/ACP capture, Codex hosted tool guard, 후속 provider input의 실제 보존/소비는 관측 불가 경로가 있다. Claude/Codex의 지원 strict 행동은 capability gap/block으로 처리한다. **OMP의 새 `--strict` 설치는 native pre-request 예외/timeout의 fail-closed gate가 없으므로 `HOST_STRICT_UNSUPPORTED`로 설정 쓰기 전에 거절한다.** OMP의 advisory/MCP 수동 호출은 지원한다. 역사적 strict receipt는 정확한 owned uninstall/rollback용으로만 허용하며 기존 extension은 제거·재설치 후 host를 재시작해야 한다. receipt 거절이 이미 로드된 옛 host의 직접 provider 호출을 막는다고 주장하지 않는다. offered context는 consumed/enforced가 아니다.
+generic MCP는 자동 호출/자연어 준수를 강제하지 않는다. opt-in native adapter의 capture·context·lifecycle 지원 범위도 다르다. Claude 일반 prompt의 원본 attribution, OMP print/ACP capture, Codex hosted tool guard, 후속 provider input의 실제 보존/소비는 관측 불가 경로가 있다. **Codex의 새 `--strict` 설치는 실제 native 보호 검증 실패 때문에 `HOST_STRICT_UNSUPPORTED`로 설정 쓰기 전에 거절한다. advisory/MCP 설치는 `--strict` 없이 명시적으로 선택해야 하며 자동 downgrade하지 않는다.** 과거 Codex strict receipt의 metadata는 설치 지원·보호 승인 증거가 아니며 기존 owned 설정은 uninstall할 수 있다. 이미 로드된 native hook을 이번 거절이 비활성화하지는 않는다. Claude도 실제 callback·거절·무부작용이 관측된 host/tool 경로와 관측 불가 경로를 구분한다. **OMP의 새 `--strict` 설치도 native pre-request 예외/timeout의 fail-closed gate가 없으므로 같은 오류로 설정 쓰기 전에 거절한다.** OMP의 advisory/MCP 수동 호출은 지원한다. 역사적 OMP strict receipt는 정확한 owned uninstall/rollback용으로만 허용하며 기존 extension은 제거·재설치 후 host를 재시작해야 한다. receipt 거절이 이미 로드된 옛 host의 직접 provider 호출을 막는다고 주장하지 않는다. offered context는 consumed/enforced가 아니다.
+
+**최신 native 검증 경계:** Codex0.162.1은 strict 정의 설치와 구독 MCP 성공만으로 파일 변경이 차단되지 않았다. 유효한 단일 patch가 실제 합성 파일을 변경했으므로 Codex strict 첫 행동·중지·복구 보호는 미완료다. native hook 활성·신뢰·callback 실행을 별도로 확인해야 한다. Claude의 실제 Read는 healthy/stop/recovery에서 callback·거절·무부작용을 확인했지만, provider input 소비 보장을 뜻하지 않는다. [공식 리뷰 후 실제 실행/남은 gate](docs/verification.ko.md#공식-리뷰-후-fix-loop--development20261015-131245)를 따른다.
 
 ## 호출 계약
 
@@ -207,6 +278,8 @@ generic MCP는 자동 호출/자연어 준수를 강제하지 않는다. opt-in 
 승인자 credential을 바꾸기 전 `credential revoke --credential-id "$ID" --preview`로 본문 없는 영향 목록을 확인한다. 활성 required rule이 영향받으면 `--ack-required-rules` 없이는 폐기를 거절한다. 폐기 후 같은 immutable proposal·frozen scope/targets를 fresh 승인 key로 재승인하면 새 rule ID와 더 높은 revision을 만든다. 무관한 project roster 증가 때문에 기존 frozen target의 재승인을 막거나 새 project를 자동 포함하지 않는다. 회사 공유 승인의 fresh managed signature 요건은 그대로 유지한다. 원문이 철회된 proposal이나 변경된 body/범위를 기존 승인으로 부활시키지 않는다.
 
 ## 운영
+
+설치 전 호환성 확인, 소비 프로세스 quiesce, encrypted final backup, package 교체, fresh credential, 장애별 복구와 실제 검증의 구분은 [설치·업그레이드·장애 복구 runbook](docs/release-runbook.ko.md)을 따른다. 이 절차의 문서화는 전체 의존성 offline 배포나 실제 재부팅·장기 trial 완료를 뜻하지 않는다.
 
 `doctor`, `stats`, `inspect`, bounded `spool enqueue/status/flush`를 제공한다. 신규 capture backlog는 binding별이며 legacy revalidation·cleanup·판단 불가 원문 때문에 다른 프로젝트의 수집을 막지 않는다. stats의 `current_operations/current_jobs/dlq`는 현재 미해결 복구 대상이고 `historical_operations/historical_jobs/recovery_jobs`는 원래 상태·오류·attempt와 successor disposition을 보존한다. successor 해결 뒤 historical 실패를 지우거나 현재 degraded로 계속 세지 않는다. journal은 DB restore 밖에 있으며 본문 대신 HMAC source/origin identifiers와 fsync chain을 기록한다. pending을 빈 corpus나 자동 완료로 보고하지 않는다. 제품 health metrics 대시보드·새 telemetry는 이번 범위 밖이다.
 
@@ -230,4 +303,4 @@ Claude recovery intent는 canonical project의 소유한 `mcpServers.agents-memo
 
 logical retraction, local drain, provider completion unknown, local row purge와 WAL/media/backup erasure는 서로 다른 상태다. socket cancel이나 row 삭제를 모든 사본 삭제로 주장하지 않는다.
 
-public/synthetic corpus의 1–2주 paired memory-on/off 제한 trial은 [설계 10절](docs/architecture.ko.md#10-12주-trialcloud-전환)의 고정 범위·기록·중단·판정 조건을 따른다. 로컬 환경은 기본 구성 완료지만 trial은 시작하지 않았으며 elapsed 기간·측정 효익·일반 출시 완료를 주장하지 않는다. 회사 Jev 허용을 위한 운영 주체 독립적 외부 전송 정책 전환과 개인·회사 클라우드의 서비스·연결·두 판단 경로·사례별 검증은 [이슈 #5](https://github.com/chonamdoo/agents-memory/issues/5)의 다음 구현 작업이다. provisioning·TLS·OAuth ingress·실제 원격 실행 검증도 미완료다. 이번 문서 변경은 corpus 이동·저장/외부 전송 허가나 egress 설정 변경이 아니다. publication/commit/push/PR/merge는 별도 승인이다.
+public/synthetic corpus의 1–2주 paired memory-on/off 제한 trial은 [설계 10절](docs/architecture.ko.md#10-12주-trialcloud-전환)의 고정 범위·기록·중단·판정 조건을 따른다. trial은 미시작이며 elapsed 기간·측정 효익·일반 출시 완료를 주장하지 않는다. 클라우드 구현·격리 합성 검증은 최신 사용자 지시로 진행하지만 실제 계정 provisioning·실제 corpus 저장/이동·egress 승인은 별개다. 전체 #5 acceptance·공식 review/QA/handoff·별도 출시 승인은 merge·일반 배포·안정 운영 전환 gate로 유지한다. 2026-10-16 사용자의 “일단 지금까지 한 것으로 커밋·푸시·PR” 지시로 현재 작업의 **checkpoint commit/push·Draft PR 게시만** 별도 허용했다. 이는 기능 완료·리뷰 승인·merge·출시 승인이 아니다. main merge 뒤의 실제 Agent Flow 폴더 설치도 별도 확인한다. 구조도 원본은 `docs/images/*.svg`다.

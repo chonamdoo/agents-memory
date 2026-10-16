@@ -2,13 +2,52 @@
 
 ## Unreleased
 
-### 배포 환경 문서·계획 정리
+### 이슈 #5 후속 — strict 설치 안전성과 삭제 재유입
 
-- 배포 위치(로컬/클라우드)·운영 주체(개인/회사)·Jev 외부 API 정책(허용/불가)을 독립 축으로 설명하고 README에 8행 사례 표를 추가했다. 개인 로컬+Jev 불가와 회사 클라우드+Jev 허용도 포함하며, 두 구조도와 본문에 Jev 허용·명시선택의 worker 경로 및 불가·미설정·미선택의 구독 coding-agent MCP 판단 경로를 표시한다. relevance는 항상 coding agent, 두 기록 경로 모두 서버 검증·불확실/실패 pending·자동 fallback 없음이다.
-- 로컬은 기본 구성 완료이며 회사 Jev 허용까지 구현된 상태는 아니다. 현행 `mode=personal`만 Jev 허용·`mode=company` 거절은 구현 제약으로 분리했다. 운영 주체 독립적 명시 외부 전송 정책으로의 전환, 개인·회사 클라우드의 서비스·연결·양 판단 경로와 사례별 검증은 통합 [이슈 #5](https://github.com/chonamdoo/agents-memory/issues/5)의 다음 구현 범위다. 제한 trial 미시작·일반 출시 미완료와 구분한다.
-- 이번 변경은 문서·그림·계획 갱신이며 코드 구현·배포·권한·egress 설정을 바꾸지 않는다. 기존 runtime 식별자, 현행 Jev 제한, corpus 격리·각 corpus의 저장/외부 전송 허가·공유 승인 계약을 유지한다. 승인된 회사 클라우드는 회사 배포이며 다른 deployment로의 자동 동기화·무승인 이전은 허용하지 않는다. 과거 변경 이력·검증 기록·연구 원문은 당시 기록으로 보존한다.
+- 현재 source의 정확한 `uv run pytest -q`는 **2,161 pass/skip0/518.79초**다. 최초2113pass/48fail의 Homebrew symlink ownership 거절을 보존하고 private regular interpreter·정상 ownership·isolated source와69개 실패 표면을 먼저 검증했다. 제품 guard·Homebrew 권한은 변경하지 않았다.
 
-### 판단 provider 선택 (agent | Jev)
+- Codex 신규 `--strict`는 실제 native 보호 실패 상태에서 성공처럼 등록하지 않고 `HOST_STRICT_UNSUPPORTED/not_started`로 설정 쓰기 전에 거절한다. 자동 advisory downgrade는 없으며 명시 advisory/MCP·기존 owned 정리는 유지한다. Codex native 보호 구현 완료로 표시하지 않는다.
+- 삭제 identity/lineage floor와 동일 본문의 새 origin 재판단을 문서화했다. retract/purge 두 회귀와 새 설치 CLI/advisory MCP→HTTP/PG에서 기존 origin 비부활·옛 본문 부재·재판단 전 비노출·새 claim/source만 citation을 확인했다. R05의 누락 비교·잘못된 reference·비독립 근거 오류를 구분했다.
+- [설치·업그레이드·장애 복구 runbook](docs/release-runbook.ko.md)을 추가했다. 문서 절차와 실제 안정 cutover·OS login/reboot/sleep·restore 수행 증거를 혼동하지 않는다.
+- app+runtime34 wheels를 hash 필수·index/cache 비활성 local 입력으로 설치하고 `pip check`·isolated Python43파일 일치를 확인했다. lock CycloneDX와 실제 target35 distributions의 license-file inventory를 준비했다. Python/PG/tools/age/OS·build backend·다른 ABI·license/배포 승인까지 포함한 offline release 완료는 아니다.
+- 현재 source는 `744b84b1…297f15`다. 앞선2,164 pass는 이전 source 이력이며 이번 controller 실행·남은 공식/native/trial gate는 [검증 기록](docs/verification.ko.md#이슈-5-후속--승인-없는-구현과-설치-소비자-검증)을 따른다.
+
+
+### 두 번째 공식 리뷰 — Jev 재시도·발급 복구·readiness
+
+- Jev와 key 검증의 실제 HTTP 시도마다 현재 허가를 확인한다. backoff 중 철회·provider/policy revision 변경 뒤 새 전송을 차단하며 이미 admission된 요청의 회수를 주장하지 않는다.
+- deny 중단 후 reallow는 agent 전환·폐기를 먼저 완결한다. 새 credential의 발급 전 private intent와 PG clock 직렬화로 lost-response/미확정 commit을 복구한다. 손상 provider는 명시 agent 복구를 요구한다.
+- 익명 readiness도 삭제 barrier를 유지하되 Store 소유의 단일 live 검증을 공유한다. 실제 HTTP timeout8건·검증1개·health 유지·해제 후 DB readiness 회복과 새 wheel의 합성 live Jev remember/active claim을 확인했다.
+- effective 허가와 configured provider를 구분하고 project add의 후속 grant 실패는 committed로 보고한다. bootstrap principal 용어와 [원래 Shorts 분석의 출처 연결](docs/research/2026-10-16-shorts-lTja2ZxXYyI.ko.md)을 보완했다.
+- 같은 source에서 Ruff/build와 **정확한 `uv run pytest -q`:2,164 pass/skip0**를 확인했다. QA interpreter·isolated MCP project 설치 prerequisite를 고친 과정의 실패 이력은 보존했다. 새 noneditable wheel의 실제 구독 Claude/Codex/OMP도 deny/agent·키 없음에서 원문 판단·저장·같은 claim/예외 최종 context를 통과했다.
+- 두 번째 공식 리뷰의 request-changes를 controller 실행으로 승인으로 바꾸지 않았다. Codex native trust/callback·실제 보호·수정 후 승인 리뷰·공식 QA/handoff·trial·runtime 게시는 여전히 별도 gate다.
+- 재개 검증용 subscriber native 등록·credential·private trace/project와 QA env/cache를 정리하고 owned service/PG를 중지했다. 정상 native 승인 재검증용 최소 private fixture는 남아 있으며 전체 철거·운영 cutover 완료를 주장하지 않는다.
+
+### 공식 리뷰 후 deadline·경합·운영 복구 수정
+
+- HTTP DNS/connect/TLS/send/response 전체 deadline과 종료·회수 가능한 resolver를 적용했다. unknown mutation은 재전송하지 않는다. remote recovery20초 cycle budget과 private spool 단일 flush owner를 추가했다.
+- launchd 설치/삭제 durable intent·중단 후 정상 명령 재개·disabled 보존을 구현했다. Jev setup/deny/provider/credential retirement와 실제 publication commit의 cross-process 경합을 막고 미완료 revoke intent를 보존한다.
+- bootstrap identity/권한 경계, public operator 거절과 business route의 인증 전 journal sweep 제거, remote CA commit rollback, MixedCase Unix socket 및 Codex context 미출력 lifecycle metadata를 수정했다. 익명 readiness의 검증 누적은 위 두 번째 리뷰에서 별도로 해결했다.
+- 이 첫 fix-loop 당시 직접 실행은 Ruff/build 성공·전체2,143 pass/skip0, 실제 HTTP/TLS16경우·launchd crash intent·새 개인/회사 HTTPS package·noneditable wheel·실제 구독 Claude/Codex/OMP MCP 판단/저장/최종 read다. 후속 source의 새 통과로 재사용하지 않으며 [관측과 한계](docs/verification.ko.md#공식-리뷰-후-fix-loop--development20261015-131245)를 구분한다.
+- **Codex strict native 보호는 아직 입증되지 않았고 유효 patch의 실제 변경 실패를 기록했다.** 합성 파일은 원복했다. 설치/MCP 성공을 native 첫 행동 차단으로 취급하지 않으며 native 승인이나 workflow guard를 우회하지 않는다. fresh 공식 review/QA/handoff·전체 acceptance·trial·runtime 게시는 미완료다.
+
+### 로컬·클라우드 원격 경로와 독립 판단 정책
+
+- 개인/회사 × 로컬/클라우드 × Jev 허용/불가의 독립 축을 유지한다. 개인·회사 로컬은 별도 `egress-policy.json` default-deny, 명시 allow+확인과 provider 선택·키 검증을 분리했다. deny는 먼저 저장하고 agent 전환·worker credential 폐기, 요청·응답·게시 revision fence를 적용한다. 키·기존 personal 설정만으로 허가를 추론하지 않는다.
+- per-user macOS launchd install/start/stop/status/uninstall, 로그인 시작 등록·비정상 종료 재시작·durable manual stop을 추가했다. native 제어와 DB-inclusive `/readyz`가 하나의 전체 기한을 공유하며 살아 있는 DB-unready 서비스를 죽이지 않는다. PostgreSQL/Docker 자체는 관리하지 않는다.
+- provider와 독립적인 bounded capture spool recovery가 새 host event 없이 준비 회복 후 전송한다. 기존24시간 TTL·물리 상한·stable key/unknown-effect 계약을 유지하며 owned intermediate0755/leaf0700 설치 layout을 안전하게 처리한다. operator-only body-free 상태, 실패 격리된 worker shutdown·application drain·DB close를 추가했다.
+- claude-mem OMP/Claude/Codex의 실제 구현·merged/open 수정과 #5의86개 후보를 [OSS 연구](docs/research/2026-10-15-oss-local-runtime.ko.md)에 정리했다. deadline·실패 격리·production pipe·설치 소비자·비공허 native gate 검증 패턴만 기존 계약에 독립 구현하며 새 memory engine/provider·transcript 수집을 도입하지 않는다.
+- 새 정책에서 개인/회사 × 로컬/클라우드 실제 Jev remember·원문 span·재조회를 합성 데이터로 확인했다. 다운로드 원본 키는 프로그램만 읽고0600 서비스 사본을 사용하며 assistant/로그/GitHub에 값을 노출하지 않는다. 구독 Claude/Codex/OMP의 실제 MCP 판단·저장·동일 claim 재조회 및 no-call 관측 범위는 [검증 기록](docs/verification.ko.md)에 구분한다. 현재 작업트리를 PR #9 remote runtime·공식 QA·일반 출시로 표현하지 않는다.
+- 메모리 건강 관리 제안을 실제 native Opus5.5/Sol6.1로 독립 리뷰하고 최초 과장을 반증·정정했다. [건강 관리 리뷰](docs/research/2026-10-15-memory-health-adversarial.ko.md)는 provenance/Accept-Reject/coalesce/retention·구형 DB/backup의 영향과 권한을 구분한다. [DB 성장 조사](docs/research/2026-10-15-oss-db-growth.ko.md)는 #5 후보의 실제 merged 수정·코드·기본값·재개/삭제 위험과 별도 PG/SQLite 합성 실험을 기록한다. Reject가 즉시 recall 제외·철회가 아니고 post-backup disposition rollback은 별도 요구임을 현재 문서에 명시했다. health subsystem·자동 망각·추가 전송은 도입하지 않았다.
+- strict remote profile·verified HTTPS/public CA·전체 body deadline·현재 PG bearer/OAuth 매핑·one-binding bootstrap·DB 비밀 없는 PC host receipt와 remote client supervisor를 추가했다. 정확한404/not_started session만 안전하게 재초기화하며 unknown write 재전송·원격 authority 자동 기동은 하지 않는다.
+- 실제 실패를 수정했다: unsupported SQLite의 WAL 쓰기 전 차단, CLI closed-pipe 성공 exit, Python3.13 symlink-loop와 missing-cwd 분류, custom Claude native 경로의 clean-env 보존, launchd 비동기 bootout 뒤 즉시 start race, SQLAlchemy Unix DSN host decode. 원문/권한 guard를 완화하거나 기억 없음으로 숨기지 않았다.
+- Caddy shared-network-namespace의 app crash 후 영구 HTTPS 장애를 재현해 독립 private-network 컨테이너와 exact proxy IP 신뢰로 전환했다. non-root/read-only·backend 미공개·proxy의 app secret/journal/socket 미mount를 유지하고 자동 HTTPS+DB 회복을 확인했다. pgBackRest/restic/Headscale·외부 삭제 witness·실제 cloud 계정 provisioning은 추가하지 않았다.
+- cloud 구현·합성 검증은 최신 지시로 trial과 별도 진행한다. 실제1–2주 trial·전체 #5 acceptance·fresh 공식 review/QA/handoff·publication gate와 실제 corpus 승인 경계는 유지한다.
+
+
+### 이전 PR #8 판단 provider 선택 (agent | Jev)
+
+아래는 당시 개인 전용 구현·검증 이력이다. 현재 허용 정책은 위의 운영 주체 독립 default-deny 계약을 따른다.
 
 - 원문 선택·관계 정리 판단 provider를 `agent`(기본, 지금 쓰는 coding agent)와 `jev`(TypeSafe Jev, 개인 배포 전용) 중에서 고른다. `init --judge`(개인 터미널에서는 대화형 질문)로 설치 때 정하고 `judge set agent|jev`·`judge status`로 언제든 바꾸고 확인한다. MCP는 `memory_inspect(ref="judge")` 조회만 하며 provider를 바꿀 수 없다. relevance는 provider와 무관하게 coding agent가 판단한다.
 - provider·키·worker token은 Settings·DB가 아니라 `state_dir/judge`의 0600 파일에 둔다. Settings digest·init intent·host receipt·backup/restore 형식은 바뀌지 않는다. 키는 `--key-file` 또는 화면 표시 없는 입력으로만 받고 합성 질문으로 검증한 뒤 저장하며, 응답에는 HMAC fingerprint만 나온다. 회사 모드는 설정과 worker 실행 모두에서 `JUDGE_PROVIDER_FORBIDDEN`이다.

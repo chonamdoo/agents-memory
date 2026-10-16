@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 from alembic import command
 from alembic.config import Config
@@ -21,6 +21,9 @@ def _arguments(dsn: str) -> tuple[str, dict]:
     query = dict(parse_qsl(parts.query))
     schema = query.pop("schema", None)
     options = {"passfile": "/dev/null"}
+    host = unquote(parts.netloc.rsplit("@", 1)[-1].split(":", 1)[0])
+    if host.startswith("/"):
+        options["host"] = host
     if schema is not None:
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", schema):
             raise ValueError("Invalid schema name")

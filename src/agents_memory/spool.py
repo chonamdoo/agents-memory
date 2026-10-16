@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sqlite3
@@ -42,8 +43,22 @@ RECEIPT_MAX_COUNT = 4096
 HOUSEKEEPING_ROWS = 128
 
 
+def require_supported_sqlite() -> None:
+    version = sqlite3.sqlite_version_info
+    if (version >= (3, 51, 3)
+            or (3, 50, 7) <= version < (3, 51, 0)
+            or (3, 44, 6) <= version < (3, 45, 0)):
+        return
+    raise DomainError(
+        "SPOOL_SQLITE_UNSUPPORTED",
+        "Capture requires SQLite 3.51.3+ or the patched 3.50.7/3.44.6 release line",
+        status=503, effect=EffectState.NOT_STARTED,
+    )
+
+
 class ProducerSpool:
     def __init__(self, path: Path, deployment_id: str, binding_id: str, limit_bytes: int) -> None:
+        require_supported_sqlite()
         self.path = path
         self.deployment_id = deployment_id
         self.binding_id = binding_id
@@ -455,6 +470,24 @@ class ProducerSpool:
     def flush(self, client: LocalClient, limit: int = 32) -> dict:
         if not 1 <= limit <= 128:
             raise DomainError("SPOOL_LIMIT_INVALID", "Choose a bounded flush limit")
+        descriptor = os.open(
+            str(self.path) + ".flush.lock",
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600,
+        )
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise DomainError("SPOOL_PATH_DENIED", "The outbox delivery lock must be private and owned")
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {"committed": 0, "newly_quarantined": 0, "errors": [],
+                        "flush_owner": "busy", **self.status()}
+            return self._flush_owned(client, limit)
+        finally:
+            os.close(descriptor)
+
+    def _flush_owned(self, client: LocalClient, limit: int) -> dict:
         self._housekeep()
         accepted, quarantined = 0, 0
         failures = []

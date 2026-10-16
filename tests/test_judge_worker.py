@@ -1,26 +1,34 @@
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 from dataclasses import dataclass, field
+from threading import Event
 
 import pytest
 import pytest_asyncio
+from test_jev_client import http_error
 from test_store_authority import TOKEN
 from test_store_authority import authority as authority
 
 from agents_memory.application import Application
 from agents_memory.config import Settings
 from agents_memory.domain import CaptureCommand, DomainError, Principal, Role
-from agents_memory.jev import JevFailure, JevResult
+from agents_memory.jev import JevClient, JevFailure, JevResult
 from agents_memory.judge import (
+    EGRESS_POLICY_FILE,
     KEY_FILE,
     PROVIDER_FILE,
     TOKEN_FILE,
+    EgressPolicy,
     JudgeState,
     judge_dir,
     key_fingerprint,
+    load_egress_policy,
     load_state,
     read_worker_token,
+    set_egress_policy,
     set_jev,
 )
 from agents_memory.judge_worker import JudgeWorker
@@ -53,7 +61,8 @@ class FakeJev:
         self.constructed += 1
         return self
 
-    def system_one(self, state, questions):
+    def system_one(self, state, questions, *, before_attempt):
+        before_attempt()
         self.calls.append((json.loads(json.dumps(state)), dict(questions)))
         if self.on_call is not None:
             self.on_call(len(self.calls))
@@ -126,6 +135,7 @@ async def world(authority):
     settings = store.settings
     settings.state_dir.mkdir(parents=True, exist_ok=True)
     settings.state_dir.chmod(0o700)
+    await set_egress_policy(settings, store, authority.actor, jev_allowed=True)
     await set_jev(settings, store, authority.actor, KEY, verify=lambda key, model: "jev-1.13.0")
     operator = await store.authenticate(TOKEN)
     application = Application(settings, store)
@@ -135,7 +145,9 @@ async def world(authority):
     return World(store, operator, authority.binding_id, settings, application, jev, worker)
 
 
-async def test_confident_decision_is_remembered_verbatim_under_the_worker_credential(world):
+@pytest.mark.parametrize("deployment_mode", ["personal", "company"])
+async def test_confident_decision_is_remembered_verbatim_under_the_worker_credential(world, deployment_mode):
+    world.worker.settings = world.settings.model_copy(update={"mode": deployment_mode})
     world.jev.remember = {"decided": 0.93}
     world.jev.kind = "finding"
     captured = await world.capture("remember-source", f"{DECISION} {CHATTER}")
@@ -284,14 +296,19 @@ async def test_provider_switch_during_a_request_discards_the_result(world):
 
 class Tripwire:
     def __getattr__(self, name):
-        pytest.fail(f"A company refusal touched {name}")
+        pytest.fail(f"A denied or unselected judge touched {name}")
 
 
-async def test_company_deployment_refuses_jev_before_constructing_a_client(tmp_path):
+@pytest.mark.parametrize("deployment_mode", ["company", "personal"])
+@pytest.mark.parametrize("policy", ["absent", "denied", "invalid"])
+async def test_denied_policy_refuses_jev_before_constructing_a_client(tmp_path, deployment_mode, policy):
     state_dir = tmp_path / "state"
     state_dir.mkdir(mode=0o700)
-    settings = Settings(deployment_id="deployment-001", realm="company", mode="company", database_dsn="postgresql://not-used",
-        state_dir=state_dir, journal_dir=tmp_path / "journal")
+    settings = Settings(deployment_id="deployment-001", realm=deployment_mode, mode=deployment_mode,
+        database_dsn="postgresql://not-used", state_dir=state_dir, journal_dir=tmp_path / "journal")
+    if policy != "absent":
+        private_write(judge_dir(settings) / EGRESS_POLICY_FILE,
+            EgressPolicy(jev_allowed=False).model_dump_json() if policy == "denied" else "{invalid")
     private_write(judge_dir(settings) / KEY_FILE, KEY + "\n")
     private_write(judge_dir(settings) / TOKEN_FILE, "worker-token\n")
     private_write(judge_dir(settings) / PROVIDER_FILE, JudgeState(
@@ -299,11 +316,12 @@ async def test_company_deployment_refuses_jev_before_constructing_a_client(tmp_p
         credential_id="credential_worker").model_dump_json())
 
     def forbidden_client(key, model):
-        pytest.fail("A company deployment constructed a Jev client")
+        pytest.fail("Denied Jev egress constructed a client")
 
     worker = JudgeWorker(settings, Tripwire(), Tripwire(), client_factory=forbidden_client)
     assert await worker.cycle() is False
-    assert worker.phase == "refused" and worker.last_error == "JUDGE_PROVIDER_FORBIDDEN"
+    expected = "JUDGE_EGRESS_POLICY_INVALID" if policy == "invalid" else "JUDGE_PROVIDER_FORBIDDEN"
+    assert worker.phase == "refused" and worker.last_error == expected
 
 
 async def test_rejected_key_pauses_until_the_provider_revision_changes(world):
@@ -351,3 +369,218 @@ async def test_judge_view_rejects_window_arguments(world, window):
     with pytest.raises(DomainError) as caught:
         await world.application.inspect(agent, "judge", world.binding_id, **window)
     assert caught.value.code == "INPUT_INVALID"
+
+
+@pytest.mark.parametrize("deployment_mode", ["company", "personal"])
+@pytest.mark.parametrize("allowed", [False, True])
+async def test_unselected_jev_does_not_dispatch_any_judge(tmp_path, deployment_mode, allowed):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(mode=0o700)
+    settings = Settings(deployment_id="deployment-001", realm=deployment_mode, mode=deployment_mode,
+        database_dsn="postgresql://not-used", state_dir=state_dir, journal_dir=tmp_path / "journal")
+    if allowed:
+        actor = Principal(id="owner_test", credential_id="credential_operator", realm=deployment_mode,
+            role=Role.OPERATOR, generation=1, bindings=())
+        await set_egress_policy(settings, Tripwire(), actor, jev_allowed=True)
+    worker = JudgeWorker(settings, Tripwire(), Tripwire(),
+        client_factory=lambda *_: pytest.fail("An unselected provider constructed a client"))
+    assert await worker.cycle() is False
+    assert worker.provider == "agent" and worker.phase == "idle"
+
+
+@pytest.mark.parametrize("revoke_on_request", [1, 2])
+async def test_policy_revocation_during_request_drops_results_before_source_publication(world, revoke_on_request):
+    world.jev.remember = {"decided": 0.95}
+
+    def revoke(number):
+        if number == revoke_on_request:
+            policy = load_egress_policy(world.settings)
+            private_write(judge_dir(world.settings) / EGRESS_POLICY_FILE,
+                EgressPolicy(jev_allowed=False, revision=policy.revision + 1).model_dump_json(), replace=True)
+
+    world.jev.on_call = revoke
+    await world.capture("policy-fenced-source", DECISION)
+    await world.worker.cycle()
+    assert len(world.jev.calls) == revoke_on_request
+    assert await world.selections() == []
+    assert await world.pending("source_selection") == ["pending"]
+    assert world.worker.phase == "refused"
+    assert world.worker.last_error == "JUDGE_PROVIDER_FORBIDDEN"
+
+
+async def test_policy_revocation_during_cleanup_request_drops_relations(world):
+    await remembered_pair(world)
+    calls_before = len(world.jev.calls)
+
+    def revoke(number):
+        policy = load_egress_policy(world.settings)
+        private_write(judge_dir(world.settings) / EGRESS_POLICY_FILE,
+            EgressPolicy(jev_allowed=False, revision=policy.revision + 1).model_dump_json(), replace=True)
+
+    world.jev.on_call = revoke
+    await world.worker.cycle()
+    assert len(world.jev.calls) == calls_before + 1
+    assert await world.rows("SELECT id FROM am_claim_judgments WHERE binding_id=$1", world.binding_id) == []
+    assert await world.pending("cleanup") == ["pending"]
+
+
+async def test_operator_deny_during_inflight_request_retires_authority_and_blocks_publication(world):
+    request_started, finish_request = Event(), Event()
+    world.jev.remember = {"decided": 0.95}
+
+    def hold_response(number):
+        request_started.set()
+        assert finish_request.wait(10), "Test did not release the in-flight response"
+
+    world.jev.on_call = hold_response
+    await world.capture("operator-policy-fence", DECISION)
+    token = read_worker_token(world.settings)
+    cycle = asyncio.create_task(world.worker.cycle())
+    try:
+        assert await asyncio.to_thread(request_started.wait, 10)
+        result = await set_egress_policy(world.settings, world.store, world.operator, jev_allowed=False)
+        assert result["provider"] == "agent"
+    finally:
+        finish_request.set()
+        await cycle
+    assert len(world.jev.calls) == 1
+    assert await world.selections() == []
+    assert await world.pending("source_selection") == ["pending"]
+    with pytest.raises(DomainError) as caught:
+        await world.store.authenticate(token)
+    assert caught.value.code == "AUTH_DENIED"
+
+
+@pytest.mark.parametrize("failure", ["transport", "server", "rate_limit"])
+async def test_jev_failure_is_explicit_and_leaves_work_pending_without_provider_fallback(world, failure):
+    world.jev.failure = JevFailure(failure)
+    await world.capture("provider-unavailable", DECISION)
+    await world.worker.cycle()
+    assert world.worker.phase == "waiting" and world.worker.last_error == "JEV_UNAVAILABLE"
+    assert load_state(world.settings).provider == "jev"
+    assert await world.selections() == []
+    assert await world.pending("source_selection") == ["pending"]
+
+
+async def test_reauthorizing_during_inflight_request_does_not_accept_an_older_policy_result(world):
+    world.jev.remember = {"decided": 0.95}
+
+    def revoke_then_reauthorize(number):
+        policy = load_egress_policy(world.settings)
+        for offset, allowed in ((1, False), (2, True)):
+            private_write(judge_dir(world.settings) / EGRESS_POLICY_FILE,
+                EgressPolicy(jev_allowed=allowed, revision=policy.revision + offset).model_dump_json(), replace=True)
+
+    world.jev.on_call = revoke_then_reauthorize
+    await world.capture("policy-generation-fence", DECISION)
+    await world.worker.cycle()
+    assert len(world.jev.calls) == 1
+    assert load_egress_policy(world.settings).jev_allowed is True
+    assert await world.selections() == []
+    assert await world.pending("source_selection") == ["pending"]
+    assert world.worker.phase == "idle"
+
+
+async def test_deny_cannot_commit_inside_a_publication_already_waiting_for_database(world, monkeypatch):
+    entered, released = asyncio.Event(), asyncio.Event()
+    order = []
+    record = world.application.record
+    world.jev.remember = {"decided": 0.95}
+    await world.capture("publication-policy-linearization", DECISION)
+
+    async def paused_record(actor, command):
+        entered.set()
+        await released.wait()
+        result = await record(actor, command)
+        order.append("publication_committed")
+        return result
+
+    async def deny():
+        result = await set_egress_policy(world.settings, world.store, world.operator, jev_allowed=False)
+        order.append("deny_committed")
+        return result
+
+    monkeypatch.setattr(world.application, "record", paused_record)
+    cycle = asyncio.create_task(world.worker.cycle())
+    denied = None
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        denied = asyncio.create_task(deny())
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert load_egress_policy(world.settings).jev_allowed
+    finally:
+        released.set()
+        await cycle
+        if denied is not None:
+            await denied
+    assert order == ["publication_committed", "deny_committed"]
+    [selection] = await world.selections()
+    assert selection["state"] == "active"
+    assert load_state(world.settings).provider == "agent"
+
+
+def retrying_worker(world):
+    paused, release = Event(), Event()
+    sent = []
+
+    class Opener:
+        def open(self, request, timeout=None):
+            payload = json.loads(request.data)
+            sent.append(payload)
+            if len(sent) == 1:
+                raise http_error(429)
+            return io.BytesIO(json.dumps({
+                "model": "jev-1.13.0",
+                "answers": {identifier: {"type": "noul", "noul": 0.04} for identifier in payload["questions"]},
+            }).encode())
+
+    def backoff(seconds):
+        paused.set()
+        assert release.wait(10), "The test did not release vendor backoff"
+
+    def factory(key, model):
+        return JevClient(key, model, opener=Opener(), sleep=backoff)
+
+    worker = JudgeWorker(world.settings, world.store, world.application, client_factory=factory)
+    world.application.judge = worker
+    return worker, sent, paused, release
+
+
+@pytest.mark.parametrize("transition", ["deny", "provider", "policy_revision"])
+async def test_operator_transition_during_actual_client_backoff_prevents_retry_and_publication(world, transition):
+    worker, sent, paused, release = retrying_worker(world)
+    await world.capture("retry-authorization-boundary", DECISION)
+    cycle = asyncio.create_task(worker.cycle())
+    try:
+        assert await asyncio.to_thread(paused.wait, 10)
+        if transition == "provider":
+            await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda *_: "jev-1.13.0")
+        else:
+            await set_egress_policy(world.settings, world.store, world.operator, jev_allowed=transition != "deny")
+    finally:
+        release.set()
+        await cycle
+    assert len(sent) == 1
+    assert await world.selections() == []
+    assert await world.pending("source_selection") == ["pending"]
+    assert await world.rows("SELECT id FROM am_claims WHERE binding_id=$1", world.binding_id) == []
+    if transition == "deny":
+        assert worker.phase == "refused" and worker.last_error == "JUDGE_PROVIDER_FORBIDDEN"
+    else:
+        assert worker.phase == "idle"
+
+
+async def test_actual_client_retry_with_unchanged_authorization_resolves_source(world):
+    worker, sent, paused, release = retrying_worker(world)
+    await world.capture("authorized-vendor-retry", CHATTER)
+    cycle = asyncio.create_task(worker.cycle())
+    try:
+        assert await asyncio.to_thread(paused.wait, 10)
+    finally:
+        release.set()
+        await cycle
+    assert len(sent) == 2
+    [selection] = await world.selections()
+    assert selection["label"] == "discard" and selection["state"] == "active"
+    assert await world.pending("source_selection") == ["resolved"]
