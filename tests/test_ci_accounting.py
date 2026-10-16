@@ -414,16 +414,15 @@ def test_cleanup_retains_identity_through_the_final_group_signal(monkeypatch, un
             return None
         if sig == 0:
             probed = True
-            clock.now = 10
             return None
         if probed and expired.returncode is not None:
             return real_killpg(unrelated.pid, sig)
         return real_killpg(expired.pid, sig)
 
     monkeypatch.setattr(os, "killpg", simulate_pgid_reuse)
-    # Advance only this cleanup's clock after the successful probe.
+    # Advance only cleanup's grace clock; subprocess readiness and waits stay real.
     monkeypatch.setitem(cleanup.__globals__, "time", SimpleNamespace(
-        monotonic=lambda: clock.now, sleep=lambda _: None,
+        monotonic=lambda: clock.now, sleep=lambda _: setattr(clock, "now", clock.now + 10),
     ))
     cleanup(expired)
     if interleaving == "after-probe":
