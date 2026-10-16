@@ -60,6 +60,7 @@ def main() -> int:
     import pytest
 
     helpers = runpy.run_path(str(Path(__file__).with_name("run-tests.py")))
+    selectors = runpy.run_path(str(Path(__file__).with_name("aggregate.py")))["WHEEL_SELECTORS"]
     shard = helpers["Shard"](0, 1)
     output = args.result_dir / "wheel-consumer.json"
     before = helpers["source_digest"]()
@@ -68,10 +69,7 @@ def main() -> int:
               "installed_module_count": len(members), "pytest_exit_code": None}
     helpers["write_result"](output, result)
     try:
-        code = int(pytest.main([
-            "-q", "tests/test_host_import_isolation.py",
-            "tests/test_cli_bind.py::test_occupied_listen_address_refuses_before_database_or_journal_work",
-        ], plugins=[shard]))
+        code = int(pytest.main(["-q", *selectors], plugins=[shard]))
         counts = shard.counts()
         result.update(pytest_exit_code=code, counts=counts, selected_nodeids=shard.selected,
                       reports=shard.reports, collection_issues=shard.collection_issues,

@@ -76,7 +76,7 @@ def evidence(tmp_path):
         "checks": {name: {"command": command, "exit_code": 0, "timeout": False}
                    for name, command in module["CHECK_COMMANDS"].items()},
     }))
-    (checks.parent / "prerequisites.json").write_text(json.dumps(preparation(tested_sha, False)))
+    (checks.parent / "prerequisites.json").write_text(json.dumps(preparation(tested_sha, True)))
     distribution = tmp_path / "distribution" / "candidate.whl"
     distribution.parent.mkdir()
     distribution.write_bytes(b"synthetic artifact bytes for accounting regression")

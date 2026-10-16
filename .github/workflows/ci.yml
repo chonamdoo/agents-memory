@@ -84,8 +84,8 @@ jobs:
         with:
           version: '0.13.0'
           enable-cache: false
-      - name: Prepare owned Python
-        run: python3 .github/ci/environment.py prepare --state-dir "$RUNNER_TEMP/agents-memory-ci"
+      - name: Prepare owned prerequisites
+        run: python3 .github/ci/environment.py prepare --state-dir "$RUNNER_TEMP/agents-memory-ci" --postgres
       - name: Install frozen dependencies
         run: uv sync --frozen
       - name: Run bounded lint and build

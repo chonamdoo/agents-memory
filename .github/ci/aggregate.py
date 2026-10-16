@@ -15,11 +15,35 @@ CHECK_COMMANDS = {
     "wheel-consumer": ["uv", "run", "--no-sync", "python", ".github/ci/wheel-consumer.py",
                        "--result-dir", ".ci-results"],
 }
+WHEEL_SELECTORS = (
+    "tests/test_host_import_isolation.py",
+    "tests/test_cli_bind.py::test_occupied_listen_address_refuses_before_database_or_journal_work",
+    "tests/test_service.py::test_managed_readiness_preserves_the_owned_config_upgrade_refusal",
+    "tests/test_inspection_stability.py::test_minimum_mcp_cap_can_inspect_a_plain_captured_source",
+    "tests/test_edge_boundaries.py::test_producer_capture_authority_never_grants_memory_read_authority",
+    "tests/test_judge_settings.py::test_waiting_judge_mutations_recheck_live_operator_authority",
+    "tests/test_judge_settings.py::test_judge_file_failures_keep_publication_identity_and_explicit_recovery",
+    "tests/test_native_status.py::test_native_inventory_ends_descendants_and_closes_pipes_on_failure",
+    "tests/test_recovery.py::test_remote_bad_first_outbox_cannot_starve_retained_healthy_batch",
+    "tests/test_remote_cancellation.py::test_readonly_ready_stop_cancels_real_tls_response_before_business_dispatch",
+    "tests/test_remote_cancellation.py::test_already_dispatched_business_request_drains_response_without_retry",
+)
 
 
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
+
+
+def wheel_nodeids(collection: list[str]) -> list[str]:
+    selected: set[str] = set()
+    for selector in WHEEL_SELECTORS:
+        prefixes = (selector + "::", selector + "[")
+        matches = {item for item in collection if item == selector or item.startswith(prefixes)}
+        require(bool(matches), f"No collected installed-wheel consumer for {selector}")
+        require(selected.isdisjoint(matches), "Overlapping installed-wheel selectors")
+        selected.update(matches)
+    return sorted(selected)
 
 
 def receipt(path: Path) -> dict:
@@ -125,7 +149,7 @@ def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_j
     if collection is None or selected_union != set(collection):
         raise ValueError("The full collection was not executed")
     checks = receipt(checks_paths[0])
-    prerequisites(checks_paths[0].parent / "prerequisites.json", tested_sha, False)
+    prerequisites(checks_paths[0].parent / "prerequisites.json", tested_sha, True)
     identity(checks, tested_sha, source)
     outcomes = checks.get("checks")
     if not isinstance(outcomes, dict) or set(outcomes) != set(CHECK_COMMANDS):
@@ -142,9 +166,7 @@ def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_j
     identity(wheel, tested_sha, source)
     require(wheel.get("collection_issues") == [], "Wheel consumer did not collect cleanly")
     selected = nodeids(wheel.get("selected_nodeids"), "wheel-consumer execution")
-    expected_wheel = [item for item in collection
-                     if item.startswith("tests/test_host_import_isolation.py::")
-                     or item == "tests/test_cli_bind.py::test_occupied_listen_address_refuses_before_database_or_journal_work"]
+    expected_wheel = wheel_nodeids(collection)
     require(selected == expected_wheel, "The installed wheel did not exercise every declared consumer case")
     execution(wheel, selected)
     distributions = list((artifacts / "distribution").glob("*.whl"))
