@@ -977,3 +977,9 @@ spool의 `test_concurrent_producer_and_flushers_have_one_dispatch_owner`는 별�
 
 회귀-only checkpoint `fe44a63181843ed9194d68f03541b85400ff7d4f`의 [수정 전 Actions run38920768944](https://github.com/chonamdoo/agents-memory/actions/runs/38920768944)는 실제2430 collected/2410 passed/20 failed/skip0이었다. 제품/CI 수정은 worktree에 보존하고 새 회귀만 먼저 게시했다. 실패는 retained-intent replay3, resistant descendant1, executable resource digest1, Jev file publication/cleanup12, ingress file/authority 오류 구분3이다. 실제 로그에서 not_started/unknown 불일치, 잔존 writer의 FIFO EOF 부재, resource 변경 뒤 동일 digest, filesystem 오류의 DATABASE_UNAVAILABLE 오분류를 확인했다. lint/build와 별도 wheel 소비는 통과했지만 aggregate는 `complete:false`로 거절했다. 원본 logs·job metadata·phase receipts·distribution·실패 집계를 보존했으며 후속 push로 run을 취소하거나 결과를 green으로 바꾸지 않았다. 수정본의 성공은 별도 source SHA/receipt가 필요하고 local 재현으로 대체하지 않는다.
 
+### 첫 수정본 Actions — 전체 green 아님
+
+`1f0a6fb034d743ec0cb639e625f3ebc5510b0460`의 [run38921564935](https://github.com/chonamdoo/agents-memory/actions/runs/38921564935)는2430건 중2425 passed/5 failed/skip0, aggregate `complete:false`였다. 앞서 실제 실패한20건은 모두 통과했고 lint/build·wheel 소비도 통과했다. 남은5건은 기존 `MemoryJudgeStore` fault matrix의 `token_write/key_write/provider_publish/after_publication/fence_crash`였다.
+
+실제 로그와 기존 assertion을 대조하니, 그 회귀는 DomainError이면 주입한 DB 오류 `DATABASE_BUSY`를 모두 그대로 기대했다. 이제 파일 실패가 명시 DomainError가 되어 그 가정이 깨졌다. 제품 오류를 다시 DB로 바꾸지 않는다. 해당 mock-echo assertion을 삭제하고, 모든 fault가 DomainError로 보고되어야 한다는 조건과 COMMITTED/UNKNOWN·provider fence·미완료 issuance·명시 복구·old/orphan credential 폐기의 행동 검증은 유지한다. 실제 PG의 새12건은 파일 오류의 고유 분류와 복구를 따로 검증한다. 이 실패도 원래 source·로그·receipts와 함께 보존하고 수정된 회귀의 새 Actions 결과를 기다린다.
+

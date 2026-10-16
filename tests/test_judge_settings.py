@@ -830,7 +830,7 @@ async def test_failed_jev_replacement_preserves_selection_and_requires_explicit_
         patcher.setattr(store, "revoke_token", interrupted_retirement)
         patcher.setattr(judge_module, "private_write", interrupted_write)
         patcher.setattr(judge_module, "_save_state", interrupted_save)
-        with pytest.raises((DomainError, OSError)) as caught:
+        with pytest.raises(DomainError) as caught:
             await set_jev(settings, store, actor, OTHER_KEY, verify=verified)
 
     state = load_state(settings)
@@ -849,9 +849,7 @@ async def test_failed_jev_replacement_preserves_selection_and_requires_explicit_
         with pytest.raises(DomainError) as unavailable:
             read_worker_token(settings)
         assert unavailable.value.code == "JUDGE_CREDENTIAL_INVALID"
-    if isinstance(caught.value, DomainError):
-        assert caught.value.code == "DATABASE_BUSY"
-        assert caught.value.effect == (EffectState.COMMITTED if fault == "list_bindings" else EffectState.UNKNOWN)
+    assert caught.value.effect == (EffectState.COMMITTED if fault == "list_bindings" else EffectState.UNKNOWN)
     if fault in {"issue_before_commit", "issue_lost_response", "token_write", "key_write", "provider_publish",
                  "after_publication"}:
         assert (judge_dir(settings) / ISSUING_TOKEN_FILE).exists()
