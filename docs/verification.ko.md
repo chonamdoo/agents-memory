@@ -1029,3 +1029,24 @@ spool의 `test_concurrent_producer_and_flushers_have_one_dispatch_owner`는 별�
 
 모든 원본 job/run metadata·phase receipt·outcome-only JUnit·checks/wheel·distribution·aggregate와 five-case 전후 대조를 보존했다. 로컬 검증은0이다. 후속 문서-only head의 정확한 CI 결과는 해당 SHA의 Actions/receipts를 따른다. 134b096의12개 approve를 이 새 소스의 승인으로 재사용하지 않으며 fresh normal Opus/Sol review→QA→handoff와 원래18개 acceptance는 별도로 유지한다.
 
+### 정상 재개와 실제 설치 wheel 소비 범위 확대 — 8aa611b
+
+사용자의 정상 owner abort 뒤 CLI의 `no runs`를 확인하고 같은 전체 checkout/branch에서 `development/20261016-222904`를 시작했다. dirty leader preflight는 문서화된 `--allow-dirty` 재개로 수용했고 기존 사용자 파일을 수정·stash·reset하지 않았다. 옛 run·모든 실패/timeout·원래18개 acceptance를 보존했다. guard/trust/settings/pins/판정·모델/xhigh/600초 reviewer timeout을 바꾸거나 예전 host identity로 권한을 가장하지 않았다.
+
+기존 설치31건은 import 격리와 점유 CLI bind에 한정돼 있었다. `.github/ci/aggregate.py`의 단일 `WHEEL_SELECTORS`13개를 wheel 실행기와 집계가 공유하도록 바꿨다. 집계는 전체 source collection에서 file/function/parameter 경계로 예상 node ID를 계산하고, 선언 누락·중복 범위·실제 설치 실행/phase 누락을 거절한다. checks job도 test shard와 같은 owned PostgreSQL prerequisite를 준비하며 실제 preparation receipt의 PG role을 요구한다. action pin과 lint120/build300/wheel300·source shard600초 제한은 그대로다.
+
+| 정확한 checkpoint | 실제 Actions | 전체 수집 | 통과 | 실패 | skip | 별도 설치 wheel 통과 |
+|---|---|---:|---:|---:|---:|---:|
+| `5c55134555b59cd5b0614c4d60eedadcd1fbc627` | [38976436528](https://github.com/chonamdoo/agents-memory/actions/runs/38976436528), 실패 | 2436 | 2434 | 2 | 0 | 31 |
+| `d70f4bf186db82b5356486398ad73c029642f026` | [38976988409](https://github.com/chonamdoo/agents-memory/actions/runs/38976988409), 성공 | 2436 | 2436 | 0 | 0 | 83 |
+| `8aa611b210852ef7c121e37069b102fde8a0c181` | [38977685346](https://github.com/chonamdoo/agents-memory/actions/runs/38977685346), 성공 | 2436 | 2436 | 0 | 0 | 85 |
+
+수정 전에는 self-consistent한 import/점유 CLI만의 영수증을 `complete`로 승인해 새 부정 회귀가 실제 `DID NOT RAISE ValueError`로 실패했다. 확대 범위의 완전한 positive receipt도 옛 정책에서 거절됐다. 두 회귀는 수정 후 같은 node ID의 setup/call/teardown이 모두 통과했다. 각 성공 run의 aggregate는 `complete:true`이고 failed/skip/xfail/xpass0이다. 설치 subset을 전체 suite에 더하지 않는다.
+
+실제 frozen 환경에서 wheel을 noneditable 재설치하고 새 `-I` process의 site-prefix package를 소비했다. 기존 import/CLI에 owned service readiness upgrade 거절, modern/legacy HTTP/MCP capture→inspect→record, producer/read 권한 분리, live operator 재확인·private publication 복구, native 자손/pipe 정리, retained bad-first recovery, 실제 TLS stop/drain을 추가했다. 마지막 두 selector는 기존 `test_cleanup_after_esrch_cannot_kill_a_reused_group`의 `probe-native`/`term-native`다. 두 경우 모두 별도 소유 child가 살아서 ping에 응답했고 phase가 통과했다. CI helper 대상 변형은 전체 source suite에서만 실행하며 설치 제품 소비로 세지 않는다.
+
+최종 run의 다섯 upstream job은 UTC22:46:04에 병렬 시작했고 owned cleanup도 모두 성공했다. lint exit0/0.064초, build exit0/1.116초, 설치 consumer37.801초였다. source/resource digest는 `188fc72e77c6570928c7398ef3a2b0fae6a7c23c12ae184c59da7102d0aa22ef`, 실제 소비·공개 wheel SHA256은 `10e52bce0bdc6c4345adac6153f76f5a8ff65382b6f1c2a2c8f58bc078045061`이다. wheel의 Python module45개와 설치 file bytes를 대조했다. run/job/phase·outcome-only JUnit·prerequisite/checks/wheel·distribution·실패/성공 aggregate를 새 run context에 모두 보존했다.
+
+service fixture의 launchctl은 모사이고 HTTP/MCP 사례는 in-process ASGI다. 별도 stop/recovery fixture의 TLS와 owned child process는 실제 실행됐지만 실제 macOS service/native host 활성·kernel PID wraparound·live model·운영 cloud·human gold/trial을 입증하지 않는다. 로컬 test/collection/ruff/build/syntax/추가 smoke는0이다. 이 절 갱신 뒤의 정상 fresh Opus/Sol review→QA→handoff는 [PR9의 source/run별 기록](https://github.com/chonamdoo/agents-memory/pull/9)을 따르며 이전 source의 승인을 재사용하지 않는다. 원래18개 외부 acceptance와 merge/release 결정은 별도다.
+
+

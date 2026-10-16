@@ -4,7 +4,7 @@
 
 이슈 [#5](https://github.com/chonamdoo/agents-memory/issues/5)의 기존 [86개 링크 분류](2026-10-15-oss-local-runtime.ko.md), [DB 성장 조사](2026-10-15-oss-db-growth.ko.md), [native trust 조사](2026-10-16-oss-native-trust.ko.md)를 잇는다. 이슈 댓글44개의 외부 GitHub repository 링크를 정규화해 기존86행과 대조했고 누락 링크는 없었다. **86은 독립된 사용 가능 OSS86종이라는 뜻이 아니다.** 별칭·상용 host·문서·demo·retired project·비상업 라이선스 자료도 원래 분류대로 남긴다.
 
-upstream issue/PR·고정 source·회귀 코드를 읽었다. upstream 설치·test·eval은 실행하지 않았다. 이 보고서 작성 시점의 우리 수정은 **작업트리에 적용했으나 미커밋·미push·CI 미실행**이었다. 작성한 테스트를 통과 증거로 세지 않는다. 사용자 지시로 로컬 test/collection/ruff/lint/build/추가 smoke는 실행하지 않는다. 이전 전체2311 pass/skip0은 이전 고정 source의 기록이며 최신 수정의 결과가 아니다. 이후 CI용 미검증 checkpoint 게시는 별도 명시 허용됐고 실제 실행 상태는 [Actions](https://github.com/chonamdoo/agents-memory/actions/workflows/ci.yml)에서 source SHA와 함께 확인한다.
+upstream issue/PR·고정 source·회귀 코드를 읽었다. upstream 설치·test·eval은 실행하지 않았다. **초기 작성 시점**에는 우리 수정이 미커밋·미push·CI 미실행이었고 이전 전체2311 pass를 최신 결과로 세지 않았다. 이후 명시 허용된 정상 CI checkpoint 게시와 실제 GitHub Actions를 수행했다. 후속 정확한 source·실패 전/성공 후·설치 소비 증거는 [검증 기록](../verification.ko.md#정상-재개와-실제-설치-wheel-소비-범위-확대--8aa611b)과 각 SHA의 Actions/receipts를 따른다. 사용자 지시로 로컬 test/collection/ruff/lint/build/syntax/추가 smoke는 계속 실행하지 않는다.
 
 ## upstream 상태 갱신
 
@@ -29,7 +29,7 @@ upstream issue/PR·고정 source·회귀 코드를 읽었다. upstream 설치·t
 
 **결정:** `store.py:_scrub_purge_floors`에 assigned field의 null-safe `IS DISTINCT FROM` 조건을 추가했다. 기존 target의 OR는 괄호 안에 보존한다. `_apply_floors`의 eligible source/claim 배열과 desired state를 CTE로 계산하고 달라진 row만 쓴다. `WITH ORDINALITY`로 원래 배열 순서를 유지한다. 새 trigger/migration·retention·삭제 journal pruning은 추가하지 않았다. retracted operation의 epoch 갱신·global clock·deletion head 의미는 바꾸지 않았다.
 
-**회귀:** `tests/test_purge_reconcile_churn.py`는 실제 PG에서 A purge 후 `xmin/ctid`를 기록하고 B purge/reconcile 뒤 A와 무관 pending의 row version 불변, B scrub, eligible 배열 순서·held/retracted 전환을 검사한다. restore된 private payload가 다시 생긴 경우에는 **변경 guard가 반드시 재-scrub을 허용**하는지도 확인한다. row 불변만 확인해 삭제 복구를 깨뜨리는 최적화를 막는다. **CI 미실행.**
+**회귀:** `tests/test_purge_reconcile_churn.py`는 실제 PG에서 A purge 후 `xmin/ctid`를 기록하고 B purge/reconcile 뒤 A와 무관 pending의 row version 불변, B scrub, eligible 배열 순서·held/retracted 전환을 검사한다. restore된 private payload가 다시 생긴 경우에는 **변경 guard가 반드시 재-scrub을 허용**하는지도 확인한다. row 불변만 확인해 삭제 복구를 깨뜨리는 최적화를 막는다. 후속8aa611b의 전체 source suite에서 이 파일5건이 통과했다. 해당 파일은 설치 wheel subset에는 포함되지 않으며 그 실행으로 확대하지 않는다.
 
 ### 2. 생성 native hook/MCP의 Python import 격리
 
@@ -39,7 +39,7 @@ upstream issue/PR·고정 source·회귀 코드를 읽었다. upstream 설치·t
 
 **결정:** `hosts.py:_command`가 세 host의 hook과 MCP 모두에 `sys.executable -I -m agents_memory.cli`를 생성한다. Claude의 명시 `CLAUDE_CONFIG_DIR` 전달은 유지한다. adapter를6으로 올렸고, v5 receipt는 검증한 **owned cleanup-only** 경로로 읽어 기존 entry 제거·명시 재설치·pending spool 보존을 허용한다. old receipt 수정·새 alias·구형 active 실행 fallback은 없다. live 설치 환경을 덮어쓰지 않고 runbook의 owned uninstall→새 stable package→재등록 순서를 따른다.
 
-**회귀:** `tests/test_host_import_isolation.py`는 Claude/Codex/OMP의 **실제 생성 command**를 불신 project CWD/PYTHONPATH와 module/package/stdlib shadow 아래 실행한다. 악성 sentinel 부재와 실제 stdio/hook 응답을 함께 관측한다. v5 local/remote·삭제된 project의 정리/재설치가 private pending을 보존하는지도 확인한다. `.github/ci/wheel-consumer.py`는 frozen dependency 환경의 editable app을 실제 build wheel로 교체하고 새 `-I` process에서 이 소비 경로를 실행하도록 구성했다. 이는 **CI용 online dependency 준비 환경**이며 offline 전체 closure 증명이 아니다. **CI 미실행.**
+**회귀:** `tests/test_host_import_isolation.py`는 Claude/Codex/OMP의 **실제 생성 command**를 불신 project CWD/PYTHONPATH와 module/package/stdlib shadow 아래 실행한다. 악성 sentinel 부재와 실제 stdio/hook 응답을 함께 관측한다. v5 local/remote·삭제된 project의 정리/재설치가 private pending을 보존하는지도 확인한다. `.github/ci/wheel-consumer.py`는 frozen dependency 환경의 editable app을 실제 build wheel로 교체하고 새 `-I` process에서 소비한다. 후속8aa611b에서 이 파일30건은 전체 source와 설치 wheel 양쪽 모두 통과했다. 이는 **CI용 online dependency 준비 환경**이며 offline 전체 closure·native hook 활성 증명이 아니다.
 
 ### 3. lifespan 전에 listen socket 확보
 
@@ -49,15 +49,15 @@ upstream issue/PR·고정 source·회귀 코드를 읽었다. upstream 설치·t
 
 **결정:** `cli.py:execute`의 `serve/service-run`이 configured address에 socket을 bind/listen한 뒤 `server.serve(sockets=[listener])`에 넘긴다. 실패는 errno를 보존한 `SERVICE_BIND_FAILED/not_started`다. 임의 port fallback·기존 listener kill·설정 변경은 하지 않는다. context가 실패/종료 시 socket을 닫는다.
 
-**회귀:** `tests/test_cli_bind.py`는 실제 CLI subprocess에서 점유 port+접속 불가능 DB를 사용해 **DB/journal/state 작업 전 typed 거절**을 확인하도록 작성했다. 별도 실제 PG fixture는 같은 prebound CLI의 DB-inclusive `/readyz`와 종료 뒤 port 회수를 확인한다. 첫 negative는 wheel consumer에서도 실행한다. **CI 미실행.**
+**회귀:** `tests/test_cli_bind.py`는 실제 CLI subprocess에서 점유 port+접속 불가능 DB로 **DB/journal/state 작업 전 typed 거절**을 확인한다. 별도 실제 PG fixture는 같은 prebound CLI의 DB-inclusive `/readyz`와 종료 뒤 port 회수를 확인한다. 후속8aa611b에서 파일2건은 전체 source suite에서 통과했고, 첫 negative1건은 실제 설치 wheel에서도 통과했다. PG positive까지 설치 subset에서 실행했다고 세지 않는다.
 
 ## 이미 반영된 메커니즘과 이번 검증 공백
 
 | 영역 | upstream의 해결·반례 | 우리 계약·결정 |
 |---|---|---|
 | lost ACK·전송 중 교체 | claude-mem #4626/#4798 | spool key+digest+payload 비교·receipt·unknown 유지·single flush owner는 기존 구현. 테스트 identity는 source/wheel hash로 고정 |
-| 실패 outbox 뒤 정상 유입 | 영구/일시 실패를 전체 drain 중단과 혼동 | 현재 recovery 수정은 stop/budget/readiness 실패 때 미처리 batch를 보존. 실제 TLS의 bad-first AUTH_DENIED→retained healthy 전송·backoff 회귀를 추가했으나 CI 미실행 |
-| 원격 중단 | socket cancel을 이미 보낸 mutation 취소로 오인 | pending TCP/TLS/GET·최초 send 전 stop은 not_started. 이미 보낸 business는 원래 deadline으로 응답 drain, 재전송 없음. 실제 socket/TLS/DNS 회귀를 추가했으나 CI 미실행 |
+| 실패 outbox 뒤 정상 유입 | 영구/일시 실패를 전체 drain 중단과 혼동 | recovery는 stop/budget/readiness 실패 때 미처리 batch를 보존. 실제 TLS의 bad-first AUTH_DENIED→retained healthy 전송·backoff 회귀3건이 후속8aa611b의 전체 source/실제 설치 wheel에서 통과 |
+| 원격 중단 | socket cancel을 이미 보낸 mutation 취소로 오인 | pending TCP/TLS/GET·최초 send 전 stop은 not_started. 이미 보낸 business는 원래 deadline으로 응답 drain, 재전송 없음. socket/TLS/DNS 회귀7건은 전체 source에서 통과했고 선택된 실제 TLS stop/drain3건만 설치 wheel에서 통과 |
 | child teardown | #4792와 [#4674](https://github.com/thedotmack/claude-mem/pull/4674)의 중간 cleanup 실패 | bounded process-group TERM/KILL·wait, lifespan `AsyncExitStack`/최종 Store close는 기존 구현. setsid 탈출 자식의 완전 containment 증거는 없음 |
 | 사용자 설정 보존 | #4783·malformed/symlink 설정 덮어쓰기 | receipt-owned entry만 제거, malformed/ownership drift fail-closed. foreign native/Agent Flow/trust 유지. BOM 호환을 위해 parser를 완화하지 않음 |
 | 삭제·anti-resurrection | [doobidoo #1522](https://github.com/doobidoo/mcp-memory-service/issues/1522)의 identity 경계 | origin/lineage floor·독립 journal·transaction별 barrier는 기존 구현. purge는 모든 미래 동일 본문의 blacklist나 media erase가 아님 |
@@ -97,6 +97,8 @@ upstream issue/PR·고정 source·회귀 코드를 읽었다. upstream 설치·t
 
 추가한 구현은 개념을 기존 코드에 적용한 것이며 upstream source/data를 vendoring하지 않았다. 조사 pin의 Hindsight/Quivr/Engram/IWE/LEANN은 MIT, claude-mem/memharness/Redis benchmark는 Apache-2.0으로 분류한다. repository 현재 main의 모든 전이 dependency/license를 새로 승인했다는 뜻은 아니다. `agent-memory-benchmark`의 repository license 불확명과 제한 데이터는 계속 제외한다. app의 MIT를 전체 SBOM·NOTICE·재배포 승인으로 확대하지 않는다.
 
-`.github/workflows/ci.yml`은 실제 PostgreSQL18/pgvector≥0.8.7·지원 Python/SQLite·PG18 native 도구·age를 준비한4개 test shard와 별도 lint/build/wheel consumer를 구성한다. 전체 sorted node ID의 동일 collection, 결정적 hash partition, exact disjoint union, setup/call/teardown, skip/xfail/수집 오류0·source identity·upstream job 상태를 aggregate가 함께 요구한다. 누락/취소/timeout을 통과로 합산하지 않는다. credential이 섞일 수 있는 raw traceback/captured output은 JUnit artifact에 싣지 않고 outcome-only XML을 작성한다.
+`.github/workflows/ci.yml`은 실제 PostgreSQL18/pgvector≥0.8.7·지원 Python/SQLite·PG18 native 도구·age를 준비한4개 test shard와 별도 lint/build/wheel consumer를 구성한다. checks도 owned PG prerequisite를 준비한다. 전체 sorted node ID의 동일 collection, 결정적 hash partition, exact disjoint union, setup/call/teardown, skip/xfail/수집 오류0·source identity·upstream job 상태와 canonical13 selector의 실제 설치 소비를 aggregate가 함께 요구한다. 누락/취소/timeout을 통과로 합산하지 않는다. credential이 섞일 수 있는 raw traceback/captured output은 JUnit artifact에 싣지 않고 outcome-only XML을 작성한다.
 
-**미완료:** 실제 Actions run/SHA·전체 결과·artifact, 최신 source의 정상 독립 Opus/Sol formal review·QA/handoff, 이후 commit/push·PR 갱신. 이전 Opus timeout/다섯 skipped와 Sol request-changes는 승인으로 바꾸지 않는다. native trust/activation·실제 first-action·PMPA/semantic matrix·human gold/paired workload·macOS maintenance·stable0004 cutover·cloud/corpus 권한·전체 OS/ABI/offline/license·1–2주 trial·merge/release·귀속 미확인5volume 등 원래18개 acceptance는 그대로 미해결이다. 이 조사·합성 회귀·코드 수정은 그 승인이나 실행을 대체하지 않는다.
+**후속 실제 실행:** 8aa611b의 [Actions38977685346](https://github.com/chonamdoo/agents-memory/actions/runs/38977685346)는 `complete:true`다. 전체 source와 별도 installed subset, 두 집계 회귀의 실패 전/성공 후 및 모든 원본 artifact의 범위는 [검증 기록](../verification.ko.md#정상-재개와-실제-설치-wheel-소비-범위-확대--8aa611b)에 고정했다. 초기 미실행 기록·이전 Opus timeout/다섯 skipped와 Sol request-changes는 지우거나 승인으로 바꾸지 않았다.
+
+**판정·승인 경계:** 이 절 갱신 뒤의 최신 source 정상 독립 Opus/Sol review·QA/handoff와 PR 상태는 [PR9의 source/run별 기록](https://github.com/chonamdoo/agents-memory/pull/9)을 따른다. native trust/activation·실제 first-action·PMPA/semantic matrix·human gold/paired workload·macOS maintenance·stable0004 cutover·cloud/corpus 권한·전체 OS/ABI/offline/license·1–2주 trial·merge/release·귀속 미확인5volume 등 원래18개 acceptance는 별도 미해결이다. 이 조사·합성 회귀·코드 수정·CI 게시를 그 승인이나 실행으로 대체하지 않는다.
