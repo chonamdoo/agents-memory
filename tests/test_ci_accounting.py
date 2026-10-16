@@ -39,6 +39,15 @@ def evidence(tmp_path):
     wheel_ids = sorted([
         "tests/test_host_import_isolation.py::test_shadowed_import",
         "tests/test_cli_bind.py::test_occupied_listen_address_refuses_before_database_or_journal_work",
+        "tests/test_service.py::test_managed_readiness_preserves_the_owned_config_upgrade_refusal",
+        "tests/test_inspection_stability.py::test_minimum_mcp_cap_can_inspect_a_plain_captured_source[modern]",
+        "tests/test_edge_boundaries.py::test_producer_capture_authority_never_grants_memory_read_authority",
+        "tests/test_judge_settings.py::test_waiting_judge_mutations_recheck_live_operator_authority[revoke-allow]",
+        "tests/test_judge_settings.py::test_judge_file_failures_keep_publication_identity_and_explicit_recovery[before-effect-policy]",
+        "tests/test_native_status.py::test_native_inventory_ends_descendants_and_closes_pipes_on_failure[None-malformed-parent_first]",
+        "tests/test_recovery.py::test_remote_bad_first_outbox_cannot_starve_retained_healthy_batch[None]",
+        "tests/test_remote_cancellation.py::test_readonly_ready_stop_cancels_real_tls_response_before_business_dispatch[headers]",
+        "tests/test_remote_cancellation.py::test_already_dispatched_business_request_drains_response_without_retry",
     ])
     all_ids = sorted([*(f"tests/cases.py::test_case_{index}" for index in range(64)), *wheel_ids])
     paths = []
@@ -92,6 +101,19 @@ def test_complete_ci_requires_exact_full_disjoint_execution(evidence):
     assert result["complete"] is True
     assert result["collected"] == result["passed"] == len(evidence.ids)
     assert sum(shard["passed"] for shard in result["shards"]) == len(evidence.ids)
+
+
+def test_complete_ci_refuses_self_consistent_import_only_wheel_execution(evidence):
+    wheel = json.loads(evidence.wheel.read_text())
+    limited = [item for item in wheel["selected_nodeids"]
+               if item.startswith("tests/test_host_import_isolation.py::")
+               or item == "tests/test_cli_bind.py::test_occupied_listen_address_refuses_before_database_or_journal_work"]
+    wheel["selected_nodeids"] = limited
+    wheel["reports"] = {item: wheel["reports"][item] for item in limited}
+    wheel["counts"]["passed"] = len(limited)
+    evidence.wheel.write_text(json.dumps(wheel))
+    with pytest.raises(ValueError):
+        evidence.aggregate(evidence.root, 4, evidence.sha, evidence.jobs)
 
 
 @pytest.mark.parametrize("fault", [
