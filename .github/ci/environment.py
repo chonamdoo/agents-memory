@@ -88,7 +88,8 @@ def python_runtime(state: Path) -> tuple[dict[str, str], dict]:
         "UV_PYTHON_PREFERENCE": "only-managed",
     }
     env = os.environ | values
-    run(["uv", "python", "install", "--managed-python", PYTHON], env=env)
+    subprocess.run(["uv", "python", "install", "--managed-python", PYTHON],
+                   env=env, check=True, timeout=300)
     binary = Path(run(["uv", "python", "find", "--managed-python", PYTHON], env=env)).resolve(strict=True)
     if not binary.is_relative_to(state / "python"):
         raise RuntimeError("uv did not select the owned managed Python")
@@ -260,7 +261,8 @@ def main() -> int:
         else:
             cleanup(state)
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
-        print(f"CI prerequisite {args.action} failed: {type(error).__name__}")
+        reason = str(error) if type(error) is RuntimeError else type(error).__name__
+        print(f"CI prerequisite {args.action} failed: {reason}")
         return 1
     return 0
 

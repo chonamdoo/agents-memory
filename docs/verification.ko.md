@@ -923,3 +923,11 @@ fresh native review 4차의 must-fix 2건만 수정했다. ruff 통과, 실제 P
 현재 pinned profile의 lint/test/package는 `execution: local`이다. `gates --execution ci`는 선언된 CI gate만 선택할 뿐 기존 local gate를 Actions로 바꾸지 않는다. 빈 CI 선택을 QA 완료로 표시하지 않는다. 정상 hosted review는 fresh 독립 reviewer 실행 뒤 review/awaiting_host에서 멈추는 지원 경계가 있으나, 실제 Actions 결과를 local gate 통과로 import하는 지원 경로는 확인되지 않았다. pins/settings/guard·판정·기존 timeout을 바꾸지 않는다. 이후 사용자가 **최신 CI·보안·복구·OSS 수정의 CI 검증용 미검증 checkpoint commit/push만** 명시 허용했다. 정상 guard 경로만 사용하며 QA 위조·merge·출시 승인은 아니다. 위 미커밋/미push·run0은 이 허용 전 관측이고 실제 게시/실행은 별도 증거가 필요하다.
 
 원래 Opus timeout/나머지 skipped와 Sol request-changes는 보존한다. 새 formal 양 모델 리뷰·실제 CI·정상 QA/handoff·commit/push/PR 갱신은 여전히 별도 완료 조건이다. [OSS 후속 조사](research/2026-10-16-oss-followup.ko.md)의 보류 위험과 원래18개 native/평가/운영/권한/반입/trial/release/미귀속 volume acceptance도 인수했으며 코드 작성만으로 완료 처리하지 않았다.
+
+### 첫 실제 CI checkpoint 실행 — 실패 증거 보존
+
+명시 허용 뒤 `ad41787f827002e355949527495a50df68eceec4`를 정상 commit/push했다. PR #9 head가 같은 SHA임을 GitHub API로 확인했고 [첫 Actions run38915565153](https://github.com/chonamdoo/agents-memory/actions/runs/38915565153)이 실제 실행됐다. 네 shard와 별도 lint/build job은 병렬 시작했으나 모두 `Prepare owned Python`에서 `RuntimeError`로 실패했다. test·collection·lint·build 본체는 시작하지 않았으므로 통과/skip 수를 만들지 않는다.
+
+다운로드한 실제 `ci-summary/summary.json`은 해당 SHA의 `complete:false`, upstream job 실패를 기록했다. job/step metadata·실패 로그·aggregate artifact는 원래 값으로 보존했다. 같은 실패를 확인하려는 재실행이나 local 검증은 하지 않았다. 원래 wrapper가 public Python 설치 오류의 상세도 가렸으므로, credential 생성 전 설치 출력과 안전한 authored error 이유를 보이도록 수정했다. PG/DSN을 사용하는 명령의 raw stderr나 credential-bearing argv는 공개하지 않는다. 원인 진단과 다음 수정본 검증도 Actions에서만 수행한다.
+
+정상 재리뷰 진입 시도는 두 번 모두 `skill_scope_grew`에서 멈췄고 실제 reviewer는 아직 시작하지 않았다. 변경 경로의 provenance 순서가 document identity에 들어가는 static 원인을 확인했으며 body/digest가 같은 네 실제 required-read를 정상 계획에 따라 재사용한다. archived `fix-loop-norms-N.md`와 기존 document ID/pins를 보존하고 최종 source를 고정한 뒤 새 artifact로 정상 재진입한다. 이 중단을 새 Opus timeout이나 승인으로 기록하지 않는다.
