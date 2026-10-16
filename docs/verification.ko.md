@@ -1043,10 +1043,31 @@ spool의 `test_concurrent_producer_and_flushers_have_one_dispatch_owner`는 별�
 
 수정 전에는 self-consistent한 import/점유 CLI만의 영수증을 `complete`로 승인해 새 부정 회귀가 실제 `DID NOT RAISE ValueError`로 실패했다. 확대 범위의 완전한 positive receipt도 옛 정책에서 거절됐다. 두 회귀는 수정 후 같은 node ID의 setup/call/teardown이 모두 통과했다. 각 성공 run의 aggregate는 `complete:true`이고 failed/skip/xfail/xpass0이다. 설치 subset을 전체 suite에 더하지 않는다.
 
-실제 frozen 환경에서 wheel을 noneditable 재설치하고 새 `-I` process의 site-prefix package를 소비했다. 기존 import/CLI에 owned service readiness upgrade 거절, modern/legacy HTTP/MCP capture→inspect→record, producer/read 권한 분리, live operator 재확인·private publication 복구, native 자손/pipe 정리, retained bad-first recovery, 실제 TLS stop/drain을 추가했다. 마지막 두 selector는 기존 `test_cleanup_after_esrch_cannot_kill_a_reused_group`의 `probe-native`/`term-native`다. 두 경우 모두 별도 소유 child가 살아서 ping에 응답했고 phase가 통과했다. CI helper 대상 변형은 전체 source suite에서만 실행하며 설치 제품 소비로 세지 않는다.
+실제 frozen 환경에서 wheel을 noneditable 재설치하고 새 `-I` process의 site-prefix package를 소비했다. 기존 import/CLI에 owned service readiness upgrade 거절, 직접 `Store.capture` 후 modern/legacy MCP inspect→record, 별도 HTTP producer capture 후 context/inspect/record 권한 거절, live operator 재확인·private publication 복구, native 자손/pipe 정리, retained bad-first recovery, 실제 TLS stop/drain을 추가했다. 하나의 wire capture→inspect→record end-to-end 실행이라고 세지 않는다. 마지막 두 selector는 기존 `test_cleanup_after_esrch_cannot_kill_a_reused_group`의 `probe-native`/`term-native`다. 두 경우 모두 별도 소유 child가 살아서 ping에 응답했고 phase가 통과했다. CI helper 대상 변형은 전체 source suite에서만 실행하며 설치 제품 소비로 세지 않는다.
 
 최종 run의 다섯 upstream job은 UTC22:46:04에 병렬 시작했고 owned cleanup도 모두 성공했다. lint exit0/0.064초, build exit0/1.116초, 설치 consumer37.801초였다. source/resource digest는 `188fc72e77c6570928c7398ef3a2b0fae6a7c23c12ae184c59da7102d0aa22ef`, 실제 소비·공개 wheel SHA256은 `10e52bce0bdc6c4345adac6153f76f5a8ff65382b6f1c2a2c8f58bc078045061`이다. wheel의 Python module45개와 설치 file bytes를 대조했다. run/job/phase·outcome-only JUnit·prerequisite/checks/wheel·distribution·실패/성공 aggregate를 새 run context에 모두 보존했다.
 
 service fixture의 launchctl은 모사이고 HTTP/MCP 사례는 in-process ASGI다. 별도 stop/recovery fixture의 TLS와 owned child process는 실제 실행됐지만 실제 macOS service/native host 활성·kernel PID wraparound·live model·운영 cloud·human gold/trial을 입증하지 않는다. 로컬 test/collection/ruff/build/syntax/추가 smoke는0이다. 이 절 갱신 뒤의 정상 fresh Opus/Sol review→QA→handoff는 [PR9의 source/run별 기록](https://github.com/chonamdoo/agents-memory/pull/9)을 따르며 이전 source의 승인을 재사용하지 않는다. 원래18개 외부 acceptance와 merge/release 결정은 별도다.
+
+### Group leader 소유권 보존 — 7df1eb4
+
+정확한 문서 head4ad185c의 [Actions38978293639](https://github.com/chonamdoo/agents-memory/actions/runs/38978293639)도 전체2436/설치85를 통과했다. 이후 정상 독립 review measurement `6141550777e94a7cb761b8df363a48f4`의12개 실제 process가 모두 완료됐다. Opus6approve, Sol5approve/1request-changes, timeout0이었고 모든 원본 report hash가 manifest와 일치했다. 다수결로 승인하지 않았다. Sol state-integrity의 소유권 P1를 수용한 aggregate request-changes와 정상 fix-loop 진입을 보존했다.
+
+지적은 native/CI cleanup의 중간 `process.poll()`이 leader를 reap한다는 것이다. 성공한 group probe 뒤 마지막 자손이 사라지면 숫자 PID/PGID가 최종 KILL 전에 재사용될 수 있고, ESRCH를 관측한 경우만 막던 회귀는 그 interleaving을 다루지 않았다. 정상 단독 Popen supervisor 호출에서 leader를 최종 group 신호까지 unreaped로 유지하고 마지막에만 wait하도록 수정했다. 이미 `returncode`가 알려져 reap된 입력에는 group 신호를 보내지 않는다. 기존 TERM/grace/KILL·ESRCH 거절·parent reap과 native2/CI5초 grace, lint120/build300/wheel300/source600/reviewer600초 제한은 그대로다.
+
+| 정확한 checkpoint | 실제 Actions | 전체 source 수집/통과/실패/skip | 별도 설치 wheel 통과/실패/skip | 판정 |
+|---|---|---|---|---|
+| `558d5d496f089bc907e4d1c9f49c5fab36b5d7bf` | [38981655314](https://github.com/chonamdoo/agents-memory/actions/runs/38981655314) | 취소·부분 결과 보존 | 잘못된 fixture 시도 | CANCELLED, 유효 P1 red 아님 |
+| `aa1766178f7d996d73aa9b564e47c6c7d428f1e0` | [38982448750](https://github.com/chonamdoo/agents-memory/actions/runs/38982448750) |2440/2436/4/0|85/2/0|실패|
+| `7df1eb4e1879d15b0a65a3e377badf9164250a4a` | [38982950669](https://github.com/chonamdoo/agents-memory/actions/runs/38982950669) |2440/2440/0/0|87/0/0|성공, complete:true|
+
+첫 fixture는 already-reaped 분기에서 가상 grace clock을 진행시키지 않아 중단했다. 실제 취소·부분 로그/receipt와 controller wait의240초 helper-kernel reset을 보존했고 성공이나 유효 제품 재현으로 바꾸지 않았다. fixture만 고친 뒤 유효 실패 전 실행을 다시 확보했다. `waitid(WNOWAIT|WNOHANG)`은 테스트에서 exited leader를 bounded하게 관측하되 reap하지 않으며, 가상 시계는 cleanup의 grace sleep만 진행시킨다. 실제 subprocess 준비·wait·출력 관측은 그대로다. 제품 deadline을 바꿔 테스트를 맞추지 않았다.
+
+유효 수정 전의 after-probe native/CI 두 사례에서는 별도 소유 child가 실제 `-9`, already-reaped 두 사례에서는 `-15`로 종료돼 ping에 응답하지 못했다. 설치된 wheel에서도 같은 native 두 사례가 각각 실패했다. 수정 후 같은 source4건과 installed native2건은 setup/call/teardown이 모두 통과했고 child가 exit0/`survived:ping`을 반환했다. canonical selector는15개이며 설치87건을 전체 suite 분모에 더하지 않는다. 실제 kernel PID wraparound를 관측한 것이 아니라 signal 경계에 PGID 재사용을 주입한 것이다.
+
+성공 run의 다섯 upstream job은 UTC23:43:54–55에 병렬 시작했고 모든 owned prerequisite cleanup이 성공했다. failed/skip/xfail/xpass0, lint exit0/0.064초, build exit0/1.166초, installed consumer38.894초였다. source/resource digest는 `335a23298716a073771a26178a314bb6cb9172eebdd9eefe25eef27b8d05ff4e`, 실제 소비·공개 wheel SHA256은 `abf2210df64e8d806bd36d302d535436c10dbe41457403435cb01ee0a6293280`이다. 설치 Python45-file bytes와 public distribution을 대조했다. 실패 run은 checks 실패로 public distribution 업로드가 생략됐다는 사실도 보존하며 다른 run의 artifact로 채우지 않는다.
+
+현재 supervisor의 단독 wait 소유권을 보존한 것이지 임의 외부 reaper·탈출한 setsid 자손·실제 native startup/activation·운영 배포·live model/human gold/trial의 증명은 아니다. MCP 증거 문구도 직접 Store capture+두 MCP inspect/record와 별도 HTTP producer 권한 거절로 바로잡았다. 로컬 검증은0이고 shared pane/server/VM/daemon/LSP를 중지하지 않았다. 원래18개 acceptance는 사용자 요청으로 실제 새 우측 패인의 읽기 전용 준비 lane과 병렬 조정하며 완료로 치환하지 않는다. 이 수정 source의 fresh normal Opus/Sol→QA/handoff와 final-publication/merge/release 조건은 별도다.
+
 
 
