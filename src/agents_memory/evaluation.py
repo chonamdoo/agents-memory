@@ -15,24 +15,49 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from . import evaluation_diagnostics as diagnostics_module
 from . import evaluation_gateway as gateway_module
 from . import evaluation_native as native_module
+from . import evaluation_scoring as scoring_module
 from . import evaluation_verifier as verifier_module
 from .domain import CaptureCommand, ContextCommand
 from .evaluation_artifacts import (
-    ArtifactBundle, ArtifactEntry, ArtifactLimits, ByteEdit, EditableSpan, EditPolicy,
-    EditWitness, ModePermission, canonical_bytes, digest_bytes, load_submission,
-    materialize_snapshot, open_private_directory, safe_path, verify_allowed_edits,
+    ArtifactBundle,
+    ArtifactEntry,
+    ArtifactLimits,
+    ByteEdit,
+    EditableSpan,
+    EditPolicy,
+    EditWitness,
+    ModePermission,
+    canonical_bytes,
+    digest_bytes,
+    load_submission,
+    materialize_snapshot,
+    open_private_directory,
+    safe_path,
+    verify_allowed_edits,
 )
 from .evaluation_gateway import EvaluationGateway, GatewayScope, GatewayUpstream
 from .evaluation_native import NativeDriverSpec, run_native_arm
 from .evaluation_runtime import (
-    DockerRuntime, EvaluationOwner, RuntimeLimits, RuntimeSpec, publish_or_reconcile,
+    DockerRuntime,
+    EvaluationOwner,
+    RuntimeLimits,
+    RuntimeSpec,
+    publish_or_reconcile,
 )
 from .evaluation_scoring import ArmObservation, RetrievalObservation, ScoringProtocol
 from .evaluation_verifier import (
-    ControlArtifact, FileExpectation, IndependentControlApproval, OracleCase,
-    OracleTask, VerifierExecutor, VerifierSpec, controls_digest, verifier_source_digest,
+    ControlArtifact,
+    FileExpectation,
+    IndependentControlApproval,
+    OracleCase,
+    OracleTask,
+    VerifierExecutor,
+    VerifierSpec,
+    controls_digest,
+    verifier_source_digest,
 )
 from .stdio import RelayEndpoint
 from .wire import decode_json, validate_wire
@@ -126,7 +151,9 @@ def _read(path: Path, maximum: int, *, private: bool = False) -> bytes:
                 break
             chunks.extend(block)
         after = os.fstat(fd)
-        identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        def identity(info):
+            return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
         _require(len(chunks) <= maximum and identity(before) == identity(after), "INPUT_UNSTABLE_OR_BOUND")
         return bytes(chunks)
     finally:
@@ -582,7 +609,9 @@ def load_manifest(path: Path, *, expected_sha256: str | None = None) -> Evaluati
         total += len(content)
         _require(total <= _TOTAL_BYTES, "FROZEN_INPUT_TOTAL_BOUND")
         files.append(FrozenFile(name, source, item["sha256"], maximum, content))
-    _require({"wheel", "controller", "verifier", "native_driver", "gateway_driver", "corpus", "gold", "workload", "rules", "native_identity", "runtime"} <= names, "REQUIRED_FROZEN_INPUTS")
+    _require({"wheel", "controller", "verifier", "native_driver", "gateway_driver", "scoring", "diagnostics",
+              "corpus", "gold", "workload", "rules", "native_identity", "runtime"} <= names,
+             "REQUIRED_FROZEN_INPUTS")
     result = EvaluationManifest(path, digest, raw, tuple(files))
     _require(result.file("controller").sha256 == value["controller_digest"], "CONTROLLER_FILE_IDENTITY")
     _runtime(result.document("runtime"))
@@ -739,7 +768,11 @@ def _terminal(manifest: EvaluationManifest, run_dir: Path, invocation: dict, res
 
 
 def _read_terminal(manifest: EvaluationManifest, run_dir: Path, invocation: dict) -> dict | None:
-    result = _existing(run_dir / "ledger", _key(invocation["invocation_id"]) + ".terminal.json", manifest.config["record_bytes"])
+    return _checked_terminal(manifest, invocation, _existing(
+        run_dir / "ledger", _key(invocation["invocation_id"]) + ".terminal.json", manifest.config["record_bytes"]))
+
+
+def _checked_terminal(manifest: EvaluationManifest, invocation: dict, result: dict | None) -> dict | None:
     if result is not None:
         _keys(result, set(_initial_result()) | {"schema", "manifest_digest", "invocation_id"}, {"delivery"})
         _require(type(result["schema"]) is int and result["schema"] == 1 and result["manifest_digest"] == manifest.digest and result["invocation_id"] == invocation["invocation_id"], "TERMINAL_IDENTITY_DRIFT")
@@ -787,7 +820,9 @@ class _RunGateway(EvaluationGateway):
 
 
 def _running_sources(manifest: EvaluationManifest) -> None:
-    for name, source in (("controller", __file__), ("verifier", verifier_module.__file__), ("native_driver", native_module.__file__), ("gateway_driver", gateway_module.__file__)):
+    for name, source in (("controller", __file__), ("verifier", verifier_module.__file__),
+                         ("native_driver", native_module.__file__), ("gateway_driver", gateway_module.__file__),
+                         ("scoring", scoring_module.__file__), ("diagnostics", diagnostics_module.__file__)):
         _require(digest_bytes(_read(Path(source).absolute(), _FILE_BYTES)) == manifest.file(name).sha256, "RUNNING_SOURCE_IDENTITY_DRIFT")
     _require(verifier_source_digest() == manifest.config["verifier_digest"], "RUNNING_VERIFIER_IDENTITY_DRIFT")
 
@@ -957,7 +992,7 @@ def _gateway_receipt(manifest: EvaluationManifest, run_dir: Path, invocation: di
             candidates = {item["claim_id"] for item in payload.get("candidate_manifest", [])}
             _require(candidates <= allowed, "UNFROZEN_CORPUS_CANDIDATE")
             context = payload.get("context")
-            if isinstance(context, str):
+            if isinstance(context, str) and context != "":
                 context = decode_json(context.encode())
             if isinstance(context, dict):
                 _require({item["ref"] for item in context.get("memory_candidates", [])} <= allowed, "UNFROZEN_CORPUS_DELIVERY")
@@ -1163,22 +1198,33 @@ def _unbytes(value: dict) -> bytes:
 
 def _preflight_link(manifest: EvaluationManifest, run_dir: Path, invocation: dict, delivery: dict) -> bool:
     capture = _existing(run_dir / "ledger", _key(invocation["invocation_id"]) + ".capture.json", manifest.config["record_bytes"])
+    return _preflight_link_data(
+        manifest, capture, _trace_events(manifest, run_dir, invocation["invocation_id"], "gateway"), delivery)
+
+
+def _preflight_link_data(manifest: EvaluationManifest, capture: dict, events: list[dict], delivery: dict) -> bool:
     pointer = capture["source_pointer"]
     source = pointer["source_id"]
-    events = _trace_events(manifest, run_dir, invocation["invocation_id"], "gateway")
     recorded, inspected, windows = set(), {}, {}
     coverage = []
     for event in events:
         if event.get("stage") != "gateway_wire":
             continue
         exchange = event.get("exchange", {})
-        if exchange.get("stage") != "response" or exchange.get("response_complete") is not True or not exchange.get("response_body") or not exchange.get("request_body"):
+        if (exchange.get("stage") != "response" or exchange.get("response_complete") is not True
+                or exchange.get("response_body") is None or exchange.get("request_body") is None):
             continue
-        request = decode_json(_unbytes(exchange["request_body"]))
+        request_bytes = _unbytes(exchange["request_body"])
+        response_bytes = _unbytes(exchange["response_body"])
+        if not request_bytes or not response_bytes:
+            continue
+        request = decode_json(request_bytes)
         params = request.get("params", {})
         arguments = params.get("arguments", {})
-        response = decode_json(_unbytes(exchange["response_body"]))
-        if params.get("name") not in {"memory_inspect", "memory_record"} or "result" not in response or response["result"].get("isError"):
+        if request.get("method") != "tools/call" or params.get("name") not in {"memory_inspect", "memory_record"}:
+            continue
+        response = decode_json(response_bytes)
+        if "result" not in response or response["result"].get("isError"):
             continue
         payload = _payload(response["result"])
         if params["name"] == "memory_record":
@@ -1339,13 +1385,69 @@ def _grounding(context: dict) -> list[dict]:
     return refs
 
 
+def _normalized_retrieval_request(manifest: EvaluationManifest, request: dict) -> dict:
+    _require(request.get("binding_id") is None or request.get("binding_id") == manifest.config["gateway"]["binding_id"],
+             "RETRIEVAL_REQUEST_BINDING_MISMATCH")
+    return validate_wire(ContextCommand, {
+        **request, "binding_id": manifest.config["gateway"]["binding_id"],
+    }).model_dump(mode="json", exclude={"admission_id", "relevance"})
+
+
+def _resolved_retrieval_context(manifest: EvaluationManifest, invocation: dict, delivery: dict) -> tuple[object, bool]:
+    reads = delivery.get("final_reads") or []
+    final = reads[0] if len(reads) == 1 else None
+    context = final.get("context") if final else None
+    matched = False
+    if invocation["mode"] == "required_only":
+        required = delivery.get("required_reads") or []
+        if len(required) == 1:
+            call = required[0]
+            context = call["result"].get("context")
+            matched = (_normalized_retrieval_request(manifest, call["request"])
+                       == _normalized_retrieval_request(manifest, manifest.config["gateway"]["required_request"]))
+    else:
+        case = next(item for item in manifest.workload["retrieval"] if item["case_id"] == invocation["target_id"])
+        expected = _normalized_retrieval_request(manifest, case["request"])
+        calls = [call for call in delivery.get("context_calls", [])
+                 if call["result"].get("judgment_required") is False
+                 and (call["request"].get("admission_id") or call["result"].get("candidate_manifest") == [])]
+        if len(calls) == 1:
+            call = calls[0]
+            confirmed = (final is not None and call["result"].get("context") == final.get("context")
+                         if call["request"].get("admission_id")
+                         else call["result"].get("candidate_manifest") == [])
+            matched = _normalized_retrieval_request(manifest, call["request"]) == expected and confirmed
+            context = call["result"].get("context")
+    if isinstance(context, str) and context != "":
+        context = decode_json(context.encode())
+    known_context = context == "" or isinstance(context, dict) and isinstance(context.get("memory_candidates"), list)
+    return context, known_context and delivery.get("observation_complete") is True and matched
+
+
+def _report_ledger(manifest: EvaluationManifest, run_dir: Path) -> dict:
+    records = {}
+    for invocation in manifest.workload["invocations"]:
+        prefix = _key(invocation["invocation_id"])
+        for suffix in ("intent", "terminal", "gateway"):
+            name = prefix + "." + suffix + ".json"
+            value = _existing(run_dir / "ledger", name, manifest.config["record_bytes"])
+            if value is not None:
+                records["ledger/" + name] = value
+    return records
+
+
 def load_report_inputs(run_dir: Path) -> tuple[ScoringProtocol, list[ArmObservation], list[RetrievalObservation]]:
     manifest = _load_frozen_run(run_dir)
+    return _report_inputs_from_records(manifest, _report_ledger(manifest, run_dir))
+
+
+def _report_inputs_from_records(manifest: EvaluationManifest, records: dict) -> tuple:
     protocol, arms, retrieval = _protocol(manifest), [], []
     nullable = {key: value for key, value in _initial_result().items() if key not in {"code", "status", "comparable", "comparability_reasons", "contaminated", "native_identity_observed"}}
     for invocation in manifest.workload["invocations"]:
-        terminal = _read_terminal(manifest, run_dir, invocation)
-        intent = _existing(run_dir / "ledger", _key(invocation["invocation_id"]) + ".intent.json", manifest.config["record_bytes"])
+        prefix = "ledger/" + _key(invocation["invocation_id"])
+        terminal = _checked_terminal(manifest, invocation, records.get(prefix + ".terminal.json"))
+        intent = records.get(prefix + ".intent.json")
         if intent is not None:
             _require(intent == {"schema": 1, "manifest_digest": manifest.digest, "invocation": invocation}, "ATTEMPT_INTENT_CONFLICT")
         _require(terminal is None or intent is not None, "TERMINAL_WITHOUT_PRIOR_INTENT")
@@ -1361,50 +1463,104 @@ def load_report_inputs(run_dir: Path) -> tuple[ScoringProtocol, list[ArmObservat
         else:
             case = next(item for item in manifest.document("gold")["cases"] if item["case_id"] == invocation["target_id"])
             delivery = row.get("delivery") or {}
-            reads = delivery.get("final_reads") or []
-            final = reads[-1] if len(reads) == 1 else None
-            context = final.get("context") if final else None
-            request_matched = False
-            if invocation["mode"] == "required_only":
-                required = delivery.get("required_reads") or []
-                context = required[-1]["result"].get("context") if required else None
-                request_matched = bool(required)
-            else:
-                frozen_case = next(item for item in manifest.workload["retrieval"] if item["case_id"] == case["case_id"])
-                expected = validate_wire(ContextCommand, frozen_case["request"]).model_dump(mode="json", exclude={"admission_id", "relevance"})
-                final_calls = [call for call in delivery.get("context_calls", []) if call["result"].get("judgment_required") is False and (
-                    call["request"].get("admission_id") or call["result"].get("candidate_manifest") == [])]
-                if len(final_calls) == 1:
-                    call = final_calls[0]
-                    actual = validate_wire(ContextCommand, {**call["request"], "binding_id": manifest.config["gateway"]["binding_id"]}).model_dump(mode="json", exclude={"admission_id", "relevance"})
-                    confirmed = (len(reads) == 1 and call["result"].get("context") == final.get("context")) if call["request"].get("admission_id") else call["result"].get("candidate_manifest") == []
-                    request_matched = actual == expected and confirmed
-                    context = call["result"].get("context")
-            if isinstance(context, str):
-                context = decode_json(context.encode())
-            complete = isinstance(context, dict) and delivery.get("observation_complete") is True and request_matched
-            ids = [claim["ref"] for claim in context.get("memory_candidates", [])] if complete else None
+            context, complete = _resolved_retrieval_context(manifest, invocation, delivery)
+            ids = ([] if context == "" else [claim["ref"] for claim in context["memory_candidates"]]) if complete else None
             comparable = common["comparable"] and complete
             reasons = list(common["comparability_reasons"])
             if not complete:
                 reasons.append("FINAL_CONTEXT_UNOBSERVED_OR_AMBIGUOUS")
             common.update(comparable=comparable, comparability_reasons=sorted(set(reasons)))
-            retrieval.append(RetrievalObservation(**common, case_id=case["case_id"], cluster_id=case["cluster_id"], attempt_id=invocation["invocation_id"], returned_claim_ids=ids, manifest_complete=True if complete else None, final_context_digest=digest_bytes(canonical_bytes(context)) if complete else None, grounding_refs=_grounding(context) if complete else None, **{key: row.get(key) for key in ("latency_seconds", "input_tokens", "output_tokens", "total_tokens", "cost_usd", "cost_basis")}))
+            retrieval.append(RetrievalObservation(**common, case_id=case["case_id"], cluster_id=case["cluster_id"],
+                attempt_id=invocation["invocation_id"], returned_claim_ids=ids,
+                manifest_complete=True if complete else None,
+                final_context_digest=digest_bytes(canonical_bytes(context)) if complete else None,
+                grounding_refs=([] if context == "" else _grounding(context)) if complete else None,
+                **{key: row.get(key) for key in ("latency_seconds", "input_tokens", "output_tokens",
+                                               "total_tokens", "cost_usd", "cost_basis")}))
     return protocol, arms, retrieval
 
 
-def report_evaluation(run_dir: Path) -> dict:
+def _diagnostic_observations_from_records(
+    manifest: EvaluationManifest, protocol: ScoringProtocol,
+    retrieval: list[RetrievalObservation], records: dict,
+) -> list:
+    from .evaluation_scoring import DeliveredClaimObservation, RetrievalDiagnosticObservation
+
+    observations = []
+    corpus_ids = {claim["ref"] for claim in manifest.document("corpus")["claims"]}
+    for row in retrieval:
+        invocation = _invocation(manifest, row.attempt_id)
+        prefix = "ledger/" + _key(row.attempt_id)
+        terminal = _checked_terminal(manifest, invocation, records.get(prefix + ".terminal.json")) or _initial_result()
+        delivery = terminal.get("delivery")
+        if delivery is None:
+            delivery = records.get(prefix + ".gateway.json") or {}
+        scope = diagnostics_module.diagnostic_scope(manifest, protocol, row.case_id)
+        context, complete = _resolved_retrieval_context(manifest, invocation, delivery)
+        final_claims = None
+        if complete:
+            final_claims = tuple(DeliveredClaimObservation(
+                claim_id=item["ref"], claim_digest=digest_bytes(canonical_bytes(item)), complete=True,
+            ) for item in (context["memory_candidates"] if isinstance(context, dict) else ()))
+        candidate = {}
+        if invocation["mode"] == "memory_on":
+            case = next(item for item in manifest.workload["retrieval"] if item["case_id"] == row.case_id)
+            initial = [call for call in delivery.get("context_calls", [])
+                       if not call["request"].get("admission_id")]
+            reasons = []
+            matching = (len(initial) == 1
+                        and _normalized_retrieval_request(manifest, initial[0]["request"])
+                        == _normalized_retrieval_request(manifest, case["request"]))
+            items = initial[0]["result"].get("candidate_manifest") if matching else None
+            ids = [item.get("claim_id") for item in items] if isinstance(items, list) else None
+            stage_complete = (ids is not None and len(ids) <= 20 and len(set(ids)) == len(ids)
+                              and all(isinstance(ref, str) and ref in corpus_ids for ref in ids)
+                              and delivery.get("invocation_id") == row.attempt_id
+                              and delivery.get("mode") == row.mode
+                              and delivery.get("observation_complete") is True)
+            if not stage_complete:
+                reasons.append("CANDIDATE_STAGE_UNOBSERVED_OR_AMBIGUOUS")
+            if (terminal.get("corpus_before_digest") != protocol.corpus_digest
+                    or terminal.get("corpus_after_digest") != protocol.corpus_digest
+                    or terminal.get("required_rules_digest") != protocol.required_rules_digest
+                    or terminal.get("native_identity_digest") != protocol.native_identity_digest
+                    or terminal.get("native_identity_observed") is not True
+                    or terminal.get("contaminated") is not False):
+                reasons.append("CANDIDATE_SCOPE_OR_NATIVE_IDENTITY_UNKNOWN")
+            candidate = dict(
+                candidate_status="completed" if stage_complete else "unknown",
+                candidate_comparable=stage_complete and not reasons,
+                candidate_comparability_reasons=reasons,
+                candidate_claim_ids=ids if stage_complete else None,
+                candidate_manifest_digest=digest_bytes(canonical_bytes(items)) if stage_complete else None,
+                candidates_complete=stage_complete,
+            )
+        observations.append(RetrievalDiagnosticObservation(
+            schema=1, scope=scope, retrieval=row, final_claims=final_claims, **candidate))
+    return observations
+
+
+def report_evaluation(run_dir: Path, *, adjudication: bytes | None = None) -> dict:
     manifest = _load_frozen_run(run_dir)
-    protocol, attempts, retrieval = load_report_inputs(run_dir)
+    _running_sources(manifest)
+    return _report_from_records(manifest, _report_ledger(manifest, run_dir), adjudication=adjudication)
+
+
+def _report_from_records(manifest: EvaluationManifest, records: dict, *, adjudication: bytes | None = None) -> dict:
+    protocol, attempts, retrieval = _report_inputs_from_records(manifest, records)
     from .evaluation_scoring import score_run
 
     report = score_run(protocol, attempts, retrieval)
+    supplements = diagnostics_module.load_diagnostic_gold(manifest, protocol, adjudication=adjudication)
+    report["retrieval_diagnostics"] = scoring_module.score_retrieval_diagnostics(
+        protocol, supplements.gold, _diagnostic_observations_from_records(manifest, protocol, retrieval, records))
+    report["retrieval_diagnostics"]["evidence_provenance"] = supplements.provenance()
     invocation = _invocation(manifest, manifest.workload["preflight"]["invocation_id"])
-    intent = _existing(run_dir / "ledger", _key(invocation["invocation_id"]) + ".intent.json",
-                       manifest.config["record_bytes"])
+    prefix = "ledger/" + _key(invocation["invocation_id"])
+    intent = records.get(prefix + ".intent.json")
     _require(intent is None or intent == {"schema": 1, "manifest_digest": manifest.digest,
                                          "invocation": invocation}, "ATTEMPT_INTENT_CONFLICT")
-    preflight = _read_terminal(manifest, run_dir, invocation)
+    preflight = _checked_terminal(manifest, invocation, records.get(prefix + ".terminal.json"))
     _require(preflight is None or intent is not None, "TERMINAL_WITHOUT_PRIOR_INTENT")
     if preflight is not None:
         _require(preflight["manifest_digest"] == manifest.digest
@@ -1420,6 +1576,7 @@ def report_evaluation(run_dir: Path) -> dict:
             "input_tokens", "output_tokens", "total_tokens", "cost_usd", "cost_basis", "evidence_refs")},
     }
     return report
+
 
 
 @dataclass(frozen=True)

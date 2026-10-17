@@ -8,7 +8,9 @@ import pytest
 from agents_memory import spool as spool_module
 from agents_memory.domain import CaptureCommand, DomainError, EffectState
 from agents_memory.health import (
-    CodeFileObservation, CodeObservationCommand, SessionObservationCommand,
+    CodeFileObservation,
+    CodeObservationCommand,
+    SessionObservationCommand,
 )
 from agents_memory.spool import PAYLOAD_RETENTION_SECONDS, ProducerSpool
 

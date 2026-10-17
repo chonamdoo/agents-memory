@@ -449,6 +449,48 @@ def test_duplicate_claim_cannot_publish_over_inflight_observations(tmp_path, run
     assert b"YW5zd2VyCg==" in private
 
 
+def test_identical_payloads_have_distinct_invocations_but_changed_payload_cannot_reuse_claim(
+    tmp_path, runtime_spec, limits, monkeypatch,
+):
+    tmp_path.chmod(0o700)
+    before = bundle(limits, b"old")
+    correct = bundle(limits, b"new")
+    wrong = bundle(limits, b"bad")
+    policy = EditPolicy(before.digest, (EditableSpan("a.py", 0, 3),), (), (), ())
+    proof = witness(before, correct, (ByteEdit("a.py", 0, 3, b"new"),))
+    case = OracleCase("functional", ("/candidate",), b"", b"answer\n", b"", 0, ())
+    task = verifier.OracleTask("engineering-invocation", "1", "engineering-only", before.digest, policy, proof, (case,))
+    spec = verifier.VerifierSpec(runtime_spec, "d" * 64, verifier.verifier_source_digest(), 3, 1, 1024 * 1024)
+    executor = verifier.VerifierExecutor(spec, owner(), tmp_path)
+    controls = (
+        verifier.ControlArtifact("correct", correct, proof),
+        verifier.ControlArtifact("noop", before, witness(before, before)),
+        verifier.ControlArtifact("plausible_wrong", wrong, witness(before, wrong, (ByteEdit("a.py", 0, 3, b"bad"),))),
+    )
+    executed = []
+
+    def run(self, intent, *args, **kwargs):
+        executed.append(intent.case_id)
+        return observation(b"answer\n" if intent.snapshot == correct.digest else b"wrong\n")
+
+    monkeypatch.setattr(DockerRuntime, "preflight", lambda self: None)
+    monkeypatch.setattr(DockerRuntime, "run", run)
+    approval = verifier.IndependentControlApproval(task.digest, verifier.controls_digest(controls), "engineering-only")
+    assert executor.precheck(before, task, controls, approval).eligible
+    on = executor.verify(before, correct, task, proof, invocation_id="memory-on-one")
+    off = executor.verify(before, correct, task, proof, invocation_id="required-only-one")
+    assert on.success and off.success
+    assert on.error_code is off.error_code is None
+    assert on.terminal_artifact != off.terminal_artifact
+    completed = (tmp_path / on.terminal_artifact).read_bytes()
+    changed = executor.verify(
+        before, wrong, task, witness(before, wrong, (ByteEdit("a.py", 0, 3, b"bad"),)),
+        invocation_id="memory-on-one")
+    assert changed.error_code == "ATTEMPT_CLAIM_UNKNOWN_OR_EXISTING"
+    assert len(executed) == 5
+    assert (tmp_path / on.terminal_artifact).read_bytes() == completed
+
+
 def test_completed_nonzero_exit_still_observes_declared_effects(owned_runtime, monkeypatch):
     instance, _ = owned_runtime
     instance.spec = replace(instance.spec, limits=replace(instance.spec.limits, watchdog_seconds=30))

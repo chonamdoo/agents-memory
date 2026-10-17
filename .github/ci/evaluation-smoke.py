@@ -15,20 +15,23 @@ import sys
 import traceback
 import zipfile
 from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import asdict
+from copy import deepcopy
+from dataclasses import asdict, replace
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from agents_memory import cli as product_cli
 from agents_memory import (
     evaluation,
     evaluation_artifacts,
+    evaluation_diagnostics,
     evaluation_gateway,
+    evaluation_health,
     evaluation_native,
     evaluation_runtime,
     evaluation_scoring,
     evaluation_verifier,
 )
-from agents_memory import cli as product_cli
 from agents_memory.config import Settings
 from agents_memory.domain import Role, RuleApproval, RuleProposal, RuleScope
 from agents_memory.edge import create_app
@@ -47,6 +50,7 @@ from agents_memory.evaluation_artifacts import (
 from agents_memory.evaluation_gateway import EvaluationGateway, GatewayScope, GatewayUpstream
 from agents_memory.evaluation_runtime import CommandLease, DockerRuntime, EvaluationOwner
 from agents_memory.evaluation_verifier import ControlArtifact, OracleCase, OracleTask, controls_digest
+from agents_memory.health import HealthAssessmentCommand, HealthPolicyCommand
 from agents_memory.journal import DeletionJournal
 from agents_memory.migrations import migrate
 from agents_memory.private_io import private_read, private_write
@@ -65,7 +69,9 @@ LIMITS = ArtifactLimits(65536, 20, 8192, 16384, 8, 512, 128, 20, 16384)
 MODULES = {
     "controller": evaluation,
     "artifacts": evaluation_artifacts,
+    "diagnostics": evaluation_diagnostics,
     "gateway_driver": evaluation_gateway,
+    "health_compiler": evaluation_health,
     "native_driver": evaluation_native,
     "runtime_driver": evaluation_runtime,
     "scoring": evaluation_scoring,
@@ -486,7 +492,8 @@ def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, list]:
     try:
         rules = call("memory_required_context", config["required_request"])["stamp"]["rules"]
         capture = gateway.capture({"binding_id": config["binding_id"], "idempotency_key": "engineering-measured-source",
-                                   "origin_key": "engineering-measured-source", "speaker": "document", "body": SOURCE_BODY})
+                                   "origin_key": "engineering-measured-source", "speaker": "document", "body": SOURCE_BODY,
+                                   "root_run_id": "engineering-measured-run", "agent_path": "engineering-source"})
         pointer = capture["source_pointer"]
         source = pointer["source_id"]
         window = call("memory_inspect", {"ref": source})
@@ -494,6 +501,17 @@ def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, list]:
         selection = full_inspect(call, selected["artifact_id"])
         claims = [full_inspect(call, claim) for claim in selection["claim_ids"]]
         require(len(claims) == 1, "EXACT_ENGINEERING_CLAIM_REQUIRED")
+        segment = gateway._producer.request("/api/health", {
+            "kind": "session_observation", "binding_id": config["binding_id"],
+            "expected_binding_revision": 1, "idempotency_key": "engineering-segment-end",
+            "stream_id": "engineering-stream", "segment_id": "engineering-segment",
+            "event_id": "engineering-end", "sequence": 1, "event": "end",
+            "root_run_id": "engineering-measured-run", "agent_path": "engineering-source",
+            "source_refs": [{"id": source, "revision": pointer["source_revision"]}],
+            "claim_refs": [{"id": item["id"], "revision": item["revision"]} for item in claims],
+            "coverage": "partial", "gaps": ["HOST_HUMAN_PRESENCE_UNATTESTED"],
+        })
+        require(segment["state"] == "health_recorded", "EXPLICIT_OBSERVED_SEGMENT_REQUIRED")
         config["approved_refs"] = sorted({source, *(item["id"] for item in claims),
                                          *("health:claim:" + item["id"] for item in claims)})
         gateway.close()
@@ -594,8 +612,11 @@ def freeze_manifest(root: Path, measured: dict, preflight: dict, corpus: dict, g
     return manifest_path, run, config
 
 
-async def cli(root: Path, name: str, arguments: list[str], seconds: float = 1200) -> dict:
-    argv = [sys.executable, "-m", "agents_memory.cli", "evaluation", *arguments]
+async def cli(
+    root: Path, name: str, arguments: list[str], seconds: float = 1200,
+    *, command: str = "evaluation", global_arguments: tuple[str, ...] = (),
+) -> dict:
+    argv = [sys.executable, "-m", "agents_memory.cli", *global_arguments, command, *arguments]
     save(root / (name + "-intent.json"), {"schema": 1, "argv": argv, "seconds": seconds})
     def execute():
         return CommandLease(argv, dict(os.environ), stdin=b"", seconds=seconds,
@@ -621,7 +642,8 @@ def assert_results(run: Path, manifest: Path, report: dict, reported: dict) -> d
     protocol, arms, retrieval = evaluation.load_report_inputs(run)
     require(len(arms) == 2 and len(retrieval) == 2, "ALL_ATTEMPTS_REQUIRED")
     projected = evaluation_scoring.score_run(protocol, arms, retrieval)
-    require(projected == reported and {key: report[key] for key in projected} == projected, "CLI_SCORER_REPORT_MISMATCH")
+    require({key: reported[key] for key in projected} == projected and report == reported,
+            "CLI_SCORER_REPORT_MISMATCH")
     require(report["scope"] == "engineering" and report["original_acceptance"] is False
             and report["original18_completed"] == 0 and report["engineering_nonacceptance"] is True,
             "ENGINEERING_NONACCEPTANCE_REQUIRED")
@@ -694,6 +716,77 @@ def assert_results(run: Path, manifest: Path, report: dict, reported: dict) -> d
             "correct_noop_wrong_external_controls": True, "all_blackbox_cases": True,
             "unchanged_corpus_rules": True, "on_off_scope": True, "unknown_costs_preserved": True,
             "strict_scorer_report": True}
+
+
+async def exercise_health_link(root: Path, run: Path, expected: str, store, actor, binding: str) -> dict:
+    evidence = await asyncio.to_thread(
+        evaluation_health.load_evaluation_health_evidence, run, expected_manifest_sha256=expected)
+    pending = await store.inspect(actor, binding, "health")
+    require(len(pending["items"]) == 1, "ONE_OBSERVED_HEALTH_WORK_REQUIRED")
+    work = await store.inspect(actor, binding, pending["items"][0]["ref"])
+    command = HealthAssessmentCommand(
+        binding_id=binding, expected_binding_revision=work["binding_revision"],
+        idempotency_key="engineering-explicit-evaluation-health",
+        admission_id=work["admission"]["id"], pending_id=work["pending_id"],
+        health_manifest_digest=work["health_manifest_digest"],
+        input_sources=work["input_sources"], input_claims=work["input_claims"],
+        assessments=[{"claim_ref": target, "support": "unknown", "freshness": "unknown",
+                      "relevance": "unknown",
+                      "reason": "Engineering task success does not establish memory truth or human approval."}
+                     for target in work["input_claims"]])
+    snapshot = evidence.manifest.config["gateway"]["required_request"].get("snapshot")
+    views = {target.id: await store.inspect(actor, binding, "health:claim:" + target.id, snapshot=snapshot)
+             for target in command.input_claims}
+
+    def link(retained, live_views, live_work, pin=expected):
+        return evaluation_health.compile_evaluation_health_assessment(
+            retained, command, current_health_views=live_views, current_health_work=live_work,
+            expected_manifest_sha256=pin)
+
+    linked = await asyncio.to_thread(link, evidence, views, work)
+    require(linked.command.evaluation_receipt_digest == digest_bytes(evidence.report_bytes),
+            "COMPLETE_EVALUATION_REPORT_DIGEST_REQUIRED")
+    altered_report = decode_json(evidence.report_bytes)
+    altered_report["retrieval_diagnostics"]["evidence_provenance"]["independence"] = "independently_approved"
+    partial = deepcopy(views)
+    partial[command.input_claims[0].id]["coverage"]["complete"] = False
+    revised = deepcopy(views)
+    revised[command.input_claims[0].id]["claim"]["revision"] += 1
+    wrong_work = deepcopy(work)
+    wrong_work["health_manifest_digest"] = "0" * 64
+    refusals = (
+        (evidence, views, work, "0" * 64, "EVALUATION_HEALTH_EXPECTED_MANIFEST"),
+        (replace(evidence, report_bytes=canonical_bytes(altered_report)), views, work, expected,
+         "EVALUATION_HEALTH_REPORT_CONFLICT"),
+        (evidence, partial, work, expected, "EVALUATION_HEALTH_DEPENDENCY_MISMATCH_OR_PARTIAL"),
+        (evidence, revised, work, expected, "EVALUATION_HEALTH_LIVE_CLAIM_MISMATCH"),
+        (evidence, views, wrong_work, expected, "EVALUATION_HEALTH_WORK_MANIFEST_SCOPE"),
+    )
+    for retained, live_views, live_work, pin, code in refusals:
+        try:
+            await asyncio.to_thread(link, retained, live_views, live_work, pin)
+        except evaluation_health.EvaluationHealthError as error:
+            require(str(error) == code, "EXACT_EVALUATION_HEALTH_REFUSAL_REQUIRED")
+        else:
+            raise ValueError("FORGED_EVALUATION_HEALTH_ACCEPTED")
+    path = root / "explicit-health-command.json"
+    save(path, command.model_dump(mode="json"))
+    result = await cli(
+        root, "health-evaluation", ["apply-evaluation", "--run-dir", str(run), "--command-file", str(path),
+                                  "--expected-sha256", expected], 60, command="health",
+        global_arguments=("--config", str(root / "settings.private.json"),
+                          "--token-file", str(root / "operator.token")))
+    require(result["operation"]["state"] == "health_recorded", "ACTUAL_HEALTH_CLI_API_COMMIT_REQUIRED")
+    event = await store.inspect(actor, binding, "health:event:" + result["operation"]["artifact_id"])
+    require(event["payload"]["evaluation_receipt_digest"] == digest_bytes(evidence.report_bytes),
+            "PERSISTED_COMPLETE_REPORT_LINK_REQUIRED")
+    for target in command.input_claims:
+        current = await store.inspect(actor, binding, "health:claim:" + target.id, snapshot=snapshot)
+        require(current["health"]["support"] == current["health"]["freshness"] == "unknown"
+                and current["health"]["operator_review"] is None,
+                "TASK_SUCCESS_MUST_NOT_INVENT_MEMORY_TRUTH_OR_HUMAN_APPROVAL")
+    return {"explicit_evaluation_health_link": True, "no_automatic_health_or_human_approval": True,
+            "forged_evidence_refused": len(refusals)}
 
 
 def reconcile_verifiers(run: Path, config: dict) -> bool:
@@ -792,6 +885,10 @@ async def smoke(args, root: Path, summary: dict) -> None:
                 scope=RuleScope.LOCAL_PROJECT, target_bindings=(binding.id,), target_set_revision=proposal["target_set_revision"],
                 idempotency_key="engineering-" + phase + "-approval"))
         require(bindings["measured"] != bindings["preflight"], "SEPARATE_BINDINGS_REQUIRED")
+        actor = await store.authenticate(operator_token)
+        await store.health(actor, HealthPolicyCommand(
+            binding_id=bindings["measured"], expected_binding_revision=1,
+            idempotency_key="engineering-health-enable", expected_policy_revision=0, enabled=True))
         server = uvicorn.Server(uvicorn.Config(create_app(settings), access_log=False, log_level="critical"))
         serving = asyncio.create_task(server.serve(sockets=[listener]))
         async with asyncio.timeout(20):
@@ -824,6 +921,8 @@ async def smoke(args, root: Path, summary: dict) -> None:
         reported = await cli(root, "report", ["report", "--run-dir", str(run)], 60)
         require(ledger_snapshot(run) == immutable, "REPORT_MUTATED_IMMUTABLE_EVIDENCE")
         outcomes = assert_results(run, manifest, report, reported)
+        outcomes.update(await exercise_health_link(root, run, expected, store, actor, bindings["measured"]))
+        require(ledger_snapshot(run) == immutable, "HEALTH_LINK_MUTATED_RETAINED_EVALUATION")
         _, after = source_identity(args.wheel, args.expected_wheel_sha256, args.consumption)
         require(before == after, "CONSUMED_SOURCE_CHANGED")
         outcomes["source_unchanged"] = True

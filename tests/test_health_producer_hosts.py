@@ -11,8 +11,11 @@ from test_host_boundaries import native
 from agents_memory import health_producer, hosts
 from agents_memory.domain import DomainError, EffectState
 from agents_memory.health_producer import (
-    configure_health_workspace, health_before_context, observe_health_workspace,
-    observe_host_session, prepare_health_workspace,
+    configure_health_workspace,
+    health_before_context,
+    observe_health_workspace,
+    observe_host_session,
+    prepare_health_workspace,
 )
 from agents_memory.spool import ProducerSpool
 
@@ -176,6 +179,7 @@ def test_recovery_observes_changed_linked_file_without_a_new_host_event(health_i
     project, settings, _, _, endpoint, calls = health_installation
     (project / "module.py").write_bytes(b"def answer(): return 1\n")
     monkeypatch.setattr(recovery, "LocalClient", lambda *args, **kwargs: endpoint)
+    settings.state_dir.chmod(0o700)
     worker = recovery.SpoolRecovery(settings, None)
     worker.cycle()
     before = [payload for route, payload in calls if route == "/api/health" and payload["kind"] == "code_observation"]
@@ -189,6 +193,41 @@ def test_recovery_observes_changed_linked_file_without_a_new_host_event(health_i
     previous_calls = len(calls)
     worker.cycle()
     assert len(calls) == previous_calls
+
+
+def test_recovery_preserves_unknown_observation_without_resending_in_same_cycle(health_installation, monkeypatch):
+    from agents_memory import recovery
+
+    project, settings, _, receipt, endpoint, calls = health_installation
+    (project / "module.py").write_bytes(b"def answer(): return 1\n")
+    settings.state_dir.chmod(0o700)
+    original_request = endpoint.request
+    uncertain = []
+
+    def request(route, payload):
+        if route == "/api/health" and payload["kind"] == "code_observation":
+            calls.append((route, payload))
+            uncertain.append(payload)
+            raise DomainError("SERVICE_UNAVAILABLE", "Delivery is unconfirmed", effect=EffectState.UNKNOWN)
+        return original_request(route, payload)
+
+    monkeypatch.setattr(endpoint, "request", request)
+    monkeypatch.setattr(recovery, "LocalClient", lambda *args, **kwargs: endpoint)
+    worker = recovery.SpoolRecovery(settings, None)
+    worker.cycle()
+    assert len(uncertain) == 1
+    spool = ProducerSpool(
+        Path(receipt["runtime_dir"]) / "capture.sqlite3", receipt["deployment_id"],
+        receipt["binding_id"], receipt["spool_limit_bytes"],
+    )
+    try:
+        assert spool.status()["pending"] == 1
+    finally:
+        spool.close()
+    worker.cycle()
+    assert len(uncertain) == 2
+    assert uncertain[0] == uncertain[1]
+    assert endpoint.sequence == 0
 
 
 def test_actual_relay_context_is_observed_and_scoped_before_send(health_installation, monkeypatch):

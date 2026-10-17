@@ -23,7 +23,7 @@ from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 from .client import HttpExchange, LocalClient
 from .connection import read_http_body
 from .domain import CaptureCommand, ContextCommand, DomainError, EffectState, Operation
-from .edge import DESCRIPTIONS, SCHEMAS, input_schema, record_schema
+from .edge import DESCRIPTIONS, SCHEMAS, _compact_schema, input_schema, record_schema
 from .stdio import RelayEndpoint, StdioRelay
 from .wire import decode_json, validate_wire
 
@@ -257,10 +257,12 @@ class EvaluationGateway:
         self._relay = _ObservedRelay(agent, self._wire)
         self._agent = self._client(agent)
         self._producer = self._client(producer) if producer is not None else None
-        self._schemas = {"memory_required_context": input_schema(ContextCommand)}
+        self._schemas = {"memory_required_context": _compact_schema(input_schema(ContextCommand))}
         if scope.mode == "memory_on":
-            self._schemas.update({name: record_schema() if name == "memory_record" else input_schema(model)
-                                  for name, model in SCHEMAS.items()})
+            self._schemas.update({
+                name: _compact_schema(record_schema() if name == "memory_record" else input_schema(model))
+                for name, model in SCHEMAS.items()
+            })
         self.server = Server(
             "agents-memory-evaluation", version="1", instructions="",
             on_list_tools=self._list_tools, on_call_tool=self._call_tool,

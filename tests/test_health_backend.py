@@ -9,11 +9,25 @@ from test_company_authority import candidate, capture, deliver
 from test_company_authority import company as company
 
 from agents_memory.domain import (
-    CaptureCommand, CaptureCoverage, DomainError, FeedbackCommand, Role, RuleApproval, RuleProposal, RuleScope, Selector,
+    CaptureCommand,
+    CaptureCoverage,
+    DomainError,
+    FeedbackCommand,
+    Role,
+    RuleApproval,
+    RuleProposal,
+    RuleScope,
+    Selector,
 )
 from agents_memory.health import (
-    CodeLinkCommand, CodeObservationCommand, FeedbackResolutionCommand, HealthAssessmentCommand,
-    HealthPolicyCommand, HealthWorkspaceCommand, MemoryReviewCommand, SessionObservationCommand,
+    CodeLinkCommand,
+    CodeObservationCommand,
+    FeedbackResolutionCommand,
+    HealthAssessmentCommand,
+    HealthPolicyCommand,
+    HealthWorkspaceCommand,
+    MemoryReviewCommand,
+    SessionObservationCommand,
 )
 
 
@@ -255,7 +269,7 @@ async def test_feedback_accept_requires_actual_matching_authorized_successor(com
     replacement = await company.store.correct(company.actor, company.binding_id, source.source_id,
         CaptureCommand(binding_id=company.binding_id, idempotency_key='actual-successor', origin_key='actual-successor',
             speaker='human', body='CacheKey is not retained offline.',
-            coverage=CaptureCoverage(status='observed_window', original_bytes=len('CacheKey is not retained offline.'.encode()))))
+            coverage=CaptureCoverage(status='observed_window', original_bytes=len(b'CacheKey is not retained offline.'))))
     current = await company.store.inspect(company.actor, company.binding_id, 'health:feedback:' + feedback.artifact_id)
     resolved = await company.store.health(company.actor, FeedbackResolutionCommand(**mutation(company, 'accept-correction'),
         admission_id=current['admission']['id'], feedback_ref=feedback.artifact_id,
@@ -283,7 +297,7 @@ async def test_late_capture_revises_same_session_work_and_fences_old_assessment(
     source = await company.store.capture(company.actor, CaptureCommand(binding_id=company.binding_id,
         idempotency_key='late-capture', origin_key='late-source', body='CacheKey was corrected: it is not retained offline.',
         speaker='human', root_run_id='run_test', agent_path='agent_test',
-        coverage=CaptureCoverage(status='observed_window', original_bytes=len('CacheKey was corrected: it is not retained offline.'.encode()))))
+        coverage=CaptureCoverage(status='observed_window', original_bytes=len(b'CacheKey was corrected: it is not retained offline.'))))
     current = await company.store.inspect(company.actor, company.binding_id, session['ref'])
     assert current['pending_id'] == first['pending_id']
     assert current['health_manifest_digest'] != first['health_manifest_digest']

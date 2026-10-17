@@ -50,6 +50,7 @@ WHEEL_SELECTORS = (
     "tests/test_evaluation_verifier.py",
     "tests/test_evaluation_controller.py",
     "tests/test_evaluation_scoring.py",
+    "tests/test_evaluation_diagnostics.py",
     "tests/test_evaluation_runtime_preparation.py",
     "tests/test_evaluation_smoke_inputs.py",
     "tests/test_ci_evaluation_gate.py",
@@ -83,6 +84,8 @@ EVALUATION_OUTCOMES = {
     "correct_noop_wrong_external_controls": True, "all_blackbox_cases": True,
     "unchanged_corpus_rules": True, "on_off_scope": True, "unknown_costs_preserved": True,
     "strict_scorer_report": True, "source_unchanged": True,
+    "explicit_evaluation_health_link": True, "no_automatic_health_or_human_approval": True,
+    "forged_evidence_refused": 5,
 }
 SCENARIO_NODEIDS = sorted("tests/evaluation_docker_scenarios.py::" + name for name in (
     "test_actual_controls_outer_oracle_and_exact_retention",
@@ -341,6 +344,7 @@ def evaluation_evidence(artifacts: Path, tested_sha: str, source: str,
     module_map = {"controller": "evaluation", "artifacts": "evaluation_artifacts",
                   "runtime_driver": "evaluation_runtime", "native_driver": "evaluation_native",
                   "gateway_driver": "evaluation_gateway", "scoring": "evaluation_scoring",
+                  "diagnostics": "evaluation_diagnostics", "health_compiler": "evaluation_health",
                   "verifier": "evaluation_verifier", "cli": "cli"}
     observed_modules = consumed.get("module_digests")
     require(isinstance(observed_modules, dict) and set(observed_modules) == set(module_map),

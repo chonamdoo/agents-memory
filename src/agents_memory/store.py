@@ -2314,7 +2314,7 @@ class Store:
             return await self._stats(connection, binding_id, clock["epoch"], snapshot)
 
     def _nonmodel_admission(self, row) -> NonmodelAdmission:
-        if row["request_digest"] is None:
+        if row["request_digest"] is None or row["health_manifest"] is None:
             raise DomainError("ADMISSION_STALE", "Inspect the inputs again under the current judgment contract")
         return NonmodelAdmission(id=row["id"], binding_id=row["binding_id"], binding_revision=row["binding_revision"],
             credential_id=row["credential_id"], credential_generation=row["credential_generation"], realm=row["realm"],
@@ -4320,9 +4320,16 @@ class Store:
             return await self._record_health(connection, clock, actor, command)
 
     async def _record_health(self, connection, clock, actor, command, *, receipt_kind='health') -> Operation:
-        from .health import (CodeLinkCommand, CodeObservationCommand, FeedbackResolutionCommand,
-            HealthAssessmentCommand, HealthPolicyCommand, HealthWorkspaceCommand, MemoryReviewCommand,
-            SessionObservationCommand)
+        from .health import (
+            CodeLinkCommand,
+            CodeObservationCommand,
+            FeedbackResolutionCommand,
+            HealthAssessmentCommand,
+            HealthPolicyCommand,
+            HealthWorkspaceCommand,
+            MemoryReviewCommand,
+            SessionObservationCommand,
+        )
         if isinstance(command, (HealthPolicyCommand, HealthWorkspaceCommand, MemoryReviewCommand, FeedbackResolutionCommand)):
             roles = (Role.OPERATOR,)
         elif isinstance(command, (CodeObservationCommand, SessionObservationCommand)):

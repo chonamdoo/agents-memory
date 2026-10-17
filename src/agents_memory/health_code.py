@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
 import os
 import stat
+import tokenize
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
@@ -92,6 +94,9 @@ def _python_symbols(raw: bytes, names: tuple[str, ...]) -> tuple[_SymbolCoverage
     if len(raw) > _PARSE_BYTES or len(names) > 16:
         return "partial", []
     try:
+        encoding, _ = tokenize.detect_encoding(io.BytesIO(raw).readline)
+        if encoding != "utf-8":
+            return "unsupported", []
         text = raw.decode("utf-8")
         tree = ast.parse(text)
     except (UnicodeError, SyntaxError, ValueError, RecursionError, MemoryError):

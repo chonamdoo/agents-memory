@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -61,6 +62,14 @@ class Shard:
         if report.outcome != "passed":
             self.collection_issues.append({"nodeid": report.nodeid, "outcome": report.outcome})
 
+    @pytest.hookimpl(hookwrapper=True)
+    def pytest_runtest_makereport(self, item, call):
+        outcome = yield
+        report = outcome.get_result()
+        code = getattr(call.excinfo.value, "ci_failure_code", None) if call.excinfo is not None else None
+        if isinstance(code, str) and re.fullmatch(r"EVALUATION_SCENARIO_[A-Z0-9_]{1,40}", code):
+            report.ci_failure_code = code
+
     def pytest_runtest_logreport(self, report) -> None:
         phases = self.reports.setdefault(report.nodeid, {})
         if report.when in phases:
@@ -69,6 +78,8 @@ class Shard:
             "outcome": report.outcome, "xfail": hasattr(report, "wasxfail"),
             "duration": report.duration,
         }
+        if hasattr(report, "ci_failure_code"):
+            phases[report.when]["failure_code"] = report.ci_failure_code
 
     def counts(self) -> dict[str, int]:
         counts = {"passed": 0, "failed": 0, "skipped": 0, "xfailed": 0, "xpassed": 0}
@@ -100,7 +111,8 @@ def write_junit(path: Path, shard: Shard) -> None:
                              time=f"{duration:.6f}")
         outcomes = list(phases.values())
         if any(phase["outcome"] == "failed" for phase in outcomes):
-            ET.SubElement(case, "failure", message="A runtime phase failed")
+            codes = sorted({phase["failure_code"] for phase in outcomes if phase.get("failure_code")})
+            ET.SubElement(case, "failure", message=";".join(codes) if codes else "A runtime phase failed")
             failures += 1
         elif any(phase["outcome"] == "skipped" for phase in outcomes):
             ET.SubElement(case, "skipped", message="A runtime phase skipped or xfailed")

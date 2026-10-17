@@ -27,7 +27,7 @@ async def test_health_policy_is_operator_only_and_observer_is_producer_safe(auth
             assert status == 403
         workspace = {
             "kind": "health_workspace", "binding_id": authority.binding_id, "expected_binding_revision": 1,
-            "idempotency_key": "health-wire-workspace", "workspace_id": "health_workspace_wire",
+            "idempotency_key": "health-wire-workspace", "workspace_id": "workspace_health_wire",
             "expected_workspace_revision": 0, "root_fingerprint": "a" * 64,
             "producer_credential_id": producer.credential_id,
         }
@@ -37,7 +37,7 @@ async def test_health_policy_is_operator_only_and_observer_is_producer_safe(auth
         assert status == 200, body
         observed = json.loads(body)
         assert observed["kind"] == "health_observer"
-        assert [row["workspace_id"] for row in observed["workspaces"]] == ["health_workspace_wire"]
+        assert [row["workspace_id"] for row in observed["workspaces"]] == ["workspace_health_wire"]
         assert observed["policy"]["allow_jev_health"] is False
         assert not {"claims", "sources", "reason", "body", "catalog"}.intersection(observed)
         status, body = await request(edge, {"binding_id": authority.binding_id}, AGENT_TOKEN, path="/api/health/observer")

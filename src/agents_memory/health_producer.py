@@ -16,13 +16,15 @@ from pydantic import Field, ValidationError
 from .client import LocalClient
 from .domain import DomainError, Handle, RevisionRef, SourcePointer, TypedModel
 from .health import (
-    CodeObservationCommand, HealthObserverRequest, HealthWorkspaceCommand,
-    SessionObservationCommand, relative_code_path,
+    CodeObservationCommand,
+    HealthObserverRequest,
+    HealthWorkspaceCommand,
+    SessionObservationCommand,
+    relative_code_path,
 )
 from .health_code import RootPin, observe_file, pin_root
 from .private_io import private_read, private_write
 from .spool import ProducerSpool
-from .wire import decode_json
 
 _HEALTH_BYTES = 65536
 _START_EVENTS = {"SessionStart", "session_start"}
@@ -261,8 +263,10 @@ def _observer(receipt: dict, config: HealthWorkspaceConfig, spool: ProducerSpool
 
 def observe_health_workspace(
     receipt: dict, *, client=None, require_committed: bool = False, flush_limit: int = 4,
-    explicit_paths: tuple[tuple[str, tuple[str, ...]], ...] | None = None,
+    explicit_paths: tuple[tuple[str, tuple[str, ...]], ...] | None = None, defer_flush: bool = False,
 ) -> dict:
+    if defer_flush and require_committed:
+        raise DomainError("HEALTH_OBSERVATION_MODE_INVALID", "Deferred delivery cannot attest a committed observation")
     config = load_health_workspace(receipt)
     if config is None:
         return {"state": "disabled", "configured": False}
@@ -278,7 +282,8 @@ def observe_health_workspace(
             # Reconcile the previous immutable observation before reserving a new sequence.
             prior = spool.read_health_state("code")
             if prior.get("key"):
-                spool.flush(client, limit=flush_limit)
+                if not defer_flush:
+                    spool.flush(client, limit=flush_limit)
                 try:
                     prior_disposition = spool.disposition(prior["key"])["state"]
                 except DomainError as error:
@@ -332,6 +337,10 @@ def observe_health_workspace(
             if len(command.model_dump_json().encode()) > budget:
                 return _incomplete(require_committed, "HEALTH_OBSERVATION_OVERFLOW")
             spool.enqueue(command, health_state=("code", {"key": command.idempotency_key, "sequence": sequence}))
+            if defer_flush:
+                return {"state": "queued", "configured": True, "workspace_id": config.workspace_id,
+                        "coverage": command.coverage, "files": len(files),
+                        "freshness": "uncommitted_not_context_proof"}
             spool.flush(client, limit=flush_limit)
             disposition = spool.disposition(command.idempotency_key)
             if disposition["state"] != "committed":

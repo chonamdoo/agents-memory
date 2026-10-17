@@ -5,6 +5,7 @@ Only health-smoke.json is public. The uniquely owned RUNNER_TEMP directory is
 intentionally retained, including exact requests, responses and failure evidence.
 This is not native trust, human-presence, model, or original18 acceptance.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -14,7 +15,6 @@ import importlib
 import importlib.metadata
 import json
 import os
-from pathlib import Path
 import re
 import secrets
 import signal
@@ -22,6 +22,7 @@ import socket
 import sys
 import tempfile
 import traceback
+from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
@@ -194,6 +195,7 @@ class Smoke:
 
     async def setup(self):
         import asyncpg
+
         from agents_memory.config import Settings
         from agents_memory.domain import Role
         from agents_memory.journal import DeletionJournal

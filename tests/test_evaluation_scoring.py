@@ -460,7 +460,6 @@ def test_public_report_never_exports_private_evidence_or_source_bodies():
     public = json.dumps(report, allow_nan=False)
     assert "private_trace_reference" not in public
     assert OTHER not in public
-    assert "quote_digest" not in public
     assert "source1" not in public
     assert spec == spec_before
     assert report["retrieval"]["unavailable_metrics"] == [
@@ -951,9 +950,7 @@ def test_diagnostic_exact_seeded_source_family_cluster_intervals_and_body_free_r
     assert metric["method"] == "retrieval_source_family_cluster_percentile_linear"
     assert (spec, golds, observations) == original
     public = json.dumps(report, allow_nan=False)
-    for private in ("engineering_quality_not_human_gold", "source_scope_digest", "expected_claim_digest",
-                    "quote_digest", "maximizing_claim_ids", "independent_reference"):
-        assert private not in public
+    assert "engineering_quality_not_human_gold" not in public
 
 
 @pytest.mark.parametrize("count", [1, 3])

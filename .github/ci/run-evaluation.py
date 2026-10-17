@@ -304,9 +304,11 @@ def run(result_dir: Path, wheel: Path) -> int:
 
 async def schema_cleanup(state: Path) -> bool:
     import asyncpg
+
     from agents_memory.evaluation_artifacts import open_private_directory
     from agents_memory.private_io import private_read
     from agents_memory.wire import decode_json
+
     root = state / "verifier" / "full-smoke"
     if not root.exists():
         return True
@@ -443,7 +445,8 @@ def main() -> int:
             if len(wheels) != 1:
                 raise ValueError("EXACT_EVALUATION_WHEEL_REQUIRED")
             wheel = wheels[0].resolve(strict=True)
-            subprocess.run(["uv", "pip", "install", "--python", sys.executable, "--reinstall", "--no-deps", str(wheel)],
+            subprocess.run(["uv", "pip", "install", "--python", sys.executable,
+                            "--reinstall", "--no-deps", "--link-mode", "copy", str(wheel)],
                            check=True, timeout=60)
             os.execv(sys.executable, [sys.executable, "-I", str(Path(__file__).resolve()), args.action,
                                      "--result-dir", str(args.result_dir.resolve()), "--installed-wheel", str(wheel)])

@@ -346,18 +346,33 @@ async def _install_remote_host(args, settings: RemoteClientSettings) -> dict:
 
 async def execute(args) -> dict | None:
     if args.command == "evaluation":
-        from .evaluation import build_gateway, load_manifest, prepare_run, report_evaluation, run_evaluation
+        from . import evaluation as evaluation_engine
 
         if args.evaluation_action == "report":
-            return await asyncio.to_thread(report_evaluation, args.run_dir)
-        manifest = await asyncio.to_thread(load_manifest, args.manifest, expected_sha256=args.expected_sha256)
+            adjudication = None
+            if args.adjudication_file is not None:
+                from .evaluation_diagnostics import MAX_INPUT_BYTES
+
+                adjudication = await asyncio.to_thread(
+                    evaluation_engine._read, args.adjudication_file.absolute(), MAX_INPUT_BYTES, private=True)
+            report = await asyncio.to_thread(evaluation_engine.report_evaluation, args.run_dir,
+                                             adjudication=adjudication)
+            if adjudication is not None:
+                directory = args.run_dir / "adjudications"
+                evaluation_engine._mkdir(directory)
+                evaluation_engine._publish(
+                    directory, evaluation_engine.digest_bytes(adjudication) + ".json",
+                    adjudication, MAX_INPUT_BYTES)
+            return report
+        manifest = await asyncio.to_thread(evaluation_engine.load_manifest, args.manifest,
+                                           expected_sha256=args.expected_sha256)
         if args.evaluation_action == "prepare":
-            state = await asyncio.to_thread(prepare_run, manifest, args.run_dir)
+            state = await asyncio.to_thread(evaluation_engine.prepare_run, manifest, args.run_dir)
             return {"prepared": True, "manifest_digest": state.manifest_digest,
                     "scheduled_pairs": len(state.schedule), "scope": manifest.config["scope"],
                     "original18_completed": 0}
         if args.evaluation_action == "gateway":
-            gateway = build_gateway(manifest, args.invocation_id, args.run_dir)
+            gateway = evaluation_engine.build_gateway(manifest, args.invocation_id, args.run_dir)
             phase = gateway.scope.phase
             channel = manifest.config["preflight_gateway" if phase == "preflight" else "gateway"]
             await gateway.run_stdio(timeout_seconds=channel["lifetime_seconds"])
@@ -373,7 +388,7 @@ async def execute(args) -> dict | None:
                 previous = signal.getsignal(signum)
                 loop.add_signal_handler(signum, stopped.set)
                 handled.append((signum, previous))
-            return await asyncio.to_thread(run_evaluation, manifest, args.run_dir, stop_event=stopped)
+            return await asyncio.to_thread(evaluation_engine.run_evaluation, manifest, args.run_dir, stop_event=stopped)
         finally:
             stopped.set()
             for signum, previous in handled:
@@ -384,7 +399,9 @@ async def execute(args) -> dict | None:
 
         from .health import CodeObservationTarget
         from .health_producer import (
-            load_health_preparation, observe_health_workspace, prepare_health_registration,
+            load_health_preparation,
+            observe_health_workspace,
+            prepare_health_registration,
         )
         from .hosts import load_receipt
 
@@ -590,6 +607,40 @@ async def execute(args) -> dict | None:
 
             command = validate_wire(HEALTH_ADAPTER, json_file(args.command_file))
             return await client.call("/api/health", command.model_dump(mode="json"))
+        if args.health_action == "apply-evaluation":
+            from .evaluation_health import (
+                compile_evaluation_health_assessment,
+                load_evaluation_health_evidence,
+            )
+            from .health import HealthAssessmentCommand
+
+            command = validate_wire(HealthAssessmentCommand, json_file(args.command_file))
+            adjudication = None
+            if args.adjudication_file is not None:
+                from . import evaluation as evaluation_engine
+                from .evaluation_diagnostics import MAX_INPUT_BYTES
+
+                adjudication = await asyncio.to_thread(
+                    evaluation_engine._read, args.adjudication_file.absolute(), MAX_INPUT_BYTES, private=True)
+            evidence = await asyncio.to_thread(
+                load_evaluation_health_evidence, args.run_dir,
+                expected_manifest_sha256=args.expected_sha256, adjudication=adjudication)
+            snapshot = evidence.manifest.config["gateway"]["required_request"].get("snapshot")
+            views = {}
+            for target in command.input_claims:
+                views[target.id] = await client.call("/api/inspect", {
+                    "ref": "health:claim:" + target.id, "binding_id": command.binding_id,
+                    "snapshot": snapshot, "byte_start": 0, "max_bytes": 4096,
+                })
+            work = await client.call("/api/inspect", {
+                "ref": "health:item:" + command.pending_id, "binding_id": command.binding_id,
+                "snapshot": snapshot, "byte_start": 0, "max_bytes": 4096,
+            })
+            compiled = await asyncio.to_thread(
+                compile_evaluation_health_assessment, evidence, command, current_health_views=views,
+                current_health_work=work, expected_manifest_sha256=args.expected_sha256)
+            operation = await client.call("/api/health", compiled.command.model_dump(mode="json"))
+            return {"operation": operation, "evaluation": compiled.provenance}
         if args.health_action == "observer":
             from .health import HealthObserverRequest
 
@@ -871,12 +922,22 @@ def parser() -> argparse.ArgumentParser:
         if action != "report":
             evaluation_parser.add_argument("--manifest", type=Path, required=True, help="One complete frozen execution manifest")
             evaluation_parser.add_argument("--expected-sha256", required=True, help="SHA256 of exact original manifest file bytes")
+        else:
+            evaluation_parser.add_argument("--adjudication-file", type=Path,
+                help="Private read-only independent judgments bound to this exact manifest and actual final context")
         if action == "gateway":
             evaluation_parser.add_argument("--invocation-id", required=True)
     health = commands.add_parser("health", help="Explicit bounded health control; no implicit native activation or model egress")
     health_actions = health.add_subparsers(dest="health_action", required=True)
     health_apply = health_actions.add_parser("apply", help="Submit one complete strict health command; retain its exact retry key")
     health_apply.add_argument("--command-file", type=Path, required=True)
+    health_evaluation = health_actions.add_parser(
+        "apply-evaluation", help="Attach retained measured evidence to one explicit health judgment; not human approval")
+    health_evaluation.add_argument("--run-dir", type=Path, required=True)
+    health_evaluation.add_argument("--command-file", type=Path, required=True)
+    health_evaluation.add_argument("--expected-sha256", required=True, help="Expected original frozen execution manifest SHA256")
+    health_evaluation.add_argument("--adjudication-file", type=Path,
+        help="Optional exact-manifest independent judgments; never inferred from task success")
     health_observer = health_actions.add_parser("observer", help="Read producer-safe metadata, never source or claim bodies")
     health_observer.add_argument("--binding", required=True)
     prepare = health_actions.add_parser("workspace-prepare", help="Persist a private frozen registration; does not activate health")

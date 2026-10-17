@@ -196,7 +196,8 @@ class SpoolRecovery:
                     continue
                 receipt = _receipt(self.settings, path)
                 outbox = Path(receipt["runtime_dir"]) / "capture.sqlite3"
-                if not outbox.exists() and load_health_workspace(receipt) is None:
+                health_configured = load_health_workspace(receipt) is not None
+                if not outbox.exists() and not health_configured:
                     continue
                 # Share the install/uninstall lock, but never wait behind a host operation.
                 lock = hosts._install_lock(self.settings, Path(receipt["project_root"]))
@@ -206,6 +207,8 @@ class SpoolRecovery:
                 if current != receipt:
                     continue
                 spool = ProducerSpool(outbox, receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
+                if not health_configured and not spool.status()["pending"]:
+                    continue
                 if remote and not remote_ready:
                     try:
                         ensure_remote_ready(
@@ -241,7 +244,8 @@ class SpoolRecovery:
                         return client.request(route, payload)
                 if not self._stop.is_set():
                     try:
-                        observation = observe_health_workspace(receipt, client=OwnedDelivery(), flush_limit=self.flush_limit)
+                        observation = observe_health_workspace(
+                            receipt, client=OwnedDelivery(), flush_limit=self.flush_limit, defer_flush=True)
                         if observation.get("state") == "gap":
                             self._failure(observation["code"])
                     except (OSError, ValueError, UnicodeError, DomainError, sqlite3.Error) as error:

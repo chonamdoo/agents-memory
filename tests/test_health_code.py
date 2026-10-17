@@ -42,7 +42,7 @@ def test_utf8_decorated_class_method_and_nested_function_spans_are_exact(tmp_pat
         "        def nested():\n"
         "            return '값'\n"
         "        return nested()\n"
-    ).encode("utf-8")
+    ).encode()
     (root / "module.py").write_bytes(raw)
     result = observe_file(pin, "module.py", ("Container", "Container.작업", "Container.작업.nested"))
     assert result.symbol_coverage == "complete"

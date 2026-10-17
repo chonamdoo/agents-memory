@@ -143,14 +143,27 @@ def contained_program(instance, raw, *, effects=(), stop_event=None):
     return result
 
 
+class ScenarioFailure(AssertionError):
+    def __init__(self, code):
+        super().__init__(code)
+        self.ci_failure_code = code
+
+
+def require_execution(observation, expected):
+    actual = observation.execution.state if observation.execution is not None else "missing"
+    if actual != expected:
+        raise ScenarioFailure("EVALUATION_SCENARIO_" + expected.upper() + "_STATE_" + actual.upper())
+    if not observation.cleanup.exact_absence or observation.cleanup.pending_create:
+        raise ScenarioFailure("EVALUATION_SCENARIO_" + expected.upper() + "_CLEANUP_INCOMPLETE")
+
+
 def test_actual_timeout_and_output_overflow_are_not_zero_exit_success(actual_runtime):
     timeout = contained_program(actual_runtime, b"import time\nwhile True: time.sleep(1)\n")
-    assert timeout.execution.state == "timeout"
-    assert timeout.cleanup.exact_absence and not timeout.cleanup.pending_create
+    require_execution(timeout, "timeout")
     overflow = contained_program(actual_runtime, b"import os\nwhile True: os.write(1, b'x' * 65536)\n")
-    assert overflow.execution.state == "output_limit"
-    assert len(overflow.execution.stdout) == actual_runtime.spec.limits.stdout_bytes
-    assert overflow.cleanup.exact_absence
+    require_execution(overflow, "output_limit")
+    if len(overflow.execution.stdout) != actual_runtime.spec.limits.stdout_bytes:
+        raise ScenarioFailure("EVALUATION_SCENARIO_OUTPUT_LIMIT_CAPTURE_BOUND")
 
 
 def test_actual_root_watchdog_cannot_be_killed_by_subject(actual_runtime):

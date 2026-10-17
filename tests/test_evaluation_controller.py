@@ -14,16 +14,35 @@ import pytest
 from test_evaluation_gateway import actual_upstream
 from test_store_authority import authority as authority
 
-from agents_memory import evaluation, evaluation_gateway, evaluation_native, evaluation_verifier
+from agents_memory import (
+    evaluation,
+    evaluation_diagnostics,
+    evaluation_gateway,
+    evaluation_native,
+    evaluation_scoring,
+    evaluation_verifier,
+)
 from agents_memory.client import HttpExchange
 from agents_memory.domain import DomainError
 from agents_memory.evaluation import (
-    EvaluationError, PrivateTrace, build_gateway, load_manifest, load_report_inputs,
-    prepare_run, run_evaluation,
+    EvaluationError,
+    PrivateTrace,
+    build_gateway,
+    load_manifest,
+    load_report_inputs,
+    prepare_run,
+    run_evaluation,
 )
 from agents_memory.evaluation_artifacts import (
-    ArtifactBundle, ArtifactEntry, ArtifactLimits, ByteEdit, EditableSpan, EditPolicy,
-    EditWitness, canonical_bytes, digest_bytes,
+    ArtifactBundle,
+    ArtifactEntry,
+    ArtifactLimits,
+    ByteEdit,
+    EditableSpan,
+    EditPolicy,
+    EditWitness,
+    canonical_bytes,
+    digest_bytes,
 )
 from agents_memory.evaluation_runtime import OBSERVER_SOURCE, WATCHDOG_SOURCE
 from agents_memory.evaluation_verifier import ControlArtifact, OracleCase, OracleTask, controls_digest
@@ -56,6 +75,8 @@ def fixture_inputs(tmp_path, *, repeats=2, retries=0, gateway=None, preflight_ga
         "verifier": Path(evaluation_verifier.__file__).read_bytes(),
         "native_driver": Path(evaluation_native.__file__).read_bytes(),
         "gateway_driver": Path(evaluation_gateway.__file__).read_bytes(),
+        "scoring": Path(evaluation_scoring.__file__).read_bytes(),
+        "diagnostics": Path(evaluation_diagnostics.__file__).read_bytes(),
         "wheel": b"engineering fixture identity; not an installed-wheel attestation",
         "baseline": baseline.to_bytes(), "correct": correct.to_bytes(), "wrong": wrong.to_bytes(),
         "policy": {"baseline_digest": baseline.digest, "spans": [{"path": "program.py", "start": 0, "end": len(baseline_code)}], "creates": [], "deletes": [], "modes": []},

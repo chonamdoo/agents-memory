@@ -10,7 +10,14 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from .domain import canonical_digest
 from .wire import decode_json_value, validate_wire

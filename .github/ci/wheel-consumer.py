@@ -60,7 +60,7 @@ def main() -> int:
             raise RuntimeError("Exactly one built wheel is required")
         wheel = wheels[0].resolve(strict=True)
         subprocess.run(["uv", "pip", "install", "--python", sys.executable,
-                        "--reinstall", "--no-deps", str(wheel)], check=True, timeout=60)
+                        "--reinstall", "--no-deps", "--link-mode", "copy", str(wheel)], check=True, timeout=60)
         os.execv(sys.executable, [sys.executable, "-I", str(Path(__file__).resolve()),
                                  "--result-dir", str(args.result_dir.resolve()),
                                  "--installed-wheel", str(wheel), *(["--health-only"] if args.health_only else [])])

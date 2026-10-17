@@ -6,10 +6,9 @@ branch_labels = None
 depends_on = None
 
 DDL = (
-    "DELETE FROM am_admissions",
     "ALTER TABLE am_operations ADD COLUMN actor_generation bigint",
     "ALTER TABLE am_sources ADD COLUMN health_restore_revision bigint",
-    "ALTER TABLE am_admissions ADD COLUMN health_manifest jsonb NOT NULL DEFAULT '{}'",
+    "ALTER TABLE am_admissions ADD COLUMN health_manifest jsonb",
     "ALTER TABLE am_pending_judgments DROP CONSTRAINT am_pending_judgments_kind_check",
     "ALTER TABLE am_pending_judgments ADD CONSTRAINT am_pending_judgments_kind_check CHECK(kind IN ('source_selection','cleanup','legacy_revalidation','health'))",
     "ALTER TABLE am_pending_judgments ADD COLUMN health_key text",

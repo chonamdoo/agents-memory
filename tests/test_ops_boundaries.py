@@ -279,15 +279,16 @@ async def test_private_operator_migrates_prior_schema_without_rotating_credentia
     selected = await store.capture(actor, CaptureCommand(binding_id=binding.id,
         idempotency_key="migration-current", origin_key="migration-current",
         body="Synthetic eligible migration evidence.", speaker="human"))
-    async with store.pool.acquire() as connection:
-        await connection.execute("""INSERT INTO am_operations
-            (id,binding_id,credential_id,kind,state,source_id,error_code,epoch)
-            SELECT 'historical_failed_operation',$1,$2,'reprocess','failed',$3,'HISTORICAL_FAILURE',epoch
-            FROM am_clock WHERE singleton""", binding.id, actor.credential_id, selected.source_id)
-        await connection.execute("""INSERT INTO am_jobs
-            (id,binding_id,operation_id,credential_id,credential_generation,kind,source_ids,state,attempts,error_code)
-            VALUES('historical_failed_job',$1,'historical_failed_operation',$2,$3,'extract',$4,'failed',2,'HISTORICAL_FAILURE')""",
-            binding.id, actor.credential_id, actor.generation, [selected.source_id])
+    if archived_index < 5:
+        async with store.pool.acquire() as connection:
+            await connection.execute("""INSERT INTO am_operations
+                (id,binding_id,credential_id,kind,state,source_id,error_code,epoch)
+                SELECT 'historical_failed_operation',$1,$2,'reprocess','failed',$3,'HISTORICAL_FAILURE',epoch
+                FROM am_clock WHERE singleton""", binding.id, actor.credential_id, selected.source_id)
+            await connection.execute("""INSERT INTO am_jobs
+                (id,binding_id,operation_id,credential_id,credential_generation,kind,source_ids,state,attempts,error_code)
+                VALUES('historical_failed_job',$1,'historical_failed_operation',$2,$3,'extract',$4,'failed',2,'HISTORICAL_FAILURE')""",
+                binding.id, actor.credential_id, actor.generation, [selected.source_id])
     withdrawn = await store.capture(actor, CaptureCommand(binding_id=binding.id,
         idempotency_key="migration-withdrawn", origin_key="migration-withdrawn",
         body="Synthetic withdrawn migration evidence.", speaker="human"))
@@ -301,8 +302,10 @@ async def test_private_operator_migrates_prior_schema_without_rotating_credentia
         assert await connection.fetch("SELECT * FROM am_credentials ORDER BY id") == credentials
         assert set(await connection.fetchval("""SELECT array_agg(table_name) FROM information_schema.tables
             WHERE table_schema=current_schema() AND table_type='BASE TABLE'""")) == ops._ARCHIVE_TABLES[MIGRATIONS[archived_index]]
-        assert await connection.fetchval("""SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-            WHERE n.nspname=current_schema() AND c.relkind='S'""") == 0
+        sequences = {row["relname"] for row in await connection.fetch(
+            """SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+               WHERE n.nspname=current_schema() AND c.relkind='S'""")}
+        assert sequences == (set(ops._IDENTITY_SEQUENCES) if archived_index >= 5 else set())
         columns = {(row["table_name"], row["column_name"]) for row in await connection.fetch(
             "SELECT table_name,column_name FROM information_schema.columns WHERE table_schema=current_schema()")}
         for table, column, introduced in (
@@ -312,6 +315,10 @@ async def test_private_operator_migrates_prior_schema_without_rotating_credentia
             ("am_sources", "capture_coverage", 4), ("am_claims", "capability", 4),
             ("am_admissions", "relation_ids", 4), ("am_claims", "awaiting_revalidation", 5),
             ("am_source_selections", "reason", 5), ("am_admissions", "request_digest", 5),
+            ("am_operations", "actor_generation", 6), ("am_sources", "health_restore_revision", 6),
+            ("am_admissions", "health_manifest", 6), ("am_pending_judgments", "health_key", 6),
+            ("am_pending_judgments", "health_revision", 6), ("am_pending_judgments", "health_payload", 6),
+            ("am_feedback", "health_version", 6), ("am_feedback", "resolution_event_id", 6),
         ):
             assert ((table, column) in columns) == (archived_index >= introduced)
     assert journal_files == {path.name: path.read_bytes() for path in settings.journal_dir.iterdir() if path.is_file()}
@@ -341,13 +348,16 @@ async def test_private_operator_migrates_prior_schema_without_rotating_credentia
     assert current.credential_id == actor.credential_id
     assert (await store.source(current, binding.id, selected.source_id)).body == "Synthetic eligible migration evidence."
     async with store.pool.acquire() as connection:
-        preserved = await connection.fetchrow("""SELECT r.original->>'state' AS state,
-            r.original->>'error_code' AS error_code,r.original->>'attempts' AS attempts,
-            r.original_operation->>'state' AS operation_state,j.state AS retired_state,p.state AS pending_state
-            FROM am_retired_jobs r JOIN am_jobs j ON j.id=r.job_id
-            JOIN am_pending_judgments p ON p.id=r.successor_id WHERE r.job_id='historical_failed_job'""")
-        assert dict(preserved) == {"state": "failed", "error_code": "HISTORICAL_FAILURE", "attempts": "2",
-            "operation_state": "failed", "retired_state": "retired", "pending_state": "pending"}
+        if archived_index < 5:
+            preserved = await connection.fetchrow("""SELECT r.original->>'state' AS state,
+                r.original->>'error_code' AS error_code,r.original->>'attempts' AS attempts,
+                r.original_operation->>'state' AS operation_state,j.state AS retired_state,p.state AS pending_state
+                FROM am_retired_jobs r JOIN am_jobs j ON j.id=r.job_id
+                JOIN am_pending_judgments p ON p.id=r.successor_id WHERE r.job_id='historical_failed_job'""")
+            assert dict(preserved) == {"state": "failed", "error_code": "HISTORICAL_FAILURE", "attempts": "2",
+                "operation_state": "failed", "retired_state": "retired", "pending_state": "pending"}
+        else:
+            assert await connection.fetchval("SELECT count(*) FROM am_retired_jobs") == 0
     retired = await store.inspect(current, binding.id, withdrawn.source_id)
     assert retired["state"] == "retracted" and retired.get("body") is None
     assert store.journal.verify()["head"] == head
@@ -1330,7 +1340,7 @@ async def test_dump_preflight_accepts_only_complete_revision_matched_authority(
     toc = "\n".join(f"{number}; 0 0 {kind} memory {table} memory"
         for number, (table, kind) in enumerate(
             ((table, kind) for table in sorted(tables) for kind in ("TABLE", "TABLE DATA")), 1)).encode()
-    if revision == MIGRATION:
+    if revision in {"0006_agent_judged", "0007_memory_health"}:
         toc += (b"\n900; 0 0 SEQUENCE memory am_pending_judgments_sequence_seq memory"
             b"\n901; 0 0 SEQUENCE SET memory am_pending_judgments_sequence_seq memory"
             b"\n902; 0 0 SEQUENCE memory am_claims_cleanup_sequence_seq memory"

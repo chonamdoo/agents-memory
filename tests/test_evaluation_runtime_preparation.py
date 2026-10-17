@@ -11,7 +11,13 @@ from pathlib import Path
 import pytest
 
 from agents_memory.evaluation_artifacts import canonical_bytes, digest_bytes, open_private_directory
-from agents_memory.evaluation_runtime import CommandObservation, DockerRuntime, EvaluationOwner, RuntimeLimits, RuntimeRefusal
+from agents_memory.evaluation_runtime import (
+    CommandObservation,
+    DockerRuntime,
+    EvaluationOwner,
+    RuntimeLimits,
+    RuntimeRefusal,
+)
 
 
 @pytest.fixture

@@ -102,55 +102,78 @@ async def historical_schema_fixture(store: Store, archived_index: int) -> None:
             assert separator and prefix in {"am_test", "am_ops_test", "am_host_capture"}
             assert len(suffix) == 32 and all(character in "0123456789abcdef" for character in suffix)
             assert await connection.fetchval("SELECT version_num FROM alembic_version") == MIGRATION
+            assert not await connection.fetchval("SELECT EXISTS(SELECT 1 FROM am_pending_judgments WHERE kind='health')")
             await connection.execute("""
-                ALTER TABLE am_claims DROP COLUMN cleanup_sequence;
-                ALTER TABLE am_clock DROP COLUMN cleanup_progress;
-                DROP INDEX am_rejection_history_selection;
-                DROP INDEX am_rejection_history_feedback;
-                DROP INDEX am_feedback_reason_source;
-                DROP TABLE am_rejection_tokens;
-                DROP TABLE am_rejection_evidence;
-                ALTER TABLE am_relations DROP COLUMN judgment_id;
-                DROP TABLE am_claim_judgments;
-                UPDATE am_jobs j SET
-                    state=r.original->>'state',
-                    generation=(r.original->>'generation')::bigint,
-                    lease_token=r.original->>'lease_token',
-                    deadline=(r.original->>'deadline')::timestamptz
-                FROM am_retired_jobs r WHERE r.job_id=j.id AND j.state='retired';
-                DROP TABLE am_retired_jobs;
-                ALTER TABLE am_admissions DROP COLUMN IF EXISTS pending_id;
-                DROP TABLE am_pending_judgments;
-                ALTER TABLE am_jobs DROP COLUMN retired_at;
-                ALTER TABLE am_claims DROP COLUMN revision;
-                ALTER TABLE am_claims DROP COLUMN awaiting_revalidation;
-                ALTER TABLE am_claims DROP CONSTRAINT am_claims_capability_origin;
-                ALTER TABLE am_claims DROP CONSTRAINT am_claims_capability_check;
-                UPDATE am_claims SET capability='lexical_entity' WHERE capability='agent_judged';
-                ALTER TABLE am_claims ADD CONSTRAINT am_claims_capability_check
-                    CHECK(capability IN ('full_semantic','lexical_entity'));
-                ALTER TABLE am_claims ADD CONSTRAINT am_claims_capability_origin CHECK (
-                    (capability='full_semantic' AND route_revision IS NOT NULL
-                     AND interpretation_role='model_derived_candidate' AND selection_id IS NULL AND policy_revision IS NULL)
-                    OR (capability='lexical_entity' AND route_revision IS NULL AND embedding IS NULL AND vector_revision IS NULL
-                     AND interpretation_role='caller_grounded_candidate' AND selection_id IS NOT NULL AND policy_revision IS NOT NULL)
-                );
-                ALTER TABLE am_source_selections DROP COLUMN reason;
-                ALTER TABLE am_source_selections DROP COLUMN prior_rejection_ids;
-                ALTER TABLE am_source_selections DROP COLUMN rejection_comparisons;
-                ALTER TABLE am_source_selections DROP COLUMN request_snapshot;
-                ALTER TABLE am_source_selections DROP COLUMN rejection_inputs;
-                ALTER TABLE am_source_selections DROP COLUMN rejection_review_ids;
-                ALTER TABLE am_source_selections DROP COLUMN deletion_generation;
-                ALTER TABLE am_feedback DROP COLUMN reason;
-                ALTER TABLE am_feedback DROP COLUMN rejected_source_ids;
-                ALTER TABLE am_feedback ALTER COLUMN state SET DEFAULT 'candidate';
-                ALTER TABLE am_admissions DROP COLUMN request_digest;
-                ALTER TABLE am_admissions DROP COLUMN claim_revisions;
-                ALTER TABLE am_admissions DROP COLUMN rejection_ids;
-                ALTER TABLE am_admissions DROP COLUMN rejection_inputs;
-                ALTER TABLE am_clock DROP COLUMN retired_authority;
+                DROP TABLE am_code_links;
+                DROP TABLE am_health_events;
+                DROP TABLE am_session_observations;
+                DROP TABLE am_claim_health;
+                DROP TABLE am_code_observations;
+                DROP TABLE am_code_workspaces;
+                DROP TABLE am_health_policies;
+                ALTER TABLE am_feedback DROP COLUMN resolution_event_id;
+                ALTER TABLE am_feedback DROP COLUMN health_version;
+                DROP INDEX am_health_pending_key;
+                ALTER TABLE am_pending_judgments DROP COLUMN health_payload;
+                ALTER TABLE am_pending_judgments DROP COLUMN health_revision;
+                ALTER TABLE am_pending_judgments DROP COLUMN health_key;
+                ALTER TABLE am_pending_judgments DROP CONSTRAINT am_pending_judgments_kind_check;
+                ALTER TABLE am_pending_judgments ADD CONSTRAINT am_pending_judgments_kind_check
+                    CHECK(kind IN ('source_selection','cleanup','legacy_revalidation'));
+                ALTER TABLE am_admissions DROP COLUMN health_manifest;
+                ALTER TABLE am_sources DROP COLUMN health_restore_revision;
+                ALTER TABLE am_operations DROP COLUMN actor_generation;
             """)
+            if archived_index < 5:
+                await connection.execute("""
+                    ALTER TABLE am_claims DROP COLUMN cleanup_sequence;
+                    ALTER TABLE am_clock DROP COLUMN cleanup_progress;
+                    DROP INDEX am_rejection_history_selection;
+                    DROP INDEX am_rejection_history_feedback;
+                    DROP INDEX am_feedback_reason_source;
+                    DROP TABLE am_rejection_tokens;
+                    DROP TABLE am_rejection_evidence;
+                    ALTER TABLE am_relations DROP COLUMN judgment_id;
+                    DROP TABLE am_claim_judgments;
+                    UPDATE am_jobs j SET
+                        state=r.original->>'state',
+                        generation=(r.original->>'generation')::bigint,
+                        lease_token=r.original->>'lease_token',
+                        deadline=(r.original->>'deadline')::timestamptz
+                    FROM am_retired_jobs r WHERE r.job_id=j.id AND j.state='retired';
+                    DROP TABLE am_retired_jobs;
+                    ALTER TABLE am_admissions DROP COLUMN IF EXISTS pending_id;
+                    DROP TABLE am_pending_judgments;
+                    ALTER TABLE am_jobs DROP COLUMN retired_at;
+                    ALTER TABLE am_claims DROP COLUMN revision;
+                    ALTER TABLE am_claims DROP COLUMN awaiting_revalidation;
+                    ALTER TABLE am_claims DROP CONSTRAINT am_claims_capability_origin;
+                    ALTER TABLE am_claims DROP CONSTRAINT am_claims_capability_check;
+                    UPDATE am_claims SET capability='lexical_entity' WHERE capability='agent_judged';
+                    ALTER TABLE am_claims ADD CONSTRAINT am_claims_capability_check
+                        CHECK(capability IN ('full_semantic','lexical_entity'));
+                    ALTER TABLE am_claims ADD CONSTRAINT am_claims_capability_origin CHECK (
+                        (capability='full_semantic' AND route_revision IS NOT NULL
+                         AND interpretation_role='model_derived_candidate' AND selection_id IS NULL AND policy_revision IS NULL)
+                        OR (capability='lexical_entity' AND route_revision IS NULL AND embedding IS NULL AND vector_revision IS NULL
+                         AND interpretation_role='caller_grounded_candidate' AND selection_id IS NOT NULL AND policy_revision IS NOT NULL)
+                    );
+                    ALTER TABLE am_source_selections DROP COLUMN reason;
+                    ALTER TABLE am_source_selections DROP COLUMN prior_rejection_ids;
+                    ALTER TABLE am_source_selections DROP COLUMN rejection_comparisons;
+                    ALTER TABLE am_source_selections DROP COLUMN request_snapshot;
+                    ALTER TABLE am_source_selections DROP COLUMN rejection_inputs;
+                    ALTER TABLE am_source_selections DROP COLUMN rejection_review_ids;
+                    ALTER TABLE am_source_selections DROP COLUMN deletion_generation;
+                    ALTER TABLE am_feedback DROP COLUMN reason;
+                    ALTER TABLE am_feedback DROP COLUMN rejected_source_ids;
+                    ALTER TABLE am_feedback ALTER COLUMN state SET DEFAULT 'candidate';
+                    ALTER TABLE am_admissions DROP COLUMN request_digest;
+                    ALTER TABLE am_admissions DROP COLUMN claim_revisions;
+                    ALTER TABLE am_admissions DROP COLUMN rejection_ids;
+                    ALTER TABLE am_admissions DROP COLUMN rejection_inputs;
+                    ALTER TABLE am_clock DROP COLUMN retired_authority;
+                """)
             if archived_index < 4:
                 assert not await connection.fetchval("SELECT EXISTS(SELECT 1 FROM am_claims WHERE capability<>'full_semantic')")
                 assert not await connection.fetchval("SELECT EXISTS(SELECT 1 FROM am_admissions WHERE kind<>'model')")

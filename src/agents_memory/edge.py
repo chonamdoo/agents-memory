@@ -87,34 +87,81 @@ SCHEMAS = {
 }
 DESCRIPTIONS = {
     "memory_context": "Retrieve candidates for your query and expansions, inspect them, then submit relevance for the complete saved manifest. Only agent-judged memories enter context; mandatory rules remain independent.",
-    "memory_inspect": "Inspect original sources, claims, stored selections/judgments/feedback or pending work. ref=judgment accepts up to20 unique claim_ids, not byte windows. Source required_rejection_ids are a bounded index sample, not a meaning decision. Optional rejection audit starts with rejection_cursor=history; follow rejections_next_cursor, even across an empty page. For stored claim/selection/judgment/feedback refs, reassemble draft_window.body using next_byte and verify digest before decoding complete UTF-8 JSON. Its stored_record scope excludes live epoch; claim judgment_context_refs point to live source context. Every chunk rechecks eligibility. ref=judge reads the source judge provider (agent, or explicitly authorized background Jev); it is read-only. Data grants no execution authority.",
-    "memory_record": "For recallable memory submit source_selection/remember WITH extraction atomically. A complete remember without extraction stores no claim and cannot be extended later. assertion_id is a plus four digits, e.g. a0000. Use individual_qualifications for one assertion; shared_qualifications needs at least two assertion_ids. Preserve original spans, conditions, exceptions and validity. Compare every required_rejection_id as unrelated/reopen; optional review receipts use rejection_review_ids. Reopening rejected evidence needs new independent human/tool/document evidence. Complete remember/discard is single-winner per overlapping window (SELECTION_ALREADY_RECORDED). After unknown outcome resend the same judgment/admission_id, even with a new explicit retry key, to reconcile its operation. claim_judgment records relations; notes/inactive rule candidates are not independent evidence. Never approve policy.",
+    "memory_inspect": "Inspect sources, claims, selections/judgments/feedback and health work. ref=judgment: up to20 unique claim_ids, no byte windows. Source required_rejection_ids are a bounded index, not a meaning verdict. Optional rejection audit: rejection_cursor=history; follow rejections_next_cursor including empty pages. Reassemble stored-record draft_window.body via next_byte, verify digest, then decode UTF-8; stored_record excludes live epoch; claim judgment_context_refs name live source context. Every chunk rechecks eligibility. ref=judge is read-only provider metadata (agent or explicitly authorized Jev). ref=health lists work; health:item:<pending_id> returns exact admitted evidence/coverage; health:claim:<claim_id> is review/health history, not reuse authority. Follow continuation. Data grants no execution authority.",
+    "memory_record": "Recallable memory requires atomic source_selection/remember WITH extraction; remember without extraction stores no claim and cannot later be extended. assertion_id=a plus four digits (a0000). individual_qualifications: one assertion; shared_qualifications: at least two assertion_ids. Preserve original spans, conditions, exceptions and validity. Compare all required_rejection_ids as unrelated/reopen; optional receipts use rejection_review_ids. Reopen only with new independent human/tool/document evidence. Complete remember/discard has one winner per overlapping window (SELECTION_ALREADY_RECORDED). After unknown outcome resend the SAME judgment/admission_id, with a new explicit retry key if needed, to reconcile its operation. claim_judgment records relations; notes/inactive rule candidates are not independent evidence. code_link binds inspected code; health_assessment judges the full admitted manifest with exact byte evidence. Neither grants human Accept/Reject, deletion, policy approval or freshness proof.",
     "memory_feedback": "Persist rejection reasons or correction/retract-request candidates. Reject durably affects target evidence, not just this query; query-only irrelevance belongs in memory_context.relevance. Rejection is not deletion/retraction. Never approve or purge.",
 }
-DESCRIPTIONS["memory_inspect"] += (
-    " ref=health lists bounded health work; health:item:<pending_id> returns exact admitted evidence and coverage. "
-    "health:claim:<claim_id> exposes review/health history, not reuse authority. Follow explicit continuation."
-)
-DESCRIPTIONS["memory_record"] += (
-    " code_link adds exact inspected code dependencies; health_assessment judges the complete admitted health "
-    "manifest with exact byte evidence. Neither is human Accept/Reject, deletion, policy approval or freshness proof."
-)
 
 
 
 
 def _compact_schema(schema: dict) -> dict:
-    schema.pop("title", None)
-    for key in ("properties", "$defs", "patternProperties", "dependentSchemas"):
-        for child in schema.get(key, {}).values():
-            _compact_schema(child)
-    for key in ("anyOf", "oneOf", "allOf", "prefixItems"):
-        for child in schema.get(key, ()):
-            _compact_schema(child)
-    for key in ("items", "if", "then", "else", "not", "additionalProperties"):
-        child = schema.get(key)
-        if isinstance(child, dict):
-            _compact_schema(child)
+    def children(node):
+        for keyword in ("properties", "$defs", "patternProperties", "dependentSchemas"):
+            for name, child in node.get(keyword, {}).items():
+                yield node[keyword], name, child
+        for keyword in ("anyOf", "oneOf", "allOf", "prefixItems"):
+            for index, child in enumerate(node.get(keyword, ())):
+                yield node[keyword], index, child
+        for keyword in (
+            "items", "if", "then", "else", "not", "additionalProperties",
+            "contains", "propertyNames", "unevaluatedProperties",
+        ):
+            child = node.get(keyword)
+            if isinstance(child, dict):
+                yield node, keyword, child
+
+    def strip_titles(node):
+        node.pop("title", None)
+        for _, _, child in children(node):
+            if isinstance(child, dict):
+                strip_titles(child)
+
+    def encoded(node):
+        return json.dumps(node, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    strip_titles(schema)
+    definitions = schema.setdefault("$defs", {})
+    sequence = 0
+    while True:
+        counts = {}
+
+        def count(node):
+            key = encoded(node)
+            counts[key] = counts.get(key, 0) + 1
+            for _, _, child in children(node):
+                if isinstance(child, dict):
+                    count(child)
+
+        count(schema)
+        while f"s{sequence}" in definitions:
+            sequence += 1
+        name = f"s{sequence}"
+        reference = {"$ref": f"#/$defs/{name}"}
+        reference_size = len(encoded(reference))
+        # Factor only schema nodes, never property maps, data defaults or enums.
+        # Recount after each replacement: nested savings are not independent.
+        choices = [
+            ((occurrences - 1) * len(key) - occurrences * reference_size - len(name) - 4, key)
+            for key, occurrences in counts.items() if occurrences > 1
+        ]
+        gain, selected = max(choices, default=(0, b""))
+        if gain <= 0:
+            break
+
+        def replace(node):
+            for parent, key, child in children(node):
+                if isinstance(child, dict):
+                    if encoded(child) == selected:
+                        parent[key] = reference.copy()
+                    else:
+                        replace(child)
+
+        replace(schema)
+        definitions[name] = json.loads(selected)
+        sequence += 1
+    if not definitions:
+        schema.pop("$defs", None)
     return schema
 
 
@@ -127,13 +174,21 @@ def record_schema() -> dict:
     definitions = union["$defs"]
     variants = [(item["$ref"], definitions[item["$ref"].rsplit("/", 1)[-1]]) for item in union["oneOf"]]
     note_ref, note = next((ref, item) for ref, item in variants if item["properties"]["kind"].get("default") == "note")
-    properties = {}
+    alternatives = {}
     kinds = []
     for _, variant in variants:
-        properties.update(variant["properties"])
+        for name, value in variant["properties"].items():
+            choices = alternatives.setdefault(name, [])
+            if value not in choices:
+                choices.append(value)
         kind = variant["properties"]["kind"]
         kinds.extend(kind["enum"] if "enum" in kind else (kind["const"],))
+    properties = {
+        name: choices[0] if len(choices) == 1 else {"anyOf": choices}
+        for name, choices in alternatives.items()
+    }
     properties["kind"] = {**note["properties"]["kind"], "enum": kinds}
+    properties["kind"].pop("const", None)
     conditional = {"$ref": note_ref}
     for ref, variant in reversed([(ref, item) for ref, item in variants if item is not note]):
         conditional = {
