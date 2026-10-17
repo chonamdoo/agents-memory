@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 
 
@@ -17,7 +18,7 @@ def _darwin_exited_only_member(pid: int) -> bool:
     if sys.platform != "darwin":
         return False
     try:
-        with select.kqueue() as observer:
+        with closing(select.kqueue()) as observer:
             try:
                 events = observer.control([select.kevent(
                     pid, filter=select.KQ_FILTER_PROC,
