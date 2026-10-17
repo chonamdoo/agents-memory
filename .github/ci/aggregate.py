@@ -34,12 +34,14 @@ WHEEL_SELECTORS = (
     "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[already-reaped-native]",
     "tests/test_ci_accounting.py::test_real_exited_group_cleanup_keeps_other_owned_process[native]",
     "tests/test_ci_accounting.py::test_live_group_permission_error_is_not_terminal[native]",
+    "tests/test_ci_accounting.py::test_exited_leader_permission_error_with_live_member[with-member-native]",
 )
 COMPAT_SELECTORS = (
     "tests/test_ci_accounting.py::test_cleanup_after_esrch_cannot_kill_a_reused_group",
     "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal",
     "tests/test_ci_accounting.py::test_real_exited_group_cleanup_keeps_other_owned_process",
     "tests/test_ci_accounting.py::test_live_group_permission_error_is_not_terminal",
+    "tests/test_ci_accounting.py::test_exited_leader_permission_error_with_live_member",
     "tests/test_native_status.py::test_native_inventory_survives_real_normal_shutdown",
 )
 COMPAT_RUNTIME = {"platform": "darwin", "implementation": "cpython", "python": [3, 12, 13]}

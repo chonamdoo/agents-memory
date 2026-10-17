@@ -56,6 +56,7 @@ def evidence(tmp_path):
         "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[already-reaped-native]",
         "tests/test_ci_accounting.py::test_real_exited_group_cleanup_keeps_other_owned_process[native]",
         "tests/test_ci_accounting.py::test_live_group_permission_error_is_not_terminal[native]",
+        "tests/test_ci_accounting.py::test_exited_leader_permission_error_with_live_member[with-member-native]",
         "tests/test_native_status.py::test_native_inventory_survives_real_normal_shutdown[eof]",
         "tests/test_native_status.py::test_native_inventory_survives_real_normal_shutdown[term]",
     ])
@@ -365,14 +366,38 @@ def test_source_digest_ignores_generated_bytecode(digest_source):
 
 
 @pytest.fixture
-def unreaped_leader():
-    process = subprocess.Popen(
-        [sys.executable, "-I", "-S", "-c", "import sys; sys.stdin.buffer.read(1)"],
-        stdin=subprocess.PIPE, start_new_session=True,
-    )
+def unreaped_leader(request):
+    live_member = getattr(request, "param", False)
+    control_read, control_write = os.pipe()
+    process = None
     observer = None
-    deadline = time.monotonic() + 5
+    program = "import sys; sys.stdin.buffer.read(1)"
+    if live_member:
+        program = textwrap.dedent(f"""\
+            import subprocess, sys
+            member = subprocess.Popen(
+                [sys.executable, "-I", "-S", "-c",
+                 "import os; print('ready', flush=True); os.read({control_read}, 1)"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, pass_fds=({control_read},),
+            )
+            if member.stdout.readline() != b"ready\\n":
+                raise RuntimeError("member did not start")
+            member.stdout.close()
+            print("member-ready", flush=True)
+            sys.stdin.buffer.read(1)
+            """)
     try:
+        process = subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c", program],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, pass_fds=(control_read,),
+            start_new_session=True,
+        )
+        os.close(control_read)
+        control_read = None
+        if live_member:
+            assert select.select([process.stdout], [], [], 5)[0] == [process.stdout]
+            assert process.stdout.readline() == b"member-ready\n"
+        deadline = time.monotonic() + 5
         if not hasattr(os, "waitid"):
             observer = select.kqueue()
             observer.control([select.kevent(
@@ -392,13 +417,19 @@ def unreaped_leader():
             assert events[0].fflags & select.KQ_NOTE_EXIT
         yield process
     finally:
+        # EOF releases the controlled descendant even if cleanup incorrectly skips it.
+        os.close(control_write)
+        if control_read is not None:
+            os.close(control_read)
         if observer is not None:
             observer.close()
-        process.stdin.close()
-        if process.returncode is None:
-            with suppress(ProcessLookupError):
-                process.kill()
-        process.wait(timeout=5)
+        if process is not None:
+            process.stdin.close()
+            if process.returncode is None:
+                with suppress(ProcessLookupError):
+                    process.kill()
+            process.wait(timeout=5)
+            process.stdout.close()
 
 
 @pytest.fixture
@@ -536,3 +567,22 @@ def test_live_group_permission_error_is_not_terminal(monkeypatch, target):
         process.wait(timeout=5)
         for stream in (process.stdout, process.stderr):
             stream.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Process-group supervision requires POSIX")
+@pytest.mark.parametrize("target", ["native", "ci"])
+@pytest.mark.parametrize("unreaped_leader", [True], indirect=True, ids=["with-member"])
+def test_exited_leader_permission_error_with_live_member(unreaped_leader, monkeypatch, target):
+    cleanup = (native_status._stop_process_group if target == "native"
+               else runpy.run_path(str(CI / "run-checks.py"))["_stop_process_group"])
+    real_killpg = os.killpg
+
+    def deny_term(pid, sig):
+        if pid == unreaped_leader.pid and sig == signal.SIGTERM:
+            raise PermissionError(errno.EPERM, "test-only signal permission denial")
+        return real_killpg(pid, sig)
+
+    monkeypatch.setattr(os, "killpg", deny_term)
+    with pytest.raises(PermissionError):
+        cleanup(unreaped_leader)
+    assert unreaped_leader.returncode == 0

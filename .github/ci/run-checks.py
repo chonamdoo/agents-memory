@@ -1,35 +1,79 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import re
 import runpy
+import select
 import signal
 import subprocess
+import sys
 import time
-from contextlib import suppress
 from pathlib import Path
+
+
+def _darwin_exited_only_member(pid: int) -> bool:
+    if sys.platform != "darwin":
+        return False
+    try:
+        with select.kqueue() as observer:
+            try:
+                events = observer.control([select.kevent(
+                    pid, filter=select.KQ_FILTER_PROC,
+                    flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT, fflags=select.KQ_NOTE_EXIT,
+                )], 1, 0)
+            except ProcessLookupError:
+                pass  # Darwin cannot attach NOTE_EXIT to an already exited child.
+            else:
+                if not events or events[0].ident != pid:
+                    return False
+                event = events[0]
+                if event.flags & select.KQ_EV_ERROR:
+                    if event.data != errno.ESRCH:
+                        return False
+                elif not event.fflags & select.KQ_NOTE_EXIT:
+                    return False
+        import ctypes
+
+        members = (ctypes.c_int * 2)()
+        list_members = ctypes.CDLL("/usr/lib/libproc.dylib").proc_listpgrppids
+        list_members.argtypes = (ctypes.c_int, ctypes.c_void_p, ctypes.c_int)
+        list_members.restype = ctypes.c_int
+        # One atomic, bounded census must contain only our still-unreaped leader.
+        return list_members(pid, members, ctypes.sizeof(members)) == 1 and members[0] == pid
+    except (AttributeError, ImportError, OSError):
+        return False
+
+
+def _signal_process_group(process: subprocess.Popen[bytes], sig: int) -> bool:
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        return False
+    except PermissionError as error:
+        if error.errno != errno.EPERM or not _darwin_exited_only_member(process.pid):
+            raise
+        return False
+    return True
 
 
 def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
     if process.returncode is not None:
         return
     # Keep the leader unreaped until the final group signal.
-    group_missing = False
+    group_present = True
     try:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                os.killpg(process.pid, 0)
+        group_present = _signal_process_group(process, signal.SIGTERM)
+        deadline = time.monotonic() + 5
+        while group_present and time.monotonic() < deadline:
+            group_present = _signal_process_group(process, 0)
+            if group_present:
                 time.sleep(min(0.05, max(0, deadline - time.monotonic())))
-        except ProcessLookupError:
-            group_missing = True
     finally:
         try:
-            if not group_missing:
-                with suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGKILL)
+            if group_present:
+                _signal_process_group(process, signal.SIGKILL)
         finally:
             process.wait()
 
