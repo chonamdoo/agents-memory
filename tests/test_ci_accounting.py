@@ -470,7 +470,10 @@ def test_cleanup_retains_identity_through_the_final_group_signal(monkeypatch, un
             return None
         if probed and expired.returncode is not None:
             return real_killpg(unrelated.pid, sig)
-        return real_killpg(expired.pid, sig)
+        # The owned target is simulated, like TERM/probe above. Only a released
+        # identity redirects a real signal to the survivor; zombie-group signal
+        # permissions differ between kernels and are not this injected fault.
+        return None
 
     monkeypatch.setattr(os, "killpg", simulate_pgid_reuse)
     # Advance only cleanup's grace clock; subprocess readiness and waits stay real.
