@@ -1012,7 +1012,7 @@ def main() -> int:
         summary["tested_sha"] = os.environ["CI_TESTED_SHA"]
         os.umask(0o077)
         require(args.result_dir == Path(".ci-results"), "EXACT_BODY_FREE_RESULT_DIRECTORY_REQUIRED")
-        result_dir = Path.cwd() / ".ci-results"
+        result_dir = Path(__file__).resolve().parents[2] / ".ci-results"
         if not result_dir.exists():
             private_directory(result_dir)
         descriptor = os.open(result_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)

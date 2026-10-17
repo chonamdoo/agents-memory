@@ -151,10 +151,10 @@ class Smoke:
         return value
 
     async def api(self, route: str, payload: dict, *, role="agent", denied=()):
-        import httpx
+        import httpx2
 
         self.evidence("http-request", {"route": route, "role": role, "payload": payload})
-        async with httpx.AsyncClient(timeout=8, trust_env=False) as client:
+        async with httpx2.AsyncClient(timeout=8, trust_env=False) as client:
             response = await client.post(self.settings.base_url + route, json=payload,
                 headers={"Authorization": "Bearer " + self.tokens[role].read_text().strip()})
         raw = response.content
@@ -302,11 +302,11 @@ class Smoke:
         finally:
             out.close()
             err.close()
-        import httpx
+        import httpx2
 
         async with asyncio.timeout(20):
             self.result["setup_stage"] = "READINESS"
-            async with httpx.AsyncClient(timeout=1, trust_env=False) as client:
+            async with httpx2.AsyncClient(timeout=1, trust_env=False) as client:
                 while True:
                     self.check(self.server.returncode is None, "SERVICE_EXITED")
                     try:
@@ -315,7 +315,7 @@ class Smoke:
                             self.result["setup_stage"] = "READINESS_EVIDENCE"
                             self.evidence("readiness", response.json())
                             break
-                    except httpx.TransportError:
+                    except httpx2.TransportError:
                         pass
                     await asyncio.sleep(0.1)
         self.passed("real_authority_ready")

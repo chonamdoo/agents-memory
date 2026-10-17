@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 명시적 메모리 건강 관리와 평가 engineering
+
+- 코드/worktree/root·파일/Python AST symbol anchor와 현재 health dependency를 claim의 검색·admission·게시·최종 delivery·관계 입력에 연결했다. required rule을 ordinary stale 필터로 숨기지 않는다.
+- 이미 허용된 관측 segment와 close watermark를 bounded pending으로 연결하고 다음 권한 있는 agent/별도 허용 Jev가 판단하는 경로를 추가했다. 새 transcript 수집·구독 agent 깨우기·자동 정정/승격/삭제는 추가하지 않았다.
+- relevance·support/정확성 판단·freshness와 exact-revision operator Accept/Reject를 분리했다. 늦은 판정·삭제·철회·권한 변경·code 변경을 다시 검사한다. `0007_memory_health`와 archive/init/restore closure를 연결하며 restored source의 ordinary claim은 최신 판정 증거 없이 재사용하지 않는다. 새 health disaster ledger는 없다.
+- shutdown의 false drain·eventual join·원래/동시 실패를 보존하고 실제 ASGI/Uvicorn 노출 진단을 body-free로 제한했다. proposal의 전체 UTF-8 body/예외/exact source revision inspect와 권한 제한 shared-rule projection을 구분했다. coverage·stats·pending·health 분모의 current request_snapshot/policy/review dependency 자격을 통일했다.
+- 고정 manifest/전체 attempt ledger·정책을 상속하는 native CLI driver·required-only off/실제 wire gateway·immutable artifact/허용 diff witness·격리 Docker oracle/control·pair scheduler·cluster bootstrap/unknown cost·평가 CLI와 명시 health evidence compiler를 추가했다. task 성공은 자동 support/freshness나 인간 승인이 아니다. raw diagnostic gold와 engineering oracle은 `provided_unattested`이며 인간 holdout을 만들어 채우지 않는다.
+- MCP catalog는 flat root와 variant의 required/allowed/null 제약을 유지하면서 schema 참조·중복을 줄였다. 실제 최대 escaped JSON-RPC ID의 응답 상한을 올리지 않는다. 출력 상한에 걸린 Docker exec는 container removal 전에 닫고 기존 deadline/TTL·소유권·exact cleanup을 유지한다.
+- 현재 전체 통합 health/평가 smoke·fresh whole-source formal review/QA는 미완료다. 실제 exact-head Actions와 실패 전후·부분 성공 범위는 [검증 기록](docs/verification.ko.md)을 따른다. 로컬 runtime 검증·native trust/운영/egress·human120/60task×3·실제1–2주 trial·merge/release 실행을 승인하거나 완료한 기록이 아니다.
+
+
 ### CI 전용 검증 전환과 OSS 후속 보완
 
 - GitHub Actions에 실제 PG18/pgvector·지원 Python/SQLite·Node·native PG18 도구·age 준비, 전체 collection의4개 disjoint shard, lint/build·설치 wheel 소비, 누락/skip/실패/source drift·artifact mismatch를 거절하는 최종 집계를 구성했다. raw failure/captured output 대신 outcome-only JUnit을 업로드한다.

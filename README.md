@@ -232,11 +232,29 @@ expansions JSON은 최대8개, 각512 UTF-8 bytes/합계4096 bytes의 문자열 
 
 같은 source의 겹친 discard span·새 origin의 동일 본문 remember는 `EVIDENCE_REJECTED`다. reject feedback은 연결 원문 전체에 대한 durable 차단이며 질의 한정 무관함은 context relevance로 제출한다. 독립적인 새 human/tool/document 근거와 실제 prior rejection·이유가 있어야 reopening할 수 있다. 서버는 paraphrase의 의미 동등성을 추론하지 않는다. snapshot·파생 target의 현재 전체 dependency는 별도 feedback/reason-source 읽기에도 적용한다. global claim은 scoped audit에서 생겼다는 이유만으로 private claim이 되지 않는다. `agent_note`는 raw log/inspection만 남기고 판단 admission·신규 pending·독립 수집 backlog를 만들지 않으며 memory echo도 새 독립 근거가 아니다.
 
-여기서 durable 차단은 **미래 remember 재게시**에 대한 것이다. `reject`는 operator 철회가 아니므로 기존 claim이 recall 후보에서 즉시 사라진다고 보장하지 않는다. 또한 backup 이후 PG에만 기록한 reject/discard는 restore로 되돌아갈 수 있다. 독립 삭제 journal의 retract/purge floor와 다른 계약이다. 이유/최소 metadata 보존·복원과 건강도 UX의 별도 제안은 [건강 관리 적대적 리뷰](docs/research/2026-10-15-memory-health-adversarial.ko.md), 실제 성장 대책은 [OSS DB 조사](docs/research/2026-10-15-oss-db-growth.ko.md)를 따른다. 새 health 기능·자동 삭제/전송은 구현하지 않았다.
+이 `reject`의 durable 차단은 **미래 remember 재게시**에 대한 것이다. operator 철회가 아니므로 기존 claim을 recall에서 즉시 제외한다고 보장하지 않는다. 아래의 exact-revision `memory_review` Reject와는 다른 계약이다. backup 이후 PG에만 기록한 reject/discard는 restore로 되돌아갈 수 있으며 독립 삭제 journal의 retract/purge floor와 같지 않다. 원래 [건강 관리 제안 리뷰](docs/research/2026-10-15-memory-health-adversarial.ko.md)는 조사 이력으로 보존하고, 이후 명시 승인된 제한 구현은 아래에 구분한다. 물리적 coalesce/retention·자동 삭제·미승인 원문 전송은 추가하지 않았다.
 
 삭제의 범위는 content blacklist가 아니라 **source/origin identity와 그 파생 lineage**다. retract/purge 뒤 같은 origin을 replay하면 기존 철회 identity를 반환하며 본문·옛 claim을 되살리지 않는다. 같은 본문이라도 새 origin으로 독립 수집하면 새 source로 받아 다시 판단할 수 있지만, 판단 전에는 recall되지 않고 옛 claim·승인·lineage를 승계하지 않는다. 살아 있는 discard/reject 근거의 독립성·reopening 검증은 그대로 적용한다.
 
 Raw note·feedback reason·memory echo는 미판단 coverage에 포함하지 않는다. 이 로그만 남았다는 이유로 recall을 계속 `partial`로 표시하지 않지만, 미해결 human·일반 assistant·tool·document 원문과 불완전 capture coverage는 그대로 `partial`에 반영한다.
+
+## 기억 건강 관리
+
+네 경로와 기존 API/CLI 연결을 구현 중이다. health는 기본 비활성이며 operator의 명시 정책·workspace 등록과 현재 권한이 필요하다. source 테스트의 통과만으로 전체 통합 완료를 주장하지 않는다. source/installed health smoke, 전체 평가 smoke와 새 whole-source 공식 review/QA의 실제 상태는 [검증 기록](docs/verification.ko.md)을 따른다.
+
+| 경로 | 구현 계약과 한계 |
+|---|---|
+| 코드와 기억 연결 | 명시한 worktree/root·파일 digest·UTF-8/Python AST symbol anchor를 claim revision에 연결한다. 변경 관측 뒤 stale input은 검색뿐 아니라 admission·최종 delivery·관계의 전체 입력에서 재검사한다. required rule을 stale 필터로 숨기지 않는다. 일반 Code map 서비스나 임의 파일 재귀 수집을 켜는 기능은 아니다. |
+| 관측 구간 사후 재검토 | 이미 허용된 producer의 segment·origin·close watermark를 bounded manifest/pending으로 묶는다. 다음 권한 있는 agent 또는 별도 허용된 Jev가 근거를 판단한다. 오류 지적·수정 후보의 발견과 실제 accept/decline·정정 successor를 구분한다. 없는 Stop/tool-result/transcript를 새로 수집하거나 background API로 구독 agent를 깨우지 않는다. |
+| 새 맥락의 검증 | query relevance와 support/정확성·freshness를 분리한다. exact source span과 전체 health manifest로 판단하며 부분 관측은 unknown을 유지한다. 평가 evidence 연결은 명시 판단에 receipt digest를 붙일 뿐 task 성공을 기억의 사실성·최신성·인간 승인으로 승격하지 않는다. |
+| 명시적 Accept/Reject | operator가 exact claim revision·현재 health version/manifest·이유를 제출한다. 늦은 판정, 철회·삭제·권한 변경과 code 변경을 다시 검사한다. 기존 feedback reason/agent_note는 독립 근거가 아니며 자동 정정으로 바꾸지 않는다. |
+
+`health apply --command-file FILE`은 완전한 strict command를 제출한다. producer의 `health observer --binding ID`는 body-free metadata만 읽는다. 이미 승인된 native receipt가 있는 workspace는 `health workspace-prepare`, `workspace-register`, `observe`를 사용하며 등록과 관측을 혼동하지 않는다. 이 명령은 native trust/strict capability·운영 corpus/egress 권한을 새로 부여하지 않는다.
+
+`health apply-evaluation --run-dir DIR --command-file FILE --expected-sha256 SHA`는 보존한 manifest·전체 attempt·실제 producer/MCP trace·oracle/cleanup receipt와 현재 inspect 결과로 evidence를 다시 구성한다. 원래 command의 admission을 교체하지 않으며 최종 권한 검사는 서버가 맡는다. 독립 adjudication은 `--adjudication-file FILE`로만 공급하고 없으면 unknown이다. digest는 파일 무결성 연결이지 독립 인간 검토·서명·실제 native 실행의 증명이 아니다.
+
+restore는 건강 판정용 새 disaster ledger를 만들지 않는다. PG backup 시점 이후의 판정이 소실될 수 있어 복원한 source에서 나온 ordinary claim과 이후 파생 claim은 `unknown_after_restore`로 두고 fresh exact operator review가 필요하다. health/Jev 정책은 명시 재확인 전 비활성이며 required rule·독립 삭제 journal의 기존 복원 계약은 유지한다.
+
 
 ## Agent Flow 없이도 사용
 
@@ -309,7 +327,7 @@ OMP `prepare_prompt`의 secret 거부도 재시작 후 읽히는 body-free gap�
 
 `backup`, `restore`, `restore-recover`의 기본 `--runtime local`에서는 `--pg-dump-binary /절대/경로/pg_dump --pg-restore-binary /절대/경로/pg_restore --psql-binary /절대/경로/psql`을 모두 명시해야 한다. 누락은 CLI 사용법 오류이며 bare/relative·없는 파일·실행 불가능한 파일은 작업 전에 거절한다. PATH 탐색이나 자동 fallback은 없다. `--runtime docker`에서는 이 세 host 경로를 생략하고, 명시한 Docker endpoint/container 내부의 `pg_dump`·`pg_restore`·`psql`을 사용한다.
 
-`restore`는 executor/version/schema/archive/checksum/최신 독립 deletion head를 검증한 뒤 exclusive fence를 건다. 구형 archive는 revision별 exact table allowlist로 검사하고 현재 `0006_agent_judged`로 forward migrate한다. 새 FK/table 정리와 archive SQL은 하나의 미완료 transaction에서 실행하며 authenticated age EOF·digest/크기·성공한 SQL producer를 확인한 뒤에만 COMMIT한다. 실패/중단은 기존 데이터·lineage·reservation을 rollback하지만 durable authority fence는 private recovery 전까지 유지한다. 성공 후 fresh operator/이전 token 폐기·rule 재승인·historical job retirement·surviving deletion floor를 적용한다. fresh token으로 host 설정을 갱신한다.
+`restore`는 executor/version/schema/archive/checksum/최신 독립 deletion head를 검증한 뒤 exclusive fence를 건다. 구형 archive는 revision별 exact table allowlist로 검사하고 현재 `0007_memory_health`로 forward migrate한다. 새 FK/table 정리와 archive SQL은 하나의 미완료 transaction에서 실행하며 authenticated age EOF·digest/크기·성공한 SQL producer를 확인한 뒤에만 COMMIT한다. 실패/중단은 기존 데이터·lineage·reservation을 rollback하지만 durable authority fence는 private recovery 전까지 유지한다. 성공 후 fresh operator/이전 token 폐기·rule 재승인·historical job retirement·surviving deletion floor를 적용한다. 건강 판정의 backup-point rollback과 `unknown_after_restore`는 위 별도 계약을 따르며 fresh token으로 host 설정을 갱신한다.
 
 첫 restore marker를 durable하게 발행한 뒤 fresh token 파일을 쓰고, 그 다음 executor를 시작한다. marker 발행 전 실패는 `not_started`이며 marker/token 파일을 남기지 않으므로 동일한 `--operator-out` 경로로 원래 요청을 다시 실행할 수 있다. marker가 남은 발행 실패나 이후 token 쓰기 실패는 `UNKNOWN`이며 일반 authority 접근을 막는다. 이때 현재 operator로 `restore-recover`를 실행해야 하며, 아직 발급되지 않았거나 활성화되지 않은 fresh token을 credential로 사용하지 않는다. private recovery는 archive가 적용됐다고 증명하지 않는다.
 

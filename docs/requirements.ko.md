@@ -42,7 +42,8 @@
 | U32 | 판단 provider 선택·동일 검증 | 두 mode 모두 allow·egress 확인·유효 키·명시선택 때만 Jev worker, 나머지는 구독 coding-agent MCP. 동일 span/revision/권한/삭제/snapshot 검증과 request/response/publication fence. MCP 조회만·키0600·값 미노출. 새 정책의 실제 vendor proof를 옛 PR 이력과 구분 |
 | U33 | 구현·증거·실배포 구분 | 로컬/remote 구현과 격리 TLS/PG/vendor/native 실행, fresh 공식 review/QA/handoff, 실제 trial, 계정 provisioning·외부 witness·corpus 승인·publication을 별도 기록. cloud 개발은 최신 지시로 trial과 독립 진행하되 운영 승인으로 확대하지 않음 |
 | U34 | macOS 자동 시작·장애 복구·명시 중지 | per-user launchd RunAtLoad·abnormal restart. DB 왕복 ready 후 연결·새 event 없는 bounded spool 전송·unavailable/지원 strict fail-closed. stop은 disabled를 먼저 저장하고 native unload를 bounded 확인, client/install/recovery 부활 금지. remote는 PC recovery만 관리 |
-| U35 | 건강 관리·DB 비대화 제안 적대적 리뷰 | provenance/Health Audit/Accept-Reject/coalesce/retention·구형 DB/backup·참고 OSS의 실제 성장 대책을 비교. 리뷰는 새 health subsystem·자동 삭제·전송·승격 구현 승인이 아님 |
+| U35 | 건강 관리·DB 비대화 제안 적대적 리뷰 | 원래 조사 결정: provenance/Health Audit/Accept-Reject/coalesce/retention·구형 DB/backup·참고 OSS의 성장 대책을 비교하며, 당시 리뷰만으로 새 subsystem·자동 삭제·전송·승격을 승인하지 않음. 이후 명시 구현 지시는 U36으로 구분 |
+| U36 | 빠진 네 메모리 건강 관리 경로 구현 | 최신 사용자 지시로 명시 코드 anchor와 변경 관측, 이미 관측한 세션 구간의 사후 재검토, 관련성/정확성/최신성 분리와 평가 연결, exact revision별 인간 Accept/Reject를 구현. health는 기본 비활성이며 권한·현재 manifest·버전 검사를 유지. 현재 전체 통합 smoke·새 whole-source 공식 review/QA는 미완료이며 실제 native·운영·human gold·trial·출시 승인과 별개 |
 
 ## 추가 필수 불변식
 
@@ -79,14 +80,14 @@
 | I29 | agent_note는 독립 grounding 아님 | raw log/inspection은 보존하되 판단 admission·신규 pending·독립 backlog·미판단 coverage를 만들지 않음. note/feedback reason만 남으면 partial 원인이 아니며 미해결 human·일반 assistant·tool·document는 여전히 반영. note-only remember·memory echo는 새 support가 아니며 과거 note discard로 인간 근거를 오염시키지 않음 |
 | I30 | 비밀은 저장·digest 이전 거절 | generic SOURCE_SECRET_REJECTED/not_started/422·body-free durable host gap. legacy outbox/quarantine 모두 scrub, 앞 transient 실패로 뒤 secret 잔존 금지. local invalid 판정은 읽은 key+digest+payload가 같은 row에만 적용하며 새 durably_spooled replacement와 gap/error 집계를 오염시키지 않음. body/key/digest 노출·원문 rewrite 금지 |
 | I31 | hostile exact-source와 hostnative 중복 시나리오 | architecture 9절 PMPA·secret/content reentry·native memory 공존 expected result를 실제 executor별로 확인. source-only/SDK/native proof 혼합 금지 |
-| I32 | trial/health/publication 범위 분리 | trial 미시작·효익 미측정. 건강 관리 제안 리뷰와 구현 승인을 분리하며 새 metrics/telemetry·자동 audit/삭제/전송은 이번에 켜지 않음. commit/push/PR/merge는 별도 사용자 지시 경계 |
+| I32 | trial/health/publication 범위 분리 | trial 미시작·효익 미측정. U35의 과거 조사와 U36의 최신 제한 구현 승인을 구분. health 정책·workspace·Jev 판단/egress는 각각 명시 권한이 필요하며 구독 agent를 background API로 깨우지 않음. 새 metrics/telemetry·전면 세션 수집·자동 삭제/승격·미승인 전송은 켜지 않음. checkpoint commit/push/PR와 final commit·merge·출시는 별도 |
 | I33 | 사라진 MCP 세션의 안전한 복구 | 재시작·유휴 만료·세션 수 초과 뒤 요청은 SESSION_NOT_FOUND/404/not_started, 다른 credential 세션은 SESSION_CREDENTIAL_DENIED/403. relay는 모든 필드가 검증된 SESSION_NOT_FOUND+not_started에서만 재initialize 후 원 요청을 1회 재전송하며 unknown 효과는 재전송 금지. 재연결 실패·다른 protocol version 협상 시 요청을 보내지 않고 SESSION_NOT_FOUND/not_started |
 | I34 | 하나의 DB 지원 계약 | serve·migrate·backup·restore 모두 PostgreSQL 18.x·pgvector ≥0.8.7·같은 major PG 도구. archive는 live 버전 기록, restore는 같은 계약으로 검사. 위반은 journal reconcile·DDL·restore fence 전 DATABASE_VERSION_UNSUPPORTED/not_started(backup은 staging·recipients 전) |
 | I35 | 원문 창당 하나의 판단 승자와 응답 유실 재시도 | 같은 source revision·contract·snapshot의 겹치는 창을 잡는 active complete remember/discard는 하나뿐(SELECTION_ALREADY_RECORDED, review 예외, 거절·파생 floor 우선). 게시한 claim이 모두 철회된 remember는 창을 놓으며 파생 floor가 새 claim을 막음, claim 없이 기록한 remember는 창을 계속 잡음. 같은 admission·같은 판단의 새 key 재시도는 원래 operation, 다른 판단은 ADMISSION_CONSUMED. receipt digest 불변 |
 | I36 | 과부하의 not_started 거절 | 동시 요청 상한 초과는 인증 전 SERVICE_BUSY/503, pool 획득 기한 초과는 DATABASE_BUSY/503 모두 not_started. 인증은 전역 am_clock 잠금을 기다리지 않음 |
 | I37 | recovery와 명시 stop의 우선순위 | disabled intent를 native stop 전에 영속화. shared healthy 조회·exclusive mutation, 시작 전에 intent 재검사. stop 직후 native drain 중 상태를 즉시 종료로 위장하지 않음 |
 | I38 | readiness와 미확정 쓰기 | process가 아니라 DB·identity·삭제 barrier 확인. native와 HTTP 전체 deadline 공유. unavailable를 empty로 바꾸지 않고 unknown-effect business write를 재전송하지 않음 |
-| I39 | shutdown failure isolation | 한 recovery/judge/scheduler stop 실패에도 나머지 join·application drain·DB close를 시도하고 원래 실패 보존, 본문 없는 operator diagnostics |
+| I39 | shutdown failure isolation | recovery/judge/scheduler/application의 false drain을 버리지 않고 미완료로 기록. outstanding work의 소유권과 eventual join을 보존한 뒤 DB close를 시도하며 다른 cleanup·원래/동시 실패를 잃지 않음. 노출 진단은 bounded stage/code/type이며 raw message·traceback은 내보내지 않음. grace/deadline 증가로 미완료를 성공 처리하지 않음 |
 
 `source_selection.coverage="complete_window"`는 판단한 원문 창의 계약이다. native capture의 전체 session·human-presence 관측 gap은 판단 완료로 없어지지 않으며, unclassified0이어도 incomplete/partial이 남을 수 있다. OMP preparation secret 거부는 source digest 이전에 body-free gap으로 durable하게 기록하고 기존 capture/offer 권한·generation은 전진시키지 않는다.
 

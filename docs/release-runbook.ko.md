@@ -170,6 +170,8 @@ AM_BIN="$NEXT_AM_BIN"
 
 `restore-recover`는 동일 executor/age/세 PG 경로와 `--expected-head`·`--confirm-deployment`·`--operator-out`을 받지만 archive/identity 인자를 받지 않는다. 원래 현재 operator로 호출한다. 복구는 archive 적용을 증명하지 않을 수 있으므로 반환 effect와 `archive_replacement`를 보존한다. 성공 후 fresh operator·기존 token 폐기·필수 rule 재승인·fresh agent/producer 재등록을 확인하고 서비스/host를 갱신한다. 옛 package로 되돌리는 것만으로 schema/권한/삭제 상태가 rollback되지는 않는다.
 
+`0007_memory_health` archive도 PG backup 시점의 판정만 복원한다. post-backup Reject/Accept·assessment가 최신이라는 별도 증거가 없으면 restored source에서 파생한 ordinary claim과 이후 파생 claim은 `unknown_after_restore`이며 fresh exact operator review가 필요하다. health/Jev 정책은 명시 재확인 전 비활성이다. 이를 보완한다며 새 disaster ledger/key/witness를 임의 생성하지 않는다. required rule 재승인·최신 독립 deletion head·credential 교체는 이 health 판정과 별개로 계속 필요하다.
+
 ## 6. 전환 후 합격 증거
 
 - 설치 경로/Python/import-root·실제 package hash·네 도구 catalog·인증·one-binding denial·transport/TLS·DB readiness를 확인한다.

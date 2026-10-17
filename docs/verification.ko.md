@@ -1148,3 +1148,39 @@ Linux 다섯 job은 UTC04:11:27, Mac은04:11:33에 시작해 겹쳐 실행됐고
 
 이 수정은 검증 코드의 단일 Popen 소유권과 controlled IPC에 한정된다. 외부·동시 reaper, 임의 코드 격리, group/session 탈출, 실제 native 보호·운영 배포·PMPA/semantic matrix·독립 human gold/180 valid pairs·실제 pilot 경과·volume 정리·merge/release의 증명이 아니다. 원래18개는 완료0개이고 평가 harness/workload/verifier 구현은 여전히 assistant 소유의 다음 작업이다. 로컬 검증 명령은 실행하지 않았다. 편집 도구의 비요청 LSP 경고는 별도 보존하고 검증 결과로 쓰지 않았으며 공유 LSP/settings를 바꾸거나 중단하지 않았다. 이 문서 head의 정확한 Actions와 새 독립 리뷰·CI-only QA/handoff는 [PR9 기록](https://github.com/chonamdoo/agents-memory/pull/9)을 따른다.
 
+## 승인된 health·평가 engineering과 누락 A–D 통합 — 진행 중
+
+최신 명시 지시는 제한된 네 health 경로, 평가 engineering8개와 전수조사 A–D의 구현이다. 조사 원문·기존83개 todo·OSS86개·과거 실패/취소/timeout·original18은 보존한다. `7cf75ff`의 genuine12 approve와 CI-only QA/handoff는 위 finalizer delta의 실제 완료이며 현재 whole-source 승인으로 재사용하지 않는다. 로컬 runtime/import/test·collection/collect-only·ruff/lint·build·syntax/format·reproduction·추가 smoke는 실행하지 않았다.
+
+### 실제 GitHub Actions와 성공 범위
+
+수치는 각 run의 outcome-only 원본·setup/call/teardown·동일 collection 분할·별도 installed receipt에서 읽었다. 서로 다른 population을 하나의 통과 분모로 합치지 않는다. 아래 모든 run의 전체 gate는 실패이며 부분 성공을 green으로 바꾸지 않는다.
+
+| source | Actions | source passed/failed | 별도 installed passed/failed | 독립 실제 Docker passed/failed | 관측과 한계 |
+|---|---|---:|---:|---:|---|
+| e4026c6 | [39009406009](https://github.com/chonamdoo/agents-memory/actions/runs/39009406009) | 2453/11 | — | — | A3·B3·C2·D3의 genuine call 실패. 같은11개 node와 unrelated coverage control을 후속92ffffc의 setup/call/teardown까지 대조 |
+| 0f4a2fd | [39042076340](https://github.com/chonamdoo/agents-memory/actions/runs/39042076340) | 2888/82 | 584/10 | 12/1 | 첫 health/evaluation 통합. Docker 일반 실패만으로 이후와 같은 원인을 확정하지 않음 |
+| cd02b4d | [39046915711](https://github.com/chonamdoo/agents-memory/actions/runs/39046915711) | 2946/54 | 623/1 | 12/1 | MCP wire/fixture/권한/consumer 실패와 output-limit per-scenario cleanup incomplete. 후속 owned reconcile 성공은 이 실패를 지우지 않음 |
+| 92ffffc | [39048085634](https://github.com/chonamdoo/agents-memory/actions/runs/39048085634) | 2952/48 | 624/0 | 13/0 | A–D11개 모든 phase 통과·unrelated coverage 보존. source MCP catalog 실패와 처음 실행된 health/full-evaluation smoke 실패 |
+| b15533a | [39049072651](https://github.com/chonamdoo/agents-memory/actions/runs/39049072651) | 2968/32 | 624/0 | 13/0 | legacy catalog 통과, modern 최대 escaped ID32개 실패. 실제 짧은 ID 응답14860/16384bytes; 거절된 큰 ID의 전체 body를 포획했다고 주장하지 않음 |
+| 04964e6 | [39050118281](https://github.com/chonamdoo/agents-memory/actions/runs/39050118281) | 3000/0 | 624/0 | 13/0 | catalog 포함 네 source partition 통과. source/installed health와 full-evaluation smoke는 실패 |
+| 07d95b1 | [39050747112](https://github.com/chonamdoo/agents-memory/actions/runs/39050747112) | 3000/0 | 624/0 | 13/0 | 제한 진단으로 실제 health ModuleNotFoundError와 평가 결과 디렉터리 PermissionError 확인. 전체 gate 실패 유지 |
+
+07d95b1의 source shard는760/759/781/700, source·installed·Docker·Mac 모두 skip/xfail/xpass/수집 오류0이다. Mac36은 Python3.12 compatibility subset이며 전체 Mac suite·설치 wheel/native 보호가 아니다. lint0.114초·build1.116초·installed consumer82.210초는 exit0/timeout=false다. source/resource digest `9bbfd494c778fa78d50527d434b8da0db2e032c6d180f340f4c9bd137fee3da8`는 각 source/consumer 전후 동일하고 wheel은 `73b15b97c86ef09f6fcba2af4aa873c6e1a32fdd6fec7a4b4bea06487259041c`다.
+
+e4026c6 이전 cbcb853/Actions39008248490의 source2452pass/5fail도 보존한다. A3은 fixture metadata 누락이므로 genuine red로 세지 않고 C2의 실제 sensitive-marker 노출과 구분한다. 이후0ac749e/Actions39011215103의2533pass/26fail도 보존하며 기존 incidental HTTP-success wording 검사는 다시 고정하지 않았다. 원본 run별 artifact·jobs·실패 log·취소/실패·각 phase 비교는 run context에 보존하고 유리한 행으로 교체하지 않는다.
+
+### 아직 실패하는 실제 통합 경로
+
+07d95b1 source/installed health helper는 실제 PG/schema·서로 다른 actor·child package identity를 준비했으나 `health-smoke.py:305`의 `import httpx`에서 실패했다. 첫 readiness만 failed이고 나머지22개는 not_run이다. child는 TERM/-15로 stopped이나 clean exit가 아니며 Store/schema/admin 정리와 private evidence retention은 별도 관측이다. 기존 locked MCP는 httpx2를 쓰므로 helper import를 그 dependency로 맞췄다. timeout/grace·권한·신뢰·response bound는 늘리지 않았다.
+
+full-evaluation은 image/runtime 준비와 실제13개 Docker scenario를 통과한 뒤 결과 디렉터리 준비에서 실패했다. 새 body-free 진단은 source identity admitted=true·PermissionError·helper1017→109만 공개한다. `CommandLease`는 보안 계약상 cwd `/`에서 실행하므로 상대 `.ci-results`를 cwd에 붙인 것이 잘못이었다. public receipt만 이 helper의 exact checkout `.ci-results`로 지정하고 private root·owner/no-follow·쓰기 권한 검사는 유지한다. RUNNER_TEMP admission 실패라는 앞선 가설은 actual admitted=true로 배제했다. private traceback/DSN/path/body를 공개하거나 예외를 삼켜 성공시키지 않는다.
+
+이 두 정적 수정은 아직 후속 Actions로 통과를 관측하지 않았다. 전체 source/installed23개 health 경로, 5개 invocation/3개 oracle control/2개 functional verifier·실제 producer/MCP/명시 health linkage와5개 refusal의 full smoke, strict aggregate·현재 whole-source 공식12개 review/CI-only QA/handoff는 미완료다.
+
+### 운영·평가 acceptance와의 분리
+
+새 코드/관측·session pending·operator exact review·평가 evidence compiler는 원문 수집·기억의 의미적 진실·독립 인간 승인·actual native callback을 자동 증명하지 않는다. full smoke의 protocol peer/합성 oracle은 engineering이다. human120 holdout·독립60task×3/180 valid pairs·원래 P0 subset 이후 실제 최소7/목표14일 paired trial을 임의 생성하거나 elapsed replay로 대체하지 않는다.
+
+original18은 완료0개다. native/TLS/final wheel 소비·Codex enforceable protection·전체 semantic/mode/host/transport matrix·actual-agent PMPA·macOS maintenance·stable drain/backup/restore/credential cutover·cloud/corpus/egress/witness 권한·target OS/ABI/clean/offline/license·귀속 미확인5volume·fresh whole-source review/final commit/push/PR·별도 merge/release는 기존 조건과 차단 이유를 유지한다. actual Linux fixture/부분 CI·과거 cutover 승인·checkpoint push를 새 실행 승인이나 final publication으로 확대하지 않는다.
+

@@ -100,7 +100,7 @@ Mutation은 `(principal, binding, command, idempotency_key)`와 정규화한 pay
 
 `captured`는 원문 durable capture, `selection_recorded`는 원문 선택 판단 저장, `candidate_ready`는 grounded claim 또는 관계 게시다. accepted capture를 기억·관련성 판단 완료로 읽지 않는다. 지정 operation의 causal floor가 충족되지 않은 context는 `CAUSAL_NOT_READY`다. pending/held·historical blocked/failed·partial·empty를 구분한다.
 
-원문 inspect admission은 credential generation·grant·realm·binding revision·source revision·요청 snapshot·contract revision/epoch·deletion generation·deadline·exact window digest와 rejection input fingerprint를 묶는다. 원래 source snapshot은 nullable provenance로 따로 보존한다. 관계 판단은 전체 inspected claim/source revision manifest와 해당 pending ID를, recall은 실제 candidate pool과 canonical request digest를 저장한다. 게시와 최종 delivery에서 같은 authority를 재검사하므로 stale/revoked/withdrawn 입력을 게시·전달할 수 없다. 관계/규칙 snapshot도 final transaction에서 검사한다. 단순 unrelated capture의 clock 증가가 모든 판단을 무효화하는 것은 아니다.
+원문 inspect admission은 credential generation·grant·realm·binding revision·source revision·요청 snapshot·contract revision/epoch·deletion generation·deadline·exact window digest와 rejection input fingerprint를 묶는다. 원래 source snapshot은 nullable provenance로 보존한다. 관계 판단은 전체 inspected claim/source revision manifest와 pending ID를, recall은 실제 candidate pool과 canonical request digest를 저장한다. health/code observation·operator review의 현재 version/dependency도 검색·admission 재검사·게시·최종 delivery와 관계의 모든 입력에 적용한다. required rule은 ordinary claim의 stale 필터와 분리한다. unrelated capture의 clock 증가만으로 모든 판단을 무효화하지 않는다.
 
 PG clock row를 짧게 잠가 권위 변경 commit 순서를 직렬화하며 SQL sequence 할당 순서를 commit 순서로 간주하지 않는다. coding-agent 판단은 DB transaction 밖에서 수행한다. source selection·grounded claim/index·receipt, claim judgment·관계·전체 dependency는 각각 하나의 authority transaction으로 commit한다.
 
@@ -126,9 +126,9 @@ PG clock row를 짧게 잠가 권위 변경 commit 순서를 직렬화하며 SQL
 7. **Rejection·reopening**: 기본 source inspection은16 hashed lexical token·token/scope당 bounded posting·최대32 후보 검사로 관련 rejection 최대8개를 필수 비교 대상으로 준다. lexical/entity는 후보 색인일 뿐 의미 판단·전체 이력 카탈로그가 아니다. 별도 `rejection_cursor="history"`는 원문 window/snapshot을 유지하는 선택적 live 이력이다. 페이지당 raw row 최대32개를 검사해 적격 최대8개를 반환하며 빈 적격 page에도 next_cursor가 있으면 계속한다. 각 page를 `label="review"`로 저장해 최대16개 receipt를 연결할 수 있다. remember는 필수 후보와 explicit prior ref를 직접+receipt 비교로 덮고, 직접 reopen 집합만 해당 command의 prior_rejection_ids와 같아야 한다. 모든 label에서 제출 metadata·credential/scope/window/contract/deletion/fingerprint를 검사하고 충돌·stale 비교를 거절한다. 무관한 신규 이력은 기존 비교를 무효화하지 않는다. 같은 source overlap·새 origin의 완전 동일 body 차단은 lexical index와 독립이며 bounded identity 검사가 미해결이면 fail closed한다. 현재 요청 snapshot·target 전체 dependency·feedback ancestry·별도 reason source를 먼저 검사하며 cycle/과도한 graph는 공개하지 않는다. global claim의 scope는 private selection audit 요청과 구분한다. reject는 연결 원문 전체 durable 차단, query-only 무관함은 relevance다. 실제 독립 human/tool/document 근거와 prior ref·비교 이유로만 reopening하고 paraphrase의 의미 동등성은 agent가 판단한다. discard/reject는 철회·purge·floor 확장이 아니다.
 8. **Cleanup·next use**: claim의 immutable cleanup_sequence 삽입위치20개 bucket을 사용하며 삭제·만료·낮은 UUID의 새 claim으로 page를 재포장하지 않는다. clock.cleanup_progress에 cycle high-water/keyset/scope-group 진행을 보존한다. transaction당 기존 pending 최대32개·position page4개(최대80 row)·binding/snapshot group32개만 검사하고 `more`면 lock을 놓고 event loop에 양보한 뒤 재개한다. sequence를 commit 순서로 주장하지 않는다. next agent가 pending cursor와 full item/source/judgment를 inspect해 제출하며 의미 판단은 DB transaction 밖이다. empty cleanup은 해결하고 유효하게 판단 완료된 동일 manifest의 재예약을 막는다. non-deriving discard/review 철회는 extraction floor를 만들지 않고 uncovered active source work를 다시 열며 기존 legacy held는 보존한다. human뿐 아니라 일반 assistant capture도 이 재개 대상이고 독립 reopening 근거의 speaker 규칙과 다르다. agent_note/memory는 신규 판단 admission·pending·독립 backlog를 만들지 않고 raw inspection만 남긴다. correction/retraction 뒤 별도 다음 read로 revised evidence를 확인한다.
 
-판단 coverage도 같은 provenance eligibility를 사용한다. raw agent_note·feedback reason·memory source는 unclassified/incomplete 집계에서 제외하지만 원문 inspection과 audit은 보존한다. 미해결 human·일반 assistant·tool·document와 실제 capture gap은 partial 원인으로 남는다.
+판단 coverage·stats·pending 완료·health 입력 분모는 현재 source/selection뿐 아니라 request_snapshot·current policy·rejection/review 전체 dependency 적격성을 공유한다. global source를 A snapshot에서 판단했다는 이유로 B를 classified/complete로 세지 않으며 무관한 유효 coverage는 유지한다. raw agent_note·feedback reason·memory는 unclassified/incomplete에서 제외하되 원문 audit은 보존한다. 미해결 human·일반 assistant·tool·document와 실제 capture gap은 partial 원인이다.
 
-Reject의 durable 차단은 미래 source 재게시에 대한 것이며 기존 claim의 즉시 recall 제외·operator 철회가 아니다. backup 이후 PG의 reject/discard는 rollback될 수 있고, restore 밖 deletion journal은 retract/purge를 보존한다. 모든 disposition의 restore 보존은 새 건강 관리 요구사항이지 현 삭제 floor 계약과 동일하지 않다. [독립 Opus/Sol 적대적 리뷰](research/2026-10-15-memory-health-adversarial.ko.md)와 [참고 OSS의 DB 증가 해결책](research/2026-10-15-oss-db-growth.ko.md)은 제안이며 health writer·자동 audit/삭제/승격을 추가하지 않았다.
+기존 feedback Reject는 미래 source 재게시에 대한 차단이며 기존 claim의 즉시 recall 제외·operator 철회가 아니다. 새 `memory_review`의 exact-revision operator Reject와 구분한다. backup 뒤 PG의 reject/discard·health disposition은 rollback될 수 있으므로 이를 restore 밖 retract/purge deletion journal과 같은 계약으로 주장하지 않는다. 원래 [건강 관리 제안 리뷰](research/2026-10-15-memory-health-adversarial.ko.md)는 역사로 보존하며, 이후 명시 승인된 제한 health writer와 미승인 retention/삭제/전면 audit/승격을 구분한다.
 
 원문 창의 `complete_window`와 capture 관측 범위는 별개다. native source의 `HOST_SESSION_WINDOW_UNOBSERVED`·`HOST_HUMAN_PRESENCE_UNATTESTED`는 source 전체를 판단해 `unclassified_sources=0`이어도 `incomplete_sources`와 `partial=true`를 유지한다. 이는 미판단 backlog가 남았다는 뜻이 아니라 전체 세션·인간 현존을 관측하지 못했다는 뜻이다. gap을 지우거나 판단 완료를 전체 capture 완료로 재해석하지 않으며 건강도 지표를 추가하지 않는다.
 
@@ -138,15 +138,26 @@ runtime 설정 `mode=personal|company`의 Settings는 `capability="agent_judged"
 
 미출시 `0006_agent_judged`는0005 뒤 forward-only revision이다. legacy lexical_entity claim capability만 agent_judged로 바꾸며 full_semantic provenance/awaiting_revalidation·원래 실패 audit는 유지한다. source selection·feedback·admission의 current judgment/rejection/pending metadata, `am_pending_judgments`·`am_retired_jobs`·`am_claim_judgments`와 relation judgment ownership을 추가한다. `am_rejection_evidence`는 원래 source revision/body digest/window/scope identity, `am_rejection_tokens`는 hashed 후보 posting이며 scope를 limit 전에 검사한다. 기존 active/candidate reject만 정확히 backfill하고 correct/retracted는 활성화하지 않는다. claim.cleanup_sequence와 clock.cleanup_progress가 안정적인 bounded cleanup을 소유한다. current archive는 이 revision의 두 owned identity sequence만 exact allowlist로 허용하고 구형 archive에는 새 sequence를 강요하지 않는다. 원문은 source에, claim/span은 기존 구조에 두며 stats는 현재 unresolved와 원래 historical 실패를 분리한다.
 
+현재 `0007_memory_health`는 explicit health 정책·workspace/code observation·claim code link·health event/claim state·관측 session manifest를 저장한다. pending·feedback·source·admission의 health version과 dependency를 같은 Store authority에 결합한다. archive/init의 exact table/version allowlist와 정리 순서를 함께 갱신하며 구형 archive에 새 table/sequence를 강요하지 않는다. 복원한 source와 그로부터 이후 생성한 ordinary claim은 최신 판정을 증명할 수 없어 `unknown_after_restore`다. health/Jev는 기본 비활성으로 돌리고 fresh exact operator review와 명시 정책을 요구한다. 새 health disaster journal/head/witness는 만들지 않는다.
+
 stopped-service operator가 current auth·동일 local migrator DB/schema·exclusive lock·private path·exact original config bytes를 검증해 `migrate --confirm-deployment ... --upgrade-config`를 명시 실행한다. model approval intent는 파일 전체 SHA256의 `--retire-model-approval-intent`가 추가로 필요하다. 별도 approval flock을 잡고 원본 `model-approval-retired-<sha>.json`과 route/current-authority/migration audit `model-approval-recovery-<sha>.json`을 보존한 뒤 구형 enabled route를 disable한다. migration/application auth·disabled route·원본 bytes를 다시 확인한 뒤만 exact intent를 retire하며 원래 효과는 `unknown_not_attested`다. 재개 때도 재인증하고 route를 enable하거나 승인 성공 receipt를 만들지 않는다. 앱 시작은 DDL/config 전환을 하지 않으며 archive transaction/deletion floor 경계도 유지한다. 실제 format-one init resume는 원래 signed intent/config/token/소유권을 보존하고 완료 뒤 명시 upgrade한다. completed replay는 적법한 동일 scope의 upgraded mutable config를 과거로 되돌리지 않는다. 보존 evidence는 DB credential·operator token·key 경로를 포함할 수 있는 private0600 자료다. Git/PR/평문 지원 로그에서 제외하고 필요시 실제 credential/token을 회전한다. config 편집·evidence 보존이 credential 폐기나 media erasure는 아니다. 이 설계는 실제 안정 배포 cutover 실행 proof가 아니다.
 
-`0005→0006`의 보존 admission은 request_digest가 NULL일 수 있다. shared nonmodel decoder는 현재 non-null DTO를 만들기 전에 이를 `ADMISSION_STALE/not_started`로 거절한다. source selection·claim judgment·durable recheck에 같은 경계를 적용하고, 구형 audit를 삭제하거나 digest를 자동 backfill하지 않는다. 새 inspect의 현재 admission은 정상 판단에 사용할 수 있다.
+`0005→0006`의 request_digest NULL과 `0006→0007`의 health_manifest NULL admission은 현재 공통 decoder에서 `ADMISSION_STALE/not_started`다. 기존 row/audit를 삭제하거나 현재 authority를 추정해 자동 backfill하지 않는다. source selection·claim judgment·durable recheck에 같은 경계를 적용하며 새 inspect의 admission은 현재 검사를 거쳐 사용한다.
 
 동기 migration은 별도 task를 shield하고 취소가 반복돼도 실제 worker 종료를 join한다. migration·restore·restore recovery의 기존 exclusive lock이 그 전에 풀리지 않으며 timeout도 worker 종료 증거가 아니다. 취소를 성공으로 바꾸지 않고 기존 unknown/private-recovery 경계를 유지한다.
 
 명시 migrate는 current operator 인증·preflight 뒤 권한 효과 전에 `restore-barrier.json`에 `kind="migration"`인 bounded private fence를 발행한다. 배포·realm·schema·target migration·설정 digest·operator credential/generation·config 경로와 원본/목표 digest·retirement 확인을 묶는다. 재개는 재인증한 같은 요청만 허용하고 이미 발행된 exact target config는 matching retained original audit로만 복구한다. schema/application auth·route·config·retirement 검증과 exact fence 비교 뒤에만 fence를 해제한다. migration은 genuine restore marker를, current restore recovery는 migration-kind marker를 지우지 않는다.
 
 같은 filename을 검사하는 구형 shared consumer의 차단은 설치된3ad 패키지 source에서만 확인했다. 실제 runtime smoke는 current CLI다. 구형 recovery binary의 kind 구분·안전한 재개는 보장하지 않으며 maintenance/recovery는 선택한 current package로 수행한다. 같은 UID의 비협조적 writer나 다른 state_dir의 임의 DB client까지 fencing한다고 주장하지 않는다.
+
+### 5b. 명시적 건강 판정과 관측 범위
+
+workspace 등록은 원래 native receipt의 project/root·producer credential·binding revision에 묶고 파일 탐색 범위를 명시한다. 관측은 body-free digest/UTF-8 또는 Python AST anchor metadata이며 filesystem classifier나 전체 Code map 수집이 아니다. 변경 관측과 link/claim/health manifest의 version이 일치해야 ordinary claim을 재사용한다. 코드·operator Reject·철회·삭제·권한 변경을 늦게 온 agent 판단으로 되돌리지 않는다.
+
+사후 분석은 이미 허용된 source/segment/origin과 close watermark를 bounded manifest로 pending에 연결한다. full-session 관측으로 확대하거나 없는 Stop/tool-result/transcript를 수집하지 않는다. 다음 권한 있는 agent가 판단하며 background API로 구독을 깨우지 않는다. Jev는 독립 source-egress 허가·명시 provider 선택·health 허용이 모두 있어야 한다. 기존 correct/retract_request는 agent_note 후보이고 explicit accept/decline 및 승인된 correction successor와 구분한다.
+
+관련성·support/정확성 판단·freshness는 별도 값이다. 부분 관측·변경·평가 미관측은 unknown으로 남긴다. operator Accept/Reject는 exact revision·health version/manifest·이유와 현재 권한을 검사한다. 평가 compiler는 고정 manifest와 전체 attempt·실제 producer/MCP trace·artifact/oracle/cleanup을 재구성해 명시 command에 digest를 연결할 뿐 자동 사실 판정이나 인간 승인을 만들지 않는다. 매 inspect가 새 admission을 만들더라도 command의 원래 admission을 바꾸지 않고 서버가 최종 검사한다.
+
 
 
 
@@ -158,7 +169,7 @@ stopped-service operator가 current auth·동일 local migrator DB/schema·exclu
 2. **내 프로젝트들** — 승인 당시 동일 realm의 명시 project ID 집합+target-set revision. 새 프로젝트는 새 동의 필요.
 3. **팀 또는 프로젝트 공유** — 구성된 approver와 대상 audience. 팀 전체 배포를 강제하지 않으며 project 공유도 가능.
 
-Candidate body/selector/예외/required 여부/target set/authority/revision digest를 승인에 결합한다. cancel·미응답은 candidate만 남긴다. 범위나 body가 바뀌면 다시 승인한다. PG ledger가 유일 정본이고 Git/skill export가 필요하면 projection으로 만든다. root AGENTS.md/CLAUDE.md나 eager rulebook에 body/catalog를 설치하지 않는다.
+Candidate body/selector/예외/required/target set/authority/revision digest를 exact approval에 결합한다. proposal ref 하나로 bounded UTF-8 continuation의 전체 body와 exact source revision manifest·digest·현재 inspector authority를 읽는다. 페이지 사이 입력·권한이 바뀌면 계속 읽기와 옛 승인을 거절한다. 공개 승인 rule의 target-only reader는 승인된 본문/예외와 권한 있는 target/source projection만 읽고 `approval_inspection_complete=false`다. 원본 proposal/body-source ref·권한 밖 ID를 공개하지 않으며 이를 전체 승인 inspect로 취급하지 않는다. cancel·미응답은 candidate이고 변경은 새 승인 대상이다. PG가 정본이며 root AGENTS.md/CLAUDE.md나 eager rulebook에 body/catalog를 설치하지 않는다.
 
 승인자 credential 폐기는 먼저 body-free 영향 목록을 보여 주고 required rule 영향에 대한 명시 ack를 요구한다. eligible inactive proposal의 재승인은 기존 immutable 내용·frozen scope/targets를 재검증하고 새 ID/더 높은 revision을 만든다. 무관한 roster 증가가 같은 frozen target 재승인을 막지 않으며 새로운 project/범위를 자동 포함하지 않는다. 회사 공유의 fresh G1 signature 요건은 유지한다. 예전 credential·복원 전 approval receipt·철회 원문을 활성 권한으로 되살리지 않는다.
 
@@ -238,7 +249,7 @@ MCP result body는 직접 만든 TextContent 한 plane에만 넣는다. 자동 t
 현재 계약은 통합 [이슈 #5](https://github.com/chonamdoo/agents-memory/issues/5)에서 관리한다. PR #6·#7·#8은 병합됐고 현재 작업트리는 로컬 정책/복구와 클라우드 원격 경로를 확장한다. PR #9 remote HEAD와 작업트리 차이는 검증 기록에 명시한다. branch 실행 증거를 merged/운영 설치·공식 QA·elapsed trial 완료로 바꾸지 않는다. 이전 research·실패/복구 proof는 보존한다. 아래는 **acceptance 정의**이지 실행 결과나 출시 완료 선언이 아니다.
 
 1. source/claim judgment·saved relevance·settings/schema/config/archive 계약을 같은 경로로 유지한다. 폐기한 company-only 기억 선택 승인·서버 모델·obsolete callers를 복원하지 않는다. 기존 회사 공유 규칙의 승인 조건은 별개로 유지한다.
-2. concurrent writer는 build/lint/tests/formatter를 실행하지 않는다. 통합 후 한 owner가 선언된 gates·isolated PG/API/SDK acceptance를 실행한다.
+2. 협업자와 integration owner 모두 test·collection/collect-only·ruff/lint·build·syntax/format·reproduction·추가 smoke를 로컬에서 실행하지 않는다. 실제 runtime 검증은 GitHub Actions의 병렬 job과 보존한 exact-head evidence로만 수행한다. CI 준비·부분 성공·checkpoint 게시를 전체 검증이나 정상 formal gate 통과로 위조하지 않는다.
 3. native proof는 지원 host/executor·현재 protocol·permission·lifecycle·provider input 관측 범위를 따로 기록한다. SDK/fixture/source-only 결과를 actual native proof로 바꾸지 않는다. 공식 독립 native review·QA·local handoff는 runner 소유다.
 4. live 서비스/config upgrade·native trust/설정·publication/commit/push/PR/merge는 이 문서 작성으로 허가되지 않는다. health metrics/dashboard/telemetry는 범위 밖이다.
 
@@ -316,7 +327,7 @@ pair별 task ID/revision·source origin/revision·admission/거절 code·관련�
 
 #### 평가 기록의 무결성
 
-아래는 실제 평가 전에 충족할 조건이다. 현재 human gold120개·60 task×3회 workload·실행 harness와 결과가 있다는 뜻은 아니다.
+controller/manifest·전체 attempt ledger·native CLI driver·required-only/실제 wire gateway·immutable artifact·격리 Docker verifier·scorer/report·CLI를 구현하고 있다. CI protocol peer와 engineering oracle은 이 실행 경로를 검증하기 위한 합성 입력이지 실제 Claude/Codex 구독 판단·독립 인간 검토가 아니다. human gold120개·독립60 task×3회/180 valid pairs·실제 효익 결과와 elapsed trial은 아직 없으며 assistant가 추정해서 채우지 않는다. 전체 통합 smoke·현재 source 공식 review/QA 상태는 검증 기록을 따른다.
 
 - 실행 전에 source/wheel·harness/verifier·corpus/gold/task의 revision과 digest, host/실제 모델 버전, prompt·예산·seed·도구 권한·승인 rule 집합·provider/egress 경로·native memory 잔류 관측을 한 run identity로 고정한다. 재개 때 하나라도 다르면 같은 run에 결과를 섞지 않는다. 비교 가능한 새 run으로 분리하고 이유와 이전 실패를 보존한다.
 - 원래180쌍과 arm별 모든 시도를 분모에 남긴다. timeout·busy·abort·답 생성/판정 오류·fallback·비교 불가·미관측을 결과에서 지워 성공률을 높이지 않는다. 유효 쌍만의 수치는 별도 진단이며 전체180개의 유효성 조건을 대체하지 않는다. native 잔류 때문에 비교 불가인 쌍은 이익으로 세지 않고 원래 시도와 원인을 보존한다. 재실행 허용 조건·상한은 실행 전에 고정하며, 미지정이면0회다. 유리한 remediation 결과로 이전 arm/행을 교체하지 않는다.
