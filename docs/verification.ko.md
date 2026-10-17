@@ -1290,3 +1290,26 @@ private writer가 intent를 hardlink한 뒤 임시 alias unlink 중 중단되는
 
 report는 canonical record와 증명된 같은-inode private alias를 읽되 ledger bytes/link/name을 변경하지 않는다. resume만 해당 alias를 정리하고 기존 intent의 unknown/no-replay를 보존한다. 임의·추가 link를 일반 입력으로 수용하지 않으며 frozen input의 single-link 검사를 완화하지 않는다. 이 증거는 실제 kernel/PID wraparound나 native 보호 proof가 아니다. `synthetic_native_protocol_peer:true`, `native_acceptance:false`, 원래18개 완료0이며 로컬 runtime 검증은 실행하지 않았다.
 
+
+### 공식 리뷰의 frozen context·packing·실제 downstream write 수정
+
+measured corpus/rules를 schema2로 전환하고 실제 context renderer를 frozen module identity에 추가했다. applicable optional rule의 완전한 의미와 eligible 관계의 전체 집합을 고정한다. claim inspect의 draft는 evidence를 제외하고 실제 resolved evidence로 재구성하며, 관계 판단 manifest는 전체 claim이 아닌 `id/revision` 자격과 전체 `relation_ids`를 제공한다. MCP context stamp는 text JSON만이 아니라 `_meta["agents-memory/stamp"]`에서 복원한다. 이전 가정으로 생긴 실패도 아래 원본에 남겼다.
+
+| source / Actions | 전체 source / 별도 설치 wheel | 실제 결과와 남은 범위 |
+|---|---|---|
+| `139b384b` / [39063710604](https://github.com/chonamdoo/agents-memory/actions/runs/39063710604) | 3009pass12fail /633pass12fail | test-only before. optional rule 추가와 미전송 final response의 call 실패는 유효하며 setup/teardown은 pass. R2 10개는 잘못된 draft Quote.byte_end가 있어 유효한 typed before로 세지 않음 |
+| `5500fdf8` / [39065779181](https://github.com/chonamdoo/agents-memory/actions/runs/39065779181) | 2988pass32fail /612pass32fail | Quote fixture29개와 MCP stamp를 text body에서 찾던 controller3개 실패. 전체 consumer는 preflight 전 실패 |
+| `46d9b201` / [39066943420](https://github.com/chonamdoo/agents-memory/actions/runs/39066943420) | 3027pass1fail /651pass1fail | pipe deadline은 SDK ExceptionGroup으로 unwind했는데 fixture가 예외 형태를 고정해 실패. 실제 public claim projection/role 계약을 installed consumer에서 추가 확인 |
+| `f7dc24ad` / [39068205972](https://github.com/chonamdoo/agents-memory/actions/runs/39068205972) | 3035pass5fail /659pass5fail | 관계 미리보기 경계를 넘는9개 edge와 새 reverse edge 거절,9개 실제 pipe 경로는 source/installed pass. optional rule이 한 slot을 차지하는데 F3를 기대한5개 incidental assertion 실패. 전체 CLI5attempt/1validpair 이후 health exporter의 nonpreflight gateway trace 누락으로 replay 실패 |
+| `73631e43` / [39068969823](https://github.com/chonamdoo/agents-memory/actions/runs/39068969823) | 3040pass0fail /664pass0fail | source·설치 wheel 전체 및 lint/build 성공. 실제 producer/MCP/stdio·격리 Docker control/oracle·scorer·명시 health link 완료. 별도 새 drift fixture는 필요한 명시 health 정책 없이 session observation을 요청해 HEALTH_DISABLED로 실패 |
+
+`73631e43`의 source/installed skip·xfail·xpass·collection issue는 모두0이고 실제 Docker 회귀13개도 pass다. primary consumer는5개 invocation·2개 coding arm·1valid engineering pair·2개 final read와 unknown cost, 위조 evidence5개 거절을 확인했다. helper의 product/Store/schema/verifier cleanup은 complete=true다. 추가 drift fixture와 before 수집기의 실패 때문에 전체 workflow/aggregate는 failure이며 이를 녹색 run으로 적지 않는다.
+
+별도 Actions lane은 exact `ea496f4b5ea07fc1a4c9658f8b49e87238ce8e36` 진단 코드에 현재 수정된 diagnostic test 파일만 overlay해 직접 component before를 실행했다. `73631e43` lane의 실제 결과는30pass18fail/skip0이며18개 모두 expected exception 미발생이고 setup/teardown은 pass다. required-rule 승격 거절1개는 이전 코드에서도 이미 pass다. 수집기가 이를 포함한19개 실패를 잘못 기대해 `complete:false`를 남겼으며 원본 verdict는 바꾸지 않았다. 이 component before는 전체 manifest·실제 native·인간 평가의 before가 아니다.
+
+후속 `3d971fb6` / [Actions39069655721](https://github.com/chonamdoo/agents-memory/actions/runs/39069655721)은 source·설치 wheel 전체와 lint/build, primary 전체 consumer/health link를 다시 통과했다. 별도 before lane도 실제 Python3.13.16·exact before module·현재 test SHA를 확인해 `complete:true`,30pass18fail/skip0을 기록했다. missing guard18개와 기존 required 승격 거절 pass를 구분한 component receipt이며 과거 false receipt를 고쳐 적은 것이 아니다. 이 before를 얻은 임시 lane/script는 원본 artifact·commit을 보관하고 제거한다.
+
+새 drift fixture는 health 정책 활성화 뒤에도 producer의 등록 workspace가 없어 session observation에서 `SCOPE_DENIED`로 실패했다. actual product의 producer 등록 경계를 확인했으며 이를 완화하지 않는다. 기존 primary 측과 같은 operator workspace 등록을 별도 owned root·workspace ID·현재 producer credential/generation에 적용하는 수정은 아직 runtime 미검증이다. 첫 arm 완료 뒤 실제 optional 승인·둘째 arm 차단·5attempt/2arm·0validpair/0retry·첫 terminal 불변·readonly report·소유 자원 정리의 성공 결과는 아직 없으며 전체 workflow/aggregate는 failure다.
+
+native credit은 원래 JSON-RPC ID/tool/arguments/payload/metadata stamp와 일치하는 response의 실제 완전한 write에만 붙인다. source/installed의 실제 OS pipe에서 output cap·부분 write·broken pipe·취소·deadline·ID 충돌·응답 교체·post-write 관측 실패를 검사했다. 미전송·모호한 결과는 완료로 바꾸지 않으며 완전한 write도 host/model 소비나 native 보호 증거가 아니다. 새 whole-source 공식12review/QA는 미완료이고 원래18개 완료0·로컬 runtime 검증 금지를 유지한다.
+

@@ -1047,17 +1047,21 @@ async def smoke(args, root: Path, summary: dict) -> None:
             await store.health(actor, HealthPolicyCommand(
                 binding_id=bindings[phase], expected_binding_revision=1,
                 idempotency_key="engineering-health-enable", expected_policy_revision=0, enabled=True))
-        health_project = root / "health-project"
-        private_directory(health_project)
-        producer = await store.authenticate(private_read(
-            Path(channels["measured"]["producer"]["token_file"]), 4096).decode())
-        registration = HealthWorkspaceCommand(
-            binding_id=bindings["measured"], expected_binding_revision=1,
-            idempotency_key="engineering-workspace-register", workspace_id="workspace_engineering_evaluation",
-            expected_workspace_revision=0, root_fingerprint=pin_root(health_project, secrets.token_hex(32)).fingerprint,
-            producer_credential_id=producer.credential_id)
-        save(root / "health-workspace-registration-intent.json", registration.model_dump(mode="json"))
-        await store.health(actor, registration)
+        for phase, directory, workspace_id, intent in (
+            ("measured", "health-project", "workspace_engineering_evaluation", "health-workspace-registration-intent.json"),
+            ("drift_measured", "drift-health-project", "workspace_engineering_pair_drift", "drift-workspace-registration-intent.json"),
+        ):
+            health_project = root / directory
+            private_directory(health_project)
+            producer = await store.authenticate(private_read(
+                Path(channels[phase]["producer"]["token_file"]), 4096).decode())
+            registration = HealthWorkspaceCommand(
+                binding_id=bindings[phase], expected_binding_revision=1,
+                idempotency_key="engineering-workspace-register", workspace_id=workspace_id,
+                expected_workspace_revision=0, root_fingerprint=pin_root(health_project, secrets.token_hex(32)).fingerprint,
+                producer_credential_id=producer.credential_id)
+            save(root / intent, registration.model_dump(mode="json"))
+            await store.health(actor, registration)
         server = uvicorn.Server(uvicorn.Config(create_app(settings), access_log=False, log_level="critical"))
         serving = asyncio.create_task(server.serve(sockets=[listener]))
         async with asyncio.timeout(20):
