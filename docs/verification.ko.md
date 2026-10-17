@@ -1184,3 +1184,13 @@ full-evaluation은 image/runtime 준비와 실제13개 Docker scenario를 통과
 
 original18은 완료0개다. native/TLS/final wheel 소비·Codex enforceable protection·전체 semantic/mode/host/transport matrix·actual-agent PMPA·macOS maintenance·stable drain/backup/restore/credential cutover·cloud/corpus/egress/witness 권한·target OS/ABI/clean/offline/license·귀속 미확인5volume·fresh whole-source review/final commit/push/PR·별도 merge/release는 기존 조건과 차단 이유를 유지한다. actual Linux fixture/부분 CI·과거 cutover 승인·checkpoint push를 새 실행 승인이나 final publication으로 확대하지 않는다.
 
+### 후속 4f68816: 준비 경로 진전과 fixture 계약 수정
+
+[Actions39051609510](https://github.com/chonamdoo/agents-memory/actions/runs/39051609510)는 전체 gate 실패다. source3000/별도 installed624/실제 Docker13/Mac36은 각각 pass, failed/skip/xfail/xpass/수집 오류0이다. lint0.066초·build0.966초·installed consumer76.653초는 exit0/timeout=false다. 전체 source partition 통과와 health/full-evaluation smoke 통과는 구분한다.
+
+source/installed health는 실제 HTTP readiness·body-free producer observer·명시 policy·frozen workspace preparation 네 경로를 통과하고 registration retry 검사에서 KeyError로 실패했다. 원본 observer·동일 operation 재사용·activation 검사는 이미 통과했지만 helper가 JSON에 없는 계산 속성 `pin.fingerprint`를 읽었다. immutable prepared command의 실제 `root_fingerprint`와 비교하도록 바꿨으며 서버 projection에 중복 필드를 추가하지 않았다. 나머지18개 경로는 not_run이고 child TERM/-15의 non-clean 종료 및 모든 원래 cleanup 상태를 유지한다.
+
+full-evaluation은 이제 exact checkout에 body-free receipt를 남겼다. actual failure는 DomainError/SMOKE_EXCEPTION이며 helper1036→913→515다. 이 run은 구체 code를 보존하지 않았으므로 실제 INPUT_INVALID/SCOPE_DENIED를 관측했다고 쓰지 않는다. 정적으로 기존 Handle은 hyphen을 허용하지 않고 producer session에는 현재 등록된 workspace가 필요하다. fixture의 session/root ID를 기존 규칙에 맞추고 source capture와 같은 lineage로 유지하며, 소유한 빈 project root를 실제 pin하고 operator의 `HealthWorkspaceCommand`를 통해 producer를 등록한다. 등록 intent는 먼저 private 파일로 보존한다. production validator·producer grant·workspace fence는 완화하지 않는다.
+
+새 helper는 DomainError의 bounded ASCII code만 추가 보존하며 message/body/traceback을 공개하지 않는다. 이 fixture 수정과 note/feedback의 source backlog 대 기존 health 후보 구분 문서는 다음 checkpoint의 미검증 변경이다. 아직 full invocation/control/functional verifier·health evidence linkage 성공이나 whole-source formal approval은 없다. local 검증0, original18 완료0을 유지한다.
+

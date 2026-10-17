@@ -52,15 +52,15 @@
 | I01 | source·claim·조건·부정·시간·entity·evidence graph | 조건이 다른 주장을 합치거나 단순 latest-write로 삭제하지 않음 |
 | I02 | capture→원문 inspect→source_selection→claim_judgment→candidate manifest→전체 relevance→정정→next use | runtime `mode=personal`·`mode=company`에서 동일한 기본 `agent` provider의 실제 PG/MCP loop. server LLM·lexical 자동 판단·echo/mock를 대체 증거로 쓰지 않음 |
 | I03 | 구형 model work retirement와 pending successor | 원래 job/오류/attempt/generation/시간 audit 보존. Qwen 재시도·성공 relabel·실패 삭제 금지 |
-| I04 | caller admission와 게시/최종 전달 모두 eligibility 검사 | source/claim revision·credential/grant·binding·contract·snapshot·deadline·deletion 변경 후 stale 판단/전달 거절. 구형 NULL request_digest도 DTO 내부 오류 대신 ADMISSION_STALE/not_started이며 새 inspect로 재개 |
+| I04 | caller admission와 게시/최종 전달 모두 eligibility 검사 | source/claim revision·credential/grant·binding·contract·request_snapshot/current policy·rejection/review 전체 dependency·health/code version·deadline·deletion 변경 뒤 stale 판단/전달 거절. 구형 NULL request_digest/health_manifest는 ADMISSION_STALE/not_started이며 과거 row를 삭제·자동 backfill하지 않고 새 inspect로 재개 |
 | I05 | logical retract·local drain·provider unknown·physical purge 분리 | cancel/소켓 종료를 provider erasure라고 하지 않음 |
-| I06 | causal read와 accepted/indexed 분리 | pending을 빈 corpus나 queryable 완료로 표현하지 않음 |
+| I06 | causal read와 accepted/indexed 분리 | pending을 빈 corpus나 queryable 완료로 표현하지 않음. coverage·stats·pending 완료·health 분모는 현재 request_snapshot/policy/review dependency 자격을 공유하고 unrelated 유효 coverage는 보존 |
 | I07 | idempotency payload fingerprint | 같은 key·다른 payload conflict. 응답 유실 retry도 하나의 operation |
 | I08 | principal·realm·binding 신뢰 경계 | body/CWD/branch/MCP session을 authority로 쓰지 않음. 연결된 MCP는 리더/워크트리·호출 CWD와 무관하게 같은 credential/project binding으로 동작. 설치 소유권·자동 capture/hook 경로 검사는 별도 유지 |
 | I09 | 전체 입력 dependency lineage | 인용하지 않은 입력도 철회에 영향을 줌 |
 | I10 | source identity·spool replay·삭제 floor | 과거 spool/import/backup으로 철회 자료가 부활하지 않음 |
 | I11 | PG restore 밖 본문 없는 journal | 최신 head 확인 불가·reconciliation 미완료 때 읽기 차단 |
-| I12 | approval exact digest·target-set revision | body/selector/예외/범위 변경 후 이전 승인 재사용 거절. 기억 판단과 required-rule 승인은 별개 |
+| I12 | approval exact digest·target-set revision | proposal ref 하나로 bounded continuation의 전체 UTF-8 body·예외·selector·required·exact source revision manifest·digest를 승인 전에 읽음. 페이지/승인 사이 권한·입력 변경 거절. body/범위 변경 후 옛 승인 재사용 금지. 제한된 shared-rule projection은 full approval inspect가 아니며 기억 판단과 required-rule 승인은 별개 |
 | I13 | candidate와 active rule 분리 | 모델 confidence·human=true·MCP hint가 활성화 권한이 아님 |
 | I14 | 선택·전달·model-input·준수·enforcement 구분 | receipt만 기록하고 첫 보호 행동을 allow하지 않음 |
 | I15 | child·resume·compact·fork context generation | 보존 확인 불가 시 새 generation, 다른 agent의 receipt 재사용 금지 |
@@ -77,7 +77,7 @@
 | I26 | 관계는 명시 원문 근거·complete manifest | claim_ids 공동20개·기존 logical 관계128 ref/요약8개·overflow 명시. 각 judgment의 독립 전체 dependency/edge를 보존하고 적격 logical read만 중복 제거. 공개 duplicate 정규화·조건/부정/예외 보존 |
 | I27 | bounded cleanup은 pending scheduling뿐 | transaction당 pending32·고정 삽입위치20개 bucket4·scope group32와 durable progress/more. 현재 manifest·pending ID·관계0 dependency·held 보존. non-deriving 철회는 extraction floor 없이 uncovered 원문 재개. server LLM 없음 |
 | I28 | 거절 이유와 재진입 방지 | 관련 색인 후보 최대8개만 필수 비교, 선택적 history/review와 현재 fingerprint 검사. 무관한 새 history로 전체 재검토 강제 금지. exact evidence 차단은 색인과 독립·scope/파생 target privacy 선검사. 새 독립 근거 reopening만 허용하며 의미 판단은 agent |
-| I29 | agent_note는 독립 grounding 아님 | raw log/inspection은 보존하되 판단 admission·신규 pending·독립 backlog·미판단 coverage를 만들지 않음. note/feedback reason만 남으면 partial 원인이 아니며 미해결 human·일반 assistant·tool·document는 여전히 반영. note-only remember·memory echo는 새 support가 아니며 과거 note discard로 인간 근거를 오염시키지 않음 |
+| I29 | agent_note는 독립 grounding 아님 | raw log/inspection은 보존하되 신규 source-selection admission·독립 capture backlog·미판단 source coverage를 만들지 않음. note-only remember·memory echo는 새 support가 아니며 note discard로 인간 근거를 오염시키지 않음. U36의 기존 claim/source 재검토 후보 연결은 새 독립 근거가 아니고 feedback reason도 agent_note 그대로. 현재 적격 human·일반 assistant·tool·document와 capture gap은 계속 partial에 반영 |
 | I30 | 비밀은 저장·digest 이전 거절 | generic SOURCE_SECRET_REJECTED/not_started/422·body-free durable host gap. legacy outbox/quarantine 모두 scrub, 앞 transient 실패로 뒤 secret 잔존 금지. local invalid 판정은 읽은 key+digest+payload가 같은 row에만 적용하며 새 durably_spooled replacement와 gap/error 집계를 오염시키지 않음. body/key/digest 노출·원문 rewrite 금지 |
 | I31 | hostile exact-source와 hostnative 중복 시나리오 | architecture 9절 PMPA·secret/content reentry·native memory 공존 expected result를 실제 executor별로 확인. source-only/SDK/native proof 혼합 금지 |
 | I32 | trial/health/publication 범위 분리 | trial 미시작·효익 미측정. U35의 과거 조사와 U36의 최신 제한 구현 승인을 구분. health 정책·workspace·Jev 판단/egress는 각각 명시 권한이 필요하며 구독 agent를 background API로 깨우지 않음. 새 metrics/telemetry·전면 세션 수집·자동 삭제/승격·미승인 전송은 켜지 않음. checkpoint commit/push/PR와 final commit·merge·출시는 별도 |

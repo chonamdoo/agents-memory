@@ -33,7 +33,7 @@ from agents_memory import (
     evaluation_verifier,
 )
 from agents_memory.config import Settings
-from agents_memory.domain import Role, RuleApproval, RuleProposal, RuleScope
+from agents_memory.domain import DomainError, Role, RuleApproval, RuleProposal, RuleScope
 from agents_memory.edge import create_app
 from agents_memory.evaluation_artifacts import (
     ArtifactBundle,
@@ -55,7 +55,8 @@ from agents_memory.evaluation_verifier import (
     OracleTask,
     controls_digest,
 )
-from agents_memory.health import HealthAssessmentCommand, HealthPolicyCommand
+from agents_memory.health import HealthAssessmentCommand, HealthPolicyCommand, HealthWorkspaceCommand
+from agents_memory.health_code import pin_root
 from agents_memory.journal import DeletionJournal
 from agents_memory.migrations import migrate
 from agents_memory.private_io import private_read, private_write
@@ -504,7 +505,7 @@ def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, list]:
         rules = call("memory_required_context", config["required_request"])["stamp"]["rules"]
         capture = gateway.capture({"binding_id": config["binding_id"], "idempotency_key": "engineering-measured-source",
                                    "origin_key": "engineering-measured-source", "speaker": "document", "body": SOURCE_BODY,
-                                   "root_run_id": "engineering-measured-run", "agent_path": "engineering-source"})
+                                   "root_run_id": "engineering_measured_run", "agent_path": "engineering-source"})
         pointer = capture["source_pointer"]
         source = pointer["source_id"]
         window = call("memory_inspect", {"ref": source})
@@ -515,9 +516,9 @@ def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, list]:
         segment = gateway._producer.request("/api/health", {
             "kind": "session_observation", "binding_id": config["binding_id"],
             "expected_binding_revision": 1, "idempotency_key": "engineering-segment-end",
-            "stream_id": "engineering-stream", "segment_id": "engineering-segment",
-            "event_id": "engineering-end", "sequence": 1, "event": "end",
-            "root_run_id": "engineering-measured-run", "agent_path": "engineering-source",
+            "stream_id": "engineering_stream", "segment_id": "engineering_segment",
+            "event_id": "engineering_end", "sequence": 1, "event": "end",
+            "root_run_id": "engineering_measured_run", "agent_path": "engineering-source",
             "source_refs": [{"id": source, "revision": pointer["source_revision"]}],
             "claim_refs": [{"id": item["id"], "revision": item["revision"]} for item in claims],
             "coverage": "partial", "gaps": ["HOST_HUMAN_PRESENCE_UNATTESTED"],
@@ -900,6 +901,17 @@ async def smoke(args, root: Path, summary: dict) -> None:
         await store.health(actor, HealthPolicyCommand(
             binding_id=bindings["measured"], expected_binding_revision=1,
             idempotency_key="engineering-health-enable", expected_policy_revision=0, enabled=True))
+        health_project = root / "health-project"
+        private_directory(health_project)
+        producer = await store.authenticate(private_read(
+            Path(channels["measured"]["producer"]["token_file"]), 4096).decode())
+        registration = HealthWorkspaceCommand(
+            binding_id=bindings["measured"], expected_binding_revision=1,
+            idempotency_key="engineering-workspace-register", workspace_id="workspace_engineering_evaluation",
+            expected_workspace_revision=0, root_fingerprint=pin_root(health_project, secrets.token_hex(32)).fingerprint,
+            producer_credential_id=producer.credential_id)
+        save(root / "health-workspace-registration-intent.json", registration.model_dump(mode="json"))
+        await store.health(actor, registration)
         server = uvicorn.Server(uvicorn.Config(create_app(settings), access_log=False, log_level="critical"))
         serving = asyncio.create_task(server.serve(sockets=[listener]))
         async with asyncio.timeout(20):
@@ -1045,6 +1057,8 @@ def main() -> int:
             "FileExistsError", "FileNotFoundError", "PermissionError", "NotADirectoryError",
             "ImportError", "ModuleNotFoundError", "UnsupportedOperation"} else "BoundaryError"
         summary["failure_code"] = error.code if isinstance(error, SmokeFailure) else "SMOKE_EXCEPTION"
+        if isinstance(error, DomainError) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", error.code):
+            summary["failure_code"] = error.code
         frame = error.__traceback__
         lines = []
         while frame is not None and len(lines) < 16:

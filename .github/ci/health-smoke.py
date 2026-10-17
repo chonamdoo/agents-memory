@@ -369,7 +369,8 @@ class Smoke:
         active = json.loads((self.runtime / "health-workspace.json").read_bytes())
         self.check(active == json.loads(self.frozen)["config"], "ACTIVATION_IDENTITY_CHANGED")
         observer = await self.cli("health", "observer", "--binding", self.binding, role="producer")
-        self.check(observer["workspaces"][0]["root_fingerprint"] == active["pin"]["fingerprint"], "LIVE_REGISTRATION_MISMATCH")
+        self.check(observer["workspaces"][0]["root_fingerprint"] == json.loads(self.frozen)["command"]["root_fingerprint"],
+                   "LIVE_REGISTRATION_MISMATCH")
         self.passed("registration_and_exact_retry")
         self.begin("explicit_initial_observation")
         paths = self.evidence("explicit-paths", [{"relative_path": "src/cache.py", "symbol_names": ["cache"]}])
