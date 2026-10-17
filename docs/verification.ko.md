@@ -1144,7 +1144,7 @@ sole Popen supervisor와 group 내 자손이라는 범위는 유지한다. 외�
 
 최종 run에서 before와 같은19개 source/Mac node와18개 installed node가 모든 phase를 통과했다. 새 fallback을 포함한 Mac36은 CPython3.12.13 source compatibility이며 Mac 설치 wheel이나 전체 Mac suite가 아니다. Linux 설치92의 Python45-file identity와 실제 소비·공개 wheel 일치도 통과했다. source/resource digest는 `c522186bb58461c0f241e72a10f9fb58f9c18f646e21ebc7b314c0f6044aa056`, wheel SHA256은 `70ddcf9984c75480c7ee531c84b5606f4248066ec44da83ab65226ce71333cc5`다.
 
-Linux 다섯 job은 UTC04:11:27, Mac은04:11:33에 시작해 겹쳐 실행됐고 다섯 Linux owned prerequisite cleanup이 성공했다. lint0.064초/build1.217초/installed consumer46.220초는 모두 exit0·timeout=false다. 전체 원본 API/jobs/phase/JUnit/watch/distribution과 같은 node의 전후 비교를 checkpoint별 context에 보존했다. 실제 CI aggregate 프로그램도 `complete:true`를 기록했다.
+Linux 다섯 job은 UTC04:11:27, Mac은04:11:33에 시작해 겹쳐 실행됐고 다섯 Linux owned prerequisite cleanup이 성공했다. lint0.064초/build1.217초/installed consumer46.220초는 모두 exit0·timeout=false다. 전체 원본 API/jobs/phase/JUnit/distribution과 같은 node의 전후 비교를 checkpoint별 context에 보존했다. 교정본 watch의 완료는 관측했지만 proc 보존기간이 지나 원문을 다시 가져오지 못했다는 availability receipt도 남겼다. 실제 run/job API와 모든 원본 Actions artifact 및 `complete:true` aggregate로 결과를 확인했다.
 
 이 수정은 검증 코드의 단일 Popen 소유권과 controlled IPC에 한정된다. 외부·동시 reaper, 임의 코드 격리, group/session 탈출, 실제 native 보호·운영 배포·PMPA/semantic matrix·독립 human gold/180 valid pairs·실제 pilot 경과·volume 정리·merge/release의 증명이 아니다. 원래18개는 완료0개이고 평가 harness/workload/verifier 구현은 여전히 assistant 소유의 다음 작업이다. 로컬 검증 명령은 실행하지 않았다. 편집 도구의 비요청 LSP 경고는 별도 보존하고 검증 결과로 쓰지 않았으며 공유 LSP/settings를 바꾸거나 중단하지 않았다. 이 문서 head의 정확한 Actions와 새 독립 리뷰·CI-only QA/handoff는 [PR9 기록](https://github.com/chonamdoo/agents-memory/pull/9)을 따른다.
 
