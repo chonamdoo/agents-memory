@@ -374,3 +374,57 @@ def test_closed_native_stdin_does_not_claim_interrupt_transmission(tmp_path):
     assert result.effect == "unknown"
     assert result.cleanup["leader_reaped"] is True
     assert result.artifact_bundle is None
+
+
+@pytest.mark.parametrize("variant", ["nested", "intermediate-symlink", "root-symlink", "root-replaced", "hardlink"])
+def test_native_submission_stays_in_the_original_approved_root(tmp_path, variant):
+    peer = codex_peer(f'''
+root = pathlib.Path.cwd()
+outside = root.parent / 'outside'
+outside.mkdir()
+outside_file = outside / 'submission.json'
+outside_file.write_bytes(b'{{"scope":"outside-approved-root"}}')
+path = root / 'nested' / 'submission.json'
+variant = {variant!r}
+if variant in ('root-symlink', 'root-replaced'):
+    root.rename(root.parent / 'moved-task')
+    if variant == 'root-symlink':
+        (outside / 'nested').mkdir()
+        (outside / 'nested' / 'submission.json').write_bytes(outside_file.read_bytes())
+        root.symlink_to(outside, target_is_directory=True)
+    else:
+        root.mkdir()
+        path.parent.mkdir()
+        path.write_bytes(outside_file.read_bytes())
+elif variant == 'intermediate-symlink':
+    path.parent.symlink_to(outside, target_is_directory=True)
+else:
+    path.parent.mkdir()
+    if variant == 'hardlink':
+        import os
+        os.link(outside_file, path)
+    else:
+        path.write_bytes(b'{{"scope":"approved-nested-submission"}}')
+emit({{'method':'item/completed','params':{{'threadId':'thread-one','turnId':'turn-one',
+    'item':{{'type':'agentMessage','id':'nested-message','text':json.dumps({{'submission_path':str(path)}})}}}}}})
+emit({{'method':'turn/completed','params':{{'threadId':'thread-one','turn':{{'id':'turn-one','status':'completed'}}}}}})
+sys.stdin.read()
+''')
+    spec, output = spec_for(tmp_path, peer=peer)
+    spec = replace(spec, submission_path=spec.cwd / "nested" / "submission.json")
+    result = run_native_arm(spec, "Engineering handoff path fixture, not native approval",
+        invocation_id="invocation", artifact_output=output, trace_sink=lambda _: None)
+    assert result.cleanup["leader_reaped"] is True
+    if variant == "nested":
+        assert result.status == "completed"
+        assert output.read_bytes() == b'{"scope":"approved-nested-submission"}'
+    else:
+        assert result.status == "unknown" and not result.comparable
+        assert result.artifact_bundle is None and not output.exists()
+        assert (tmp_path / "outside" / "submission.json").read_bytes() == b'{"scope":"outside-approved-root"}'
+
+
+def test_native_submission_parent_backtracking_is_not_an_approved_task_path(tmp_path):
+    spec, _ = spec_for(tmp_path)
+    with pytest.raises(ValueError):
+        replace(spec, submission_path=spec.cwd / ".." / "outside" / "submission.json")

@@ -323,6 +323,50 @@ async def test_normalized_default_budget_and_null_workspace_keep_the_qualified_f
             gateway.close()
 
 
+@pytest.mark.parametrize("candidate_options,final_options", [
+    ({}, {"limit": 3, "max_bytes": 2400}),
+    ({"limit": 3, "max_bytes": 2400}, {}),
+    ({}, {"code_workspace_id": None}),
+    ({"code_workspace_id": None}, {}),
+], ids=["omitted-to-default", "default-to-omitted", "omitted-to-null", "null-to-omitted"])
+async def test_equivalent_context_identity_keeps_actual_final_stdio_delivery(
+    authority, tmp_path, monkeypatch, candidate_options, final_options,
+):
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        frozen = {**scope_for(agent).required_request, "max_bytes": 2400}
+        gateway = EvaluationGateway(
+            replace(scope_for(agent), required_request=frozen), agent=agent, producer=producer,
+            trace_sink=lambda _: None,
+        )
+        try:
+            await call(gateway, "memory_required_context", gateway.required_request)
+            _, claims = await prepare_through_actual_wire(gateway)
+            candidates = await call(gateway, "memory_context", {"query": frozen["query"], **candidate_options})
+            for item in candidates["candidate_manifest"]:
+                await full_inspect(gateway, item["inspection_ref"])
+            arguments = {"query": frozen["query"], **final_options, "admission_id": candidates["admission_id"],
+                "relevance": [{"claim_id": item["claim_id"], "relevant": True,
+                    "reason": "The complete offline qualification applies to the unchanged request."}
+                    for item in candidates["candidate_manifest"]]}
+            async with real_stdio_pipe(gateway, monkeypatch, "complete", "equivalent-final") as pipe:
+                await pipe.send({"jsonrpc": "2.0", "id": "init", "method": "initialize", "params": {
+                    "protocolVersion": "2025-11-25", "capabilities": {},
+                    "clientInfo": {"name": "engineering-identity-peer", "version": "1"},
+                }})
+                assert (await pipe.receive())["id"] == "init"
+                await pipe.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+                await pipe.send({"jsonrpc": "2.0", "id": "equivalent-final", "method": "tools/call",
+                    "params": {"name": "memory_context", "arguments": arguments}})
+                final = payload((await pipe.receive())["result"])
+                assert set(claims) <= set(final["refs"]) and "only offline" in final["context"]
+            observation = gateway.flow_observation()
+            assert observation["final_read_observed"] is True
+            assert [read["admission_id"] for read in observation["final_reads"]] == [candidates["admission_id"]]
+            assert set(claims) <= set(observation["final_reads"][0]["refs"])
+        finally:
+            gateway.close()
+
+
 async def test_frozen_coding_cannot_capture_record_or_inspect_catalog(authority, tmp_path):
     async with actual_upstream(authority, tmp_path) as (agent, producer):
         traces = []
