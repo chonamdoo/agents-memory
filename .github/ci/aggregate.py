@@ -32,6 +32,11 @@ WHEEL_SELECTORS = (
     "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[after-probe-native]",
     "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[already-reaped-native]",
 )
+COMPAT_SELECTORS = (
+    "tests/test_ci_accounting.py::test_cleanup_after_esrch_cannot_kill_a_reused_group",
+    "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal",
+)
+COMPAT_RUNTIME = {"platform": "darwin", "implementation": "cpython", "python": [3, 12, 13]}
 
 
 def require(condition: bool, message: str) -> None:
@@ -111,7 +116,8 @@ def prerequisites(path: Path, tested_sha: str, postgres: bool) -> None:
 def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_jobs: dict) -> dict:
     require(SHA.fullmatch(tested_sha) is not None, "An exact tested head SHA is required")
     require(type(expected_shards) is int and 1 <= expected_shards <= 32, "Invalid shard count")
-    require(isinstance(upstream_jobs, dict) and set(upstream_jobs) == {"tests", "checks"},
+    require(isinstance(upstream_jobs, dict)
+            and set(upstream_jobs) == {"tests", "checks", "compatibility"},
             "Missing upstream job results")
     require(all(isinstance(job, dict) and job.get("result") == "success"
                 for job in upstream_jobs.values()), "An upstream job failed, was skipped or was cancelled")
@@ -178,6 +184,21 @@ def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_j
     with distributions[0].open("rb") as stream:
         wheel_digest = hashlib.file_digest(stream, "sha256").hexdigest()
     require(wheel.get("wheel_sha256") == wheel_digest, "The public wheel differs from the exercised artifact")
+    compat_paths = list(artifacts.rglob("compatibility.json"))
+    require(len(compat_paths) == 1, "Missing or duplicate platform compatibility artifact")
+    compat = receipt(compat_paths[0])
+    identity(compat, tested_sha, source)
+    require(compat.get("runtime") == COMPAT_RUNTIME, "Wrong compatibility runtime")
+    require(compat.get("collection_issues") == [], "Compatibility collection failed")
+    expected_compat = sorted(item for item in collection
+                             if any(item.startswith(selector + "[") for selector in COMPAT_SELECTORS))
+    require(all(any(item.startswith(selector + "[") for item in expected_compat)
+                for selector in COMPAT_SELECTORS), "Missing compatibility boundary")
+    require(nodeids(compat.get("all_nodeids"), "compatibility collection") == expected_compat,
+            "Compatibility collection differs from the declared source cases")
+    require(nodeids(compat.get("selected_nodeids"), "compatibility execution") == expected_compat,
+            "Compatibility execution omitted a declared case")
+    execution(compat, expected_compat)
     return {
         "schema": 1, "complete": True, "tested_sha": tested_sha, "source_digest": source,
         "collected": len(collection), "passed": len(selected_union), "failed": 0,
@@ -185,6 +206,7 @@ def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_j
         "shards": sorted(shards, key=lambda shard: shard["index"]), "checks": outcomes,
         "wheel_consumer": {"sha256": wheel_digest, "passed": len(selected),
                           "artifact": distributions[0].name},
+        "compatibility": {"runtime": compat["runtime"], "passed": len(expected_compat)},
     }
 
 

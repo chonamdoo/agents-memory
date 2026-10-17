@@ -117,10 +117,42 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  compatibility:
+    name: Ownership compatibility (macOS Python 3.12)
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.CI_TESTED_SHA }}
+          persist-credentials: false
+      - name: Check exact head
+        run: test "$(git rev-parse HEAD)" = "$CI_TESTED_SHA"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+        with:
+          version: '0.13.0'
+          enable-cache: false
+      - name: Install frozen minimum-version dependencies
+        run: uv sync --frozen --python 3.12.13
+      - name: Run owned process compatibility regressions
+        timeout-minutes: 5
+        run: uv run --no-sync --python 3.12.13 python .github/ci/ownership-compat.py --result-dir .ci-results
+      - name: Preserve compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: ci-compatibility
+          include-hidden-files: true
+          path: |
+            .ci-results/compatibility.json
+            .ci-results/junit.xml
+          if-no-files-found: error
+          retention-days: 14
+
   aggregate:
     name: Complete CI gate
     if: always()
-    needs: [tests, checks]
+    needs: [tests, checks, compatibility]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
@@ -144,6 +176,12 @@ jobs:
         with:
           name: ci-checks
           path: .ci-artifacts/ci-checks
+      - name: Download compatibility evidence
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: ci-compatibility
+          path: .ci-artifacts/ci-compatibility
       - name: Download exercised public distribution
         continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333

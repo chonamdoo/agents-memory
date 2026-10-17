@@ -54,7 +54,12 @@ def evidence(tmp_path):
         "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[after-probe-native]",
         "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[already-reaped-native]",
     ])
-    all_ids = sorted([*(f"tests/cases.py::test_case_{index}" for index in range(64)), *wheel_ids])
+    compat_ids = sorted([item for item in wheel_ids
+                         if any(item.startswith(selector + "[")
+                                for selector in module["COMPAT_SELECTORS"])])
+    compat_ids = sorted([*compat_ids, *(item.replace("-native]", "-ci]") for item in compat_ids)])
+    all_ids = sorted([*(f"tests/cases.py::test_case_{index}" for index in range(64)),
+                      *wheel_ids, *(item for item in compat_ids if item not in wheel_ids)])
     paths = []
     for index in range(4):
         selected = [item for item in all_ids
@@ -95,10 +100,37 @@ def evidence(tmp_path):
         "reports": {item: {phase: {"outcome": "passed", "xfail": False}
                     for phase in ("setup", "call", "teardown")} for item in wheel_ids},
     }))
+    compat = tmp_path / "compatibility" / "compatibility.json"
+    compat.parent.mkdir()
+    compat.write_text(json.dumps({
+        "schema": 1, "complete": True, "tested_sha": tested_sha,
+        "source_before": source, "source_after": source, "runtime": module["COMPAT_RUNTIME"],
+        "all_nodeids": compat_ids, "selected_nodeids": compat_ids,
+        "collection_issues": [], "pytest_exit_code": 0,
+        "counts": {"passed": len(compat_ids), "failed": 0, "skipped": 0, "xfailed": 0, "xpassed": 0},
+        "reports": {item: {phase: {"outcome": "passed", "xfail": False}
+                    for phase in ("setup", "call", "teardown")} for item in compat_ids},
+    }))
     return SimpleNamespace(root=tmp_path, paths=paths, checks=checks, wheel=wheel, distribution=distribution,
-                           sha=tested_sha, ids=all_ids,
-                           jobs={"tests": {"result": "success"}, "checks": {"result": "success"}},
+                           sha=tested_sha, ids=all_ids, compat=compat,
+                           jobs={name: {"result": "success"}
+                                 for name in ("tests", "checks", "compatibility")},
                            aggregate=module["aggregate"])
+
+
+@pytest.mark.parametrize("fault", ["missing", "wrong-runtime", "omitted-case"])
+def test_complete_ci_refuses_incomplete_minimum_platform_proof(evidence, fault):
+    if fault == "missing":
+        evidence.compat.unlink()
+    else:
+        value = json.loads(evidence.compat.read_text())
+        if fault == "wrong-runtime":
+            value["runtime"]["python"] = [3, 13, 16]
+        else:
+            value["selected_nodeids"].pop()
+        evidence.compat.write_text(json.dumps(value))
+    with pytest.raises(ValueError):
+        evidence.aggregate(evidence.root, 4, evidence.sha, evidence.jobs)
 
 
 def test_complete_ci_requires_exact_full_disjoint_execution(evidence):
