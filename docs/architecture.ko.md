@@ -327,9 +327,12 @@ pair별 task ID/revision·source origin/revision·admission/거절 code·관련�
 
 #### 평가 기록의 무결성
 
-controller/manifest·전체 attempt ledger·native CLI driver·required-only/실제 wire gateway·immutable artifact·격리 Docker verifier·scorer/report·CLI를 구현하고 있다. CI protocol peer와 engineering oracle은 이 실행 경로를 검증하기 위한 합성 입력이지 실제 Claude/Codex 구독 판단·독립 인간 검토가 아니다. human gold120개·독립60 task×3회/180 valid pairs·실제 효익 결과와 elapsed trial은 아직 없으며 assistant가 추정해서 채우지 않는다. 전체 통합 smoke·현재 source 공식 review/QA 상태는 검증 기록을 따른다.
+controller/manifest·전체 attempt ledger·native CLI driver·required-only/실제 wire gateway·immutable artifact·격리 Docker verifier·scorer/report·CLI의 engineering 실행 경로가 있다. CI protocol peer와 engineering oracle은 이 경로를 검증하기 위한 합성 입력이지 실제 Claude/Codex 구독 판단·독립 인간 검토가 아니다. human gold120개·독립60 task×3회/180 valid pairs·실제 효익 결과와 elapsed trial은 아직 없으며 assistant가 추정해서 채우지 않는다. 현재 source의 전체 통합 smoke·공식 review/QA 상태는 검증 기록을 따른다.
 
 - 실행 전에 source/wheel·harness/verifier·corpus/gold/task의 revision과 digest, host/실제 모델 버전, prompt·예산·seed·도구 권한·승인 rule 집합·provider/egress 경로·native memory 잔류 관측을 한 run identity로 고정한다. 재개 때 하나라도 다르면 같은 run에 결과를 섞지 않는다. 비교 가능한 새 run으로 분리하고 이유와 이전 실패를 보존한다.
+- measured corpus/rules는 `schema=2`다. applicable optional rule의 완전한 의미·revision/digest, 전체 eligible 관계, claim의 원문 span·source provenance와 health dependency 및 실제 context renderer를 함께 고정한다. 관계 미리보기나 bounded rule prefix를 완전한 집합으로 추정하지 않는다. controller만 사용하는 judgment manifest 권한을 native의 approved refs에 추가하지 않으며 무관한 global operation epoch 변화를 corpus drift로 사용하지 않는다.
+- 매 arm의 전후와 실제 context 전달을 고정 집합과 대조한다. 자기 packing 입력의 hash를 다시 맞춰도 claim의 조건·예외·시점·출처나 optional rule·관계를 바꿀 수 없다. 불완전한 독립 packing의 feasible maximum은 unknown이다. arm 사이 변경으로 비교 불가인 pair도 두 arm과 원래 시도·실패 이유를 유지한다.
+- native context credit은 upstream tool 반환이 아니라 원래 요청과 일치하는 downstream stdio response의 완전한 write에 묶인다. MCP metadata stamp와 실제 wire bytes를 receipt·health evidence replay에서 함께 확인한다. 부분 write·취소·deadline·중복 ID·serializer 교체·관측 실패는 완료로 승격하지 않는다. host/model의 소비는 이 receipt만으로 관측되지 않는다.
 - 원래180쌍과 arm별 모든 시도를 분모에 남긴다. timeout·busy·abort·답 생성/판정 오류·fallback·비교 불가·미관측을 결과에서 지워 성공률을 높이지 않는다. 유효 쌍만의 수치는 별도 진단이며 전체180개의 유효성 조건을 대체하지 않는다. native 잔류 때문에 비교 불가인 쌍은 이익으로 세지 않고 원래 시도와 원인을 보존한다. 재실행 허용 조건·상한은 실행 전에 고정하며, 미지정이면0회다. 유리한 remediation 결과로 이전 arm/행을 교체하지 않는다.
 - verifier는 독립 검토된 합성 oracle의 만점, no-op의0점, 그럴듯하지만 틀린 답의 거절을 먼저 확인한다. gold의 원문 anchor가 실제 corpus의 source/revision/byte span에 있어야 한다. 모호한 gold→claim 매핑은 fuzzy 성공이 아니라 누락/판정 불가로 기록한다. 인간 holdout이나 oracle을 임의로 만들어 채우지 않는다.
 - 후보 retrieval의 required/forbidden claim ID와 agent의 relevance·abstention, 후속 coding task 성공을 분리한다. 후보가 모두 무관할 때 agent가 답을 보류하는지 확인한다. 빈 후보 반환이나 정정 전·후 claim을 함께 반환하는 것만으로 성공 처리하지 않는다.

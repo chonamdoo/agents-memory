@@ -21,6 +21,7 @@ PREFIXES = (
     "tests/test_evaluation_diagnostics.py::test_rehashed_relationship_cannot_change_frozen_closure[",
 )
 SECONDARY = "tests/test_evaluation_diagnostics.py::test_rehashed_packing_cannot_drop_approved_secondary_evidence"
+ALREADY_PROTECTED = "tests/test_evaluation_diagnostics.py::test_rehashed_optional_rule_cannot_replace_approved_semantics[required-True]"
 
 
 def main() -> int:
@@ -68,7 +69,8 @@ def main() -> int:
     if not isinstance(imported_path, str):
         raise RuntimeError("Baseline imported module has no source identity")
     imported = Path(imported_path).resolve()
-    expected = {node for node in plugin.selected if node.startswith(PREFIXES) or node == SECONDARY}
+    expected = {node for node in plugin.selected
+                if (node.startswith(PREFIXES) or node == SECONDARY) and node != ALREADY_PROTECTED}
     failed = {node for node, phases in plugin.reports.items()
               if any(phase["outcome"] == "failed" for phase in phases.values())}
     phase_complete = all(set(phases) == {"setup", "call", "teardown"}
@@ -77,16 +79,19 @@ def main() -> int:
                          for phases in plugin.reports.values())
     counts = plugin.counts()
     complete = (
-        imported == source and exit_code == 1 and len(expected) == 19 and expected == failed
+        imported == source and exit_code == 1 and len(expected) == 18 and expected == failed
         and len(plugin.reports) == len(plugin.selected) and phase_complete
         and not plugin.collection_issues and counts["skipped"] == counts["xfailed"] == counts["xpassed"] == 0
         and all(plugin.failure_kinds.get(node) == "expected_exception_not_raised" for node in expected)
         and plugin.reports.get("tests/test_evaluation_diagnostics.py::test_automatic_packing_uses_complete_inputs_not_observed_delivery", {}).get("call", {}).get("outcome") == "passed"
+        and plugin.reports.get(ALREADY_PROTECTED, {}).get("call", {}).get("outcome") == "passed"
     )
     receipt = {
         "schema": 1, "complete": complete, "scope": "diagnostics_function_public_projection_before_not_native_or_whole_evaluation_acceptance",
         "code_source_sha": before_sha, "test_source_sha": os.environ["CI_TESTED_SHA"],
         "source_module_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "actual_python_version": sys.version.split()[0],
+        "already_protected_required_promotion_node": ALREADY_PROTECTED,
         "imported_exact_before_module": imported == source,
         "test_module_sha256": hashlib.sha256(test_source.read_bytes()).hexdigest(),
         "previous_test_module_sha256": original_test_digest,

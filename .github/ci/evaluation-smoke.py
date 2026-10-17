@@ -1043,9 +1043,10 @@ async def smoke(args, root: Path, summary: dict) -> None:
                 idempotency_key="engineering-" + phase + "-approval"))
         require(bindings["measured"] != bindings["preflight"], "SEPARATE_BINDINGS_REQUIRED")
         actor = await store.authenticate(operator_token)
-        await store.health(actor, HealthPolicyCommand(
-            binding_id=bindings["measured"], expected_binding_revision=1,
-            idempotency_key="engineering-health-enable", expected_policy_revision=0, enabled=True))
+        for phase in ("measured", "drift_measured"):
+            await store.health(actor, HealthPolicyCommand(
+                binding_id=bindings[phase], expected_binding_revision=1,
+                idempotency_key="engineering-health-enable", expected_policy_revision=0, enabled=True))
         health_project = root / "health-project"
         private_directory(health_project)
         producer = await store.authenticate(private_read(

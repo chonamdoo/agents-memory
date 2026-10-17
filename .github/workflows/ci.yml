@@ -303,7 +303,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/ci-before-source/src
         run: |
           timeout --signal=TERM --kill-after=15s 300s \
-            uv run --no-sync --project ci-before-source python .github/ci/diagnostics-before.py \
+            uv run --no-sync --project ci-before-source --python 3.13 python .github/ci/diagnostics-before.py \
             --baseline-root ci-before-source \
             --expected-source ea496f4b5ea07fc1a4c9658f8b49e87238ce8e36 \
             --result-dir .ci-diagnostic-before
