@@ -3,17 +3,21 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import socket
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
+import anyio
 import pytest
 import uvicorn
 from test_edge_boundaries import META, request
 from test_store_authority import authority as authority
 
+from agents_memory import evaluation_gateway as gateway_module
 from agents_memory.domain import DomainError, Role, RuleApproval, RuleProposal, RuleScope
 from agents_memory.edge import create_app
 from agents_memory.evaluation_gateway import (
@@ -490,3 +494,198 @@ async def test_unwritten_downstream_final_result_cannot_publish_delivery(authori
         assert observed["final_reads"] == ()
         assert observed["observation_complete"] is False
         assert observed["pipeline_observed"] is False
+
+
+@asynccontextmanager
+async def real_stdio_pipe(gateway, monkeypatch, variant, final_id):
+    input_read, input_write = os.pipe()
+    output_read, output_write = os.pipe()
+    stdin = os.fdopen(input_read, "rb", buffering=0)
+    stdout = os.fdopen(output_write, "wb", buffering=0)
+    os.set_blocking(input_write, False)
+    os.set_blocking(output_read, False)
+    state = SimpleNamespace(input_fd=input_write, output_fd=output_read, pending=bytearray(),
+                            transport=None, failure=None, last_raw=None)
+    original_transport = gateway_module._BoundedStdio
+    class PipeTransport(original_transport):
+        def __init__(self, *args):
+            super().__init__(*args)
+            state.transport = self
+        async def write(self, text):
+            message = json.loads(text)
+            if variant == "mismatch" and message.get("id") == final_id:
+                message["result"] = {"isError": True, "content": [{
+                    "type": "text", "text": json.dumps({"error": {"code": "SYNTHETIC_SERIALIZER_REPLACEMENT"}}),
+                }]}
+                text = json.dumps(message, ensure_ascii=False) + "\n"
+            await super().write(text)
+    async def send(message):
+        view = memoryview(json.dumps(message, ensure_ascii=False).encode() + b"\n")
+        while view:
+            await anyio.wait_writable(state.input_fd)
+            try:
+                count = os.write(state.input_fd, view)
+            except BlockingIOError:
+                continue
+            assert count > 0
+            view = view[count:]
+    async def receive():
+        async with asyncio.timeout(5):
+            while b"\n" not in state.pending:
+                await anyio.wait_readable(state.output_fd)
+                try:
+                    chunk = os.read(state.output_fd, 65536)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    raise EOFError("Owned gateway pipe closed before its response")
+                state.pending.extend(chunk)
+            line, _, rest = state.pending.partition(b"\n")
+            state.pending[:] = rest
+            state.last_raw = bytes(line) + b"\n"
+            return json.loads(line)
+    def close_input():
+        if state.input_fd is not None:
+            os.close(state.input_fd)
+            state.input_fd = None
+    def close_output():
+        if state.output_fd is not None:
+            os.close(state.output_fd)
+            state.output_fd = None
+    state.send, state.receive = send, receive
+    state.close_input, state.close_output = close_input, close_output
+    with monkeypatch.context() as patches:
+        patches.setattr(gateway_module, "sys", SimpleNamespace(stdin=stdin, stdout=stdout))
+        patches.setattr(gateway_module, "_BoundedStdio", PipeTransport)
+        state.runner = asyncio.create_task(gateway.run_stdio(timeout_seconds=5.0))
+        try:
+            yield state
+        finally:
+            close_input()
+            try:
+                await asyncio.wait_for(asyncio.shield(state.runner), 10)
+            except BaseException as error:
+                if not state.runner.done():
+                    state.runner.cancel()
+                    await asyncio.gather(state.runner, return_exceptions=True)
+                    raise AssertionError("Owned stdio session exceeded its cleanup bound") from error
+                state.failure = error
+            finally:
+                close_output()
+                stdin.close()
+                stdout.close()
+
+
+@pytest.mark.parametrize("variant", [
+    "complete", "output_limit", "broken_pipe", "cancel", "timeout",
+    "mismatch", "duplicate_id", "delivery_observer_failure",
+])
+async def test_real_stdio_write_is_only_final_delivery_boundary(authority, tmp_path, monkeypatch, variant):
+    loop = asyncio.get_running_loop()
+    ready, release, worker_done = threading.Event(), threading.Event(), threading.Event()
+    failed_write, cancelled = asyncio.Event(), asyncio.Event()
+    traces = []
+    final_id = "7" if variant == "duplicate_id" else 'final-"한국어'
+    def observe(row):
+        traces.append(row)
+        if row["stage"] in {"gateway_stdio_output_limit", "gateway_stdio_write_failed"}:
+            loop.call_soon_threadsafe(failed_write.set)
+        if (row["stage"] == "gateway_stdio_received"
+                and json.loads(row["body"]).get("method") == "notifications/cancelled"):
+            loop.call_soon_threadsafe(cancelled.set)
+        if (row["stage"] == "gateway_dispatched" and row.get("downstream_request_id") == final_id
+                and row.get("name") == "memory_context"):
+            ready.set()
+            assert release.wait(15), "Owned final-response barrier was not released"
+        if (variant == "delivery_observer_failure" and row["stage"] == "gateway_delivery"
+                and row.get("channel") == "stdio" and row.get("name") == "memory_context"):
+            raise OSError("Synthetic completed-write receipt observer failure")
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        gateway = EvaluationGateway(scope_for(agent), agent=agent, producer=producer, trace_sink=observe)
+        await call(gateway, "memory_required_context", gateway.required_request)
+        captured, claims = await prepare_through_actual_wire(gateway)
+        recall = {"query": "CacheKey offline", "max_bytes": 6144, "limit": 3}
+        candidates = await call(gateway, "memory_context", recall)
+        for item in candidates["candidate_manifest"]:
+            await full_inspect(gateway, item["inspection_ref"])
+        arguments = {
+            **recall, "admission_id": candidates["admission_id"],
+            "relevance": [{"claim_id": item["claim_id"], "relevant": True,
+                           "reason": "Engineering transport fixture inspected complete evidence."}
+                          for item in candidates["candidate_manifest"]],
+        }
+        original_leave = gateway._leave
+        def leave():
+            original_leave()
+            if ready.is_set():
+                worker_done.set()
+        monkeypatch.setattr(gateway, "_leave", leave)
+        async with real_stdio_pipe(gateway, monkeypatch, variant, final_id) as pipe:
+            try:
+                await pipe.send({"jsonrpc": "2.0", "id": "init", "method": "initialize", "params": {
+                    "protocolVersion": "2025-11-25", "capabilities": {},
+                    "clientInfo": {"name": "engineering-pipe-not-native-approval", "version": "1"},
+                }})
+                assert (await pipe.receive())["id"] == "init"
+                await pipe.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+                await pipe.send({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {
+                    "name": "memory_required_context", "arguments": gateway.required_request,
+                }})
+                assert (await pipe.receive())["id"] == 7
+                await pipe.send({"jsonrpc": "2.0", "id": final_id, "method": "tools/call", "params": {
+                    "name": "memory_context", "arguments": arguments,
+                }})
+                if variant == "duplicate_id":
+                    try:
+                        await asyncio.wait_for(asyncio.shield(pipe.runner), 8)
+                    except BaseException:
+                        assert pipe.runner.done()
+                    assert not ready.is_set()
+                else:
+                    assert await asyncio.to_thread(ready.wait, 5)
+                    if variant == "output_limit":
+                        pipe.transport.max_total = pipe.transport.written_bytes + 1
+                    elif variant == "broken_pipe":
+                        pipe.close_output()
+                    elif variant == "cancel":
+                        await pipe.send({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                                         "params": {"requestId": final_id}})
+                        await asyncio.wait_for(cancelled.wait(), 5)
+                    elif variant == "timeout":
+                        with pytest.raises(TimeoutError):
+                            await asyncio.wait_for(asyncio.shield(pipe.runner), 8)
+                        assert pipe.runner.done()
+                    release.set()
+                    assert await asyncio.to_thread(worker_done.wait, 5)
+                    if variant == "complete":
+                        response = await pipe.receive()
+                        assert response["id"] == final_id
+                        final = json.loads(response["result"]["content"][0]["text"])
+                        assert final["judgment_required"] is False
+                        assert set(final["refs"]) == set(claims)
+                        assert "only offline" in final["context"]
+                    elif variant not in {"cancel", "timeout"}:
+                        await asyncio.wait_for(failed_write.wait(), 5)
+            finally:
+                release.set()
+                if ready.is_set():
+                    assert await asyncio.to_thread(worker_done.wait, 5)
+        observed = gateway.flow_observation()
+        assert observed["captures"] == (captured,)
+        deliveries = [row for row in traces if row["stage"] == "gateway_delivery"
+                      and row.get("name") == "memory_context" and row.get("channel") == "stdio"]
+        if variant == "complete":
+            assert pipe.failure is None
+            assert observed["observation_complete"] is True
+            assert observed["pipeline_observed"] is True
+            assert len(observed["final_reads"]) == 1
+            assert len(deliveries) == 1
+            assert deliveries[0]["written_sha256"] == hashlib.sha256(pipe.last_raw).hexdigest()
+            assert deliveries[0]["written_bytes"] == len(pipe.last_raw)
+            assert deliveries[0]["provider_consumption"] is None
+        else:
+            assert observed["observation_complete"] is False
+            assert observed["pipeline_observed"] is False
+            assert observed["final_reads"] == ()
+            if variant != "delivery_observer_failure":
+                assert deliveries == []

@@ -900,7 +900,7 @@ def build_gateway(manifest: EvaluationManifest, invocation_id: str, run_dir: Pat
 
 def _payload(result: dict) -> dict:
     _require(not result.get("isError") and isinstance(result.get("content"), list) and len(result["content"]) == 1, "MCP_TOOL_FAILURE")
-    return decode_json(result["content"][0]["text"].encode())
+    return gateway_module._tool_payload(result)
 
 
 def _inspect(gateway: EvaluationGateway, ref: str, maximum: int, *, claim_ids: tuple[str, ...] | None = None) -> dict:
@@ -1229,7 +1229,7 @@ def _native_deliveries(events: list[dict]) -> dict[str, dict]:
                  and digest_bytes(content[0]["text"].encode()) == event.get("payload_sha256"),
                  "NATIVE_STDIO_DELIVERY_FRAME_MISMATCH")
         deliveries[call_id] = {"event": event, "request": request,
-                               "payload": decode_json(content[0]["text"].encode())}
+                               "payload": gateway_module._tool_payload(result)}
     return deliveries
 
 

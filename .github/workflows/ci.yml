@@ -275,3 +275,44 @@ jobs:
           path: .ci-results/summary.json
           if-no-files-found: error
           retention-days: 14
+
+  diagnostics-before:
+    name: Isolated valid diagnostic fixture before proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.CI_TESTED_SHA }}
+          persist-credentials: false
+      - name: Check exact test head
+        run: test "$(git rev-parse HEAD)" = "$CI_TESTED_SHA"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ea496f4b5ea07fc1a4c9658f8b49e87238ce8e36
+          path: ci-before-source
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+        with:
+          version: '0.13.0'
+          enable-cache: false
+      - name: Install exact before-project dependencies
+        run: uv sync --frozen --project ci-before-source --python 3.13
+      - name: Observe old source with corrected current diagnostic fixtures
+        env:
+          PYTHONPATH: ${{ github.workspace }}/ci-before-source/src
+        run: |
+          timeout --signal=TERM --kill-after=15s 300s \
+            uv run --no-sync --project ci-before-source python .github/ci/diagnostics-before.py \
+            --baseline-root ci-before-source \
+            --expected-source ea496f4b5ea07fc1a4c9658f8b49e87238ce8e36 \
+            --result-dir .ci-diagnostic-before
+      - name: Preserve separate expected-red evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: ci-diagnostics-before
+          path: .ci-diagnostic-before/diagnostics-before.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

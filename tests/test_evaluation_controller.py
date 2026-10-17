@@ -26,7 +26,7 @@ from agents_memory import (
     evaluation_verifier,
 )
 from agents_memory.client import HttpExchange
-from agents_memory.domain import DomainError, RuleApproval, RuleProposal, RuleScope
+from agents_memory.domain import RuleApproval, RuleProposal, RuleScope
 from agents_memory.evaluation import (
     EvaluationError,
     PrivateTrace,

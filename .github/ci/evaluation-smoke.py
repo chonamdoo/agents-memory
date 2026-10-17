@@ -505,7 +505,7 @@ def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, dict]:
     def call(name, arguments):
         result = gateway.call_tool(name, arguments)
         require(not result.get("isError"), "CORPUS_REAL_MCP_FAILURE")
-        return decode_json(result["content"][0]["text"].encode())
+        return evaluation._payload(result)
     try:
         rules = call("memory_required_context", config["required_request"])["stamp"]["rules"]
         capture = gateway.capture({"binding_id": config["binding_id"], "idempotency_key": "engineering-measured-source",

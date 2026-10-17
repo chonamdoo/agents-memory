@@ -29,6 +29,24 @@ from .stdio import RelayEndpoint, StdioRelay
 from .wire import decode_json, validate_wire
 
 
+def _tool_payload(result: dict) -> dict:
+    content = result.get("content")
+    if (not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict)
+            or not isinstance(content[0].get("text"), str)):
+        raise DomainError("UPSTREAM_RESULT_INVALID", "The bounded tool data is unavailable", effect=EffectState.UNKNOWN)
+    payload = decode_json(content[0]["text"].encode())
+    metadata = result.get("_meta")
+    if metadata is not None:
+        if not isinstance(metadata, dict):
+            raise DomainError("UPSTREAM_METADATA_INVALID", "The tool metadata is unavailable", effect=EffectState.UNKNOWN)
+        stamp = metadata.get("agents-memory/stamp")
+        if stamp is not None:
+            if not isinstance(stamp, dict) or "stamp" in payload and payload["stamp"] != stamp:
+                raise DomainError("UPSTREAM_STAMP_INVALID", "The tool stamp is inconsistent", effect=EffectState.UNKNOWN)
+            payload["stamp"] = stamp
+    return payload
+
+
 class _BoundedStdio:
     def __init__(self, max_record: int, max_total: int, observer: Callable[[str, bytes], None]) -> None:
         self.max_record, self.max_total, self.observer = max_record, max_total, observer
@@ -472,6 +490,7 @@ class EvaluationGateway:
             "call_id": self._current_call, "name": name, "arguments": arguments,
             "downstream_request_id": downstream_request_id, "is_error": is_error,
             "text": content[0]["text"], "payload": payload, "stamp": stamp, "final_read": final_read,
+            "metadata_stamp": (result.get("_meta") or {}).get("agents-memory/stamp"),
         }
         if downstream_request_id is None:
             self._complete_delivery(item, "direct")
@@ -547,6 +566,8 @@ class EvaluationGateway:
             result = message.get("result")
             content = result.get("content") if isinstance(result, dict) else None
             params = request.get("params", {}) if request is not None else {}
+            metadata = result.get("_meta") if isinstance(result, dict) else None
+            metadata = {} if metadata is None else metadata
             if (cancelled or request is None
                     or type(identifier) is not type(item["downstream_request_id"])
                     or identifier != item["downstream_request_id"]
@@ -554,6 +575,7 @@ class EvaluationGateway:
                     or params.get("name") != item["name"]
                     or (params.get("arguments") or {}) != item["arguments"]
                     or not isinstance(result, dict) or result.get("isError", False) is not item["is_error"]
+                    or not isinstance(metadata, dict) or metadata.get("agents-memory/stamp") != item["metadata_stamp"]
                     or not isinstance(content, list) or len(content) != 1
                     or not isinstance(content[0], dict) or content[0].get("text") != item["text"]):
                 raise ValueError("Gateway dispatched result was not the completed response")
@@ -628,7 +650,7 @@ class EvaluationGateway:
                 content = result.get("content")
                 if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0].get("text"), str):
                     raise DomainError("UPSTREAM_RESULT_INVALID", "The MCP result has no bounded data plane", effect=EffectState.UNKNOWN)
-                payload = decode_json(content[0]["text"].encode())
+                payload = _tool_payload(result)
                 final_read = self._observe_flow(name, arguments, payload)
             return self._result_ready(name, original_arguments, result, downstream_request_id,
                                       payload=payload, final_read=final_read)

@@ -230,7 +230,7 @@ def make_inputs(
                         "entities": [],
                         "evidence": [{
                             "source_id": "source1", "quote": quote,
-                            "byte_start": 0, "byte_end": len(body),
+                            "byte_start": 0,
                         }],
                     },
                     "evidence": [{
