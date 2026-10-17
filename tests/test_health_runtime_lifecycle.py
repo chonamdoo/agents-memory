@@ -20,18 +20,39 @@ async def test_false_drain_keeps_store_open_until_owned_work_finishes(authority,
     edge = create_app(authority.store.settings)
     owner = {"judge": edge.judge, "scheduler": edge.worker, "application": edge.application}[owner_name]
     entered, release, timed_out = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    request_task = None
+    join_entered, close_attempted = asyncio.Event(), asyncio.Event()
+    request_task = held_task = None
     original_context = edge.application.context
+    original_close = edge.application.store.close
+    original_join = getattr(owner, "wait_closed", None)
 
     async def held_context(actor, command):
+        nonlocal held_task
+        held_task = asyncio.current_task()
         entered.set()
         await release.wait()
         return await original_context(actor, command)
 
     async def held_worker():
+        nonlocal held_task
+        held_task = asyncio.current_task()
         entered.set()
         await release.wait()
 
+    async def observed_join():
+        join_entered.set()
+        if original_join is not None:
+            await original_join()
+        else:
+            assert held_task is not None
+            await asyncio.shield(held_task)
+
+    async def observed_close():
+        close_attempted.set()
+        await original_close()
+
+    monkeypatch.setattr(owner, "wait_closed", observed_join, raising=False)
+    monkeypatch.setattr(edge.application.store, "close", observed_close)
     if owner_name == "application":
         monkeypatch.setattr(edge.application, "context", held_context)
         original_stop = owner.drain
@@ -63,29 +84,38 @@ async def test_false_drain_keeps_store_open_until_owned_work_finishes(authority,
             await entered.wait()
 
     serving = asyncio.create_task(serve())
+    waiters = []
+    failure = None
     try:
         await asyncio.wait_for(timed_out.wait(), 5)
-        for _ in range(10):
-            await asyncio.sleep(0)
-        assert not serving.done(), "The shutdown owner must retain the outstanding join"
+        waiters = [asyncio.create_task(join_entered.wait()), asyncio.create_task(close_attempted.wait())]
+        await asyncio.wait_for(asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED), 5)
+        assert join_entered.is_set(), "Outstanding ownership must be joined before authority close"
+        assert not close_attempted.is_set()
+        assert not serving.done()
         assert edge.application.store.pool is not None
         assert edge.application.accepting is False
-        assert edge.lifecycle_status["local_drained"] is False
-        assert owner_name in edge.lifecycle_status["incomplete"]
         status, body = await request(edge, b"", token=None, path="/readyz", method="GET")
         assert status == 503
         assert json.loads(body)["lifecycle"]["local_drained"] is False
     finally:
         release.set()
-    with pytest.raises(BaseExceptionGroup) as failed:
-        await asyncio.wait_for(serving, 5)
-    assert other_failure in failed.value.exceptions
-    assert any(isinstance(error, DomainError) and error.code == "LOCAL_DRAIN_INCOMPLETE" for error in failed.value.exceptions)
-    if request_task is not None:
-        await asyncio.wait_for(request_task, 5)
+        for waiter in waiters:
+            waiter.cancel()
+        await asyncio.gather(*waiters, return_exceptions=True)
+        try:
+            await asyncio.wait_for(serving, 5)
+        except BaseExceptionGroup as error:
+            failure = error
+        if request_task is not None:
+            await asyncio.wait_for(request_task, 5)
+    assert failure is not None
+    assert other_failure in failure.exceptions
+    assert any(isinstance(error, DomainError) and error.code == "LOCAL_DRAIN_INCOMPLETE" for error in failure.exceptions)
     assert edge.application.store.pool is None
-    assert edge.lifecycle_failed is True
-    assert edge.lifecycle_status["local_drained"] is True
+    with pytest.raises(DomainError) as failed:
+        edge.raise_for_lifecycle_failure()
+    assert failed.value.code == "SERVICE_LIFECYCLE_FAILED"
 
 
 @pytest.mark.parametrize("stage", ["startup", "shutdown"])
