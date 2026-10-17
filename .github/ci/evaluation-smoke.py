@@ -291,7 +291,6 @@ def full_inspect(call, ref: str) -> dict:
 
 PEER_SOURCE = r'''
 import asyncio, hashlib, json, os, pathlib, sys, uuid
-from datetime import timedelta
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from agents_memory.evaluation_artifacts import digest_bytes
@@ -321,7 +320,7 @@ async def exercise():
     with (pathlib.Path.cwd() / 'gateway-stderr.private').open('x', encoding='utf-8') as errors:
         os.chmod(errors.name, 0o600)
         async with stdio_client(params, errlog=errors) as streams:
-            async with ClientSession(*streams, read_timeout_seconds=timedelta(seconds=30)) as client:
+            async with ClientSession(*streams, read_timeout_seconds=30.0) as client:
                 await client.initialize()
                 names = sorted(tool.name for tool in (await client.list_tools()).tools)
                 expected = ['memory_required_context'] if invocation['mode'] == 'required_only' else None
@@ -335,7 +334,7 @@ async def exercise():
                       'tools':names, 'mcp_servers':[{'name':'engineering-scoped-gateway','status':'connected'}]})
                 async def call(name, arguments):
                     result = await client.call_tool(name, arguments)
-                    assert not result.isError and len(result.content) == 1
+                    assert not result.is_error and len(result.content) == 1
                     return decode_json(result.content[0].text.encode())
                 async def inspect(ref):
                     offset, data, stamp = 0, bytearray(), None
@@ -360,7 +359,7 @@ async def exercise():
                 assert required['stamp']['rules']
                 if invocation['mode'] == 'required_only':
                     refusal = await client.call_tool('memory_context', channel['required_request'])
-                    assert refusal.isError
+                    assert refusal.is_error
                 else:
                     if invocation['phase'] == 'preflight':
                         capture = decode_json((run_dir/'ledger'/(digest_bytes(identity.encode())+'.capture.json')).read_bytes())
@@ -809,14 +808,26 @@ async def exercise_health_link(root: Path, run: Path, expected: str, store, acto
             "forged_evidence_refused": len(refusals)}
 
 
-def reconcile_verifiers(run: Path, config: dict) -> bool:
+def reconcile_verifiers(run: Path, frozen: evaluation.EvaluationManifest) -> bool:
     complete = True
-    runtime_spec = evaluation._runtime(decode_json(next(Path(item["path"]).read_bytes()
-        for item in config["files"] if item["name"] == "runtime")))
-    for invocation in read_json(next(Path(item["path"]) for item in config["files"] if item["name"] == "workload"))["invocations"]:
-        directory = run / "verifiers" / invocation["invocation_id"]
-        if not directory.exists():
-            continue
+    runtime_spec = evaluation._runtime(frozen.document("runtime"))
+    invocations = frozen.workload["invocations"]
+    expected = {item["invocation_id"] for item in invocations}
+    expected.update(evaluation._pair_verifier_id(frozen, item) for item in invocations if item["phase"] == "coding")
+    root = run / "verifiers"
+    if not root.exists():
+        require(not root.is_symlink(), "VERIFIER_ROOT_SCOPE")
+        return True
+    descriptor = open_private_directory(root)
+    try:
+        names = os.listdir(descriptor)
+    finally:
+        os.close(descriptor)
+    require(len(names) <= 4096 and set(names) <= expected, "EXACT_VERIFIER_DIRECTORY_REQUIRED")
+    for name in sorted(names):
+        directory = root / name
+        descriptor = open_private_directory(directory)
+        os.close(descriptor)
         owners = list(directory.glob("*.owner.json"))
         require(0 < len(owners) <= 16, "EXACT_VERIFIER_OWNER_REQUIRED")
         for path in owners:
@@ -843,7 +854,7 @@ async def smoke(args, root: Path, summary: dict) -> None:
     admin = store = server = serving = listener = None
     schema_created = False
     schema = "am_evaluation_" + secrets.token_hex(16)
-    config = run = None
+    frozen = run = None
     try:
         identity, before = source_identity(args.wheel, args.expected_wheel_sha256, args.consumption)
         summary["identity"] = identity
@@ -969,9 +980,9 @@ async def smoke(args, root: Path, summary: dict) -> None:
             ] if isinstance(reasons, list) else None
             references = preflight.get("evidence_refs")
             if isinstance(references, dict) and isinstance(references.get("native"), str):
-                identity = frozen.workload["preflight"]["invocation_id"]
+                preflight_identity = frozen.workload["preflight"]["invocation_id"]
                 raw = evaluation._read(run / "ledger" / (
-                    digest_bytes(identity.encode()) + ".native.json"), frozen.config["trace_bytes"], private=True)
+                    digest_bytes(preflight_identity.encode()) + ".native.json"), frozen.config["trace_bytes"], private=True)
                 require(digest_bytes(raw) == references["native"], "NATIVE_DIAGNOSTIC_DIGEST_INVALID")
                 native = decode_json(raw)
                 errors = base64.b64decode(native["stderr"]["$bytes"], validate=True)
@@ -980,7 +991,7 @@ async def smoke(args, root: Path, summary: dict) -> None:
                 error_types = {
                     "AssertionError", "BrokenResourceError", "CancelledError", "ClosedResourceError",
                     "EndOfStream", "ExceptionGroup", "FileNotFoundError", "ImportError", "KeyError",
-                    "McpError", "ModuleNotFoundError", "RuntimeError", "TimeoutError", "TypeError",
+                    "MCPError", "ModuleNotFoundError", "RuntimeError", "TimeoutError", "TypeError",
                     "ValidationError", "ValueError",
                 }
                 text = errors.decode("utf-8", errors="replace")
@@ -1008,9 +1019,9 @@ async def smoke(args, root: Path, summary: dict) -> None:
         raise
     finally:
         cleanup = summary["owned_cleanup"]
-        if config is not None and run is not None:
+        if frozen is not None and run is not None:
             try:
-                cleanup["verifiers_exact_absent"] = await asyncio.to_thread(reconcile_verifiers, run, config)
+                cleanup["verifiers_exact_absent"] = await asyncio.to_thread(reconcile_verifiers, run, frozen)
             except BaseException:
                 retain_failure(root, "verifier-cleanup-failure.private.txt", cleanup)
                 cleanup["verifiers_exact_absent"] = False

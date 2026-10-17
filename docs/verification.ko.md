@@ -1232,3 +1232,15 @@ full evaluation은 helper970의 `BoundaryError/SMOKE_EXCEPTION`으로 중단됐�
 
 기존 canonical comment hook은 실제 존재하므로 unavailable로 적지 않는다. 로컬 실행 없이, 공개 MIT upstream의 설치 버전0.3.16 commit `89512553cd85a608b02845e1dd1c3d81b4727dca`와20256bytes·SHA256 `0eb61a66acdd1ec4031c4cb8aedf78aced785f0b69c46e50a0234241adbd3f5f`가 현재 managed-hook digest와 일치함을 data-only로 확인했다. 같은 정책의 bounded old/new source 비교를 Actions에만 연결하고 exact base/head·coverage receipt를 aggregate가 요구하게 했다. 새 CI 경로 역시 아직 실행 결과가 없고 local hook·guard·trust·settings·pins는 바꾸지 않았다.
 
+### 후속 6339870: 복구 source·installed 회귀와 canonical checker 실제 성공
+
+[Actions39056992385](https://github.com/chonamdoo/agents-memory/actions/runs/39056992385)는 source3008·별도 installed632·실제 Docker13·Mac36pass, failed/skip/xfail/xpass/수집 오류0이다. b71에서 실패한 같은 recovery node의 setup/call/teardown이 모두 pass가 됐고, 새 event-based 진단 유지→실제 복구 회귀도 source와 installed에서 세 phase 모두 pass다. 새 회귀 자체의 before runtime은 실행하지 않았으므로 기존 실제 `/readyz` red와 구분한다.
+
+source health23.492초·installed health22.622초는 각각23개 outcome과 clean exit0/owned cleanup을 확인했다. 실제 소비한 wheel SHA256은 `af55c7c143a5d531dfb1ed8765b7063d51378da789c600626449209663c8ef2f`다. lint0.065초·build1.116초·wheel consumer103.724초는 exit0/timeout=false다.
+
+canonical comment checker도 실제10.383초/exit0이다. exact base `2892ca25e199386c672f23a0ba11841acaa023b3`→head6339870의124개 변경 중 canonical 정책상96개 code 파일,4349930 input bytes를 비교해 finding0·coverage_complete=true를 기록했다. 코드/경로 원문 대신 경로 digest·blob identity와 manifest digest를 보존했다. 이것은 이 source의 checker 실행 증거이며, 아직 끝나지 않은 semantic final comment pass나 whole-source review/QA를 대신하지 않는다.
+
+full evaluation의 실제 child는 stdout0bytes·stderr4873bytes·exit1, `ExceptionGroup/TypeError`, owned peer frame141/34/35/36으로 확인됐다. [공식 MCP v2 migration](https://py.sdk.modelcontextprotocol.io/migration/#timeouts-take-float-seconds-instead-of-timedelta)은 첫 request에서 기존 timedelta timeout이 TypeError를 일으키며 float seconds와 `is_error` Python 필드가 필요하다고 명시한다. 같은30초를 유지하는 locked SDK2 API 수정은 다음 checkpoint 대상이다. wire `isError`·프로토콜 조건과 모든 판정 assertion은 유지한다.
+
+이 run의 helper cleanup은 complete=false다. validated manifest 반환 cutover 뒤 기존 config=None 조건이 남아 verifier 확인을 건너뛰었으며, 이를 정상 완료로 바꾸어 적지 않는다. 별도 outer receipt는 실제13owners/29resources를 CLEAN으로 reconcile하고 schema·process·prerequisite 부재를 확인했다. helper도 frozen manifest와 실제 shared pair-verifier directory를 모두 확인하도록 고쳤으며 새 runtime 결과는 아직 없다. 전체 CI gate는 failure이고 원래18개 완료0 및 새 공식12review/QA 미완료는 유지한다.
+
