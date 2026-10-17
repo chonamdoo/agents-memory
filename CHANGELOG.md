@@ -20,8 +20,12 @@
 - 평가 gateway가 candidate/final dispatch 전에 frozen `limit`·`max_bytes`·정규화한 `code_workspace_id`를 강제한다. 원래 workspace가 null인 경우의 생략/null 동등성은 보존한다.
 - 필수 frozen `native_tool_mapping`과 immutable native-tool-link를 추가했다. 실제 native tool start/result·invocation/generation·정확한 arguments/result와 완료 gateway write를 연결하고 health export/replay에서도 검증한다. 별도 MCP client/agentMessage만의 성공, 다른 호출·server·결과·generation은 credit이 아니다. Codex native lineage와 JSON-RPC ID를 구분하고 Claude의 모호한 병렬 반복은 비교 불가로 남긴다. provider 소비·native 보호 증거로 확대하지 않는다.
 - post-spawn helper 생성자 interruption과 selector 생성/close 실패에서도 owned process group을 reap 전 종료하고 bounded final wait·모든 pipe close를 시도한다. 원래 실패와 cleanup 실패를 함께 보존하며 미관측 회수를 성공으로 숨기거나 timeout을 늘리지 않는다.
+- health work가 claim의 전체 typed 의미·조건·예외·부정/양태·valid time을 admission과 두 판단 단계에 보존하고 전체 JSON을 기존 byte budget에 계산한다. 의미가 빠지거나 예산을 넘으면 statement-only 판단으로 잘라내지 않는다. 같은 statement의 offline 조건이 online 정정 때문에 잘못 격리되는 회귀를 실제 건강 상태와 recall로 검증했다.
+- candidate↔final context는 정규화한 내부 identity로 상관관계를 확인해 같은 default 생략/명시·null 전환의 실제 final read를 잃지 않는다. native/wire 원래 arguments·frozen scope·실제 write credit은 유지한다.
+- native 제출은 실행 전에 승인 root descriptor를 고정하고 모든 경로 성분을 no-follow로 읽는다. root 교체·symlink·backtracking·hardlink·변경된 leaf를 수입하지 않으며 정상 nested 제출과 bounded cleanup을 보존한다.
 - 설치된 canonical comment 정책과 같은 공개 immutable source/checksum을 Actions에서만 실행한다. 정확한 PR base/head의 전체 old/new code와 source·coverage receipt를 확인하며, 누락·불일치·정책 실패는 aggregate가 거절한다. 로컬 hook·guard·trust·settings·pins 변경은 없다.
 - `78184763`의 [Actions39077297030](https://github.com/chonamdoo/agents-memory/actions/runs/39077297030)는 R5–R9 수정 후 source3061·설치 wheel685·실제 Docker14·Mac compatibility36, source/설치 health·전체 native-event/health consumer·owned cleanup·8job strict aggregate를 통과했다. 두 test-only before와 중간 caller/fixture 실패를 보존한다. fresh whole-source canonical12review/QA는 별도 미완료다. source별 결과는 [PR9](https://github.com/chonamdoo/agents-memory/pull/9)와 [검증 기록](docs/verification.ko.md)을 따른다. 합성 native protocol peer를 실제 native 승인·모델 효익으로 세지 않으며 로컬 runtime 검증·native trust/운영/egress·human120/60task×3·실제1–2주 trial·merge/release 실행을 승인하거나 완료한 기록이 아니다.
+- `76254a76`의 [Actions39079833321](https://github.com/chonamdoo/agents-memory/actions/runs/39079833321)는 R10–R12 수정 후 source3079·설치 wheel703·실제 Docker14·Mac compatibility36, 양쪽 health·전체 평가 consumer·owned cleanup·strict aggregate를 통과했다. genuine before의 source3062pass10fail/설치686pass10fail와 같은 node의 phase 비교를 보존한다. fresh whole-source canonical12review/QA와 원래18개 acceptance는 별도 미완료다.
 
 
 ### CI 전용 검증 전환과 OSS 후속 보완
