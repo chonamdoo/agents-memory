@@ -1148,13 +1148,13 @@ Linux 다섯 job은 UTC04:11:27, Mac은04:11:33에 시작해 겹쳐 실행됐고
 
 이 수정은 검증 코드의 단일 Popen 소유권과 controlled IPC에 한정된다. 외부·동시 reaper, 임의 코드 격리, group/session 탈출, 실제 native 보호·운영 배포·PMPA/semantic matrix·독립 human gold/180 valid pairs·실제 pilot 경과·volume 정리·merge/release의 증명이 아니다. 원래18개는 완료0개이고 평가 harness/workload/verifier 구현은 여전히 assistant 소유의 다음 작업이다. 로컬 검증 명령은 실행하지 않았다. 편집 도구의 비요청 LSP 경고는 별도 보존하고 검증 결과로 쓰지 않았으며 공유 LSP/settings를 바꾸거나 중단하지 않았다. 이 문서 head의 정확한 Actions와 새 독립 리뷰·CI-only QA/handoff는 [PR9 기록](https://github.com/chonamdoo/agents-memory/pull/9)을 따른다.
 
-## 승인된 health·평가 engineering과 누락 A–D 통합 — 진행 중
+## 승인된 health·평가 engineering과 누락 A–D 통합 — CI 통과·공식 review 대기
 
 최신 명시 지시는 제한된 네 health 경로, 평가 engineering8개와 전수조사 A–D의 구현이다. 조사 원문·기존83개 todo·OSS86개·과거 실패/취소/timeout·original18은 보존한다. `7cf75ff`의 genuine12 approve와 CI-only QA/handoff는 위 finalizer delta의 실제 완료이며 현재 whole-source 승인으로 재사용하지 않는다. 로컬 runtime/import/test·collection/collect-only·ruff/lint·build·syntax/format·reproduction·추가 smoke는 실행하지 않았다.
 
 ### 실제 GitHub Actions와 성공 범위
 
-수치는 각 run의 outcome-only 원본·setup/call/teardown·동일 collection 분할·별도 installed receipt에서 읽었다. 서로 다른 population을 하나의 통과 분모로 합치지 않는다. 아래 모든 run의 전체 gate는 실패이며 부분 성공을 green으로 바꾸지 않는다.
+수치는 각 run의 outcome-only 원본·setup/call/teardown·동일 collection 분할·별도 installed receipt에서 읽었다. 서로 다른 population을 하나의 통과 분모로 합치지 않는다. e18f1e7 이전의 전체 gate 실패와 부분 성공은 그대로 보존한다.
 
 | source | Actions | source passed/failed | 별도 installed passed/failed | 독립 실제 Docker passed/failed | 관측과 한계 |
 |---|---|---:|---:|---:|---|
@@ -1165,6 +1165,7 @@ Linux 다섯 job은 UTC04:11:27, Mac은04:11:33에 시작해 겹쳐 실행됐고
 | b15533a | [39049072651](https://github.com/chonamdoo/agents-memory/actions/runs/39049072651) | 2968/32 | 624/0 | 13/0 | legacy catalog 통과, modern 최대 escaped ID32개 실패. 실제 짧은 ID 응답14860/16384bytes; 거절된 큰 ID의 전체 body를 포획했다고 주장하지 않음 |
 | 04964e6 | [39050118281](https://github.com/chonamdoo/agents-memory/actions/runs/39050118281) | 3000/0 | 624/0 | 13/0 | catalog 포함 네 source partition 통과. source/installed health와 full-evaluation smoke는 실패 |
 | 07d95b1 | [39050747112](https://github.com/chonamdoo/agents-memory/actions/runs/39050747112) | 3000/0 | 624/0 | 13/0 | 제한 진단으로 실제 health ModuleNotFoundError와 평가 결과 디렉터리 PermissionError 확인. 전체 gate 실패 유지 |
+| e18f1e7 | [39058979005](https://github.com/chonamdoo/agents-memory/actions/runs/39058979005) | 3008/0 | 632/0 | 13/0 | source/installed health·전체 평가와 명시 health linkage·strict aggregate가 처음 함께 통과. 합성 peer engineering이며 실제 native/human/운영 acceptance는 아님 |
 
 07d95b1의 source shard는760/759/781/700, source·installed·Docker·Mac 모두 skip/xfail/xpass/수집 오류0이다. Mac36은 Python3.12 compatibility subset이며 전체 Mac suite·설치 wheel/native 보호가 아니다. lint0.114초·build1.116초·installed consumer82.210초는 exit0/timeout=false다. source/resource digest `9bbfd494c778fa78d50527d434b8da0db2e032c6d180f340f4c9bd137fee3da8`는 각 source/consumer 전후 동일하고 wheel은 `73b15b97c86ef09f6fcba2af4aa873c6e1a32fdd6fec7a4b4bea06487259041c`다.
 
@@ -1253,4 +1254,18 @@ full evaluation의 실제 child는 stdout0bytes·stderr4873bytes·exit1, `Except
 남은 실제 실패는 `load_evaluation_health_evidence`에서 난 ValueError다. 실패 stack은 strict `assert_results` 뒤 health-link 진입 지점을 가리키지만 public outcomes는 뒤늦게 할당돼 비어 있었다. 기록하지 못한 full outcome 값을 성공 receipt처럼 채우지 않으며 다음 source에서는 이미 끝난 assertion 단계의 결과를 health-link 전에 보존한다.
 
 정적 원인은 verifier의 private observations가 root JSON array인 반면 일반 retained-artifact reader가 protocol 전용 `decode_json`의 object 조건을 적용한 것이다. reader를 byte-exact 보존으로 고치고 native/control/receipt의 typed object 소비 지점에서만 decode한다. 기존 byte·record 상한, no-follow·digest·oracle 결과·terminal·현재 authority/health dependency 재검사는 유지한다. 이 수정은 아직 Actions after 증거가 없고 전체 gate·health evidence 연결·새 공식12review/QA와 원래18개는 완료로 세지 않는다.
+
+### 후속 e18f1e7: 전체 engineering 경로와 strict aggregate 실제 통과
+
+위 exact-head run의8개 job과9개 artifact를 수신하고 원본 summary·개별 receipt를 대조했다. 모든 collection의 skip/xfail/xpass/수집 오류는0이고 각 source/resource digest는 전후 동일하다. Mac36은 실제 macOS Python3.12.13의 ownership compatibility subset이며 전체 Mac suite나 native trust 검증이 아니다.
+
+source health29.444초·installed health28.364초는 각각23개 outcome과 clean exit0/강제 kill 없음을 확인했다. lint·canonical comments·build·wheel consumer도 exit0/timeout=false다. 같은 exercised wheel `3832b696cce88771a5c85c50d83869f25def7b4cac4f95645b94cb9ff91f721c`의 CLI/controller/native/gateway/artifact/oracle/scorer/health compiler identity를 별도 full smoke와 aggregate가 확인했다.
+
+전체 평가는5개 invocation/새 engineering generation, 실제 producer HTTP와 stdio MCP·판단·2개 final read·bounded immutable artifact, correct/no-op/plausible-wrong 외부 control 및2개 coding arm, 전체 attempt 분모와1개 valid engineering pair를 기록했다. strict scorer/report와 unknown cost 보존·corpus/rule 불변을 확인했다. retained bytes부터 명시적 health evidence 연결까지 완료했고 위조 evidence5개는 거절됐다. task 성공을 자동 support/freshness나 인간 승인으로 바꾸지 않았다.
+
+helper의 verifier/product/Store/schema cleanup과 별도14owners/34resources의 CLEAN reconciliation, 정확한 process/schema/prerequisite 부재를 실제로 확인했다. 이전 skipped/incomplete/failed receipt는 지우지 않는다. source·설치 wheel 및 이 전체 consumer 경로가 배열 reader 수정의 after proof이며 로컬 runtime 검증은 하지 않았다.
+
+canonical checker는 공개 immutable source/checksum을 그대로 써 PR base `2892ca25e199386c672f23a0ba11841acaa023b3`부터96개 eligible code file의 전체 old/new4350657bytes를11.994초에 검사했다. coverage complete/finding0이고 구현 완료 후 changed-code diff의 수동 final comment-authoring pass도 마쳤다. 새 공식 whole-source12review/CI-only QA/handoff는 미완료다. independent packing input의 frozen 의미 연결 범위도 그 공식 review focus로 보존한다.
+
+이 성공 receipt는 `scope:engineering`, `synthetic_native_protocol_peer:true`, `native_acceptance:false`, `original18_completed:0`을 명시한다. 실제 Claude/Codex 보호·모델 효익, human120/60task×3·180valid pairs, 실제1–2주 trial, OS·운영/egress·merge/release 증거로 확대하지 않는다.
 

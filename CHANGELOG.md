@@ -9,10 +9,11 @@
 - relevance·support/정확성 판단·freshness와 exact-revision operator Accept/Reject를 분리했다. 늦은 판정·삭제·철회·권한 변경·code 변경을 다시 검사한다. `0007_memory_health`와 archive/init/restore closure를 연결하며 restored source의 ordinary claim은 최신 판정 증거 없이 재사용하지 않는다. 새 health disaster ledger는 없다.
 - shutdown의 false drain·eventual join·원래/동시 실패를 보존하고 실제 ASGI/Uvicorn 노출 진단을 body-free로 제한했다. proposal의 전체 UTF-8 body/예외/exact source revision inspect와 권한 제한 shared-rule projection을 구분했다. coverage·stats·pending·health 분모의 current request_snapshot/policy/review dependency 자격을 통일했다.
 - 고정 manifest/전체 attempt ledger·정책을 상속하는 native CLI driver·required-only off/실제 wire gateway·immutable artifact/허용 diff witness·격리 Docker oracle/control·pair scheduler·cluster bootstrap/unknown cost·평가 CLI와 명시 health evidence compiler를 추가했다. task 성공은 자동 support/freshness나 인간 승인이 아니다. raw diagnostic gold와 engineering oracle은 `provided_unattested`이며 인간 holdout을 만들어 채우지 않는다.
+- 건강 판정용 retained evidence는 private observation array를 포함해 bounded byte-exact로 보존한다. object 조건은 실제 typed object 소비 지점에서 검사하며 receipt·terminal·digest·현재 authority 검증은 유지한다.
 - MCP catalog는 flat root와 variant의 required/allowed/null 제약을 유지하면서 schema 참조·중복을 줄였다. 실제 최대 escaped JSON-RPC ID의 응답 상한을 올리지 않는다. 출력 상한에 걸린 Docker exec는 container removal 전에 닫고 기존 deadline/TTL·소유권·exact cleanup을 유지한다.
 - 복구 주기의 공유 discovery cursor를 직렬화하고 상태 갱신을 동기화했다. 새 scan이 끝나기 전에 이전 실패를 idle로 숨기지 않는다. 실제 `/readyz` 실패 전후와 event로 멈춘 scan의 판정 유지·후속 복구를 source/설치 wheel에서 검증했다.
 - 설치된 canonical comment 정책과 같은 공개 immutable source/checksum을 Actions에서만 실행한다. 정확한 PR base/head의 전체 old/new code와 source·coverage receipt를 확인하며, 누락·불일치·정책 실패는 aggregate가 거절한다. 로컬 hook·guard·trust·settings·pins 변경은 없다.
-- 현재 전체 통합 health/평가 smoke·fresh whole-source formal review/QA는 미완료다. 실제 exact-head Actions와 실패 전후·부분 성공 범위는 [검증 기록](docs/verification.ko.md)을 따른다. 로컬 runtime 검증·native trust/운영/egress·human120/60task×3·실제1–2주 trial·merge/release 실행을 승인하거나 완료한 기록이 아니다.
+- source·설치 wheel health와 실제 producer/MCP·격리 oracle·명시 health linkage의 전체 engineering smoke 및 strict aggregate를 통과했다. fresh whole-source formal review/QA는 미완료다. exact-head Actions와 실패 전후·부분 성공 범위는 [검증 기록](docs/verification.ko.md)을 따른다. 합성 native protocol peer를 실제 native 승인·모델 효익으로 세지 않으며 로컬 runtime 검증·native trust/운영/egress·human120/60task×3·실제1–2주 trial·merge/release 실행을 승인하거나 완료한 기록이 아니다.
 
 
 ### CI 전용 검증 전환과 OSS 후속 보완
