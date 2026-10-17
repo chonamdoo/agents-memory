@@ -90,9 +90,15 @@ PROJECTION_KEYS = (
 )
 
 
+class SmokeFailure(ValueError):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code if re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", code) else "CONDITION_FAILED"
+
+
 def require(value: object, code: str) -> None:
     if not value:
-        raise ValueError(code)
+        raise SmokeFailure(code)
 
 
 def b64(raw: bytes) -> str:
@@ -1009,8 +1015,13 @@ def main() -> int:
         result_dir = Path.cwd() / ".ci-results"
         if not result_dir.exists():
             private_directory(result_dir)
-        descriptor = open_private_directory(result_dir)
-        os.close(descriptor)
+        descriptor = os.open(result_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            information = os.fstat(descriptor)
+            require(information.st_uid == os.getuid() and not information.st_mode & 0o022,
+                    "PUBLIC_RESULT_DIRECTORY_DENIED")
+        finally:
+            os.close(descriptor)
         result = result_dir / "evaluation-smoke.json"
         require(not result.exists() and not result.is_symlink(), "RESULT_ALREADY_EXISTS")
         root = state / "verifier" / "full-smoke"
@@ -1030,6 +1041,7 @@ def main() -> int:
         summary["error_type"] = type(error).__name__ if type(error).__name__ in {
             "ValueError", "OSError", "TimeoutError", "RuntimeError", "DomainError", "EvaluationError",
             "RuntimeRefusal", "CancelledError", "KeyboardInterrupt", "SystemExit"} else "BoundaryError"
+        summary["failure_code"] = error.code if isinstance(error, SmokeFailure) else "SMOKE_EXCEPTION"
     if result is not None:
         try:
             save(result, summary)

@@ -53,7 +53,9 @@ def private_file(path: Path, raw: bytes) -> Path:
 
 
 class SmokeFailure(Exception):
-    pass
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code if re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", code) else "CONDITION_FAILED"
 
 
 class Smoke:
@@ -722,10 +724,15 @@ class Smoke:
                 await self.proposals()
                 await self.health_boundaries()
                 await self.sessions()
-        except BaseException:
+        except BaseException as error:
             self.result["outcomes"][self.active] = "failed"
             self.evidence("failure", {"case": self.active, "trace": traceback.format_exc()})
             self.result["failure"] = "HEALTH_SMOKE_FAILED"
+            self.result["failure_code"] = error.code if isinstance(error, SmokeFailure) else "HEALTH_EXCEPTION"
+            self.result["failure_stage"] = self.active if self.active in CASES else "UNKNOWN"
+            self.result["failure_type"] = type(error).__name__ if type(error).__name__ in {
+                "ValueError", "OSError", "TimeoutError", "RuntimeError", "DomainError",
+                "TypeError", "KeyError", "AttributeError", "CancelledError", "SmokeFailure"} else "BoundaryError"
         finally:
             await self.cleanup()
             loop.remove_signal_handler(signal.SIGTERM)

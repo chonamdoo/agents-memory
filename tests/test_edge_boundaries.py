@@ -648,6 +648,14 @@ async def tool_schemas_request(edge, transport="modern"):
         "jsonrpc": "2.0", "id": "\x01" * 256, "method": "tools/list", "params": {"_meta": META},
     }
     status, raw = await (legacy_request(edge, payload) if transport == "legacy" else request(edge, payload))
+    if status != 200:
+        probe = {**payload, "id": 1}
+        short_status, short_raw = await (
+            legacy_request(edge, probe) if transport == "legacy" else request(edge, probe))
+        assert status == 200, {
+            "short_id_status": short_status, "short_id_bytes": len(short_raw),
+            "response_budget": edge.application.settings.max_mcp_response_bytes,
+        }
     assert status == 200
     assert len(raw) <= edge.application.settings.max_mcp_response_bytes
     schemas = {item["name"]: item["inputSchema"] for item in json.loads(raw)["result"]["tools"]}

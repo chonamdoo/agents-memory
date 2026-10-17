@@ -182,8 +182,8 @@ def health_smoke(result_dir: Path, consumption: str, wheel_digest: str | None = 
                 "--result-dir", str(result_dir / ("health-" + consumption))]
         result = command(private, "health-smoke", argv, 420, env=environment)
         value["execution"] = result.public()
-        require_completed(result)
         value["health"] = json.loads((result_dir / ("health-" + consumption) / "health-smoke.json").read_text())
+        require_completed(result)
         value["complete"] = value["health"].get("complete") is True
     except Exception as error:
         value["complete"] = False
