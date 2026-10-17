@@ -43,6 +43,8 @@ COMPAT_SELECTORS = (
     "tests/test_ci_accounting.py::test_live_group_permission_error_is_not_terminal",
     "tests/test_ci_accounting.py::test_exited_leader_permission_error_with_live_member",
     "tests/test_native_status.py::test_native_inventory_survives_real_normal_shutdown",
+    "tests/test_native_status.py::test_native_inventory_ends_descendants_and_closes_pipes_on_failure",
+    "tests/test_ci_accounting.py::test_timed_out_check_kills_descendant_after_parent_exits_successfully",
 )
 COMPAT_RUNTIME = {"platform": "darwin", "implementation": "cpython", "python": [3, 12, 13]}
 

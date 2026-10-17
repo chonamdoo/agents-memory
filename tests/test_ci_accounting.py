@@ -60,8 +60,10 @@ def evidence(tmp_path):
         "tests/test_native_status.py::test_native_inventory_survives_real_normal_shutdown[eof]",
         "tests/test_native_status.py::test_native_inventory_survives_real_normal_shutdown[term]",
     ])
-    compat_ids = sorted([item for item in wheel_ids
-                         if any(item.startswith(selector + "[")
+    source_ids = [*wheel_ids,
+                  "tests/test_ci_accounting.py::test_timed_out_check_kills_descendant_after_parent_exits_successfully"]
+    compat_ids = sorted([item for item in source_ids
+                         if any(item == selector or item.startswith(selector + "[")
                                 for selector in module["COMPAT_SELECTORS"])])
     compat_ids = sorted([*compat_ids, *(item.removesuffix("native]") + "ci]" for item in compat_ids
                                       if item.endswith("native]"))])
@@ -288,7 +290,9 @@ def test_junit_preserves_failure_without_exporting_credentials_or_captured_outpu
 
 
 @pytest.mark.skipif(os.name != "posix", reason="CI process supervision requires POSIX")
-def test_timed_out_check_kills_descendant_after_parent_exits_successfully(tmp_path, monkeypatch):
+def test_timed_out_check_kills_descendant_after_parent_exits_successfully(
+    tmp_path, monkeypatch, group_reuse_witness,
+):
     check = runpy.run_path(str(CI / "run-checks.py"))["check"]
     lifetime = tmp_path / "descendant-lifetime"
     os.mkfifo(lifetime, 0o600)
@@ -312,6 +316,7 @@ def test_timed_out_check_kills_descendant_after_parent_exits_successfully(tmp_pa
 
     def start(*args, **kwargs):
         process = real_popen(*args, **kwargs)
+        group_reuse_witness[process.pid] = process
         processes.append(process)
         assert select.select([observer], [], [], 5)[0] == [observer]
         return process

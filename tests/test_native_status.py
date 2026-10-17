@@ -94,7 +94,7 @@ def test_unavailable_native_process_is_bounded_and_no_raw_output_escapes(tmp_pat
 @pytest.mark.parametrize("failure", ["malformed", "timeout"])
 @pytest.mark.parametrize("wait_failure", [None, "timeout", "oserror"])
 def test_native_inventory_ends_descendants_and_closes_pipes_on_failure(
-    tmp_path, monkeypatch, parent_mode, failure, wait_failure,
+    tmp_path, monkeypatch, parent_mode, failure, wait_failure, group_reuse_witness,
 ):
     monkeypatch.setenv("HOME", str(tmp_path))
     lifetime = tmp_path / "descendant-lifetime"
@@ -146,6 +146,7 @@ def test_native_inventory_ends_descendants_and_closes_pipes_on_failure(
 
     def start(*args, **kwargs):
         process = real_popen(*args, **kwargs)
+        group_reuse_witness[process.pid] = process
         processes.append((process, process.wait))
         if wait_failure is not None:
             def fail_wait(timeout):
