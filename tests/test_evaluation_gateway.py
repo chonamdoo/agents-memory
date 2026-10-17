@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import hashlib
 import json
 import os
@@ -518,7 +519,13 @@ async def real_stdio_pipe(gateway, monkeypatch, variant, final_id):
                     "type": "text", "text": json.dumps({"error": {"code": "SYNTHETIC_SERIALIZER_REPLACEMENT"}}),
                 }]}
                 text = json.dumps(message, ensure_ascii=False) + "\n"
+            if variant == "partial_write" and message.get("id") == final_id:
+                capacity = fcntl.fcntl(stdout.fileno(), fcntl.F_GETPIPE_SZ)
+                text = text.rstrip("\n") + " " * (capacity + 1) + "\n"
             await super().write(text)
+    def deadline_context(seconds):
+        state.deadline = asyncio.timeout(seconds)
+        return state.deadline
     async def send(message):
         view = memoryview(json.dumps(message, ensure_ascii=False).encode() + b"\n")
         while view:
@@ -556,6 +563,9 @@ async def real_stdio_pipe(gateway, monkeypatch, variant, final_id):
     state.close_input, state.close_output = close_input, close_output
     with monkeypatch.context() as patches:
         patches.setattr(gateway_module, "sys", SimpleNamespace(stdin=stdin, stdout=stdout))
+        patches.setattr(gateway_module, "asyncio", SimpleNamespace(
+            timeout=deadline_context, to_thread=asyncio.to_thread,
+        ))
         patches.setattr(gateway_module, "_BoundedStdio", PipeTransport)
         state.runner = asyncio.create_task(gateway.run_stdio(timeout_seconds=5.0))
         try:
@@ -577,7 +587,7 @@ async def real_stdio_pipe(gateway, monkeypatch, variant, final_id):
 
 
 @pytest.mark.parametrize("variant", [
-    "complete", "output_limit", "broken_pipe", "cancel", "timeout",
+    "complete", "output_limit", "broken_pipe", "partial_write", "cancel", "timeout",
     "mismatch", "duplicate_id", "delivery_observer_failure",
 ])
 async def test_real_stdio_write_is_only_final_delivery_boundary(authority, tmp_path, monkeypatch, variant):
@@ -652,11 +662,16 @@ async def test_real_stdio_write_is_only_final_delivery_boundary(authority, tmp_p
                                          "params": {"requestId": final_id}})
                         await asyncio.wait_for(cancelled.wait(), 5)
                     elif variant == "timeout":
-                        with pytest.raises(TimeoutError):
+                        with pytest.raises(BaseException):
                             await asyncio.wait_for(asyncio.shield(pipe.runner), 8)
                         assert pipe.runner.done()
+                        assert pipe.deadline.expired()
                     release.set()
                     assert await asyncio.to_thread(worker_done.wait, 5)
+                    if variant == "partial_write":
+                        await anyio.wait_readable(pipe.output_fd)
+                        assert os.read(pipe.output_fd, 1) == b"{"
+                        pipe.close_output()
                     if variant == "complete":
                         response = await pipe.receive()
                         assert response["id"] == final_id
@@ -689,3 +704,10 @@ async def test_real_stdio_write_is_only_final_delivery_boundary(authority, tmp_p
             assert observed["final_reads"] == ()
             if variant != "delivery_observer_failure":
                 assert deliveries == []
+            if variant == "partial_write":
+                prepared = next(row["body"] for row in traces
+                                if row["stage"] == "gateway_stdio_prepared"
+                                and json.loads(row["body"]).get("id") == final_id)
+                prefix = next(row["body"] for row in traces if row["stage"] == "gateway_stdio_write_failed")
+                assert 0 < len(prefix) < len(prepared)
+                assert prepared.startswith(prefix) and not prefix.endswith(b"\n")

@@ -992,9 +992,9 @@ def _relation_manifest_ids(manifest: EvaluationManifest, payload: dict, claim_id
              "COMPLETE_RELATION_CLAIM_SCOPE_UNAVAILABLE")
     expected = {row["ref"]: row for row in manifest.document("corpus")["claims"]}
     for row in claims:
-        projection = {**row, "kind": "claim", "statement": row.get("draft", {}).get("statement")}
-        _require(diagnostics_module.render_frozen_claim({"ref": row["id"], "projection": projection})
-                 == diagnostics_module.render_frozen_claim(expected[row["id"]]),
+        _keys(row, {"id", "revision"})
+        _require(type(row["revision"]) is int
+                 and row["revision"] == expected[row["id"]]["projection"]["revision"],
                  "RELATION_MANIFEST_CLAIM_DRIFT")
     refs = payload.get("relation_ids")
     _require(isinstance(refs, list) and len(refs) <= 128

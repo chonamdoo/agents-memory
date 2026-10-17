@@ -113,6 +113,15 @@ class Inputs:
             spec[field] = manifest.file(name).sha256
         return manifest, spec
 
+    def rehash_packing(self):
+        budget_digest = digest_bytes(self.raw("packing"))
+        self.row["budget"]["sha256"] = budget_digest
+        for scope in (
+            self.row["scope"], self.row["eligibility"]["scope"],
+            *(judgment["scope"] for judgment in self.row["judgments"]),
+        ):
+            scope["budget_digest"] = budget_digest
+
     def observe(self, manifest, spec, *, returned=("claim1",)):
         scope = diagnostic_scope(manifest, spec, "case0")
         claims = {
@@ -146,6 +155,9 @@ def make_inputs(
     relevant=CLAIM_IDS,
     budget_complete=True,
     source_mapping_digest=None,
+    include_secondary_evidence=False,
+    applicable_rules=(),
+    relations=(),
 ):
     quote = "한국어 조건을 보존한다."
     body = quote.encode("utf-8")
@@ -178,6 +190,19 @@ def make_inputs(
         }
         for ref in (*CLAIM_IDS, "decoy")
     ]
+    if include_secondary_evidence:
+        for claim in claims:
+            claim["evidence"].append({
+                "source": "source2",
+                "revision": 7,
+                "source_speaker": "user",
+                "source_event_time": "2026-09-30T00:00:00Z",
+                "source_recorded_at": "2026-10-01T00:00:00Z",
+                "bytes": [0, len(body)],
+                "quote": quote,
+            })
+    rules = sorted(deepcopy(list(applicable_rules)), key=lambda rule: (not rule["required"], rule["ref"], rule["revision"]))
+    edges = sorted(deepcopy(list(relations)), key=lambda edge: edge["ref"])
     spec = protocol()
     case = spec["retrieval_cases"][0]
     case.update(
@@ -198,7 +223,16 @@ def make_inputs(
             "revision": 1,
             "body": base64.b64encode(body).decode("ascii"),
         }],
-        "relations": [],
+        "relations": [{
+            "ref": edge["ref"],
+            "projection": {
+                "id": edge["ref"], "kind": "relation", "state": "active",
+                "left_id": edge["left"], "right_id": edge["right"],
+                "relation_kind": edge["kind"],
+                "interpretation_role": "caller_judged_relation",
+                "awaiting_revalidation": False,
+            },
+        } for edge in edges],
         "claims": [
             {
                 "ref": claim["ref"],
@@ -210,7 +244,7 @@ def make_inputs(
                     "statement": claim["statement"],
                     "snapshot": claim["snapshot"],
                     "interpretation_role": claim["interpretation_role"],
-                    "input_source_ids": ["source1"],
+                    "input_source_ids": sorted({item["source"] for item in claim["evidence"]}),
                     "selection_id": "selection1",
                     "policy_revision": 1,
                     "awaiting_revalidation": False,
@@ -228,10 +262,6 @@ def make_inputs(
                         "valid_from": None,
                         "valid_until": None,
                         "entities": [],
-                        "evidence": [{
-                            "source_id": "source1", "quote": quote,
-                            "byte_start": 0,
-                        }],
                     },
                     "evidence": [{
                         "source_id": item["source"],
@@ -248,6 +278,11 @@ def make_inputs(
             for claim in claims
         ],
     }
+    if include_secondary_evidence:
+        corpus["sources"].append({
+            "source_id": "source2", "revision": 7,
+            "body": base64.b64encode(body).decode("ascii"),
+        })
     documents = {
         "corpus": corpus,
         "gold": {
@@ -255,7 +290,12 @@ def make_inputs(
             "independence": "provided_unattested",
             "cases": [deepcopy(case)],
         },
-        "rules": {"schema": 2, "rules": [], "probe": {"query": "a" * 64, "max_bytes": 6144, "limit": 5}, "applicable": []},
+        "rules": {
+            "schema": 2,
+            "rules": [[rule["ref"], rule["revision"], rule["digest"]] for rule in rules if rule["required"]],
+            "probe": {"query": "a" * 64, "max_bytes": 6144, "limit": 5},
+            "applicable": deepcopy(rules),
+        },
         "workload": {
             "retrieval": [{"case_id": "case0", "request": request}],
         },
@@ -304,9 +344,9 @@ def make_inputs(
             "maximum_item_bytes": 6144,
             "wire_deliverability_proven": False,
         },
-        "rules": [],
+        "rules": deepcopy(rules),
         "claims": claims,
-        "relations": [],
+        "relations": deepcopy(edges),
     }
     scope = {
         "corpus_digest": digest_bytes(encoded(documents["corpus"])),
@@ -743,7 +783,7 @@ def test_late_actual_content_mismatch_leaves_postrun_quality_unknown(
     ("modality", "uncertain"),
     ("conditions", []),
     ("exceptions", ["Only with explicit operator permission."]),
-    ("interpretation_role", "verbatim_candidate"),
+    ("interpretation_role", "caller_grounded_candidate"),
     ("valid_time", ["2026-10-02T00:00:00+00:00", None]),
     ("source_speaker", "assistant"),
     ("source_event_time", "2026-10-02T00:00:00+00:00"),
@@ -758,13 +798,86 @@ def test_rehashed_packing_cannot_replace_frozen_claim_meaning_or_provenance(fiel
         claim["evidence"][0][field] = value
     else:
         claim[field] = value
-    budget_digest = digest_bytes(inputs.raw("packing"))
-    inputs.row["budget"]["sha256"] = budget_digest
-    for scope in (
-        inputs.row["scope"], inputs.row["eligibility"]["scope"],
-        *(judgment["scope"] for judgment in inputs.row["judgments"]),
-    ):
-        scope["budget_digest"] = budget_digest
+    inputs.rehash_packing()
     changed_manifest, changed_spec = inputs.freeze()
     with pytest.raises(DiagnosticInputError):
         load_diagnostic_gold(changed_manifest, changed_spec)
+
+
+def test_rehashed_packing_cannot_drop_approved_secondary_evidence():
+    inputs = make_inputs(include_secondary_evidence=True)
+    manifest, spec = inputs.freeze()
+    assert load_diagnostic_gold(manifest, spec).gold[0].feasibility.maximum_relevant == 3
+    inputs.documents["packing"]["claims"][0]["evidence"].pop()
+    inputs.rehash_packing()
+    changed_manifest, changed_spec = inputs.freeze()
+    with pytest.raises(DiagnosticInputError):
+        load_diagnostic_gold(changed_manifest, changed_spec)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("body", "x"),
+    ("exceptions", []),
+    ("applicability", "false"),
+    ("required", True),
+    ("omit", None),
+])
+def test_rehashed_optional_rule_cannot_replace_approved_semantics(field, value):
+    inputs = make_inputs(applicable_rules=[{
+        "ref": "optionalrule1", "revision": 1, "digest": "c" * 64,
+        "required": False, "applicability": "true",
+        "body": "조건과 근거를 함께 보존한다.", "exceptions": ["인간의 명시적 거절은 제외한다."],
+    }])
+    manifest, spec = inputs.freeze()
+    assert load_diagnostic_gold(manifest, spec).gold[0].feasibility.maximum_relevant == 3
+    if field == "omit":
+        inputs.documents["packing"]["rules"].clear()
+    else:
+        inputs.documents["packing"]["rules"][0][field] = value
+    inputs.rehash_packing()
+    changed_manifest, changed_spec = inputs.freeze()
+    with pytest.raises(DiagnosticInputError):
+        load_diagnostic_gold(changed_manifest, changed_spec)
+
+
+@pytest.mark.parametrize("change", ["endpoint", "kind", "omit"])
+def test_rehashed_relationship_cannot_change_frozen_closure(change):
+    inputs = make_inputs(relations=[{
+        "ref": "relation12", "left": "claim1", "right": "claim2", "kind": "supports",
+    }])
+    manifest, spec = inputs.freeze()
+    assert load_diagnostic_gold(manifest, spec).gold[0].feasibility.maximum_relevant == 3
+    if change == "omit":
+        inputs.documents["packing"]["relations"].clear()
+    elif change == "endpoint":
+        inputs.documents["packing"]["relations"][0]["right"] = "decoy"
+    else:
+        inputs.documents["packing"]["relations"][0]["kind"] = "contradicts"
+    inputs.rehash_packing()
+    changed_manifest, changed_spec = inputs.freeze()
+    with pytest.raises(DiagnosticInputError):
+        load_diagnostic_gold(changed_manifest, changed_spec)
+
+
+def test_known_missing_optional_and_relationship_prefix_is_unknown_not_f():
+    inputs = make_inputs(
+        budget_complete=False,
+        applicable_rules=[{
+            "ref": "optionalrule1", "revision": 1, "digest": "c" * 64,
+            "required": False, "applicability": "true",
+            "body": "조건을 보존한다.", "exceptions": [],
+        }],
+        relations=[{
+            "ref": "relation12", "left": "claim1", "right": "claim2", "kind": "supports",
+        }],
+    )
+    inputs.documents["packing"]["rules"].clear()
+    inputs.documents["packing"]["relations"].clear()
+    inputs.rehash_packing()
+    manifest, spec = inputs.freeze()
+    supplements = load_diagnostic_gold(manifest, spec)
+    result = scored(spec, supplements, inputs.observe(manifest, spec))
+    assert result["complete_gold_hits"] == 1
+    assert supplements.gold[0].feasibility.complete is False
+    assert result["feasible_maximum"] is result["feasible_coverage"] is None
+    assert "FEASIBILITY_INCOMPLETE_OR_MISSING" in result["reasons"]

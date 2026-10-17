@@ -351,11 +351,18 @@ def _source_mapping(manifest: EvaluationManifest, gold: dict) -> str:
 def render_frozen_claim(claim: dict) -> dict:
     try:
         projection = claim["projection"]
-        draft = ClaimDraft.model_validate(projection["draft"])
         evidence = tuple(EvidenceSpan.model_validate(span) for span in projection["evidence"])
+        _require(isinstance(projection["draft"], dict) and "evidence" not in projection["draft"],
+                 "PACKING_FROZEN_CLAIM_INCOMPLETE")
+        draft = ClaimDraft.model_validate({
+            **projection["draft"],
+            "evidence": [{
+                "source_id": span.source_id, "quote": span.quote, "byte_start": span.byte_start,
+            } for span in evidence],
+        })
         _require(projection["id"] == claim["ref"] and projection["kind"] == "claim"
                  and projection["state"] == "active" and projection["statement"] == draft.statement
-                 and projection["interpretation_role"] in {"verbatim_candidate", "model_derived_candidate"}
+                 and projection["interpretation_role"] in {"caller_grounded_candidate", "model_derived_candidate"}
                  and bool(evidence), "PACKING_FROZEN_CLAIM_INCOMPLETE")
         return render_claim(
             claim["ref"], draft, evidence, snapshot=projection["snapshot"],

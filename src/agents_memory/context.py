@@ -7,7 +7,16 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
 
-from .domain import ActiveRule, Claim, ClaimDraft, ContextCommand, DomainError, EvidenceSpan, Relation, valid_path_pattern
+from .domain import (
+    ActiveRule,
+    Claim,
+    ClaimDraft,
+    ContextCommand,
+    DomainError,
+    EvidenceSpan,
+    Relation,
+    valid_path_pattern,
+)
 
 
 class Match(StrEnum):

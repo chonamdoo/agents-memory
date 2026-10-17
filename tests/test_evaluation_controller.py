@@ -14,10 +14,11 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from test_evaluation_gateway import actual_upstream
+from test_store_authority import ready_claim, relation_judgment
 from test_store_authority import authority as authority
 
+from agents_memory import context as context_module
 from agents_memory import (
-    context as context_module,
     evaluation,
     evaluation_diagnostics,
     evaluation_gateway,
@@ -727,5 +728,72 @@ async def test_frozen_fence_rejects_new_applicable_optional_rule(authority, tmp_
             target_set_revision=proposal["target_set_revision"],
             idempotency_key="frozen-optional-rule-approval",
         ))
+        with pytest.raises(EvaluationError):
+            await asyncio.to_thread(evaluation._fence, manifest, state.run_dir, invocation, "after")
+
+
+async def test_frozen_fence_checks_complete_nonempty_relationship_closure(authority, tmp_path):
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        captured = [
+            await ready_claim(authority, f"graph-source-{index}",
+                              f"CacheKey is retained only offline during audit {index}.")
+            for index in range(10)
+        ]
+        claims = [claim for _, claim in captured]
+        for index, right in enumerate(claims[1:]):
+            await authority.store.record(
+                authority.actor,
+                await relation_judgment(authority, claims[0], right, key=f"graph-edge-{index}"),
+            )
+        claim_keys = (
+            "id", "kind", "state", "statement", "evidence", "input_source_ids", "snapshot",
+            "interpretation_role", "selection_id", "policy_revision", "revision",
+            "awaiting_revalidation", "draft", "judgment_context_refs",
+        )
+        edge_keys = (
+            "id", "kind", "state", "left_id", "right_id", "relation_kind",
+            "interpretation_role", "awaiting_revalidation",
+        )
+        corpus = {"schema": 2, "sources": [], "claims": [], "relations": []}
+        for operation, claim in captured:
+            window = await authority.store.inspect(authority.actor, authority.binding_id, operation.source_id)
+            raw = window["body"].encode()
+            corpus["sources"].append({
+                "source_id": operation.source_id, "revision": window["source_revision"],
+                "body": b64(raw), "sha256": digest_bytes(raw),
+                "inspection_windows": [{
+                    key: window[key] for key in ("byte_start", "byte_end", "window_digest")
+                }],
+            })
+            view = await authority.store.inspect(authority.actor, authority.binding_id, claim.id)
+            health = await authority.store.inspect(authority.actor, authority.binding_id, "health:claim:" + claim.id)
+            corpus["claims"].append({
+                "ref": claim.id, "projection": {key: view.get(key) for key in claim_keys},
+                "health_dependency_digest": health["dependency_digest"],
+            })
+        judgment = await authority.store.inspect(authority.actor, authority.binding_id, "judgment")
+        for ref in sorted(judgment["relation_ids"]):
+            view = await authority.store.inspect(authority.actor, authority.binding_id, ref)
+            corpus["relations"].append({"ref": ref, "projection": {key: view.get(key) for key in edge_keys}})
+        coding = _actual_preflight_channel(agent, producer)
+        coding.update(
+            route_ref="engineering-coding-route", rules_file="rules",
+            approved_refs=sorted(
+                [operation.source_id for operation, _ in captured]
+                + [claim.id for claim in claims]
+                + ["health:claim:" + claim.id for claim in claims]
+                + [edge["ref"] for edge in corpus["relations"]]
+            ),
+        )
+        path, config, _ = fixture_inputs(tmp_path, gateway=coding)
+        update_document(path, config, "corpus", corpus)
+        manifest = load_manifest(path)
+        state = prepare_run(manifest, tmp_path / "run")
+        invocation = evaluation._select(manifest, "retrieval", "no-match", "memory_on")
+        await asyncio.to_thread(evaluation._fence, manifest, state.run_dir, invocation, "before")
+        await authority.store.record(
+            authority.actor,
+            await relation_judgment(authority, claims[1], claims[0], key="new-reverse-edge"),
+        )
         with pytest.raises(EvaluationError):
             await asyncio.to_thread(evaluation._fence, manifest, state.run_dir, invocation, "after")

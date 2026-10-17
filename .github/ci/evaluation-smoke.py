@@ -21,8 +21,8 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from agents_memory import cli as product_cli
+from agents_memory import context as context_module
 from agents_memory import (
-    context as context_module,
     evaluation,
     evaluation_artifacts,
     evaluation_diagnostics,
@@ -572,7 +572,7 @@ def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, dict]:
 
 def freeze_manifest(
     root: Path, measured: dict, preflight: dict, corpus: dict, gold: dict,
-    rules: list, preflight_rules: list, args, runtime_raw: bytes,
+    rules: dict, preflight_rules: list, args, runtime_raw: bytes,
 ) -> tuple[Path, Path, evaluation.EvaluationManifest]:
     inputs, native = root / "inputs", root.parent.parent / "full-smoke-native"
     private_directory(inputs)
