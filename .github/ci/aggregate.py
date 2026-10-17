@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import runpy
 import zipfile
 from pathlib import Path
 
@@ -16,6 +17,8 @@ CHECK_COMMANDS = {
     "build": ["uv", "build"],
     "wheel-consumer": ["uv", "run", "--no-sync", "python", ".github/ci/wheel-consumer.py",
                        "--result-dir", ".ci-results"],
+    "comments": ["uv", "run", "--no-sync", "python", ".github/ci/comment-check.py",
+                 "--result-dir", ".ci-results"],
 }
 WHEEL_SELECTORS = (
     "tests/test_host_import_isolation.py",
@@ -28,6 +31,7 @@ WHEEL_SELECTORS = (
     "tests/test_native_status.py::test_native_inventory_ends_descendants_and_closes_pipes_on_failure",
     "tests/test_native_status.py::test_native_inventory_survives_real_normal_shutdown",
     "tests/test_recovery.py::test_remote_bad_first_outbox_cannot_starve_retained_healthy_batch",
+    "tests/test_recovery.py::test_recovery_preserves_failure_until_a_new_cycle_finishes",
     "tests/test_remote_cancellation.py::test_readonly_ready_stop_cancels_real_tls_response_before_business_dispatch",
     "tests/test_remote_cancellation.py::test_already_dispatched_business_request_drains_response_without_retry",
     "tests/test_ci_accounting.py::test_cleanup_after_esrch_cannot_kill_a_reused_group[probe-native]",
@@ -386,7 +390,62 @@ def evaluation_evidence(artifacts: Path, tested_sha: str, source: str,
             "scenarios_passed": len(SCENARIO_NODEIDS), "full_smoke": True, "exact_cleanup": True}
 
 
-def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_jobs: dict) -> dict:
+def comment_evidence(artifacts: Path, tested_sha: str, source: str, comparison: dict) -> dict:
+    policy = runpy.run_path(str(Path(__file__).with_name("comment-check.py")))
+    value = one_receipt(artifacts, "comment-check.json")
+    identity(value, tested_sha, source)
+    actions_identity(value, "checks")
+    require(isinstance(comparison, dict) and set(comparison) == {"base_sha", "basis"}
+            and isinstance(comparison["base_sha"], str) and SHA.fullmatch(comparison["base_sha"]) is not None
+            and comparison["base_sha"] != tested_sha
+            and comparison["basis"] in {"pull_request_base", "push_before", "head_first_parent"},
+            "Missing independent comment comparison identity")
+    require(value.get("comparison") == comparison, "Comment comparison base changed")
+    require(value.get("checker") == {
+        "commit": policy["CHECKER_COMMIT"], "sha256": policy["CHECKER_SHA256"],
+        "url": policy["CHECKER_URL"], "bytes": policy["CHECKER_BYTES"], "license": "MIT",
+    }, "The canonical comment checker identity changed")
+    coverage = value.get("coverage")
+    require(isinstance(coverage, dict) and coverage.get("coverage_complete") is True
+            and value.get("code") == "CHECKED", "Comment inspection did not complete")
+    counts = {key: coverage.get(key) for key in ("changed_files", "eligible_files", "excluded_files", "input_bytes", "finding_count")}
+    require(all(type(count) is int and count >= 0 for count in counts.values()), "Invalid comment coverage counts")
+    require(counts["changed_files"] <= policy["MAX_FILES"]
+            and counts["eligible_files"] + counts["excluded_files"] == counts["changed_files"]
+            and counts["input_bytes"] <= policy["MAX_TOTAL_BYTES"]
+            and counts["finding_count"] == 0 and coverage.get("findings") == [],
+            "Incomplete or failing added-comment coverage")
+    files = coverage.get("files")
+    require(isinstance(files, list) and len(files) == counts["eligible_files"], "Missing compared source files")
+    keys, total = [], 0
+    for item in files:
+        require(isinstance(item, dict) and set(item) == {
+            "path_digest", "status", "old_mode", "new_mode", "old_oid", "new_oid", "old_bytes", "new_bytes",
+        }, "Invalid compared source record")
+        key = item["path_digest"]
+        require(isinstance(key, str) and DIGEST.fullmatch(key) is not None
+                and item["status"] in {"A", "M", "D"}, "Invalid compared source identity")
+        keys.append(key)
+        for side in ("old", "new"):
+            mode, oid, count = (item[side + suffix] for suffix in ("_mode", "_oid", "_bytes"))
+            require(mode in {"000000", "100644", "100755"} and isinstance(oid, str)
+                    and SHA.fullmatch(oid) is not None and type(count) is int
+                    and 0 <= count <= policy["MAX_FILE_BYTES"], "Invalid compared blob")
+            require((mode == "000000") == (oid == "0" * 40) and (mode != "000000" or count == 0),
+                    "Absent compared blob has content")
+            total += count
+        require((item["status"] == "A") == (item["old_mode"] == "000000")
+                and (item["status"] == "D") == (item["new_mode"] == "000000"),
+                "Compared blob status changed")
+    require(keys == sorted(set(keys)) and total == counts["input_bytes"]
+            and coverage.get("manifest_digest") == policy["digest"](policy["canonical"](files)),
+            "Compared source coverage is inconsistent")
+    return {"base_sha": comparison["base_sha"], "basis": comparison["basis"],
+            "checker_sha256": policy["CHECKER_SHA256"], "compared_files": counts["eligible_files"],
+            "manifest_digest": coverage["manifest_digest"], "finding_count": 0}
+
+
+def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_jobs: dict, *, comparison: dict) -> dict:
     require(SHA.fullmatch(tested_sha) is not None, "An exact tested head SHA is required")
     require(type(expected_shards) is int and 1 <= expected_shards <= 32, "Invalid shard count")
     require(isinstance(upstream_jobs, dict)
@@ -443,6 +502,7 @@ def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_j
                 f"Unexpected {name} command")
         require(type(outcome.get("exit_code")) is int and outcome["exit_code"] == 0
                 and not outcome.get("timeout") and not outcome.get("error"), f"The {name} command did not pass")
+    comments = comment_evidence(artifacts, tested_sha, source, comparison)
     wheel_paths = list(artifacts.rglob("wheel-consumer.json"))
     require(len(wheel_paths) == 1, "Missing or duplicate wheel-consumer artifact")
     wheel = receipt(wheel_paths[0])
@@ -495,6 +555,7 @@ def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_j
                           "artifact": distributions[0].name},
         "compatibility": {"runtime": compat["runtime"], "passed": len(expected_compat)},
         "health": {"source": True, "installed": True}, "evaluation": evaluation_result,
+        "comments": comments,
     }
 
 
@@ -509,7 +570,9 @@ def main() -> int:
     tested_sha = os.environ.get("CI_TESTED_SHA", "")
     try:
         jobs = json.loads(os.environ.get("CI_UPSTREAM_JOBS", "{}"))
-        result = aggregate(args.artifacts, args.expected_shards, tested_sha, jobs)
+        policy = runpy.run_path(str(Path(__file__).with_name("comment-check.py")))
+        comparison = policy["comparison_base"](tested_sha)
+        result = aggregate(args.artifacts, args.expected_shards, tested_sha, jobs, comparison=comparison)
     except (OSError, ValueError, TypeError) as error:
         result = {"schema": 1, "complete": False, "tested_sha": tested_sha, "error": str(error)}
     args.output.parent.mkdir(parents=True, exist_ok=True)

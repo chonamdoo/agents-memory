@@ -63,6 +63,8 @@ class SpoolRecovery:
         self._stop = threading.Event()
         self._wake = asyncio.Event()
         self._task = None
+        self._cycle_lock = threading.Lock()
+        self._status_lock = threading.RLock()
         self._scan = None
         self._pending = deque()
         self._remote_failures = 0
@@ -71,16 +73,19 @@ class SpoolRecovery:
 
     @property
     def status(self) -> dict:
-        return dict(self._status)
+        with self._status_lock:
+            return dict(self._status)
 
     def _report(self, **changes) -> None:
-        self._status = {**self._status, **changes}
+        with self._status_lock:
+            self._status = {**self._status, **changes}
 
     def _failure(self, error, *, state: str = "delivery_blocked") -> None:
         code = error.code if isinstance(error, DomainError) else error if isinstance(error, str) else "HOST_RECOVERY_UNAVAILABLE"
         if re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", code) is None:
             code = "HOST_RECOVERY_UNAVAILABLE"
-        self._report(state=state, failures=self._status["failures"] + 1, last_error=code)
+        with self._status_lock:
+            self._report(state=state, failures=self._status["failures"] + 1, last_error=code)
 
     def _defer_remote(self) -> None:
         self._remote_failures += 1
@@ -159,122 +164,139 @@ class SpoolRecovery:
         return result
 
     def cycle(self, *, deadline: float | None = None) -> None:
-        if isinstance(self.settings, RemoteClientSettings):
-            if deadline is None:
-                deadline = time.monotonic() + 20
-            with remote_connection_cycle(self.settings, deadline=deadline, stop_event=self._stop):
+        # Shared discovery cursors must not be advanced by overlapping cycles.
+        if deadline is None:
+            self._cycle_lock.acquire()
+        elif not self._cycle_lock.acquire(timeout=max(0, deadline - time.monotonic())):
+            return
+        try:
+            if isinstance(self.settings, RemoteClientSettings):
+                if deadline is None:
+                    deadline = time.monotonic() + 20
+                with remote_connection_cycle(self.settings, deadline=deadline, stop_event=self._stop):
+                    self._cycle(deadline=deadline)
+            else:
                 self._cycle(deadline=deadline)
-        else:
-            self._cycle(deadline=deadline)
+        finally:
+            self._cycle_lock.release()
 
     def _cycle(self, *, deadline: float | None) -> None:
         remote = isinstance(self.settings, RemoteClientSettings)
         if remote and time.monotonic() < self._remote_retry_at:
             self._report(state="waiting_remote", cycles=self._status["cycles"] + 1)
             return
-        self._report(state="idle", cycles=self._status["cycles"] + 1, last_error=None)
-        remote_ready = False
+        failures = self._status["failures"]
+        self._report(cycles=self._status["cycles"] + 1)
+        raised = False
         try:
-            receipts = self._discover()
-        except (OSError, DomainError) as error:
-            self._failure(error, state="discovery_failed")
-            if self._scan is not None:
-                self._scan.close()
-                self._scan = None
-            return
-        for index, path in enumerate(receipts):
-            if self._stop.is_set() or (deadline is not None and time.monotonic() >= deadline):
-                self._pending.extendleft(reversed(receipts[index:]))
-                return
-            descriptor = None
-            spool = None
+            remote_ready = False
             try:
+                receipts = self._discover()
+            except (OSError, DomainError) as error:
+                self._failure(error, state="discovery_failed")
+                if self._scan is not None:
+                    self._scan.close()
+                    self._scan = None
+                return
+            for index, path in enumerate(receipts):
+                if self._stop.is_set() or (deadline is not None and time.monotonic() >= deadline):
+                    self._pending.extendleft(reversed(receipts[index:]))
+                    return
+                descriptor = None
+                spool = None
                 try:
-                    path.lstat()
-                except FileNotFoundError:
-                    # Most discovered directories have no receipt for this host.
-                    continue
-                receipt = _receipt(self.settings, path)
-                outbox = Path(receipt["runtime_dir"]) / "capture.sqlite3"
-                health_configured = load_health_workspace(receipt) is not None
-                if not outbox.exists() and not health_configured:
-                    continue
-                # Share the install/uninstall lock, but never wait behind a host operation.
-                lock = hosts._install_lock(self.settings, Path(receipt["project_root"]))
-                descriptor = os.open(lock, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                current = _receipt(self.settings, path)
-                if current != receipt:
-                    continue
-                spool = ProducerSpool(outbox, receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
-                if not health_configured and not spool.status()["pending"]:
-                    continue
-                if remote and not remote_ready:
                     try:
-                        ensure_remote_ready(
-                            self.settings, timeout=max(deadline - time.monotonic(), 0.001),
-                            stop_event=self._stop,
-                        )
-                    except DomainError as error:
-                        if error.code == "SERVICE_STOPPED":
-                            self._stop.set()
-                        if not self._stop.is_set():
-                            self._failure(error, state="waiting_remote")
-                            self._defer_remote()
-                        self._pending.extendleft(reversed(receipts[index:]))
+                        path.lstat()
+                    except FileNotFoundError:
+                        # Most discovered directories have no receipt for this host.
+                        continue
+                    receipt = _receipt(self.settings, path)
+                    outbox = Path(receipt["runtime_dir"]) / "capture.sqlite3"
+                    health_configured = load_health_workspace(receipt) is not None
+                    if not outbox.exists() and not health_configured:
+                        continue
+                    # Share the install/uninstall lock, but never wait behind a host operation.
+                    lock = hosts._install_lock(self.settings, Path(receipt["project_root"]))
+                    descriptor = os.open(lock, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    current = _receipt(self.settings, path)
+                    if current != receipt:
+                        continue
+                    spool = ProducerSpool(outbox, receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
+                    if not health_configured and not spool.status()["pending"]:
+                        continue
+                    if remote and not remote_ready:
+                        try:
+                            ensure_remote_ready(
+                                self.settings, timeout=max(deadline - time.monotonic(), 0.001),
+                                stop_event=self._stop,
+                            )
+                        except DomainError as error:
+                            if error.code == "SERVICE_STOPPED":
+                                self._stop.set()
+                            if not self._stop.is_set():
+                                self._failure(error, state="waiting_remote")
+                                self._defer_remote()
+                            self._pending.extendleft(reversed(receipts[index:]))
+                            return
+                        remote_ready = True
+                    client = LocalClient(
+                        receipt["base_url"], Path(receipt["producer_token_file"]),
+                        timeout=max(deadline - time.monotonic(), 0.001) if remote else 1,
+                        state_dir=self.settings.state_dir, deployment_id=self.settings.deployment_id,
+                        remote_settings=hosts.receipt_connection(receipt),
+                    )
+                    owner = self
+    
+                    class OwnedDelivery:
+                        def request(self, route, payload):
+                            if owner._stop.is_set() or _receipt(owner.settings, path) != receipt:
+                                raise DomainError("SERVICE_DRAINING", "Recovery stopped before dispatch", status=503, effect=EffectState.NOT_STARTED)
+                            if deadline is not None:
+                                remaining = deadline - time.monotonic()
+                                if remaining <= 0:
+                                    raise DomainError("SERVICE_UNAVAILABLE", "The recovery cycle deadline expired", status=503, effect=EffectState.NOT_STARTED)
+                                client.timeout = remaining
+                            return client.request(route, payload)
+                    if not self._stop.is_set():
+                        try:
+                            observation = observe_health_workspace(
+                                receipt, client=OwnedDelivery(), flush_limit=self.flush_limit, defer_flush=True)
+                            if observation.get("state") == "gap":
+                                self._failure(observation["code"])
+                        except (OSError, ValueError, UnicodeError, DomainError, sqlite3.Error) as error:
+                            self._failure(error)
+                    if self._stop.is_set():
                         return
-                    remote_ready = True
-                client = LocalClient(
-                    receipt["base_url"], Path(receipt["producer_token_file"]),
-                    timeout=max(deadline - time.monotonic(), 0.001) if remote else 1,
-                    state_dir=self.settings.state_dir, deployment_id=self.settings.deployment_id,
-                    remote_settings=hosts.receipt_connection(receipt),
-                )
-                owner = self
-
-                class OwnedDelivery:
-                    def request(self, route, payload):
-                        if owner._stop.is_set() or _receipt(owner.settings, path) != receipt:
-                            raise DomainError("SERVICE_DRAINING", "Recovery stopped before dispatch", status=503, effect=EffectState.NOT_STARTED)
-                        if deadline is not None:
-                            remaining = deadline - time.monotonic()
-                            if remaining <= 0:
-                                raise DomainError("SERVICE_UNAVAILABLE", "The recovery cycle deadline expired", status=503, effect=EffectState.NOT_STARTED)
-                            client.timeout = remaining
-                        return client.request(route, payload)
-                if not self._stop.is_set():
-                    try:
-                        observation = observe_health_workspace(
-                            receipt, client=OwnedDelivery(), flush_limit=self.flush_limit, defer_flush=True)
-                        if observation.get("state") == "gap":
-                            self._failure(observation["code"])
-                    except (OSError, ValueError, UnicodeError, DomainError, sqlite3.Error) as error:
-                        self._failure(error)
-                if self._stop.is_set():
-                    return
-
-
-                result = spool.flush(OwnedDelivery(), limit=self.flush_limit)
-                self._report(committed=self._status["committed"] + result["committed"])
-                for code in result["errors"]:
-                    self._failure(code)
-                if remote and result["errors"]:
-                    self._defer_remote()
-                    self._pending.extendleft(reversed(receipts[index + 1:]))
-                    return
-            except (OSError, ValueError, UnicodeError, DomainError, sqlite3.Error) as error:
-                # Invalid, removed, busy and unavailable receipts retain their outboxes.
-                self._failure(error)
-                continue
-            finally:
-                if spool is not None:
-                    with suppress(sqlite3.Error, OSError):
-                        spool.close()
-                if descriptor is not None:
-                    os.close(descriptor)
-        if remote_ready:
-            self._remote_failures = 0
-            self._remote_retry_at = 0.0
+    
+    
+                    result = spool.flush(OwnedDelivery(), limit=self.flush_limit)
+                    self._report(committed=self._status["committed"] + result["committed"])
+                    for code in result["errors"]:
+                        self._failure(code)
+                    if remote and result["errors"]:
+                        self._defer_remote()
+                        self._pending.extendleft(reversed(receipts[index + 1:]))
+                        return
+                except (OSError, ValueError, UnicodeError, DomainError, sqlite3.Error) as error:
+                    # Invalid, removed, busy and unavailable receipts retain their outboxes.
+                    self._failure(error)
+                    continue
+                finally:
+                    if spool is not None:
+                        with suppress(sqlite3.Error, OSError):
+                            spool.close()
+                    if descriptor is not None:
+                        os.close(descriptor)
+            if remote_ready:
+                self._remote_failures = 0
+                self._remote_retry_at = 0.0
+        except BaseException:
+            raised = True
+            raise
+        finally:
+            if not raised and self._status["failures"] == failures:
+                self._report(state="idle", last_error=None)
 
 
 @contextmanager

@@ -1222,3 +1222,13 @@ full evaluation은8.693초 뒤 같은 gate에서 실패했다. 새 body-free pro
 
 전체 gate는 여전히 failure이며 native/human/운영 acceptance, full5개 invocation·control·functional·health-link 성공, whole-source 공식 review/QA 완료로 확대하지 않는다. 서비스·Store·schema·verifier cleanup은 complete=true이고 앞선 성공·실패와 원래18개 완료0을 보존한다.
 
+### 후속 b71b5d7: 복구 진단 경쟁 조건과 helper 자체 실패
+
+[Actions39055023010](https://github.com/chonamdoo/agents-memory/actions/runs/39055023010)는 source2999pass/1fail, 별도 installed624·실제 Docker13·Mac36pass이며 skip/xfail/xpass/수집 오류0이다. 실제 실패는 `test_recovery_diagnostics_are_body_free_and_operator_only`의 `/readyz`가 `discovery_failed` 대신 `idle`을 반환한 경우다. setup·teardown은 pass였고 첫 assertion에서 멈췄으므로 뒤의 privacy/role 검사를 통과했다고 세지 않는다. source·installed health는 각각23개 outcome과 clean exit0/owned cleanup을 유지했고 lint·build도 성공했다.
+
+정적 조사에서는 background와 직접 호출의 `cycle()`이 겹치고, discovery 시작 전에 이전 실패를 `idle/None`으로 덮는 게시 경계를 확인했다. 다음 수정은 timeout·sleep·기대값 완화 대신 cursor 주기 직렬화와 짧은 상태 갱신 동기화, 정상 주기 결과 이후의 실패 해제다. event로 discovery를 멈춘 동안 이전 실패가 유지되고 이후 실제 복구에서 해제되는 회귀를 source·installed 소비자 선택에 추가했다. 아직 이 수정의 runtime 결과는 없다.
+
+full evaluation은 helper970의 `BoundaryError/SMOKE_EXCEPTION`으로 중단됐다. 이는 child의 새 진단이 아니다. report가 의도적으로 `invocation_id`를 투영하지 않는 계약인데 helper가 그 필드를 읽었다. 이미 검증된 frozen workload의 preflight identity와 기존 no-follow ledger reader를 재사용하도록 수정하고, 추가 진단 전에 기존 status/reason을 보존한다. underlying native child 원인은 아직 미관측이고 소유 서비스·Store·schema·verifier cleanup은 complete=true다.
+
+기존 canonical comment hook은 실제 존재하므로 unavailable로 적지 않는다. 로컬 실행 없이, 공개 MIT upstream의 설치 버전0.3.16 commit `89512553cd85a608b02845e1dd1c3d81b4727dca`와20256bytes·SHA256 `0eb61a66acdd1ec4031c4cb8aedf78aced785f0b69c46e50a0234241adbd3f5f`가 현재 managed-hook digest와 일치함을 data-only로 확인했다. 같은 정책의 bounded old/new source 비교를 Actions에만 연결하고 exact base/head·coverage receipt를 aggregate가 요구하게 했다. 새 CI 경로 역시 아직 실행 결과가 없고 local hook·guard·trust·settings·pins는 바꾸지 않았다.
+

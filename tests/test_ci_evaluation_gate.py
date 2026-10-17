@@ -5,6 +5,7 @@ import json
 import os
 import runpy
 import zipfile
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -53,6 +54,19 @@ def complete_evidence(root: Path) -> SimpleNamespace:
     write_json(checks, {**common, "checks": {name: {"command": command, "exit_code": 0, "timeout": False}
                                              for name, command in module["CHECK_COMMANDS"].items()}})
     write_json(checks.parent / "prerequisites.json", preparation)
+    policy = runpy.run_path(str(CI / "comment-check.py"))
+    comparison = {"base_sha": "c" * 40, "basis": "pull_request_base"}
+    compared_files = [{
+        "path_digest": "1" * 64, "status": "A", "old_mode": "000000", "new_mode": "100644",
+        "old_oid": "0" * 40, "new_oid": "2" * 40, "old_bytes": 0, "new_bytes": 12,
+    }]
+    comments = checks.parent / "comment-check.json"
+    write_json(comments, {**owned("checks"), "code": "CHECKED", "comparison": comparison,
+                         "checker": {"commit": policy["CHECKER_COMMIT"], "sha256": policy["CHECKER_SHA256"],
+                                     "url": policy["CHECKER_URL"], "bytes": policy["CHECKER_BYTES"], "license": "MIT"},
+                         "coverage": {"changed_files": 1, "eligible_files": 1, "excluded_files": 0, "input_bytes": 12,
+                                      "finding_count": 0, "findings": [], "coverage_complete": True, "files": compared_files,
+                                      "manifest_digest": policy["digest"](policy["canonical"](compared_files))}})
     distribution = root / "distribution" / "engineering-evidence-fixture.whl"
     distribution.parent.mkdir(parents=True)
     module_names = {"cli", "config", "store", "application", "edge", "health", "health_producer", "health_code",
@@ -136,9 +150,9 @@ def complete_evidence(root: Path) -> SimpleNamespace:
     return SimpleNamespace(root=root, sha=sha, ids=collection, paths=paths, checks=checks, wheel=wheel,
                            distribution=distribution, compat=compat, job=job, scenario=scenario, smoke=smoke,
                            cleanup=cleanup, runtime_cleanup=runtime_cleanup,
-                           health_source=health_source, health_installed=health_installed,
+                           health_source=health_source, health_installed=health_installed, comments=comments,
                            jobs={name: {"result": "success"} for name in ("tests", "checks", "compatibility", "evaluation")},
-                           aggregate=module["aggregate"])
+                           aggregate=partial(module["aggregate"], comparison=comparison))
 
 
 @pytest.fixture
@@ -157,7 +171,7 @@ def test_complete_ci_binds_distinct_wheels_and_real_engineering_surfaces(evidenc
     assert result["evaluation"]["exact_cleanup"] is True
 
 
-@pytest.mark.parametrize("name", ["job", "scenario", "smoke", "cleanup", "runtime_cleanup", "health_source", "health_installed"])
+@pytest.mark.parametrize("name", ["job", "scenario", "smoke", "cleanup", "runtime_cleanup", "health_source", "health_installed", "comments"])
 @pytest.mark.parametrize("fault", ["missing", "duplicate", "malformed"])
 def test_complete_ci_requires_unique_parseable_engineering_evidence(evidence, name, fault):
     path = getattr(evidence, name)
@@ -182,6 +196,10 @@ def test_complete_ci_refuses_nonpassing_evaluation_job(evidence, status):
 
 @pytest.mark.parametrize("target,keys,replacement", [
     ("job", ("tested_sha",), "c" * 40),
+    ("comments", ("checker", "sha256"), "0" * 64),
+    ("comments", ("comparison", "base_sha"), "d" * 40),
+    ("comments", ("coverage", "coverage_complete"), False),
+    ("comments", ("coverage", "finding_count"), 1),
     ("job", ("source_after",), "c" * 64),
     ("job", ("actions", "job_id"), "checks"),
     ("job", ("actions", "run_attempt"), "999999"),

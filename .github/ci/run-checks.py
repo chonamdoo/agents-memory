@@ -115,6 +115,9 @@ def main() -> int:
     helpers["write_result"](output, result)
     try:
         result["checks"]["lint"] = check(["uv", "run", "ruff", "check", "src", "tests", ".github/ci"], 120)
+        result["checks"]["comments"] = check(
+            ["uv", "run", "--no-sync", "python", ".github/ci/comment-check.py",
+             "--result-dir", str(args.result_dir)], 120)
         result["checks"]["build"] = check(["uv", "build"], 300)
         result["checks"]["wheel-consumer"] = check(
             ["uv", "run", "--no-sync", "python", ".github/ci/wheel-consumer.py",

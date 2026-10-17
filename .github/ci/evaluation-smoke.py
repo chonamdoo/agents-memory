@@ -556,8 +556,10 @@ def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, list]:
         gateway.close()
 
 
-def freeze_manifest(root: Path, measured: dict, preflight: dict, corpus: dict, gold: dict,
-                    rules: list, preflight_rules: list, args, runtime_raw: bytes) -> tuple[Path, Path, dict]:
+def freeze_manifest(
+    root: Path, measured: dict, preflight: dict, corpus: dict, gold: dict,
+    rules: list, preflight_rules: list, args, runtime_raw: bytes,
+) -> tuple[Path, Path, evaluation.EvaluationManifest]:
     inputs, native = root / "inputs", root.parent.parent / "full-smoke-native"
     private_directory(inputs)
     private_directory(native)
@@ -626,8 +628,8 @@ def freeze_manifest(root: Path, measured: dict, preflight: dict, corpus: dict, g
         "gateway": measured, "preflight_gateway": preflight, "usage_budgets": {"input_tokens": None, "output_tokens": None,
         "total_tokens": None, "cost_usd": None}, "files": files, "independence": "provided_unattested"}
     save(manifest_path, config)
-    evaluation.load_manifest(manifest_path, expected_sha256=digest_bytes(manifest_path.read_bytes()))
-    return manifest_path, run, config
+    frozen = evaluation.load_manifest(manifest_path, expected_sha256=digest_bytes(manifest_path.read_bytes()))
+    return manifest_path, run, frozen
 
 
 async def cli(
@@ -940,7 +942,7 @@ async def smoke(args, root: Path, summary: dict) -> None:
                 gateway.close()
         pre_rules = await asyncio.to_thread(preflight_rules)
         require(rules and pre_rules, "REAL_REQUIRED_RULES_REQUIRED")
-        manifest, run, config = freeze_manifest(root, channels["measured"], channels["preflight"], corpus, gold,
+        manifest, run, frozen = freeze_manifest(root, channels["measured"], channels["preflight"], corpus, gold,
                                                rules, pre_rules, args, runtime_raw)
         expected = digest_bytes(manifest.read_bytes())
         common = ["--manifest", str(manifest), "--run-dir", str(run), "--expected-sha256", expected]
@@ -953,6 +955,7 @@ async def smoke(args, root: Path, summary: dict) -> None:
         preflight = controller.get("preflight") if isinstance(controller, dict) else None
         if isinstance(preflight, dict):
             observed = {}
+            summary["preflight_observed"] = observed
             for key in ("status", "code"):
                 value = preflight.get(key)
                 observed[key] = value if isinstance(value, str) and re.fullmatch(
@@ -966,8 +969,9 @@ async def smoke(args, root: Path, summary: dict) -> None:
             ] if isinstance(reasons, list) else None
             references = preflight.get("evidence_refs")
             if isinstance(references, dict) and isinstance(references.get("native"), str):
-                raw = private_read(run / "ledger" / (
-                    digest_bytes(preflight["invocation_id"].encode()) + ".native.json"), config["trace_bytes"])
+                identity = frozen.workload["preflight"]["invocation_id"]
+                raw = evaluation._read(run / "ledger" / (
+                    digest_bytes(identity.encode()) + ".native.json"), frozen.config["trace_bytes"], private=True)
                 require(digest_bytes(raw) == references["native"], "NATIVE_DIAGNOSTIC_DIGEST_INVALID")
                 native = decode_json(raw)
                 errors = base64.b64decode(native["stderr"]["$bytes"], validate=True)
@@ -988,7 +992,6 @@ async def smoke(args, root: Path, summary: dict) -> None:
                 peer_path = re.escape(str(root / "engineering-claude-protocol-peer"))
                 observed["peer_frame_lines"] = [int(value) for value in re.findall(
                     r'File "' + peer_path + r'", line (\d+)', text)[:16]]
-            summary["preflight_observed"] = observed
         outcomes = assert_results(run, manifest, report, reported)
         outcomes.update(await exercise_health_link(root, run, expected, store, actor, bindings["measured"]))
         require(ledger_snapshot(run) == immutable, "HEALTH_LINK_MUTATED_RETAINED_EVALUATION")
@@ -1099,7 +1102,7 @@ def main() -> int:
         summary["error_type"] = type(error).__name__ if type(error).__name__ in {
             "ValueError", "OSError", "TimeoutError", "RuntimeError", "DomainError", "EvaluationError",
             "RuntimeRefusal", "CancelledError", "KeyboardInterrupt", "SystemExit", "SmokeFailure",
-            "TypeError", "NameError", "AttributeError", "UnboundLocalError", "ArtifactError",
+            "TypeError", "KeyError", "NameError", "AttributeError", "UnboundLocalError", "ArtifactError",
             "FileExistsError", "FileNotFoundError", "PermissionError", "NotADirectoryError",
             "ImportError", "ModuleNotFoundError", "UnsupportedOperation"} else "BoundaryError"
         summary["failure_code"] = error.code if isinstance(error, SmokeFailure) else "SMOKE_EXCEPTION"

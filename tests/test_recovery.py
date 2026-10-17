@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -228,6 +229,54 @@ def test_recovery_rejects_unsafe_ancestors_and_leaves_without_delivery(installed
     assert worker.status["last_error"] == "HOST_PATH_DENIED"
     assert worker.status["failures"] >= 1
     assert receipt["project_root"] not in str(worker.status)
+
+
+def test_recovery_preserves_failure_until_a_new_cycle_finishes(installed, monkeypatch):
+    settings, _, receipt, _, state = installed
+    root = settings.state_dir / "host-adapters"
+    root.chmod(0o777)
+    worker = SpoolRecovery(settings, ProbeStore(settings, state))
+    worker.cycle()
+    assert worker.status["state"] == "discovery_failed"
+    assert worker.status["last_error"] == "HOST_PATH_DENIED"
+    entered, release = threading.Event(), threading.Event()
+    errors = []
+    discover = worker._discover
+
+    def blocked_discovery():
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("The recovery diagnostic observation was not released")
+        return discover()
+
+    def cycle():
+        try:
+            worker.cycle()
+        except BaseException as error:
+            errors.append(error)
+
+    monkeypatch.setattr(worker, "_discover", blocked_discovery)
+    thread = threading.Thread(target=cycle)
+    thread.start()
+    try:
+        assert entered.wait(5)
+        observed = worker.status
+        assert observed["state"] == "discovery_failed"
+        assert observed["last_error"] == "HOST_PATH_DENIED"
+        assert observed["failures"] == 1
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive() and errors == []
+    assert worker.status["state"] == "discovery_failed"
+    assert worker.status["failures"] == 2
+    root.chmod(0o755)
+    state.update(ready=True, db_ready=True)
+    worker.cycle()
+    recovered = worker.status
+    assert recovered["state"] == "idle" and recovered["last_error"] is None
+    assert recovered["failures"] == 2 and recovered["committed"] == 1
+    assert status(settings, receipt)["pending"] == 0
 
 
 def test_absent_host_receipts_are_idle_not_recovery_failures(installed):
