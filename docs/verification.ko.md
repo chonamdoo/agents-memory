@@ -1095,9 +1095,32 @@ Linux에서는 exited/unreaped leader가 zombie로 group에 남아 `killpg(pgid,
 
 수정한 fixture는 child를 stdin에 대기시킨 뒤 `waitid`가 없는 곳에서 kqueue `KQ_FILTER_PROC/NOTE_EXIT`를 먼저 등록하고 child를 해제한다. exit 관측은 reap하지 않으며 마지막 wait와 실제 별도 소유 child의 exit0/`survived:ping` 검증은 유지한다. `waitid`가 있는 Linux 경로도 그대로다. Mac을 skip하지 않는다.
 
-첫 수정의8개 setup/teardown은 모두 통과했지만 가상 group의 성공 probe 뒤 실제 죽은 owned group으로 최종 KILL을 전달한 두 call은 Darwin에서 EPERM을 받았다. 이 실패도 원본 log/phase/receipt와 함께 보존했다. owned target은 기존 TERM/probe와 일관되게 가상 처리하고, leader를 reap해 소유권이 풀린 경우에는 여전히 실제 survivor로 신호를 돌리는 fault model로 바로잡았다. 제품의 PermissionError를 삼키거나 두 production cleanup helper·grace 상수·deadline을 바꾸지 않았다. 실제 kernel PID 재사용이나 Mac native 보호의 증명이 아니다.
+첫 수정의8개 setup/teardown은 모두 통과했지만 가상 group의 성공 probe 뒤 실제 죽은 owned group으로 최종 KILL을 전달한 두 call은 Darwin에서 EPERM을 받았다. 이 실패도 원본 log/phase/receipt와 함께 보존했다. owned target은 기존 TERM/probe와 일관되게 가상 처리하고, leader를 reap해 소유권이 풀린 경우에는 여전히 실제 survivor로 신호를 돌리는 fault model로 바로잡았다. 그 단계에서는 두 production cleanup helper·grace 상수·deadline을 바꾸지 않았다. **다만 이를 fixture만의 문제로 판단한 것은 불완전했다.** 이후 실제 정상 종료·inventory의 실패도 확인했으며 아래 제품 수정과 구분한다. 이8건의 green은 실제 kernel PID 재사용이나 Mac native 보호의 증명이 아니다.
 
 성공 run의 Linux 다섯 job은 UTC00:35:18–19, Mac job은00:35:25에 시작해 겹쳐 실행됐다. lint0.064초/build1.166초/installed consumer39.902초 모두 exit0·timeout=false였다. source/resource digest는 `923803a294d486432bd46383b71a30796768b702b48680a386657d9645602586`이며 Mac/Linux/checks의 before/after가 일치했다. 실제 소비·공개 wheel SHA256은 `abf2210df64e8d806bd36d302d535436c10dbe41457403435cb01ee0a6293280`이고 설치45-file identity와 모든 installed phase가 통과했다. 정확한 run/job API·전체 watch·phase/JUnit·distribution·실패/성공 aggregate를 각 checkpoint별 context에 보존했다.
 
 이는 두 helper의 source-level fault injection과 실제 별도 child 생존에 한정된 Mac 최소 runtime 회귀다. Mac 전체 suite·실제 native first-action/stop/recovery·login/reboot/sleep-wake·운영 배포·human gold/180 valid pairs·trial·출시 승인을 주장하지 않는다. 로컬 runtime 검증은0이다. 이 문서 수정 뒤의 정확한 head CI·fresh normal 독립 리뷰·QA/handoff는 [PR9 기록](https://github.com/chonamdoo/agents-memory/pull/9)을 따르며 원래18개 acceptance는 별도로 유지한다.
+
+
+### Darwin 정상 inventory와 terminal 권한 오류 구분 — 2656828
+
+문서 head `f2d5f6d`의 다음 정상 독립 review measurement `2ff8cfee155248d183bad9f9c7be9084`는 실제12완료/5approve/7request-changes/timeout0이었다. 모든 원본 report hash가 일치했지만 aggregate와 must-avoid는 request-changes/fail을 유지했다. 실제 Darwin의 zombie-only group도 EPERM을 반환하므로 정상 inventory의 `finally`가 성공한 config/hooks 결과를 `HOST_NATIVE_STATUS_UNAVAILABLE`로 바꾸는 제품 결함이었다. 앞선 fixture-only 진단을 철회하고 정상 세 번째 fix-loop에서 수정했다.
+
+| 정확한 checkpoint | 실제 Actions | Mac 통과 | Mac 실패 | Mac skip | 별도 Linux source 통과 | 별도 설치 wheel 통과 | 최종 집계 |
+|---|---|---:|---:|---:|---:|---:|---|
+| `6dd73df96d8f8dd356fa4b4c48d8af09353aa4ce` | [38990589473](https://github.com/chonamdoo/agents-memory/actions/runs/38990589473) |10|4|0|2449|91|실패|
+| `a614f898d3497db78fc3b9c52d45ef353266bfa3` | [38991649759](https://github.com/chonamdoo/agents-memory/actions/runs/38991649759) |8|8|0|2451|92|실패|
+| `2656828adea62784d97be388838b185b12608a4e` | [38991986933](https://github.com/chonamdoo/agents-memory/actions/runs/38991986933) |16|0|0|2451|92|성공, complete:true|
+
+유효 before의4개 call 실패는 신호·시계를 모사하지 않은 exited-group cleanup의 native/CI 두 변형과 controlled app-server의 정상 EOF/TERM public inventory 두 변형이다. setup/teardown은 모두 통과했다. 첫 제품 수정본은 Python3.12의 `select.kqueue`를 context manager로 사용할 수 있다고 잘못 가정해 새8개 call이 TypeError로 실패했다. `contextlib.closing`으로 실제 지원하는 close 수명을 보장했으며 TypeError를 삼키는 fallback은 넣지 않았다. 최종 run에서 before와 같은14개 node ID가 모두 통과했고, 추가한 exited-leader/live-member 두 음성 회귀도 통과했다. 모든 성공 source/installed/Mac phase는 setup/call/teardown pass이며 skip/xfail/xpass0이다.
+
+EPERM만으로 group을 소멸 처리하거나 leader exit만으로 다른 member의 부재를 추정하지 않는다. Darwin에서만 reap 없는 NOTE_EXIT/이미 exited인 owned leader의 ESRCH를 확인한 뒤, 시스템 `libproc`의 `proc_listpgrppids`를 표준 `ctypes`로 호출한다. 두 PID 크기의 고정 buffer에 **정확히 그 unreaped leader 한 개만** 있어야 terminal로 판단한다. live leader·다른 member·전체/잘린 buffer·불일치·API/관찰 실패는 원래 PermissionError를 유지한다. 다른 zombie member가 있어도 보수적으로 실패한다. 최종 group 판단 전 poll/wait를 하지 않고 마지막 parent wait와 기존 native2/CI5초 grace·deadline을 유지한다.
+
+근거는 [released XNU의 group census](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/bsd/kern/proc_info.c#L357-L482)와 [public libproc wrapper](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/libsyscall/wrappers/libproc/libproc.c#L46-L83)다. whole-call 권한 확인 뒤 UID별 필터 없이 allproc/zombproc을 같은 process-list lock 아래 조회하며 wrapper의 반환 단위는 byte가 아닌 PID 수다. macOS15.4/15.6 공개 source에서도 같은 경계를 대조했다. 비원자적인 `ps` 상태 목록이나 nice 변경은 채택하지 않았고 Apple 코드를 복사/vendoring하지 않았다. runner의 정확한 kernel binary나 전체 OS/ABI/license closure를 확인했다는 뜻은 아니다.
+
+살아 있는 leader 및 exited leader 뒤 실제 살아 있는 member가 있는 group에 TERM permission denial만 주입하면 둘 다 여전히 PermissionError를 반환한다. 후자는 private pipe의 EOF로 fixture를 회수하며 reap 뒤 숫자 PID로 다른 process를 정리하지 않는다. 실제 setuid/타 UID 권한 변경은 실행하지 않았다. 정상 public inventory는 실제 controlled app-server와 통신해 observed metadata·private 내용 비노출·EOF0/TERM-15·pipe 종료를 검증한다. 이것은 실제 Codex/Claude native 보호나 final native wheel smoke가 아니다. Mac은 source compatibility이고 설치92건은 별도 Linux noneditable wheel 소비이며 CI-helper 변형은 source-only다.
+
+최종 run의 다섯 Linux job은 UTC01:42:26–27, Mac job은01:42:31에 시작해 병렬 실행됐고 모든 Linux owned prerequisite cleanup이 성공했다. lint0.064초/build1.116초/installed consumer44.266초는 모두 exit0·timeout=false다. source/resource digest는 `9f3a1a35469688d24b885c3fc63c7191ba18ef0cb4da03454255d94407fc0dd3`, 실제 소비·공개 wheel SHA256은 `70ddcf9984c75480c7ee531c84b5606f4248066ec44da83ab65226ce71333cc5`이며 설치 Python45-file identity도 통과했다. 원본 API/jobs/artifacts/JUnit·실패 log·watch·같은 node ID의 전후 phase를 현재 run context에 checkpoint별로 보존했다.
+
+sole Popen supervisor와 group 내 자손이라는 범위는 유지한다. 외부 reaper·group/session 탈출·kernel PID wraparound·실제 native first-action/stop/recovery·Mac maintenance·운영 TLS/cutover/egress·독립 human gold/180 valid pairs·실제1–2주 trial·volume 정리·merge/release는 입증하지 않았다. 원래18개는 완료0개이며 assistant 소유의 평가 harness/workload/verifier 엔지니어링도 별도 미완료로 남긴다. 로컬 runtime 검증은0이다. 이 문서 변경 뒤 정확한 head의 Actions와 fresh normal 독립 Opus/Sol review·QA/handoff는 [PR9 기록](https://github.com/chonamdoo/agents-memory/pull/9)을 따른다.
 
