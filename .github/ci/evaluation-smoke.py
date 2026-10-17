@@ -373,7 +373,8 @@ async def exercise():
                     raise ValueError('fixture-inspection-bound')
                 required = await call('memory_required_context', channel['required_request'])
                 assert required['stamp']['rules']
-                await call('memory_required_context', channel['required_request'])
+                if invocation['mode'] == 'memory_on':
+                    await call('memory_required_context', channel['required_request'])
                 if invocation['mode'] == 'required_only':
                     refusal = await client.call_tool('memory_context', channel['required_request'])
                     assert refusal.is_error
