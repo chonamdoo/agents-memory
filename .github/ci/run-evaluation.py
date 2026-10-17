@@ -299,6 +299,10 @@ def run(result_dir: Path, wheel: Path) -> int:
                 and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", diagnostic[name])
             }
             value["smoke_diagnostic"]["source_identity_admitted"] = diagnostic.get("tested_sha") == os.environ["CI_TESTED_SHA"]
+            helper_lines = diagnostic.get("failure_helper_lines")
+            if (isinstance(helper_lines, list) and len(helper_lines) <= 16
+                    and all(type(line) is int and 0 < line <= 1000000 for line in helper_lines)):
+                value["smoke_diagnostic"]["helper_lines"] = helper_lines
         require_completed(full)
         value["complete"] = True
     except Exception as error:

@@ -1040,8 +1040,18 @@ def main() -> int:
         summary["code"] = "EVALUATION_SMOKE_FAILED"
         summary["error_type"] = type(error).__name__ if type(error).__name__ in {
             "ValueError", "OSError", "TimeoutError", "RuntimeError", "DomainError", "EvaluationError",
-            "RuntimeRefusal", "CancelledError", "KeyboardInterrupt", "SystemExit"} else "BoundaryError"
+            "RuntimeRefusal", "CancelledError", "KeyboardInterrupt", "SystemExit", "SmokeFailure",
+            "TypeError", "NameError", "AttributeError", "UnboundLocalError", "ArtifactError",
+            "FileExistsError", "FileNotFoundError", "PermissionError", "NotADirectoryError",
+            "ImportError", "ModuleNotFoundError", "UnsupportedOperation"} else "BoundaryError"
         summary["failure_code"] = error.code if isinstance(error, SmokeFailure) else "SMOKE_EXCEPTION"
+        frame = error.__traceback__
+        lines = []
+        while frame is not None and len(lines) < 16:
+            if frame.tb_frame.f_code.co_filename == __file__:
+                lines.append(frame.tb_lineno)
+            frame = frame.tb_next
+        summary["failure_helper_lines"] = lines
     if result is not None:
         try:
             save(result, summary)

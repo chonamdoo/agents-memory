@@ -741,7 +741,16 @@ class Smoke:
                 "NameError", "ValidationError", "FileNotFoundError", "PermissionError",
                 "ProcessLookupError", "JSONDecodeError", "NotImplementedError", "InvalidURL",
                 "UniqueViolationError", "UndefinedTableError", "NotNullViolationError",
-                "ForeignKeyViolationError", "InterfaceError", "DataError"} else "BoundaryError"
+                "ForeignKeyViolationError", "InterfaceError", "DataError", "FileExistsError",
+                "NotADirectoryError", "ArtifactError", "UnicodeDecodeError", "ImportError",
+                "ModuleNotFoundError", "SSLError", "UnsupportedOperation", "UnboundLocalError"} else "BoundaryError"
+            frame = error.__traceback__
+            lines = []
+            while frame is not None and len(lines) < 16:
+                if frame.tb_frame.f_code.co_filename == __file__:
+                    lines.append(frame.tb_lineno)
+                frame = frame.tb_next
+            self.result["failure_helper_lines"] = lines
         finally:
             await self.cleanup()
             loop.remove_signal_handler(signal.SIGTERM)
