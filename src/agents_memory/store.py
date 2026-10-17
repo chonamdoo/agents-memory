@@ -25,6 +25,7 @@ from .domain import (
     CaptureCoverage,
     Claim,
     ClaimDraft,
+    ClaimMeaning,
     ContextCommand,
     DomainError,
     EffectState,
@@ -4773,11 +4774,14 @@ class Store:
         claims, manifests = [], []
         for identifier in claim_ids:
             claim = await self._claim_row(connection, binding_id, identifier, pending['snapshot'])
-            manifests.append(await self._claim_health_manifest(connection, claim))
-            claims.append({'id': claim['id'], 'revision': claim['revision'], 'statement': _decode(claim['draft'])['statement']})
-        remaining = policy['max_audit_bytes'] - sum(len(claim['statement'].encode('utf-8')) for claim in claims)
+            meaning = ClaimMeaning.model_validate(_decode(claim['draft'])).model_dump(mode='json')
+            manifests.append({**await self._claim_health_manifest(connection, claim),
+                'meaning_digest': canonical_digest(meaning)})
+            claims.append({'id': claim['id'], 'revision': claim['revision'], **meaning})
+        remaining = policy['max_audit_bytes'] - sum(len(json.dumps(claim,
+            ensure_ascii=False, separators=(',', ':')).encode('utf-8')) for claim in claims)
         if remaining < 4 * len(source_rows):
-            raise DomainError('HEALTH_BUNDLE_TOO_LARGE', 'The exact claim statements and nonempty source windows exceed current policy')
+            raise DomainError('HEALTH_BUNDLE_TOO_LARGE', 'Complete claim meanings and nonempty source windows exceed current policy')
         sources = []
         for index, (source, raw) in enumerate(source_rows):
             available = min(4096, remaining - 4 * (len(source_rows) - index - 1))

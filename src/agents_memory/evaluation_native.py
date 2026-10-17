@@ -62,6 +62,8 @@ class NativeDriverSpec:
             self.executable, self.cwd, self.submission_path,
         )) or not self.submission_path.is_relative_to(self.cwd):
             raise ValueError("Native paths require an absolute approved task scope")
+        if ".." in self.cwd.parts or ".." in self.submission_path.parts or self.submission_path == self.cwd:
+            raise ValueError("Native submission paths must stay below the normalized task root")
         for value in (self.timeout_seconds, self.cleanup_seconds):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Native deadlines must be positive and finite")
@@ -470,11 +472,38 @@ def _argv(spec: NativeDriverSpec) -> list[str]:
     ]
 
 
-def _publish_submission(spec: NativeDriverSpec, output: Path, protocol: _Protocol) -> dict:
+def _open_task_directory(path: Path, *, expected: int | None = None) -> int:
+    descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in path.parts[1:]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        if expected is not None:
+            pinned, current = os.fstat(expected), os.fstat(descriptor)
+            if (pinned.st_dev, pinned.st_ino) != (current.st_dev, current.st_ino):
+                raise _ProtocolError("SUBMISSION_ROOT_CHANGED")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _publish_submission(spec: NativeDriverSpec, output: Path, protocol: _Protocol, task_directory: int) -> dict:
     if protocol.structured != {"submission_path": str(spec.submission_path)}:
         raise _ProtocolError("SUBMISSION_REFERENCE_INVALID")
     # These bytes, not a recursive view of the still-untrusted workspace, define the artifact.
-    raw = private_read(spec.submission_path, spec.max_submission_bytes, private=False)
+    parent = _open_task_directory(spec.cwd, expected=task_directory)
+    try:
+        parts = spec.submission_path.relative_to(spec.cwd).parts
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        raw = private_read(Path(parts[-1]), spec.max_submission_bytes, private=False, directory=parent)
+        os.close(_open_task_directory(spec.cwd, expected=task_directory))
+    finally:
+        os.close(parent)
     directory = os.open(output.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         info = os.fstat(directory)
@@ -516,6 +545,7 @@ def run_native_arm(
                   "interrupted_terminal": False}
     artifact = None
     process: subprocess.Popen[bytes] | None = None
+    task_directory = None
     reasons = []
     for observed, reason in (
         (spec.exclusive_optional_route_observed, "ALTERNATIVE_OPTIONAL_ROUTE_UNRESOLVED"),
@@ -538,6 +568,7 @@ def run_native_arm(
         status, code = "aborted", "STOP_REQUESTED_BEFORE_SPAWN"
     else:
         try:
+            task_directory = _open_task_directory(spec.cwd)
             trace_sink({"stage": "native_intent", "invocation_id": invocation_id,
                         "observed_ns": started, "backend": spec.backend,
                         "authorization_ref": spec.authorization_ref})
@@ -739,7 +770,7 @@ def run_native_arm(
             if status == "completed" and spec.backend == "claude" and process.returncode != 0:
                 status, code = "failed", "NATIVE_EXIT_NONZERO"
             if status == "completed":
-                artifact = _publish_submission(spec, artifact_output, protocol)
+                artifact = _publish_submission(spec, artifact_output, protocol, task_directory)
         except _ProtocolError as error:
             status, code = "unknown" if process is not None else "blocked", str(error)
         except OSError as error:
@@ -750,20 +781,24 @@ def run_native_arm(
         except Exception:
             status, code = "unknown" if process is not None else "failed", "NATIVE_PROTOCOL_OR_OBSERVATION_FAILED"
         finally:
-            if process is not None and process.returncode is None:
-                try:
-                    if not cleanup["group_signals_completed"]:
-                        if _signal_process_group(process, signal.SIGTERM):
-                            _signal_process_group(process, signal.SIGKILL)
-                        cleanup["group_signals_completed"] = True
-                    process.wait(timeout=spec.cleanup_seconds)
-                    cleanup["leader_reaped"] = True
-                except (OSError, subprocess.SubprocessError):
-                    cleanup["leader_reaped"] = False
-                finally:
-                    for stream in (process.stdin, process.stdout, process.stderr):
-                        if stream is not None and not stream.closed:
-                            stream.close()
+            try:
+                if process is not None and process.returncode is None:
+                    try:
+                        if not cleanup["group_signals_completed"]:
+                            if _signal_process_group(process, signal.SIGTERM):
+                                _signal_process_group(process, signal.SIGKILL)
+                            cleanup["group_signals_completed"] = True
+                        process.wait(timeout=spec.cleanup_seconds)
+                        cleanup["leader_reaped"] = True
+                    except (OSError, subprocess.SubprocessError):
+                        cleanup["leader_reaped"] = False
+                    finally:
+                        for stream in (process.stdin, process.stdout, process.stderr):
+                            if stream is not None and not stream.closed:
+                                stream.close()
+            finally:
+                if task_directory is not None:
+                    os.close(task_directory)
     if not cleanup["leader_reaped"] and process is not None:
         status, code = "unknown", "NATIVE_CLEANUP_UNRESOLVED"
     observed_model = protocol.identity.get("model")

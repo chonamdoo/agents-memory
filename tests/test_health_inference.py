@@ -20,7 +20,10 @@ def bundle():
             "source_ref": {"id": "source_health", "revision": 2}, "speaker": "human",
             "byte_start": 11, "byte_end": 11 + len(text.encode()), "body": text,
         }],
-        "claims": [{"id": "claim_health", "revision": 1, "statement": "CacheKey is always retained."}],
+        "claims": [{"id": "claim_health", "revision": 1, "statement": "CacheKey is retained.",
+            "kind": "fact", "subject": "CacheKey", "predicate": "retained", "object": "offline",
+            "polarity": "positive", "modality": "asserted", "conditions": ["only offline"],
+            "exceptions": [], "valid_from": None, "valid_until": None, "entities": ["CacheKey"]}],
         "policy": {"revision": 3, "max_audit_sources": 16, "max_audit_claims": 20, "max_audit_bytes": 32768},
         "coverage": {"partial": False, "scope": "captured_windows_not_full_session"},
     }
@@ -80,3 +83,21 @@ def test_unselected_evidence_stays_unknown_and_is_not_sent_to_support_stage():
     assessment = inputs.command(selections, {}).assessments[0]
     assert assessment.support == assessment.freshness == "unknown"
     assert assessment.relevance == "unrelated" and assessment.evidence == []
+
+
+@pytest.mark.parametrize("missing", ["polarity", "modality", "conditions", "exceptions", "valid_from", "valid_until"])
+def test_inference_refuses_a_claim_with_unobserved_structured_meaning(missing):
+    work = bundle()
+    del work["claims"][0][missing]
+    with pytest.raises(DomainError) as failed:
+        HealthInputs.from_bundle(work)
+    assert failed.value.code == "HEALTH_EVIDENCE_INCOMPLETE"
+
+
+def test_complete_structured_claim_meaning_consumes_the_authorized_byte_budget():
+    work = bundle()
+    work["claims"][0]["conditions"] = ["오프라인" * 300]
+    work["policy"]["max_audit_bytes"] = 1024
+    with pytest.raises(DomainError) as failed:
+        HealthInputs.from_bundle(work)
+    assert failed.value.code == "HEALTH_EVIDENCE_INCOMPLETE"

@@ -287,7 +287,7 @@ class Quote(TypedModel):
     byte_start: int | None = Field(default=None, ge=0)
 
 
-class ClaimDraft(TypedModel):
+class ClaimMeaning(TypedModel):
     statement: SmallText
     kind: Literal["fact", "preference", "procedure", "finding", "rule_candidate"]
     subject: str = Field(min_length=1, max_length=256)
@@ -300,7 +300,6 @@ class ClaimDraft(TypedModel):
     valid_from: datetime | None = None
     valid_until: datetime | None = None
     entities: tuple[EntityText, ...] = Field(default=(), max_length=16)
-    evidence: tuple[Quote, ...] = Field(min_length=1, max_length=8)
 
     @field_validator("valid_from", "valid_until")
     @classmethod
@@ -310,10 +309,14 @@ class ClaimDraft(TypedModel):
         return value
 
     @model_validator(mode="after")
-    def valid_interval(self) -> ClaimDraft:
+    def valid_interval(self) -> ClaimMeaning:
         if self.valid_from and self.valid_until and self.valid_from >= self.valid_until:
             raise ValueError("valid_until must follow valid_from")
         return self
+
+
+class ClaimDraft(ClaimMeaning):
+    evidence: tuple[Quote, ...] = Field(min_length=1, max_length=8)
 
 
 class EvidenceSpan(TypedModel):

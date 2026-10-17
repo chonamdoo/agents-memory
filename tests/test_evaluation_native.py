@@ -275,7 +275,11 @@ def test_immutable_submission_publication_reconciles_exact_visible_bytes(tmp_pat
         publications.append(path)
         raise OSError("Synthetic directory sync failure after publication")
     monkeypatch.setattr(evaluation_native, "private_write", visible_then_failed)
-    bundle = evaluation_native._publish_submission(spec, output, protocol)
+    directory = os.open(spec.cwd, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        bundle = evaluation_native._publish_submission(spec, output, protocol, directory)
+    finally:
+        os.close(directory)
     assert publications == [output]
     assert bundle["sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
     assert output.read_bytes() == spec.submission_path.read_bytes()

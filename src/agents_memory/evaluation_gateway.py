@@ -589,6 +589,7 @@ class EvaluationGateway:
             raise DomainError("INPUT_INVALID", "Tool arguments must be an object")
         self._enter(name, downstream_request_id)
         original_arguments = arguments
+        context_identity = None
         try:
             if name not in self._schemas:
                 self._deny("OPTIONAL_TOOL_DENIED" if self.scope.mode != "memory_on" else "TOOL_SCOPE_DENIED")
@@ -616,6 +617,9 @@ class EvaluationGateway:
                 for key in ("paths", "purpose", "host", "snapshot", "code_workspace_id", "limit", "max_bytes"):
                     if normalized.get(key) != self.required_request.get(key):
                         self._deny("REQUIRED_SELECTORS_CHANGED")
+                context_identity = {
+                    key: value for key, value in normalized.items() if key not in {"admission_id", "relevance"}
+                }
             if name == "memory_inspect":
                 ref = arguments.get("ref")
                 if ref not in self._allowed_refs and not (
@@ -652,7 +656,7 @@ class EvaluationGateway:
                 if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0].get("text"), str):
                     raise DomainError("UPSTREAM_RESULT_INVALID", "The MCP result has no bounded data plane", effect=EffectState.UNKNOWN)
                 payload = _tool_payload(result)
-                final_read = self._observe_flow(name, arguments, payload)
+                final_read = self._observe_flow(name, arguments, payload, context_identity=context_identity)
             return self._result_ready(name, original_arguments, result, downstream_request_id,
                                       payload=payload, final_read=final_read)
         except BaseException as error:
@@ -662,7 +666,9 @@ class EvaluationGateway:
         finally:
             self._leave()
 
-    def _observe_flow(self, name: str, arguments: dict, payload: dict) -> dict | None:
+    def _observe_flow(
+        self, name: str, arguments: dict, payload: dict, *, context_identity: dict | None = None,
+    ) -> dict | None:
         final_read = None
         if name == "memory_inspect" and isinstance(payload.get("draft_window"), dict):
             window = payload["draft_window"]
@@ -724,23 +730,24 @@ class EvaluationGateway:
                     self._selections.add(payload["artifact_id"])
                     self._selection_sources[payload["artifact_id"]] = arguments["source_id"]
         elif name == "memory_context":
+            if context_identity is None:
+                raise DomainError("CONTEXT_IDENTITY_UNOBSERVED", "The normalized context identity is unavailable",
+                                  effect=EffectState.UNKNOWN)
             admission = payload.get("admission_id") or arguments.get("admission_id")
             if not arguments.get("admission_id"):
                 manifest = payload.get("candidate_manifest")
                 if isinstance(admission, str) and isinstance(manifest, list):
                     ids = {item["claim_id"] for item in manifest if isinstance(item, dict) and isinstance(item.get("claim_id"), str)}
                     self._allowed_refs.update(ids)
-                    identity = {key: value for key, value in arguments.items() if key not in {"admission_id", "relevance"}}
-                    self._admissions[admission] = (identity, ids)
+                    self._admissions[admission] = (context_identity, ids)
                     for item in manifest:
                         if isinstance(item, dict) and isinstance(item.get("inspection_ref"), str):
                             self._allowed_refs.add(item["inspection_ref"])
             elif admission in self._admissions and payload.get("judgment_required") is False:
                 original, ids = self._admissions[admission]
-                identity = {key: value for key, value in arguments.items() if key not in {"admission_id", "relevance"}}
                 decisions = arguments.get("relevance", [])
                 selected_ids = [item.get("claim_id") for item in decisions]
-                if (identity == original and len(selected_ids) == len(ids) and set(selected_ids) == ids
+                if (context_identity == original and len(selected_ids) == len(ids) and set(selected_ids) == ids
                         and ids <= self._inspected_claims):
                     final_read = {"admission_id": admission, "refs": payload.get("refs"),
                                   "observed_ns": time.monotonic_ns(), "context": payload.get("context")}
