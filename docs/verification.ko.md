@@ -1053,7 +1053,15 @@ service fixture의 launchctl은 모사이고 HTTP/MCP 사례는 in-process ASGI�
 
 정확한 문서 head4ad185c의 [Actions38978293639](https://github.com/chonamdoo/agents-memory/actions/runs/38978293639)도 전체2436/설치85를 통과했다. 이후 정상 독립 review measurement `6141550777e94a7cb761b8df363a48f4`의12개 실제 process가 모두 완료됐다. Opus6approve, Sol5approve/1request-changes, timeout0이었고 모든 원본 report hash가 manifest와 일치했다. 다수결로 승인하지 않았다. Sol state-integrity의 소유권 P1를 수용한 aggregate request-changes와 정상 fix-loop 진입을 보존했다.
 
-지적은 native/CI cleanup의 중간 `process.poll()`이 leader를 reap한다는 것이다. 성공한 group probe 뒤 마지막 자손이 사라지면 숫자 PID/PGID가 최종 KILL 전에 재사용될 수 있고, ESRCH를 관측한 경우만 막던 회귀는 그 interleaving을 다루지 않았다. 정상 단독 Popen supervisor 호출에서 leader를 최종 group 신호까지 unreaped로 유지하고 마지막에만 wait하도록 수정했다. 이미 `returncode`가 알려져 reap된 입력에는 group 신호를 보내지 않는다. 기존 TERM/grace/KILL·ESRCH 거절·parent reap과 native2/CI5초 grace, lint120/build300/wheel300/source600/reviewer600초 제한은 그대로다.
+지적은 native/CI cleanup의 중간 `process.poll()`이 leader를 reap한다는 것이다. 성공한 group probe 뒤 마지막 자손이 사라지면 숫자 PID/PGID가 최종 KILL 전에 재사용될 수 있고, ESRCH를 관측한 경우만 막던 회귀는 그 interleaving을 다루지 않았다. 정상 단독 Popen supervisor 호출에서 leader를 최종 group 신호까지 unreaped로 유지하고 마지막에만 wait하도록 수정했다. 이미 `returncode`가 알려져 reap된 입력에는 group 신호를 보내지 않는다. TERM/grace/KILL·ESRCH 거절·최종 parent wait와 native2/CI5초 grace **상수**, lint120/build300/wheel300/source600/reviewer600초 제한은 유지했다. 다만 Linux의 조기 종료 동작과 지연은 같지 않다.
+
+Linux에서는 exited/unreaped leader가 zombie로 group에 남아 `killpg(pgid, 0)`가 계속 성공하므로 cleanup이2초 grace 전체를 기다린다. opt-in `native-status --host codex --codex-executable …`의 성공/실패 cleanup에도 적용되는 안전성 비용이다. CI helper의5초 대기는 timeout 경로에만 해당한다. 소유권을 일찍 버리는 최적화는 되돌리지 않았다. 아래는 보존된 두 실제 Linux Actions의 `test_unavailable_native_process_is_bounded_and_no_raw_output_escapes` call phase이며, macOS의 같은 지연은 관측하지 않았으므로 추정하지 않는다.
+
+| 사례 | `4ad185c` / Actions38978293639 call초 | `592b648` / Actions38983563287 call초 |
+|---|---:|---:|
+| malformed |0.059|2.011|
+| oversize |0.059|2.011|
+| timeout |0.201|2.151|
 
 | 정확한 checkpoint | 실제 Actions | 전체 source 수집/통과/실패/skip | 별도 설치 wheel 통과/실패/skip | 판정 |
 |---|---|---|---|---|

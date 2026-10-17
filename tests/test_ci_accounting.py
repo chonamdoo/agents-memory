@@ -360,14 +360,35 @@ def test_source_digest_ignores_generated_bytecode(digest_source):
 
 @pytest.fixture
 def unreaped_leader():
-    process = subprocess.Popen([sys.executable, "-I", "-S", "-c", "pass"], start_new_session=True)
+    process = subprocess.Popen(
+        [sys.executable, "-I", "-S", "-c", "import sys; sys.stdin.buffer.read(1)"],
+        stdin=subprocess.PIPE, start_new_session=True,
+    )
+    observer = None
     deadline = time.monotonic() + 5
     try:
-        while os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
-            assert time.monotonic() < deadline
-            time.sleep(0.001)
+        if not hasattr(os, "waitid"):
+            observer = select.kqueue()
+            observer.control([select.kevent(
+                process.pid, filter=select.KQ_FILTER_PROC,
+                flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT, fflags=select.KQ_NOTE_EXIT,
+            )], 0, 0)
+        # Register before releasing the child: NOTE_EXIT must not race an earlier exit.
+        process.stdin.write(b"\n")
+        process.stdin.close()
+        if observer is None:
+            while os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+                assert time.monotonic() < deadline
+                time.sleep(0.001)
+        else:
+            events = observer.control(None, 1, 5)
+            assert len(events) == 1 and events[0].ident == process.pid
+            assert events[0].fflags & select.KQ_NOTE_EXIT
         yield process
     finally:
+        if observer is not None:
+            observer.close()
+        process.stdin.close()
         if process.returncode is None:
             with suppress(ProcessLookupError):
                 process.kill()
