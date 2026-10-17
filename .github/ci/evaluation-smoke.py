@@ -964,6 +964,30 @@ async def smoke(args, root: Path, summary: dict) -> None:
                 value for value in reasons[:16]
                 if isinstance(value, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", value)
             ] if isinstance(reasons, list) else None
+            references = preflight.get("evidence_refs")
+            if isinstance(references, dict) and isinstance(references.get("native"), str):
+                raw = private_read(run / "ledger" / (
+                    digest_bytes(preflight["invocation_id"].encode()) + ".native.json"), config["trace_bytes"])
+                require(digest_bytes(raw) == references["native"], "NATIVE_DIAGNOSTIC_DIGEST_INVALID")
+                native = decode_json(raw)
+                errors = base64.b64decode(native["stderr"]["$bytes"], validate=True)
+                require(len(errors) == native["stderr"]["size"]
+                        and digest_bytes(errors) == native["stderr"]["sha256"], "NATIVE_STDERR_DIGEST_INVALID")
+                error_types = {
+                    "AssertionError", "BrokenResourceError", "CancelledError", "ClosedResourceError",
+                    "EndOfStream", "ExceptionGroup", "FileNotFoundError", "ImportError", "KeyError",
+                    "McpError", "ModuleNotFoundError", "RuntimeError", "TimeoutError", "TypeError",
+                    "ValidationError", "ValueError",
+                }
+                text = errors.decode("utf-8", errors="replace")
+                observed["native_exit_code"] = native["exit_code"]
+                observed["native_stdout_bytes"] = native["stdout"]["size"]
+                observed["native_stderr_bytes"] = len(errors)
+                observed["stderr_error_types"] = sorted(kind for kind in error_types if re.search(
+                    r"(?m)^[\s|+]*(?:[A-Za-z_][A-Za-z0-9_.]*\.)?" + kind + r"(?::|$)", text))
+                peer_path = re.escape(str(root / "engineering-claude-protocol-peer"))
+                observed["peer_frame_lines"] = [int(value) for value in re.findall(
+                    r'File "' + peer_path + r'", line (\d+)', text)[:16]]
             summary["preflight_observed"] = observed
         outcomes = assert_results(run, manifest, report, reported)
         outcomes.update(await exercise_health_link(root, run, expected, store, actor, bindings["measured"]))

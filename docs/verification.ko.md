@@ -1214,3 +1214,11 @@ source health20.257초·installed health26.838초는 각각23개 전체 outcome�
 
 전체 gate의 남은 실패는 full-evaluation `NATIVE_PRODUCER_PREFLIGHT_REQUIRED`다. 실제 CLI run/report는 생성됐고 retained ledger를 report가 바꾸지 않았으나 native producer preflight의 completed/comparable 조건을 충족하지 못했다. verifier/서비스/Store/schema cleanup은 complete=true다. assertion을 낮추거나 fixture를 actual native로 바꾸지 않고 다음 body-free receipt에 원래 preflight status/code/비교 불가 reason code만 제한해 보존한다. 현재 full invocation/control/functional/health-link 성공과 새 공식12review·QA/handoff는 아직 미관측이다.
 
+### 후속 19ef5df: producer preflight의 실제 unknown 보존
+
+[Actions39054136291](https://github.com/chonamdoo/agents-memory/actions/runs/39054136291)에서도 source3000/별도 installed624/실제 Docker13/Mac36이 pass이고 failed/skip/xfail/xpass/수집 오류0이다. lint0.064초·build0.865초·wheel consumer68.175초는 exit0/timeout=false다. source health30.731초와 installed health16.218초는 각각23개 전체 outcome, clean exit0 및 owned cleanup을 다시 확인했다. wheel SHA256은 이전 `73b15b97c86ef09f6fcba2af4aa873c6e1a32fdd6fec7a4b4bea06487259041c`와 같다.
+
+full evaluation은8.693초 뒤 같은 gate에서 실패했다. 새 body-free projection에서 실제 preflight `status:unknown`, `code:TERMINAL_UNOBSERVED`, `comparable:false`와 model/version 미관측·identity 불일치 reason을 확인했다. 이것은 child의 구체적 예외 원인을 증명하지 않는다. 원래 required/comparability assertion은 유지하고, 다음 진단에는 digest가 일치하는 private native stderr에서 고정 allowlist 예외 종류·owned peer의 frame 번호·실제 exit/byte 수만 제한해 투영한다. 원문 stderr/traceback·경로·provider output은 공개하지 않는다.
+
+전체 gate는 여전히 failure이며 native/human/운영 acceptance, full5개 invocation·control·functional·health-link 성공, whole-source 공식 review/QA 완료로 확대하지 않는다. 서비스·Store·schema·verifier cleanup은 complete=true이고 앞선 성공·실패와 원래18개 완료0을 보존한다.
+
