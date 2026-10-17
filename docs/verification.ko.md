@@ -1244,3 +1244,13 @@ full evaluation의 실제 child는 stdout0bytes·stderr4873bytes·exit1, `Except
 
 이 run의 helper cleanup은 complete=false다. validated manifest 반환 cutover 뒤 기존 config=None 조건이 남아 verifier 확인을 건너뛰었으며, 이를 정상 완료로 바꾸어 적지 않는다. 별도 outer receipt는 실제13owners/29resources를 CLEAN으로 reconcile하고 schema·process·prerequisite 부재를 확인했다. helper도 frozen manifest와 실제 shared pair-verifier directory를 모두 확인하도록 고쳤으며 새 runtime 결과는 아직 없다. 전체 CI gate는 failure이고 원래18개 완료0 및 새 공식12review/QA 미완료는 유지한다.
 
+### 후속 75e810d: 실제 engineering preflight 완료와 retained-byte reader 실패
+
+[Actions39058044071](https://github.com/chonamdoo/agents-memory/actions/runs/39058044071)는 source3008/별도 installed632/실제 Docker13/Mac36pass와 failed/skip/xfail/xpass/수집 오류0을 유지했다. lint0.114초·canonical comments11.891초·build1.317초·wheel consumer102.151초는 exit0/timeout=false다. source health26.171초·installed health28.193초는 각각23개 outcome/clean exit0을 확인했다.
+
+이번 실제 preflight는 `NATIVE_COMPLETED/completed/comparable:true`, child exit0·stdout728bytes·stderr0·비교 불가 reason0이다. 이 identity는 명시된 synthetic engineering protocol peer이며 실제 Claude/Codex host·native 승인·보호 동작이나 model 효익의 증거가 아니다. helper verifier 확인도 이번에는 실제로 실행돼 own/outer cleanup 모두 complete=true다. 앞선 skipped/incomplete receipt는 그대로 보존한다.
+
+남은 실제 실패는 `load_evaluation_health_evidence`에서 난 ValueError다. 실패 stack은 strict `assert_results` 뒤 health-link 진입 지점을 가리키지만 public outcomes는 뒤늦게 할당돼 비어 있었다. 기록하지 못한 full outcome 값을 성공 receipt처럼 채우지 않으며 다음 source에서는 이미 끝난 assertion 단계의 결과를 health-link 전에 보존한다.
+
+정적 원인은 verifier의 private observations가 root JSON array인 반면 일반 retained-artifact reader가 protocol 전용 `decode_json`의 object 조건을 적용한 것이다. reader를 byte-exact 보존으로 고치고 native/control/receipt의 typed object 소비 지점에서만 decode한다. 기존 byte·record 상한, no-follow·digest·oracle 결과·terminal·현재 authority/health dependency 재검사는 유지한다. 이 수정은 아직 Actions after 증거가 없고 전체 gate·health evidence 연결·새 공식12review/QA와 원래18개는 완료로 세지 않는다.
+

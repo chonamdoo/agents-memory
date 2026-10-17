@@ -445,7 +445,8 @@ def load_evaluation_health_evidence(
             total += len(raw)
             _require(total <= MAX_EVIDENCE_BYTES, "EVALUATION_HEALTH_BYTE_BOUND")
             records[name] = raw
-        return decode_json(records[name])
+        # Private observation arrays must remain byte-exact until receipt validation.
+        return records[name]
 
     def take_trace(invocation_id, channel):
         directory = "traces/" + invocation_id + "/" + channel + "/"
@@ -480,7 +481,7 @@ def load_evaluation_health_evidence(
             continue
         _require(prefix + ".intent.json" in records and prefix + ".terminal.json" in records,
                  "EVALUATION_HEALTH_RETAINED_RECORD_MISSING")
-        native = take(prefix + ".native.json", manifest.config["trace_bytes"])
+        native = decode_json(take(prefix + ".native.json", manifest.config["trace_bytes"]))
         take(prefix + ".gateway.json")
         generation = native["identity"].get("thread_id") or native["identity"].get("session_id")
         _require(isinstance(generation, str), "EVALUATION_HEALTH_GENERATION_UNKNOWN")
@@ -496,8 +497,8 @@ def load_evaluation_health_evidence(
             continue
         take("artifacts/" + invocation["invocation_id"] + ".submission.json", manifest.config["artifact_limits"]["bundle_bytes"])
         take("artifacts/" + invocation["invocation_id"] + ".witness.json")
-        control = take(prefix + ".controls.json")
-        receipt = take(prefix + ".verifier.json")
+        control = decode_json(take(prefix + ".controls.json"))
+        receipt = decode_json(take(prefix + ".verifier.json"))
         pair = controller._pair_verifier_id(manifest, invocation)
         take("ledger/" + pair + ".intent.json")
         take("ledger/" + pair + ".controls.json")

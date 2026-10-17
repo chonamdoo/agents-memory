@@ -1004,12 +1004,12 @@ async def smoke(args, root: Path, summary: dict) -> None:
                 observed["peer_frame_lines"] = [int(value) for value in re.findall(
                     r'File "' + peer_path + r'", line (\d+)', text)[:16]]
         outcomes = assert_results(run, manifest, report, reported)
+        summary["outcomes"] = outcomes
         outcomes.update(await exercise_health_link(root, run, expected, store, actor, bindings["measured"]))
         require(ledger_snapshot(run) == immutable, "HEALTH_LINK_MUTATED_RETAINED_EVALUATION")
         _, after = source_identity(args.wheel, args.expected_wheel_sha256, args.consumption)
         require(before == after, "CONSUMED_SOURCE_CHANGED")
         outcomes["source_unchanged"] = True
-        summary["outcomes"] = outcomes
         summary["manifest_digest"] = expected
         summary["report_digest"] = digest_bytes(canonical_bytes(reported))
         summary["evidence_inventory_digest"] = digest_bytes(canonical_bytes(immutable))
@@ -1112,13 +1112,16 @@ def main() -> int:
         summary["code"] = "EVALUATION_SMOKE_FAILED"
         summary["error_type"] = type(error).__name__ if type(error).__name__ in {
             "ValueError", "OSError", "TimeoutError", "RuntimeError", "DomainError", "EvaluationError",
-            "RuntimeRefusal", "CancelledError", "KeyboardInterrupt", "SystemExit", "SmokeFailure",
+            "RuntimeRefusal", "CancelledError", "KeyboardInterrupt", "SystemExit", "SmokeFailure", "EvaluationHealthError",
             "TypeError", "KeyError", "NameError", "AttributeError", "UnboundLocalError", "ArtifactError",
             "FileExistsError", "FileNotFoundError", "PermissionError", "NotADirectoryError",
             "ImportError", "ModuleNotFoundError", "UnsupportedOperation"} else "BoundaryError"
         summary["failure_code"] = error.code if isinstance(error, SmokeFailure) else "SMOKE_EXCEPTION"
         if isinstance(error, DomainError) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", error.code):
             summary["failure_code"] = error.code
+        if isinstance(error, evaluation_health.EvaluationHealthError) and re.fullmatch(
+                r"[A-Z][A-Z0-9_]{0,79}", str(error)):
+            summary["failure_code"] = str(error)
         frame = error.__traceback__
         lines = []
         while frame is not None and len(lines) < 16:
