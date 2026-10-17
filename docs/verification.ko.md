@@ -1204,3 +1204,13 @@ source health23개는 모두 pass다. 8,330-byte 한국어 proposal의10개 wind
 
 full-evaluation의 현재 실제 code는 `REQUIRED_CONTEXT_READ_REQUIRED`다. health session 등록 뒤 새로 만든 gateway에서 첫 required context 없이 inspect를 시작한 fixture 순서 오류다. 새 gateway도 실제 required context를 먼저 읽고 기존 rule identity와 같아야 진행하도록 바꿨다. gateway 보호를 끄거나 옛 stamp를 주입하지 않았다. 전체 evaluation/cleanup·strict aggregate·새 whole-source review/CI-only QA/handoff는 계속 미완료이며 모든 실패와 original18 완료0을 유지한다.
 
+### 후속 f65717f: source·installed health23와 A–D 완료 범위
+
+[Actions39053251612](https://github.com/chonamdoo/agents-memory/actions/runs/39053251612)는 source3000/별도 installed624/실제 Docker13/Mac36이 모두 pass, failed/skip/xfail/xpass/수집 오류0이다. lint0.114초·build1.316초·wheel consumer98.015초는 exit0/timeout=false다. 공개 distribution과 실제 installed module identity가 일치하며 wheel SHA256은 `73b15b97c86ef09f6fcba2af4aa873c6e1a32fdd6fec7a4b4bea06487259041c`다.
+
+source health20.257초·installed health26.838초는 각각23개 전체 outcome과 `complete:true`다. controlled prior TERM handler 아래 실제 원래 CLI가 lifecycle 검사 뒤 exit0했고 forced kill 없이 adapter 제거·child reap·Store close·owned schema 부재·admin close와 package 불변을 확인했다. 원래 -15 실패를 삭제하거나 clean으로 relabel하지 않는다. source/resource 전후 digest는 `4433197bb8f8e6abd8616f5601e74942af68fd61c0de1340815ed38abf72bef1`다.
+
+원래 e4026c6에서 실패한 A3/B3/C2/D3의 같은11개 node와 unrelated coverage control을 이 run의 setup/call/teardown까지 대조해 모두 pass를 확인했다. malformed cbcb A fixture는 genuine red에 넣지 않는다. 이 actual 회귀와 source/installed API·CLI proof로 **추가 A–D 및 bounded code/session/operator-review 구현 조건만** 완료 처리했다. 전체83개 중54개 완료·10개 engineering 열림·19개 별도 차단이며 원래18개 완료0은 유지한다. 네 health 경로의 최종 통합·평가 evidence 연결·whole-source review/QA는 별도 미완료다.
+
+전체 gate의 남은 실패는 full-evaluation `NATIVE_PRODUCER_PREFLIGHT_REQUIRED`다. 실제 CLI run/report는 생성됐고 retained ledger를 report가 바꾸지 않았으나 native producer preflight의 completed/comparable 조건을 충족하지 못했다. verifier/서비스/Store/schema cleanup은 complete=true다. assertion을 낮추거나 fixture를 actual native로 바꾸지 않고 다음 body-free receipt에 원래 preflight status/code/비교 불가 reason code만 제한해 보존한다. 현재 full invocation/control/functional/health-link 성공과 새 공식12review·QA/handoff는 아직 미관측이다.
+

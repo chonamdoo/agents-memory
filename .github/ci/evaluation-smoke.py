@@ -949,6 +949,22 @@ async def smoke(args, root: Path, summary: dict) -> None:
         immutable = ledger_snapshot(run)
         reported = await cli(root, "report", ["report", "--run-dir", str(run)], 60)
         require(ledger_snapshot(run) == immutable, "REPORT_MUTATED_IMMUTABLE_EVIDENCE")
+        controller = report.get("controller")
+        preflight = controller.get("preflight") if isinstance(controller, dict) else None
+        if isinstance(preflight, dict):
+            observed = {}
+            for key in ("status", "code"):
+                value = preflight.get(key)
+                observed[key] = value if isinstance(value, str) and re.fullmatch(
+                    r"[A-Za-z][A-Za-z0-9_]{0,79}", value) else None
+            comparable = preflight.get("comparable")
+            observed["comparable"] = comparable if type(comparable) is bool else None
+            reasons = preflight.get("comparability_reasons")
+            observed["reason_codes"] = [
+                value for value in reasons[:16]
+                if isinstance(value, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", value)
+            ] if isinstance(reasons, list) else None
+            summary["preflight_observed"] = observed
         outcomes = assert_results(run, manifest, report, reported)
         outcomes.update(await exercise_health_link(root, run, expected, store, actor, bindings["measured"]))
         require(ledger_snapshot(run) == immutable, "HEALTH_LINK_MUTATED_RETAINED_EVALUATION")

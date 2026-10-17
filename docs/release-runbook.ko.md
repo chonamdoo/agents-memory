@@ -206,3 +206,28 @@ AM_BIN="$NEXT_AM_BIN"
 ## 7. 제거·보관
 
 owned host/service만 정상 uninstall한다. 사용자·Agent Flow 설정, 명시 중지 의사, private pending spool과 미확정 mutation 이력을 보존한다. 코드/venv는 참조하는 live consumer가 없음을 확인한 뒤 제거한다. 메모리 retract/purge, DB 물리 공간 회수, journal 최소 metadata 보존, encrypted archive retention은 별도 정책·권한이다. 무관한 임시 파일·서비스·기존 배포를 정리 대상으로 포함하지 않는다.
+
+## 평가 engineering 실행 계약
+
+현재 run의 runtime 검증은 **허용된 GitHub Actions 병렬 job에서만** 수행한다. 아래는 설치 wheel의 CLI 계약이며 로컬 실행 지시·실제 native/model/corpus/egress 승인이나 trial 시작 허가가 아니다. `$EVAL_BIN`은 검증 대상 exact wheel의 entrypoint이고 위 stable `$AM_BIN`을 교체하지 않는다. 실제 target/권한·독립 gold/oracle이 없으면 해당 실행은 blocked다.
+
+```sh
+"$EVAL_BIN" evaluation prepare \
+  --manifest "$MANIFEST" --expected-sha256 "$MANIFEST_SHA256" --run-dir "$RUN_DIR"
+"$EVAL_BIN" evaluation run \
+  --manifest "$MANIFEST" --expected-sha256 "$MANIFEST_SHA256" --run-dir "$RUN_DIR"
+"$EVAL_BIN" evaluation report --run-dir "$RUN_DIR"
+```
+
+독립 adjudication을 실제로 받은 경우에만 마지막 명령에 `--adjudication-file "$ADJUDICATION_FILE"`을 추가한다. 입력은 읽기 전용이고 exact manifest·실제 final context·rubric에 묶여야 하며 없거나 관측이 부족하면 unknown이다. report는 전체 ledger에서 다시 구성하며 CLI exit0/완료 report를 목표 점수·180 valid pairs·출시 승인으로 해석하지 않는다.
+
+| manifest 경계 | 제출·검사 계약 |
+|---|---|
+| 원본 identity | `schema=1`, `scope=engineering|evaluation`, `source_commit`, controller/verifier/settings/permissions digest와 **원본 manifest bytes**의 외부 `--expected-sha256`. `independence=provided_unattested`는 인간 승인 attestation이 아니다. |
+| frozen files | 각 `{name,path,sha256,maximum_bytes}`. wheel/controller/verifier/native_driver/gateway_driver/scoring/diagnostics/corpus/gold/workload/rules/native_identity/runtime가 필수다. 상대 path는 manifest 디렉터리 기준이고 digest·개별/합계 bound를 검사한다. |
+| 비교·분모 | seed·repeats·concurrency·byte/event/artifact/verifier/usage budget·고정 bootstrap10,000/95% CI. retry는 사전 명시하지 않으면0이고 모든 원래 attempt·중단·오류·오염 pair를 보존한다. 비용 미관측은0이 아니다. |
+| 실제 권한·격리 | current Actions owner·exact inspected Docker runtime/image·정상 native policy/capability·서로 다른 measured/preflight binding·명시 upstream/refs/required rule. token/file 경로·설정 digest가 trust/egress/실제 protected-action 승인을 대신하지 않는다. |
+| 운영 평가 범위 | `scope=evaluation`은 원래60 task/60 cluster×3회와 gold120개 이상·10군별12개 이상을 요구한다. 작은 engineering protocol peer/합성 oracle 실행으로 이 요구를 줄이거나 인간 gold를 만들어 채우지 않는다. |
+
+`RUN_DIR`은 absolute private retained directory이며 native 작업 CWD와 서로 포함되지 않아야 한다. `prepare`는 manifest/run identity·frozen inputs·전체 pair schedule을 먼저 보존한다. 이후 inputs/ledger/traces/artifacts/verifiers를 원본 실패·private receipt·cleanup과 함께 유지한다. body/corpus/credential이 있을 수 있으므로 run 디렉터리를 public Actions artifact나 PR에 통째로 게시하지 않는다. 이 준비만으로 실제 native consumption·oracle 독립성·clean/offline/ABI·trial 경과를 증명하지 않는다.
+
