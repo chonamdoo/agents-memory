@@ -330,6 +330,48 @@ def test_crash_intent_is_reported_unknown_and_native_effect_is_never_replayed(tm
     assert all(item.returned_claim_ids is None for item in retrieval)
 
 
+def test_interrupted_private_writer_intent_is_readable_without_replay(tmp_path, monkeypatch):
+    path, _, _ = fixture_inputs(tmp_path)
+    manifest = load_manifest(path)
+    state = prepare_run(manifest, tmp_path / "run")
+    invocation = manifest.workload["invocations"][0]
+    ledger = state.run_dir / "ledger"
+    identity = ledger.stat()
+    original_unlink = os.unlink
+
+    class PowerLoss(BaseException):
+        pass
+
+    def interrupt_cleanup(name, *, dir_fd=None):
+        if dir_fd is not None and str(name).startswith(".memory-private-"):
+            parent = os.fstat(dir_fd)
+            if (parent.st_dev, parent.st_ino) == (identity.st_dev, identity.st_ino):
+                raise PowerLoss()
+        return original_unlink(name, dir_fd=dir_fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "unlink", interrupt_cleanup)
+        with pytest.raises(PowerLoss):
+            evaluation._intent(manifest, state.run_dir, invocation)
+
+    intent = ledger / (evaluation._key(invocation["invocation_id"]) + ".intent.json")
+    temporary = next(ledger.glob(".memory-private-*"))
+    assert intent.stat().st_nlink == temporary.stat().st_nlink == 2
+    retained = {item.name: (item.read_bytes(), item.stat().st_nlink) for item in ledger.iterdir()}
+    before = evaluation.report_evaluation(state.run_dir)
+    assert before["controller"]["preflight"]["status"] == "unknown"
+    assert before["controller"]["preflight"]["code"] == "CRASH_INTENT_NO_TERMINAL"
+    assert retained == {item.name: (item.read_bytes(), item.stat().st_nlink) for item in ledger.iterdir()}
+
+    resumed = run_evaluation(manifest, state.run_dir)
+    assert resumed["controller"]["preflight"]["status"] == "unknown"
+    assert resumed["controller"]["preflight"]["code"] == "CRASH_INTENT_NO_REPLAY"
+    assert intent.stat().st_nlink == 1
+    assert not temporary.exists()
+    assert not Path(invocation["native"]["cwd"]).exists()
+    assert not (state.run_dir / "artifacts/preflight-one.submission.json").exists()
+
+
 def test_report_projection_survives_missing_original_inputs(tmp_path):
     path, config, _ = fixture_inputs(tmp_path)
     manifest = load_manifest(path)
