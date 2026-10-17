@@ -3,8 +3,11 @@ from __future__ import annotations
 import base64
 import copy
 import os
+import signal
+import sys
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -593,3 +596,149 @@ def test_publication_recovers_actual_private_writer_unlink_interruption(owned_ru
     assert instance.read_private_record("interrupted.json") == value
     assert not (instance.intent_dir / interrupted[0]).exists()
     assert (instance.intent_dir / "interrupted.json").stat().st_nlink == 1
+
+
+@pytest.fixture
+def actual_lease_helper(monkeypatch):
+    original = runtime.subprocess
+    state = SimpleNamespace(process=None, streams=(), ready=False, configure=lambda _: None,
+                            selectors=runtime.selectors, wait=None)
+
+    def spawn(*args, **kwargs):
+        process = original.Popen(*args, **kwargs)
+        state.process = process
+        state.streams = (process.stdin, process.stdout, process.stderr)
+        state.wait = process.wait
+        state.configure(process)
+        return process
+
+    monkeypatch.setattr(runtime, "subprocess", SimpleNamespace(
+        Popen=spawn, PIPE=original.PIPE, TimeoutExpired=original.TimeoutExpired,
+    ))
+    try:
+        yield state
+    finally:
+        process = state.process
+        if process is not None:
+            try:
+                if process.returncode is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    state.wait(timeout=5)
+            finally:
+                for stream in state.streams:
+                    if stream is not None:
+                        stream.close()
+
+
+def exception_leaves(error):
+    if isinstance(error, BaseExceptionGroup):
+        return tuple(leaf for nested in error.exceptions for leaf in exception_leaves(nested))
+    return (error,)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="CommandLease owns the Actions Linux verifier helper")
+@pytest.mark.parametrize("cleanup_fault", [None, "selector-close", "wait", "pipe-close"])
+def test_command_lease_interrupted_wait_reaps_helper_and_closes_pipes(
+    actual_lease_helper, monkeypatch, cleanup_fault,
+):
+    state = actual_lease_helper
+    interruption = KeyboardInterrupt("controlled interruption of an active helper")
+    cleanup_error = OSError("controlled independent cleanup failure")
+
+    def configure(process):
+        if cleanup_fault == "wait":
+            original_wait = process.wait
+
+            def fail_after_reap(*args, **kwargs):
+                original_wait(*args, **kwargs)
+                raise cleanup_error
+
+            process.wait = fail_after_reap
+        elif cleanup_fault == "pipe-close":
+            original_stream = process.stdout
+
+            class CloseFailure:
+                def __getattr__(self, name):
+                    return getattr(original_stream, name)
+
+                def close(self):
+                    original_stream.close()
+                    raise cleanup_error
+
+            process.stdout = CloseFailure()
+
+    state.configure = configure
+
+    class InterruptSelector:
+        def __init__(self):
+            self.selector = state.selectors.DefaultSelector()
+
+        def __getattr__(self, name):
+            return getattr(self.selector, name)
+
+        def select(self, timeout):
+            events = self.selector.select(timeout)
+            if any(key.data == "stdout" for key, _ in events):
+                state.ready = True
+                raise interruption
+            return events
+
+        def close(self):
+            self.selector.close()
+            if cleanup_fault == "selector-close":
+                raise cleanup_error
+
+    monkeypatch.setattr(runtime, "selectors", SimpleNamespace(
+        DefaultSelector=InterruptSelector, EVENT_READ=state.selectors.EVENT_READ,
+        EVENT_WRITE=state.selectors.EVENT_WRITE,
+    ))
+    with pytest.raises(BaseException) as caught:
+        runtime.CommandLease(
+            [sys.executable, "-I", "-S", "-c",
+             "import os, signal; os.write(1, b'ready\\n'); signal.pause()"],
+            dict(os.environ), stdin=b"", seconds=10, stdout_limit=1024, stderr_limit=1024,
+        )
+    assert state.ready
+    leaves = exception_leaves(caught.value)
+    assert interruption in leaves
+    if cleanup_fault is not None:
+        assert cleanup_error in leaves
+    assert state.process.returncode is not None
+    with pytest.raises(ChildProcessError):
+        os.waitpid(state.process.pid, os.WNOHANG)
+    assert all(stream.closed for stream in state.streams)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="CommandLease owns the Actions Linux verifier helper")
+def test_command_lease_selector_creation_failure_reaps_helper_and_closes_pipes(
+    actual_lease_helper, monkeypatch,
+):
+    state = actual_lease_helper
+    factory_error = OSError("controlled selector creation failure after spawn")
+
+    def fail_after_ready():
+        with state.selectors.DefaultSelector() as selector:
+            selector.register(state.process.stdout, state.selectors.EVENT_READ)
+            assert selector.select(5)
+            assert os.read(state.process.stdout.fileno(), 6) == b"ready\n"
+        state.ready = True
+        raise factory_error
+
+    monkeypatch.setattr(runtime, "selectors", SimpleNamespace(
+        DefaultSelector=fail_after_ready, EVENT_READ=state.selectors.EVENT_READ,
+        EVENT_WRITE=state.selectors.EVENT_WRITE,
+    ))
+    with pytest.raises(OSError) as caught:
+        runtime.CommandLease(
+            [sys.executable, "-I", "-S", "-c",
+             "import os, signal; os.write(1, b'ready\\n'); signal.pause()"],
+            dict(os.environ), stdin=b"", seconds=10, stdout_limit=1024, stderr_limit=1024,
+        )
+    assert caught.value is factory_error and state.ready
+    assert state.process.returncode is not None
+    with pytest.raises(ChildProcessError):
+        os.waitpid(state.process.pid, os.WNOHANG)
+    assert all(stream.closed for stream in state.streams)

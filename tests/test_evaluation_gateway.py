@@ -228,6 +228,101 @@ async def test_off_is_server_enforced_and_required_rules_match_on(authority, tmp
             assert not json.loads(raw).get("result", {}).get("resources")
 
 
+@pytest.mark.parametrize("phase", ["candidate", "final"])
+@pytest.mark.parametrize("field,value", [("limit", 5), ("max_bytes", 6144)])
+async def test_context_budget_cannot_replace_frozen_candidate_or_final_scope(
+    authority, tmp_path, phase, field, value,
+):
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        traces = []
+        frozen = {**scope_for(agent).required_request, "max_bytes": 2400}
+        gateway = EvaluationGateway(
+            replace(scope_for(agent), required_request=frozen), agent=agent, producer=producer,
+            trace_sink=traces.append,
+        )
+        try:
+            await call(gateway, "memory_required_context", gateway.required_request)
+            await prepare_through_actual_wire(gateway)
+            arguments = dict(gateway.required_request)
+            if phase == "final":
+                candidates = await call(gateway, "memory_context", arguments)
+                for item in candidates["candidate_manifest"]:
+                    await full_inspect(gateway, item["inspection_ref"])
+                arguments.update(
+                    admission_id=candidates["admission_id"],
+                    relevance=[{"claim_id": item["claim_id"], "relevant": True,
+                                "reason": "The complete inspected offline evidence matches."}
+                               for item in candidates["candidate_manifest"]],
+                )
+            arguments[field] = value
+            exchanges = [row["exchange"] for row in traces if row["stage"] == "gateway_wire"]
+            with pytest.raises(DomainError) as caught:
+                await asyncio.to_thread(gateway.call_tool, "memory_context", arguments)
+            assert caught.value.code == "REQUIRED_SELECTORS_CHANGED"
+            assert [row["exchange"] for row in traces if row["stage"] == "gateway_wire"] == exchanges
+        finally:
+            gateway.close()
+
+
+@pytest.mark.parametrize("frozen_workspace,requested_workspace", [
+    pytest.param("workspace_frozen", "omitted", id="omitted-frozen-workspace"),
+    pytest.param("workspace_frozen", None, id="null-frozen-workspace"),
+    pytest.param("workspace_frozen", "workspace_alternate", id="alternate-workspace"),
+    pytest.param(None, "workspace_alternate", id="workspace-introduced"),
+])
+async def test_context_cannot_select_a_different_frozen_code_workspace(
+    authority, tmp_path, frozen_workspace, requested_workspace,
+):
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        traces = []
+        frozen = {**scope_for(agent).required_request, "code_workspace_id": frozen_workspace}
+        gateway = EvaluationGateway(
+            replace(scope_for(agent), required_request=frozen), agent=agent, producer=producer,
+            trace_sink=traces.append,
+        )
+        try:
+            await call(gateway, "memory_required_context", gateway.required_request)
+            arguments = {key: value for key, value in gateway.required_request.items()
+                         if key != "code_workspace_id"}
+            if requested_workspace != "omitted":
+                arguments["code_workspace_id"] = requested_workspace
+            exchanges = [row["exchange"] for row in traces if row["stage"] == "gateway_wire"]
+            with pytest.raises(DomainError) as caught:
+                await asyncio.to_thread(gateway.call_tool, "memory_context", arguments)
+            assert caught.value.code == "REQUIRED_SELECTORS_CHANGED"
+            assert [row["exchange"] for row in traces if row["stage"] == "gateway_wire"] == exchanges
+        finally:
+            gateway.close()
+
+
+async def test_normalized_default_budget_and_null_workspace_keep_the_qualified_final_read(authority, tmp_path):
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        frozen = {**scope_for(agent).required_request, "max_bytes": 2400}
+        gateway = EvaluationGateway(
+            replace(scope_for(agent), required_request=frozen), agent=agent, producer=producer,
+            trace_sink=lambda _: None,
+        )
+        try:
+            await call(gateway, "memory_required_context", gateway.required_request)
+            _, claims = await prepare_through_actual_wire(gateway)
+            arguments = {"query": frozen["query"], "code_workspace_id": None}
+            candidates = await call(gateway, "memory_context", arguments)
+            assert {item["claim_id"] for item in candidates["candidate_manifest"]} == set(claims)
+            for item in candidates["candidate_manifest"]:
+                await full_inspect(gateway, item["inspection_ref"])
+            final = await call(gateway, "memory_context", {
+                **arguments, "admission_id": candidates["admission_id"],
+                "relevance": [{"claim_id": item["claim_id"], "relevant": True,
+                               "reason": "Only the complete offline qualification is relevant."}
+                              for item in candidates["candidate_manifest"]],
+            })
+            assert final["judgment_required"] is False
+            assert set(claims) <= set(final["refs"])
+            assert "only offline" in final["context"]
+        finally:
+            gateway.close()
+
+
 async def test_frozen_coding_cannot_capture_record_or_inspect_catalog(authority, tmp_path):
     async with actual_upstream(authority, tmp_path) as (agent, producer):
         traces = []
