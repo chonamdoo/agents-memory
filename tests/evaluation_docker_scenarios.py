@@ -5,9 +5,12 @@ import secrets
 from dataclasses import asdict, replace
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
 
+from agents_memory import evaluation as controller
+from agents_memory import evaluation_runtime as runtime_module
 from agents_memory.evaluation_artifacts import (
     ArtifactBundle,
     ArtifactEntry,
@@ -328,3 +331,75 @@ def test_actual_private_nonzero_effect_controls_enable_verification(tmp_path, pr
     receipt = executor.verify(before, correct, task)
     assert receipt.success and receipt.cleanup_complete
     assert receipt.cases[0].exit_equal and receipt.cases[0].effects_equal
+
+
+def test_actual_pair_control_cancellation_stops_current_and_later_controls(tmp_path, prepared_runtime, monkeypatch):
+    from test_evaluation_controller import fixture_inputs, save, update_document
+
+    tmp_path.chmod(0o700)
+    marker = b"cancel-ready\n"
+    code = b"import signal\nprint('cancel-ready', flush=True)\nsignal.pause()\n"
+    path, config, _ = fixture_inputs(tmp_path, repeats=1, correct_code=code)
+    raw_runtime = asdict(prepared_runtime)
+    for key in ("docker_executable", "docker_config"):
+        raw_runtime[key] = str(raw_runtime[key])
+    update_document(path, config, "runtime", raw_runtime)
+    config["owner"] = {key: value for key, value in asdict(actual_owner()).items()
+                       if key in {"run_id", "run_attempt", "job_id"}}
+    save(path, config)
+    manifest = controller.load_manifest(path)
+    state = controller.prepare_run(manifest, tmp_path / "run")
+    stopped, armed = Event(), {"ready": False, "observed": False}
+    selectors = runtime_module.selectors
+    original_command, original_run = DockerRuntime.command, DockerRuntime.run
+    commands, subjects = [], []
+
+    class MarkerSelector:
+        def __init__(self):
+            self.actual = selectors.DefaultSelector()
+
+        def __getattr__(self, name):
+            return getattr(self.actual, name)
+
+        def select(self, timeout=None):
+            events = self.actual.select(timeout)
+            if armed["ready"] and any(key.data == "stdout" for key, _ in events):
+                armed.update(ready=False, observed=True)
+                stopped.set()
+            return events
+
+    def command(instance, label, args, **kwargs):
+        commands.append(label)
+        result = original_command(instance, label, args, **kwargs)
+        if label == "tool" and not armed["observed"]:
+            armed["ready"] = True
+        return result
+
+    def run(instance, *args, **kwargs):
+        result = original_run(instance, *args, **kwargs)
+        subjects.append(result)
+        return result
+
+    monkeypatch.setattr(runtime_module, "selectors", SimpleNamespace(
+        DefaultSelector=MarkerSelector, EVENT_READ=selectors.EVENT_READ, EVENT_WRITE=selectors.EVENT_WRITE,
+    ))
+    monkeypatch.setattr(DockerRuntime, "command", command)
+    monkeypatch.setattr(DockerRuntime, "run", run)
+    invocations = [item for item in manifest.workload["invocations"] if item["phase"] == "coding"]
+    try:
+        controller._run_pair(manifest, state.run_dir, ("coding-one", 0, ("memory_on", "required_only")), True, stopped)
+    finally:
+        controller._reconcile(manifest, state.run_dir, invocations[0])
+    assert armed["observed"] and stopped.is_set()
+    assert subjects[0].execution.stdout == marker
+    assert subjects[0].state == subjects[0].execution.state == "aborted"
+    assert subjects[0].execution.helper_cleanup and subjects[0].cleanup.exact_absence
+    assert len(subjects) == commands.count("create") == commands.count("start") == commands.count("tool") == 1
+    identifier = controller._pair_verifier_id(manifest, invocations[0])
+    control = decode_json(private_read(state.run_dir / "ledger" / (identifier + ".controls.json"), config["record_bytes"]))
+    assert control["eligible"] is False and len(control["receipts"]) == 1
+    assert control["receipts"][0]["cleanup_complete"] is True
+    assert control["receipts"][0]["cases"][0]["observation"]["execution"]["state"] == "aborted"
+    assert (state.run_dir / "ledger" / (identifier + ".intent.json")).is_file()
+    assert (state.run_dir / "ledger" / (identifier + ".failed.json")).is_file()
+    assert not tuple((state.run_dir / "ledger").glob("*.native.json"))

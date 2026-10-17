@@ -66,7 +66,7 @@ def save(path, value):
     path.chmod(0o600)
 
 
-def fixture_inputs(tmp_path, *, repeats=2, retries=0, gateway=None, preflight_gateway=None, peer=None):
+def fixture_inputs(tmp_path, *, repeats=2, retries=0, gateway=None, preflight_gateway=None, peer=None, correct_code=b"print('correct')\n"):
     root = tmp_path / "inputs"
     root.mkdir(mode=0o700)
     workspaces = tmp_path / "native"
@@ -78,7 +78,7 @@ def fixture_inputs(tmp_path, *, repeats=2, retries=0, gateway=None, preflight_ga
         entries = (ArtifactEntry("program.py", "file", 0o644, code, digest_bytes(code)), ArtifactEntry("retained.txt", "file", 0o644, b"retained\r\n", digest_bytes(b"retained\r\n")))
         return ArtifactBundle(entries, limits)
 
-    baseline, correct, wrong = [bundle(code) for code in (baseline_code, b"print('correct')\n", b"print('plausible')\n")]
+    baseline, correct, wrong = [bundle(code) for code in (baseline_code, correct_code, b"print('plausible')\n")]
     documents = {
         "controller": Path(evaluation.__file__).read_bytes(),
         "verifier": Path(evaluation_verifier.__file__).read_bytes(),
@@ -114,6 +114,12 @@ def fixture_inputs(tmp_path, *, repeats=2, retries=0, gateway=None, preflight_ga
 
     gateway = gateway or channel("engineering-coding", "engineering-coding-route", "rules")
     preflight_gateway = preflight_gateway or channel("engineering-preflight", "engineering-preflight-route", "preflight_rules")
+    documents["native_tool_mapping"] = {
+        "schema": 1, "backend": "codex",
+        "routes": [{"route_ref": selected["route_ref"], "server": "engineering-scoped-gateway",
+                    "tools": {name: name for name in ("memory_required_context", *evaluation_gateway.SCHEMAS)}}
+                   for selected in (gateway, preflight_gateway)],
+    }
     context = {"schema": 1, "independence": "provided_unattested", "settings_digest": "1" * 64, "permissions_digest": "2" * 64, "ownership_boundary_ref": "engineering-only-not-an-isolation-attestation", "exclusive_optional_route_observed": True, "residual_memory_absence_observed": True, "fresh_generation_observed": True}
     documents["context"] = {**context, "route_ref": gateway["route_ref"]}
     documents["preflight_context"] = {**context, "route_ref": preflight_gateway["route_ref"]}
@@ -458,7 +464,7 @@ def _actual_preflight_channel(agent, producer):
             "lifetime_seconds": 5.0, "rules_file": "preflight_rules"}
 
 
-def _controller_peer(manifest_path, run_dir, complete, *, invocation_id="preflight-one", final_empty=False):
+def _controller_peer(manifest_path, run_dir, complete, *, invocation_id="preflight-one", final_empty=False, event_mode="valid"):
     return f'''import asyncio, hashlib, json, os, pathlib, sys
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -487,6 +493,9 @@ run_dir = pathlib.Path({str(run_dir)!r})
 identity = {invocation_id!r}
 selected_invocation = next(item for item in manifest.workload['invocations'] if item['invocation_id'] == identity)
 channel = manifest.config['preflight_gateway' if selected_invocation['phase'] == 'preflight' else 'gateway']
+mapping = next(item for item in manifest.document('native_tool_mapping')['routes'] if item['route_ref'] == channel['route_ref'])
+event_mode = {event_mode!r}
+action_count = 0
 async def exercise():
     params = StdioServerParameters(command=sys.executable, args=[
         '-m', 'agents_memory.cli', 'evaluation', 'gateway', '--manifest', str(manifest_path),
@@ -498,8 +507,27 @@ async def exercise():
             async with ClientSession(*streams, read_timeout_seconds=5.0) as client:
                 await client.initialize()
                 async def call(name, arguments):
+                    global action_count
+                    action_count += 1
+                    action_id = 'native-action-' + str(action_count)
+                    native_arguments = {{**arguments, 'query': 'not-the-dispatched-query'}} if event_mode == 'arguments' else arguments
+                    server = 'unrelated-server' if event_mode == 'server' else mapping['server']
+                    item = {{'type': 'mcpToolCall', 'id': action_id, 'server': server,
+                            'tool': mapping['tools'][name], 'arguments': native_arguments,
+                            'status': 'inProgress', 'result': None, 'error': None}}
+                    scope = {{'threadId': 'engineering-thread', 'turnId': 'engineering-turn'}}
+                    if event_mode != 'missing':
+                        emit({{'method': 'item/started', 'params': {{**scope, 'item': item}}}})
+                        if event_mode == 'duplicate':
+                            emit({{'method': 'item/started', 'params': {{**scope, 'item': item}}}})
                     response = await client.call_tool(name, arguments)
                     assert not response.is_error
+                    content = [entry.model_dump(mode='json', by_alias=True, exclude_none=True) for entry in response.content]
+                    if event_mode == 'result':
+                        content = [{{'type': 'text', 'text': '{{"not":"the-dispatched-result"}}'}}]
+                    if event_mode != 'missing':
+                        item = {{**item, 'status': 'completed', 'result': {{'content': content, 'structuredContent': None, '_meta': None}}}}
+                        emit({{'method': 'item/completed', 'params': {{**scope, 'item': item}}}})
                     return json.loads(response.content[0].text)
                 async def inspect(ref):
                     offset, collected = 0, bytearray()
@@ -593,6 +621,26 @@ async def test_actual_controller_producer_native_peer_mcp_preflight_is_not_funct
         else:
             assert not result["comparable"]
             assert "PRODUCER_NATIVE_MCP_PIPELINE_INCOMPLETE" in result["comparability_reasons"]
+
+
+@pytest.mark.parametrize("event_mode", ["missing", "arguments", "result", "server", "duplicate"])
+async def test_actual_native_completion_cannot_credit_unlinked_gateway_delivery(authority, tmp_path, event_mode):
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        path, run_dir = tmp_path / "manifest.json", tmp_path / "run"
+        peer = _controller_peer(path, run_dir, True, event_mode=event_mode)
+        path, _, _ = fixture_inputs(tmp_path, repeats=1, preflight_gateway=_actual_preflight_channel(agent, producer), peer=peer)
+        manifest = load_manifest(path)
+        state = prepare_run(manifest, run_dir)
+        invocation = manifest.workload["invocations"][0]
+        result = await asyncio.to_thread(evaluation._run_one, manifest, state.run_dir, invocation, enabled=True)
+        prefix = state.run_dir / "ledger" / digest_bytes(invocation["invocation_id"].encode())
+        native = json.loads(prefix.with_suffix(".native.json").read_bytes())
+        gateway = json.loads(prefix.with_suffix(".gateway.json").read_bytes())
+        assert native["status"] == "completed" and native["comparable"] is True
+        assert gateway["observation_complete"] is True and gateway["final_reads"]
+        assert result["status"] == "incomplete" and result["comparable"] is False
+        assert any(reason.startswith("NATIVE_TOOL_") for reason in result["comparability_reasons"])
+        assert "native_tool_link" not in result["evidence_refs"]
 
 
 async def test_controller_uses_real_verifier_controls_and_blocks_unprepared_runtime_before_native(authority, tmp_path):

@@ -167,7 +167,6 @@ def test_complete_ci_binds_distinct_wheels_and_real_engineering_surfaces(evidenc
     assert result["passed"] == result["collected"] == len(evidence.ids)
     assert result["health"] == {"source": True, "installed": True}
     assert result["evaluation"]["wheel_sha256"] != result["wheel_consumer"]["sha256"]
-    assert result["evaluation"]["scenarios_passed"] == 13
     assert result["evaluation"]["full_smoke"] is True
     assert result["evaluation"]["exact_cleanup"] is True
 

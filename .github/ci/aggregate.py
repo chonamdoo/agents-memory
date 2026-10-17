@@ -113,6 +113,7 @@ SCENARIO_NODEIDS = sorted("tests/evaluation_docker_scenarios.py::" + name for na
     "test_actual_cancellation_preserves_failure_and_owned_cleanup",
     "test_actual_watchdog_expires_without_host_subject_supervision",
     "test_actual_private_nonzero_effect_controls_enable_verification",
+    "test_actual_pair_control_cancellation_stops_current_and_later_controls",
 ))
 EVALUATION_PHASES = ("image-acquisition", "runtime-prepare", "scenarios", "full-smoke")
 EVALUATION_IMAGE = "docker.io/library/python@sha256:2ed6491b93cd49272ee6de2b5a38440c3448360322c089fc23e370722d74179d"
