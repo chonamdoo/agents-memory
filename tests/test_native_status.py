@@ -8,7 +8,6 @@ import subprocess
 import sys
 import textwrap
 import time
-from contextlib import suppress
 
 import pytest
 

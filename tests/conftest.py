@@ -81,10 +81,16 @@ def owned_descendants(
             deadline = time.monotonic() + 2
             while True:
                 remaining = deadline - time.monotonic()
-                if remaining <= 0 or not select.select([observer], [], [], remaining)[0]:
+                if remaining <= 0:
                     break
-                if os.read(observer, 4096) == b"":
-                    return
+                try:
+                    data = os.read(observer, 4096)
+                except BlockingIOError:
+                    if not select.select([observer], [], [], remaining)[0]:
+                        break
+                else:
+                    if data == b"":
+                        return
             pytest.fail("Controlled descendant did not close its lifetime descriptor")
 
         cleanup.callback(observe_descendant_exit)
