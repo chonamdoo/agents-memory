@@ -22,6 +22,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from agents_memory import cli as product_cli
 from agents_memory import (
+    context as context_module,
     evaluation,
     evaluation_artifacts,
     evaluation_diagnostics,
@@ -80,6 +81,7 @@ MODULES = {
     "controller": evaluation,
     "artifacts": evaluation_artifacts,
     "diagnostics": evaluation_diagnostics,
+    "context_renderer": context_module,
     "gateway_driver": evaluation_gateway,
     "health_compiler": evaluation_health,
     "native_driver": evaluation_native,
@@ -491,7 +493,7 @@ def fixture_gateway(config: dict, trace) -> EvaluationGateway:
     return EvaluationGateway(scope, agent=upstream["agent"], producer=upstream["producer"], trace_sink=trace)
 
 
-def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, list]:
+def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, dict]:
     sequence = 0
     def trace(value):
         nonlocal sequence
@@ -536,7 +538,20 @@ def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, list]:
         window = call("memory_inspect", {"ref": source, "byte_start": 0, "max_bytes": 4096})
         health_views = {item["id"]: call("memory_inspect", {"ref": "health:claim:" + item["id"]})
                         for item in claims}
-        corpus = {"schema": 1, "sources": [{"source_id": source, "revision": pointer["source_revision"],
+        probe = {"query": digest_bytes(b"engineering bounded zero-candidate rule probe"), "max_bytes": 6144, "limit": 5}
+        request = {**{key: value for key, value in config["required_request"].items()
+                      if key not in {"query", "query_expansions", "max_bytes", "limit"}}, **probe}
+        rules_snapshot = {
+            "schema": 2, "rules": sorted(rules), "probe": probe,
+            "applicable": evaluation._rule_snapshot(call("memory_context", request)),
+        }
+        evaluation._validate_rule_snapshot(rules_snapshot)
+        judgment = evaluation._inspect(
+            gateway, "judgment", 4 * 1024 * 1024,
+            claim_ids=tuple(item["id"] for item in claims),
+        )
+        require(judgment.get("relation_ids") == [], "ENGINEERING_EMPTY_RELATION_CLOSURE_REQUIRED")
+        corpus = {"schema": 2, "relations": [], "sources": [{"source_id": source, "revision": pointer["source_revision"],
                    "body": b64(SOURCE_BODY.encode()), "sha256": digest_bytes(SOURCE_BODY.encode()),
                    "inspection_windows": [{key: window[key]
                                            for key in ("byte_start", "byte_end", "window_digest")}]}],
@@ -550,7 +565,7 @@ def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, list]:
                 "cluster_id": "engineering-source-family", "group": "engineering-positive",
                 "relevant_claim_ids": [claims[0]["id"]], "irrelevant_claim_ids": [], "judgment_complete": True,
                 "grounding_refs": anchors}]}
-        return corpus, gold, sorted(rules)
+        return corpus, gold, rules_snapshot
     finally:
         gateway.close()
 
@@ -570,7 +585,7 @@ def freeze_manifest(
     documents.update({name: Path(module.__file__).read_bytes() for name, module in MODULES.items()})
     documents.update({"wheel": private_read(args.wheel, 64 * 1024 * 1024, private=False),
                       "runtime": runtime_raw, "corpus": corpus, "gold": gold,
-                      "rules": {"schema": 1, "rules": rules}, "preflight_rules": {"schema": 1, "rules": preflight_rules},
+                      "rules": rules, "preflight_rules": {"schema": 1, "rules": preflight_rules},
                       "prompt": b"Explicit synthetic engineering protocol fixture only. Preserve retained.txt exactly; change program.py to print correct. No original native/model/independent approval is claimed."})
     settings_digest = digest_bytes(canonical_bytes({"peer": digest_bytes(peer.read_bytes()), "measured": measured,
                                                     "preflight": preflight, "scope": "engineering-only"}))
@@ -952,7 +967,7 @@ async def smoke(args, root: Path, summary: dict) -> None:
             finally:
                 gateway.close()
         pre_rules = await asyncio.to_thread(preflight_rules)
-        require(rules and pre_rules, "REAL_REQUIRED_RULES_REQUIRED")
+        require(rules["rules"] and pre_rules, "REAL_REQUIRED_RULES_REQUIRED")
         manifest, run, frozen = freeze_manifest(root, channels["measured"], channels["preflight"], corpus, gold,
                                                rules, pre_rules, args, runtime_raw)
         expected = digest_bytes(manifest.read_bytes())

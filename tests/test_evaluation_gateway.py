@@ -374,14 +374,13 @@ def test_actual_http_unknown_or_malformed_write_is_never_retried(fault_upstream,
         assert any(item.stage == "failure" for item in observations)
 
 
-@pytest.mark.parametrize("failed_stage", ["gateway_flow", "gateway_delivery"])
-async def test_failed_final_observation_cannot_publish_pipeline_success(authority, tmp_path, failed_stage):
+async def test_failed_final_observation_cannot_publish_pipeline_success(authority, tmp_path):
     async with actual_upstream(authority, tmp_path) as (agent, producer):
         traces = []
         armed = False
         failed = []
         def observe(row):
-            if armed and row["stage"] == failed_stage and row.get("name") == "memory_context":
+            if armed and row["stage"] == "gateway_flow" and row.get("name") == "memory_context":
                 failed.append(row["stage"])
                 raise OSError("Synthetic final-context observer failure")
             traces.append(row)
@@ -411,7 +410,7 @@ async def test_failed_final_observation_cannot_publish_pipeline_success(authorit
         assert json.loads(failure["content"][0]["text"])["error"] == {
             "code": "GATEWAY_FAILURE_RECONCILE", "effect": "unknown",
         }
-        assert failed == [failed_stage]
+        assert failed == ["gateway_flow"]
         observation = gateway.flow_observation()
         assert observation["pipeline_observed"] is False
         assert observation["final_read_observed"] is False

@@ -72,7 +72,7 @@ def complete_evidence(root: Path) -> SimpleNamespace:
     module_names = {"cli", "config", "store", "application", "edge", "health", "health_producer", "health_code",
                     "evaluation", "evaluation_artifacts", "evaluation_runtime", "evaluation_native",
                     "evaluation_gateway", "evaluation_scoring", "evaluation_verifier",
-                    "evaluation_diagnostics", "evaluation_health"}
+                    "evaluation_diagnostics", "context", "evaluation_health"}
     modules = {}
     with zipfile.ZipFile(distribution, "w") as archive:
         for name in sorted(module_names):
@@ -125,7 +125,7 @@ def complete_evidence(root: Path) -> SimpleNamespace:
                           "runtime_digest": runtime_digest, "wheel_sha256": evaluation_wheel, "installed_modules": modules})
     mapping = {"controller": "evaluation", "artifacts": "evaluation_artifacts", "runtime_driver": "evaluation_runtime",
                "native_driver": "evaluation_native", "gateway_driver": "evaluation_gateway", "scoring": "evaluation_scoring",
-               "diagnostics": "evaluation_diagnostics", "health_compiler": "evaluation_health",
+               "diagnostics": "evaluation_diagnostics", "context_renderer": "context", "health_compiler": "evaluation_health",
                "verifier": "evaluation_verifier", "cli": "cli"}
     observed_modules = {name: modules["agents_memory/" + target + ".py"] for name, target in mapping.items()}
     observed_modules_digest = hashlib.sha256(json.dumps(observed_modules, ensure_ascii=False, sort_keys=True,

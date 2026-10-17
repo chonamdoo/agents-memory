@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .domain import ContextCommand, canonical_digest
+from .context import render_claim
+from .domain import ClaimDraft, ContextCommand, EvidenceSpan, canonical_digest
 from .evaluation_artifacts import digest_bytes
 from .evaluation_scoring import (
     BudgetFeasibilityWitness,
@@ -275,7 +276,7 @@ def independent_context_item_feasibility(
             if base_size + sum(claim_sizes[ref] for ref in selected) + count - 1 > problem.max_bytes:
                 continue
             selected_set = set(selected)
-            edges = [edge.model_dump(mode="json") | {"endpoints_in_context": [ref for ref in (edge.left, edge.right) if ref in selected_set]} for edge in problem.relations if edge.left in selected_set or edge.right in selected_set]
+            edges = [edge.model_dump(mode="json") | {"endpoints_in_context": [ref for ref in (edge.left, edge.right) if ref in selected_set]} for edge in sorted(problem.relations, key=lambda edge: edge.ref) if edge.left in selected_set or edge.right in selected_set]
             candidate = {**value, "memory_candidates": [rendered[ref] for ref in selected], "relations": edges}
             if _size(candidate) <= problem.max_bytes:
                 return PackingResult(True, count, selected, evaluations, None)
@@ -347,6 +348,23 @@ def _source_mapping(manifest: EvaluationManifest, gold: dict) -> str:
     return canonical_digest({"case": gold, "claims": claims, "sources": [source for source in corpus["sources"] if source["source_id"] in sources]})
 
 
+def render_frozen_claim(claim: dict) -> dict:
+    try:
+        projection = claim["projection"]
+        draft = ClaimDraft.model_validate(projection["draft"])
+        evidence = tuple(EvidenceSpan.model_validate(span) for span in projection["evidence"])
+        _require(projection["id"] == claim["ref"] and projection["kind"] == "claim"
+                 and projection["state"] == "active" and projection["statement"] == draft.statement
+                 and projection["interpretation_role"] in {"verbatim_candidate", "model_derived_candidate"}
+                 and bool(evidence), "PACKING_FROZEN_CLAIM_INCOMPLETE")
+        return render_claim(
+            claim["ref"], draft, evidence, snapshot=projection["snapshot"],
+            interpretation_role=projection["interpretation_role"],
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise DiagnosticInputError("PACKING_FROZEN_CLAIM_INCOMPLETE") from error
+
+
 def diagnostic_scope(manifest: EvaluationManifest, protocol: ScoringProtocol | dict, case_id: str) -> RetrievalDiagnosticScope:
     protocol = _protocol(manifest, protocol)
     case, request, gold = _case_inputs(manifest, protocol, case_id)
@@ -364,15 +382,39 @@ def diagnostic_scope(manifest: EvaluationManifest, protocol: ScoringProtocol | d
     _require(supplied.scope.model_dump(mode="json") == scope.model_dump(mode="json", exclude={"manifest_digest"}), "DIAGNOSTIC_RAW_SCOPE")
     budget = _reference(manifest, supplied.budget, IndependentPackingInput)
     _require(budget.case_id == case_id and budget.corpus_digest == scope.corpus_digest and budget.required_rules_digest == scope.required_rules_digest and budget.request_digest == scope.request_digest and budget.source_scope_digest == scope.source_scope_digest and budget.max_bytes == request["max_bytes"] and budget.limit == request["limit"], "DIAGNOSTIC_BUDGET_SCOPE")
-    identities = [[rule.ref, rule.revision, rule.digest] for rule in budget.rules
-                  if rule.required and rule.applicability == "true"]
-    _require(sorted(identities) == manifest.document("rules")["rules"], "DIAGNOSTIC_RULE_SCOPE")
-    frozen_sources = {item["source_id"]: item for item in manifest.document("corpus")["sources"]}
-    frozen_claims = {item["ref"]: item for item in manifest.document("corpus")["claims"]}
+    frozen_rules = manifest.document("rules")
+    _require(frozen_rules.get("schema") == 2
+             and isinstance(frozen_rules.get("applicable"), list),
+             "PACKING_FROZEN_RULE_SET_INCOMPLETE")
+    rules = sorted(
+        (rule.model_dump(mode="json") for rule in budget.rules),
+        key=lambda rule: (not rule["required"], rule["ref"], rule["revision"]),
+    )
+    expected_rules = {rule["ref"]: rule for rule in frozen_rules["applicable"]}
+    _unique((rule["ref"] for rule in rules), "PACKING_DUPLICATE_RULE")
+    _require(all(rule == expected_rules.get(rule["ref"]) for rule in rules)
+             and (not budget.complete or rules == frozen_rules["applicable"]),
+             "PACKING_APPROVED_RULE_CONTENT_MISMATCH")
+    corpus = manifest.document("corpus")
+    _require(corpus.get("schema") == 2 and isinstance(corpus.get("relations"), list),
+             "PACKING_FROZEN_RELATION_SET_INCOMPLETE")
+    frozen_sources = {item["source_id"]: item for item in corpus["sources"]}
+    frozen_claims = {item["ref"]: item for item in corpus["claims"]}
+    expected_relations = [{
+        "ref": edge["ref"], "left": edge["projection"]["left_id"],
+        "right": edge["projection"]["right_id"], "kind": edge["projection"]["relation_kind"],
+    } for edge in corpus["relations"]]
+    relations = [edge.model_dump(mode="json") for edge in sorted(budget.relations, key=lambda edge: edge.ref)]
+    expected_edges = {edge["ref"]: edge for edge in expected_relations}
+    _unique((edge["ref"] for edge in relations), "PACKING_DUPLICATE_RELATION")
+    _require(all(edge == expected_edges.get(edge["ref"]) for edge in relations)
+             and (not budget.complete or relations == expected_relations),
+             "PACKING_FROZEN_RELATION_CONTENT_MISMATCH")
     _unique((item.ref for item in budget.claims), "PACKING_DUPLICATE_CLAIM")
     for claim in budget.claims:
-        _require(claim.ref in frozen_claims and claim.snapshot == frozen_claims[claim.ref]["projection"]["snapshot"],
-                 "PACKING_CLAIM_SOURCE_SCOPE")
+        _require(claim.ref in frozen_claims, "PACKING_CLAIM_SOURCE_SCOPE")
+        _require(claim.rendered() == render_frozen_claim(frozen_claims[claim.ref]),
+                 "PACKING_FROZEN_CLAIM_CONTENT_MISMATCH")
         for span in claim.evidence:
             source = frozen_sources.get(span.source)
             _require(source is not None and span.revision == source["revision"], "PACKING_EVIDENCE_SOURCE_SCOPE")
@@ -455,6 +497,12 @@ def load_diagnostic_gold(
                 feasibility = BudgetFeasibilityWitness(scope=scope, independent_reference=problem.independent_reference, evidence_digest=supplied.budget.sha256, eligibility_digest=canonical_digest(eligibility), basis="complete_independent_context_item_packing", complete=packed.complete, maximum_relevant=packed.maximum_relevant, maximizing_claim_ids=packed.maximizing_claim_ids)
             for judgment in supplied.judgments:
                 _require(quality_digest is not None and judgment.definition_digest == quality_digest, "DIAGNOSTIC_RUBRIC_SCOPE")
+                if judgment.phase == "frozen_claim":
+                    claim = next((row for row in manifest.document("corpus")["claims"]
+                                  if row["ref"] == judgment.claim_id), None)
+                    _require(claim is not None and judgment.expected_claim_digest
+                             == canonical_digest(render_frozen_claim(claim)),
+                             "DIAGNOSTIC_FROZEN_CLAIM_JUDGMENT_CONTENT_MISMATCH")
                 judgments.append(DeliveredClaimJudgment(**judgment.model_dump(mode="json", exclude={"scope"}), scope=scope))
         post = extra_cases.get(case.case_id)
         if post is not None:

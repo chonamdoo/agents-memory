@@ -12,6 +12,7 @@
 - 건강 판정용 retained evidence는 private observation array를 포함해 bounded byte-exact로 보존한다. object 조건은 실제 typed object 소비 지점에서 검사하며 receipt·terminal·digest·현재 authority 검증은 유지한다.
 - MCP catalog는 flat root와 variant의 required/allowed/null 제약을 유지하면서 schema 참조·중복을 줄였다. 실제 최대 escaped JSON-RPC ID의 응답 상한을 올리지 않는다. 출력 상한에 걸린 Docker exec는 container removal 전에 닫고 기존 deadline/TTL·소유권·exact cleanup을 유지한다.
 - 복구 주기의 공유 discovery cursor를 직렬화하고 상태 갱신을 동기화했다. 새 scan이 끝나기 전에 이전 실패를 idle로 숨기지 않는다. 실제 `/readyz` 실패 전후와 event로 멈춘 scan의 판정 유지·후속 복구를 source/설치 wheel에서 검증했다.
+- interrupted intent의 증명된 private-writer 임시 hardlink를 소유권 경계에서 복구한다. 읽기 전용 report는 ledger를 고치지 않고 unknown 분모를 보존하며, resume의 정리는 재실행 허가가 아니다. 임의·추가·symlink·비소유 link 및 frozen input의 single-link 제한은 유지한다. 별도 source/설치 wheel 실패→성공과 전체 engineering smoke를 Actions에서 검증했다.
 - 설치된 canonical comment 정책과 같은 공개 immutable source/checksum을 Actions에서만 실행한다. 정확한 PR base/head의 전체 old/new code와 source·coverage receipt를 확인하며, 누락·불일치·정책 실패는 aggregate가 거절한다. 로컬 hook·guard·trust·settings·pins 변경은 없다.
 - source·설치 wheel health와 실제 producer/MCP·격리 oracle·명시 health linkage의 전체 engineering smoke 및 strict aggregate를 통과했다. fresh whole-source formal review/QA는 별도 판정이며 source별 결과는 [PR9](https://github.com/chonamdoo/agents-memory/pull/9), exact-head Actions와 실패 전후·부분 성공 범위는 [검증 기록](docs/verification.ko.md)을 따른다. 합성 native protocol peer를 실제 native 승인·모델 효익으로 세지 않으며 로컬 runtime 검증·native trust/운영/egress·human120/60task×3·실제1–2주 trial·merge/release 실행을 승인하거나 완료한 기록이 아니다.
 

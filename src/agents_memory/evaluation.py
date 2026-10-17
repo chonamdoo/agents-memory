@@ -15,12 +15,15 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from mcp.shared.dispatcher import coerce_request_id
+
+from . import context as context_module
 from . import evaluation_diagnostics as diagnostics_module
 from . import evaluation_gateway as gateway_module
 from . import evaluation_native as native_module
 from . import evaluation_scoring as scoring_module
 from . import evaluation_verifier as verifier_module
-from .domain import CaptureCommand, ContextCommand
+from .domain import CaptureCommand, ContextCommand, DomainError, EffectState
 from .evaluation_artifacts import (
     ArtifactBundle,
     ArtifactEntry,
@@ -393,8 +396,8 @@ def _validate_documents(manifest: EvaluationManifest) -> None:
     _keys(gold, {"schema", "independence", "cases"})
     _require(gold["schema"] == 1 and type(gold["schema"]) is int and gold["independence"] == "provided_unattested", "GOLD_PROVENANCE")
     corpus = manifest.document("corpus")
-    _keys(corpus, {"schema", "sources", "claims"})
-    _require(type(corpus["schema"]) is int and corpus["schema"] == 1, "CORPUS_SCHEMA")
+    _keys(corpus, {"schema", "sources", "claims", "relations"})
+    _require(type(corpus["schema"]) is int and corpus["schema"] == 2, "CORPUS_SCHEMA")
     sources = {}
     for source in _array(corpus["sources"], 12000):
         _keys(source, {"source_id", "revision", "body", "sha256", "inspection_windows"})
@@ -431,8 +434,31 @@ def _validate_documents(manifest: EvaluationManifest) -> None:
             start = _integer(span.get("byte_start"), 0, len(body))
             end = _integer(span.get("byte_end"), start + 1, len(body))
             _require(type(span.get("source_revision")) is int and span["source_revision"] == revision and isinstance(span.get("quote"), str) and body[start:end] == span["quote"].encode(), "CLAIM_GROUNDING_MISMATCH")
+        diagnostics_module.render_frozen_claim(claim)
+    relation_ids, relation_keys = set(), set()
+    for edge in _array(corpus["relations"], 12000):
+        _keys(edge, {"ref", "projection"})
+        _text(edge["ref"])
+        projection = _keys(edge["projection"], {
+            "id", "kind", "state", "left_id", "right_id", "relation_kind",
+            "interpretation_role", "awaiting_revalidation",
+        })
+        _require(projection["id"] == edge["ref"] and projection["kind"] == "relation"
+                 and projection["state"] == "active"
+                 and projection["left_id"] in claim_ids and projection["right_id"] in claim_ids
+                 and projection["interpretation_role"] == "caller_judged_relation"
+                 and projection["awaiting_revalidation"] is False,
+                 "FROZEN_RELATION_IDENTITY_OR_SCOPE")
+        _text(projection["relation_kind"], 128)
+        key = (projection["left_id"], projection["right_id"], projection["relation_kind"])
+        _require(edge["ref"] not in relation_ids and key not in relation_keys,
+                 "DUPLICATE_FROZEN_RELATION")
+        relation_ids.add(edge["ref"])
+        relation_keys.add(key)
+    _require([edge["ref"] for edge in corpus["relations"]] == sorted(relation_ids),
+             "FROZEN_RELATION_ORDER")
     approved_corpus_refs = ({source["source_id"] for source in corpus["sources"]}
-                            | claim_ids | {"health:claim:" + ref for ref in claim_ids})
+                            | claim_ids | relation_ids | {"health:claim:" + ref for ref in claim_ids})
     _require(approved_corpus_refs <= set(config["gateway"]["approved_refs"]),
              "EXPLICIT_CORPUS_AND_HEALTH_INSPECTION_SCOPE_REQUIRED")
     cases, groups = {}, {}
@@ -518,15 +544,7 @@ def _validate_documents(manifest: EvaluationManifest) -> None:
             _require({key: value for key, value in dataclasses.asdict(specs[0]).items() if key not in varying} == {key: value for key, value in dataclasses.asdict(specs[1]).items() if key not in varying}, "PAIRED_NATIVE_BUDGET_OR_CONTEXT_MISMATCH")
     paths = sorted(Path(value) for value in directories)
     _require(not any(right.is_relative_to(left) for index, left in enumerate(paths) for right in paths[index + 1:]), "OVERLAPPING_NATIVE_WORKSPACES")
-    rules = manifest.document("rules")
-    _keys(rules, {"schema", "rules"})
-    _require(type(rules["schema"]) is int and rules["schema"] == 1 and isinstance(rules["rules"], list), "RULE_SNAPSHOT_SCHEMA")
-    _require(rules["rules"] == sorted(rules["rules"]), "RULE_IDENTITY_ORDER")
-    for rule in rules["rules"]:
-        _require(isinstance(rule, list) and len(rule) == 3, "RULE_IDENTITY")
-        _text(rule[0])
-        _integer(rule[1], 1, 2**63 - 1)
-        _digest(rule[2])
+    _validate_rule_snapshot(manifest.document("rules"))
     _require(config["gateway"]["rules_file"] == "rules", "MEASURED_RULE_FILE_IDENTITY")
     preflight_rules = manifest.document(config["preflight_gateway"]["rules_file"])
     _keys(preflight_rules, {"schema", "rules"})
@@ -614,7 +632,7 @@ def load_manifest(path: Path, *, expected_sha256: str | None = None) -> Evaluati
         total += len(content)
         _require(total <= _TOTAL_BYTES, "FROZEN_INPUT_TOTAL_BOUND")
         files.append(FrozenFile(name, source, item["sha256"], maximum, content))
-    _require({"wheel", "controller", "verifier", "native_driver", "gateway_driver", "scoring", "diagnostics",
+    _require({"wheel", "controller", "verifier", "native_driver", "gateway_driver", "scoring", "diagnostics", "context_renderer",
               "corpus", "gold", "workload", "rules", "native_identity", "runtime"} <= names,
              "REQUIRED_FROZEN_INPUTS")
     result = EvaluationManifest(path, digest, raw, tuple(files))
@@ -803,31 +821,62 @@ class _RunGateway(EvaluationGateway):
         super().__init__(*args, **kwargs)
 
     def call_tool(self, name: str, arguments: dict, *, downstream_request_id=None) -> dict:
-        result = super().call_tool(name, arguments, downstream_request_id=downstream_request_id)
-        if not result.get("isError") and name in {"memory_required_context", "memory_context"}:
-            payload = _payload(result)
-            record = {"request": arguments, "result": payload}
-            self._trace("controller_context_delivery", name=name, **record)
-            (self.required_reads if name == "memory_required_context" else self.context_calls).append(record)
-        return result
+        if downstream_request_id is None:
+            raise DomainError("NATIVE_STDIO_DELIVERY_REQUIRED", "Use the native invocation's MCP stdio route")
+        return super().call_tool(name, arguments, downstream_request_id=downstream_request_id)
+
+    def _complete_delivery(self, item: dict, channel: str, raw: bytes | None = None) -> None:
+        if channel != "stdio" or raw is None:
+            raise DomainError("NATIVE_STDIO_DELIVERY_REQUIRED", "A completed native stdio response is required",
+                              effect=EffectState.UNKNOWN)
+        if not item["is_error"] and item["name"] in {"memory_required_context", "memory_context"}:
+            record = {"request": item["arguments"], "result": item["payload"]}
+            self._trace("controller_context_delivery", name=item["name"], call_id=item["call_id"],
+                        downstream_request_id=item["downstream_request_id"],
+                        written_sha256=digest_bytes(raw), **record)
+            (self.required_reads if item["name"] == "memory_required_context" else self.context_calls).append(record)
+        super()._complete_delivery(item, channel, raw)
+
 
     def close(self) -> None:
-        super().close()
-        flow = {**self.flow_observation(), "required_reads": self.required_reads, "context_calls": self.context_calls}
-        _publish(self.run_dir / "ledger", _key(self.scope.invocation_id) + ".gateway.json", _private_value(flow), self.manifest.config["record_bytes"])
+        failures = []
+        try:
+            super().close()
+        except BaseException as error:
+            failures.append(error)
+        try:
+            flow = {**self.flow_observation(), "required_reads": self.required_reads, "context_calls": self.context_calls}
+            _publish(self.run_dir / "ledger", _key(self.scope.invocation_id) + ".gateway.json",
+                     _private_value(flow), self.manifest.config["record_bytes"])
+        except BaseException as error:
+            failures.append(error)
+        if failures:
+            raise DomainError("GATEWAY_CLOSE_INCOMPLETE", "Private gateway cleanup or receipt needs reconciliation",
+                              effect=EffectState.UNKNOWN) from BaseExceptionGroup("Private gateway close failures", failures)
+
 
     async def run_stdio(self, *, timeout_seconds: float) -> None:
         _require(timeout_seconds == _gateway_config(self.manifest, _invocation(self.manifest, self.scope.invocation_id))["lifetime_seconds"], "FROZEN_GATEWAY_LIFETIME_REQUIRED")
+        failures = []
         try:
             await super().run_stdio(timeout_seconds=timeout_seconds)
-        finally:
+        except BaseException as error:
+            failures.append(error)
+        try:
             self.close()
+        except BaseException as error:
+            failures.append(error)
+        if failures:
+            raise DomainError("GATEWAY_SESSION_INCOMPLETE", "The native gateway session is incomplete",
+                              effect=EffectState.UNKNOWN) from BaseExceptionGroup("Private gateway session failures", failures)
+
 
 
 def _running_sources(manifest: EvaluationManifest) -> None:
     for name, source in (("controller", __file__), ("verifier", verifier_module.__file__),
                          ("native_driver", native_module.__file__), ("gateway_driver", gateway_module.__file__),
-                         ("scoring", scoring_module.__file__), ("diagnostics", diagnostics_module.__file__)):
+                         ("scoring", scoring_module.__file__), ("diagnostics", diagnostics_module.__file__),
+                         ("context_renderer", context_module.__file__)):
         _require(digest_bytes(_read(Path(source).absolute(), _FILE_BYTES)) == manifest.file(name).sha256, "RUNNING_SOURCE_IDENTITY_DRIFT")
     _require(verifier_source_digest() == manifest.config["verifier_digest"], "RUNNING_VERIFIER_IDENTITY_DRIFT")
 
@@ -854,10 +903,10 @@ def _payload(result: dict) -> dict:
     return decode_json(result["content"][0]["text"].encode())
 
 
-def _inspect(gateway: EvaluationGateway, ref: str, maximum: int) -> dict:
+def _inspect(gateway: EvaluationGateway, ref: str, maximum: int, *, claim_ids: tuple[str, ...] | None = None) -> dict:
     offset, chunks, expected = 0, bytearray(), None
     while True:
-        payload = _payload(gateway.call_tool("memory_inspect", {"ref": ref, "binding_id": gateway.scope.binding_id, "byte_start": offset, "max_bytes": 4096, **{key: value for key, value in gateway.required_request.items() if key == "snapshot"}}))
+        payload = _payload(gateway.call_tool("memory_inspect", {"ref": ref, "binding_id": gateway.scope.binding_id, "byte_start": offset, "max_bytes": 4096, **({"claim_ids": list(claim_ids)} if claim_ids is not None else {}), **{key: value for key, value in gateway.required_request.items() if key == "snapshot"}}))
         window = payload.get("draft_window")
         if not isinstance(window, dict):
             _require(offset == 0, "INSPECTION_REPRESENTATION_CHANGED")
@@ -876,15 +925,97 @@ def _inspect(gateway: EvaluationGateway, ref: str, maximum: int) -> dict:
         _require(type(offset) is int and offset == len(chunks), "INSPECTION_CURSOR")
 
 
+def _validate_rule_snapshot(snapshot: dict) -> None:
+    _keys(snapshot, {"schema", "rules", "probe", "applicable"})
+    _require(type(snapshot["schema"]) is int and snapshot["schema"] == 2,
+             "RULE_SNAPSHOT_SCHEMA")
+    for identity in _array(snapshot["rules"], 4096):
+        _require(isinstance(identity, list) and len(identity) == 3, "RULE_IDENTITY")
+        _text(identity[0])
+        _integer(identity[1], 1, 2**63 - 1)
+        _digest(identity[2])
+    probe = _keys(snapshot["probe"], {"query", "max_bytes", "limit"})
+    _text(probe["query"])
+    _require(type(probe["max_bytes"]) is int and probe["max_bytes"] == 6144
+             and type(probe["limit"]) is int and probe["limit"] == 5, "RULE_PROBE_BOUND")
+    applicable = [diagnostics_module.PackingRule.model_validate(rule)
+                  for rule in _array(snapshot["applicable"], 4096)]
+    _require(all(rule.applicability == "true" for rule in applicable)
+             and len({rule.ref for rule in applicable}) == len(applicable)
+             and sum(not rule.required for rule in applicable) <= 5, "RULE_SNAPSHOT_INCOMPLETE")
+    ordered = sorted(applicable, key=lambda rule: (not rule.required, rule.ref, rule.revision))
+    _require([rule.model_dump(mode="json") for rule in ordered] == snapshot["applicable"],
+             "RULE_SNAPSHOT_ORDER")
+    required = sorted([[rule.ref, rule.revision, rule.digest]
+                       for rule in applicable if rule.required])
+    _require(snapshot["rules"] == required, "RULE_REQUIRED_SNAPSHOT_IDENTITY")
+
+
+def _rules_probe_request(manifest: EvaluationManifest) -> dict:
+    return {
+        **{key: value for key, value in manifest.config["gateway"]["required_request"].items()
+           if key not in {"query", "query_expansions", "max_bytes", "limit"}},
+        **manifest.document("rules")["probe"],
+    }
+
+
+def _rule_snapshot(payload: dict) -> list[dict]:
+    _require(type(payload.get("omitted")) is int and payload["omitted"] == 0
+             and type(payload.get("unresolved_required_rule_count")) is int
+             and payload["unresolved_required_rule_count"] == 0
+             and payload.get("refs") == [] and payload.get("candidate_manifest") == []
+             and payload.get("judgment_required") is False, "COMPLETE_APPLICABLE_RULE_SET_UNAVAILABLE")
+    text = payload.get("context")
+    _require(isinstance(text, str), "RULE_PROBE_CONTEXT_UNAVAILABLE")
+    context = decode_json(text.encode()) if text else {"approved_rules": []}
+    _require(isinstance(context, dict) and isinstance(context.get("approved_rules"), list),
+             "RULE_PROBE_CONTEXT_UNAVAILABLE")
+    versions = payload.get("stamp", {}).get("rules")
+    _require(isinstance(versions, list) and len(versions) == len(context["approved_rules"]),
+             "RULE_PROBE_IDENTITY_UNAVAILABLE")
+    result = []
+    for rule, identity in zip(context["approved_rules"], versions, strict=True):
+        _require(isinstance(rule, dict) and isinstance(identity, list) and len(identity) == 3
+                 and identity[:2] == [rule.get("ref"), rule.get("revision")],
+                 "RULE_PROBE_CONTENT_IDENTITY_MISMATCH")
+        parsed = diagnostics_module.PackingRule.model_validate({**rule, "digest": identity[2]})
+        _require(parsed.applicability == "true", "RULE_PROBE_APPLICABILITY_UNKNOWN")
+        result.append(parsed.model_dump(mode="json"))
+    return result
+
+
+def _relation_manifest_ids(manifest: EvaluationManifest, payload: dict, claim_ids: tuple[str, ...]) -> set[str]:
+    claims = payload.get("claims")
+    _require(isinstance(claims, list) and len(claims) == len(claim_ids)
+             and all(isinstance(row, dict) for row in claims)
+             and {row.get("id") for row in claims} == set(claim_ids),
+             "COMPLETE_RELATION_CLAIM_SCOPE_UNAVAILABLE")
+    expected = {row["ref"]: row for row in manifest.document("corpus")["claims"]}
+    for row in claims:
+        projection = {**row, "kind": "claim", "statement": row.get("draft", {}).get("statement")}
+        _require(diagnostics_module.render_frozen_claim({"ref": row["id"], "projection": projection})
+                 == diagnostics_module.render_frozen_claim(expected[row["id"]]),
+                 "RELATION_MANIFEST_CLAIM_DRIFT")
+    refs = payload.get("relation_ids")
+    _require(isinstance(refs, list) and len(refs) <= 128
+             and all(isinstance(ref, str) and bool(ref) for ref in refs)
+             and len(set(refs)) == len(refs), "COMPLETE_RELATION_SET_UNAVAILABLE")
+    return set(refs)
+
+
 def _fence(manifest: EvaluationManifest, run_dir: Path, invocation: dict, stage: str) -> dict:
     trace = PrivateTrace(manifest, run_dir, invocation["invocation_id"], stage)
-    scope = replace(_scope(manifest, invocation), mode="memory_on", phase="coding")
+    corpus = manifest.document("corpus")
+    relation_refs = tuple(edge["ref"] for edge in corpus["relations"])
+    scope = replace(_scope(manifest, invocation, ("judgment", *relation_refs)), mode="memory_on", phase="coding")
     gateway = EvaluationGateway(scope, agent=_upstream(manifest, "agent", invocation), producer=None, trace_sink=trace)
     try:
         required = _payload(gateway.call_tool("memory_required_context", scope.required_request))
         rules = sorted(required["stamp"]["rules"])
         _require(rules == manifest.document("rules")["rules"], "REQUIRED_RULE_IDENTITY_DRIFT")
-        corpus = manifest.document("corpus")
+        probe = _payload(gateway.call_tool("memory_context", _rules_probe_request(manifest)))
+        _require(_rule_snapshot(probe) == manifest.document("rules")["applicable"],
+                 "APPLICABLE_RULE_SET_OR_CONTENT_DRIFT")
         for source in corpus["sources"]:
             expected = _binary(source["body"], _FILE_BYTES)
             offset, collected = 0, bytearray()
@@ -913,6 +1044,17 @@ def _fence(manifest: EvaluationManifest, run_dir: Path, invocation: dict, stage:
             _require(health.get("partial") is not True
                      and health.get("dependency_digest") == claim["health_dependency_digest"],
                      "CORPUS_HEALTH_AUTHORITY_OR_CODE_DEPENDENCY_DRIFT")
+        refs = tuple(claim["ref"] for claim in corpus["claims"])
+        observed_relations = set()
+        for start in range(0, len(refs), 20):
+            batch = refs[start:start + 20]
+            judgment = _inspect(gateway, "judgment", manifest.config["record_bytes"], claim_ids=batch)
+            observed_relations.update(_relation_manifest_ids(manifest, judgment, batch))
+        _require(observed_relations == set(relation_refs), "ELIGIBLE_RELATION_SET_DRIFT")
+        for edge in corpus["relations"]:
+            actual = _inspect(gateway, edge["ref"], manifest.config["record_bytes"])
+            _require({key: actual.get(key) for key in edge["projection"]} == edge["projection"],
+                     "ELIGIBLE_RELATION_CONTENT_DRIFT")
         return {"corpus_digest": manifest.file("corpus").sha256, "required_rules_digest": manifest.file("rules").sha256}
     finally:
         gateway.close()
@@ -982,25 +1124,167 @@ def _usage(result: dict, native) -> None:
     result["latency_seconds"] = (native.finished_ns - native.started_ns) / 1_000_000_000
 
 
-def _gateway_receipt(manifest: EvaluationManifest, run_dir: Path, invocation: dict) -> dict:
-    receipt = _existing(run_dir / "ledger", _key(invocation["invocation_id"]) + ".gateway.json", manifest.config["record_bytes"])
-    _require(receipt is not None and receipt.get("invocation_id") == invocation["invocation_id"] and receipt.get("mode") == invocation["mode"] and receipt.get("observation_complete") is True, "GATEWAY_DELIVERY_UNOBSERVED")
+def _validate_context_call(manifest: EvaluationManifest, record: dict) -> None:
+    request, payload = record["request"], record["result"]
+    command = validate_wire(ContextCommand, request)
+    corpus = manifest.document("corpus")
+    claims = {claim["ref"]: claim for claim in corpus["claims"]}
+    candidates = payload.get("candidate_manifest", [])
+    _require(isinstance(candidates, list) and all(
+        isinstance(item, dict) and item.get("claim_id") in claims for item in candidates
+    ), "UNFROZEN_CORPUS_CANDIDATE")
+    text = payload.get("context")
+    _require(isinstance(text, str), "FROZEN_CONTEXT_UNAVAILABLE")
+    value = {"evidence_role": "memory_candidates_not_execution_authority",
+             "approved_rules": [], "memory_candidates": [], "relations": []}
+    context = decode_json(text.encode()) if text else value
+    _require(isinstance(context, dict), "FROZEN_CONTEXT_UNAVAILABLE")
+    rules = [diagnostics_module.PackingRule.model_validate(rule)
+             for rule in manifest.document("rules")["applicable"]]
+    included = [rule for rule in rules if rule.required]
+    value = {**value, "approved_rules": [rule.rendered() for rule in included]}
+    if payload.get("judgment_required") is not True:
+        optional_count = 0
+        for rule in rules:
+            if rule.required or optional_count == command.limit:
+                continue
+            prospective = {**value, "approved_rules": [*value["approved_rules"], rule.rendered()]}
+            if len(canonical_bytes(prospective)) <= command.max_bytes:
+                value = prospective
+                included.append(rule)
+                optional_count += 1
+    _require(context.get("approved_rules") == value["approved_rules"]
+             and payload.get("stamp", {}).get("rules")
+             == [[rule.ref, rule.revision, rule.digest] for rule in included],
+             "DELIVERED_APPLICABLE_RULE_CONTENT_OR_IDENTITY_DRIFT")
+    actual = context.get("memory_candidates")
+    _require(isinstance(actual, list) and all(isinstance(item, dict) for item in actual),
+             "FROZEN_CONTEXT_CLAIMS_UNAVAILABLE")
+    refs = [item.get("ref") for item in actual]
+    _require(all(isinstance(ref, str) and ref in claims for ref in refs)
+             and len(refs) == len(set(refs)) and payload.get("refs") == refs,
+             "UNFROZEN_CORPUS_DELIVERY")
+    _require(actual == [diagnostics_module.render_frozen_claim(claims[ref]) for ref in refs],
+             "DELIVERED_FROZEN_CLAIM_CONTENT_DRIFT")
+    selected = set(refs)
+    edges = [edge for edge in corpus["relations"]
+             if edge["projection"]["left_id"] in selected or edge["projection"]["right_id"] in selected]
+    expected_edges = [{
+        "ref": edge["ref"], "left": edge["projection"]["left_id"],
+        "right": edge["projection"]["right_id"], "kind": edge["projection"]["relation_kind"],
+        "endpoints_in_context": [ref for ref in (edge["projection"]["left_id"], edge["projection"]["right_id"])
+                                 if ref in selected],
+    } for edge in edges]
+    _require(context.get("relations") == expected_edges, "DELIVERED_ELIGIBLE_RELATION_DRIFT")
+
+
+def _native_deliveries(events: list[dict]) -> dict[str, dict]:
+    requests, writes, intents, request_ids = {}, {}, {}, set()
+    for event in events:
+        if event.get("stage") in {"gateway_stdio_received", "gateway_stdio_written"}:
+            raw = _unbytes(event["body"])
+            _require(raw.endswith(b"\n") and raw.count(b"\n") == 1, "NATIVE_STDIO_RECORD_INCOMPLETE")
+            message = decode_json(raw)
+            _require(isinstance(message, dict), "NATIVE_STDIO_RECORD_INVALID")
+            if event["stage"] == "gateway_stdio_written":
+                if type(message.get("id")) not in {str, int}:
+                    continue
+                digest = digest_bytes(raw)
+                _require(digest not in writes, "NATIVE_STDIO_RESPONSE_REUSED")
+                writes[digest] = (raw, message)
+            elif "id" in message and isinstance(message.get("method"), str):
+                identifier = message["id"]
+                _require(type(identifier) in {str, int}, "NATIVE_STDIO_ID_INVALID")
+                key, correlated = (type(identifier), identifier), coerce_request_id(identifier)
+                _require(correlated not in request_ids, "NATIVE_STDIO_REQUEST_REUSED")
+                request_ids.add(correlated)
+                requests[key] = message
+        elif event.get("stage") == "gateway_intent":
+            _require(event.get("call_id") not in intents, "NATIVE_GATEWAY_INTENT_REUSED")
+            intents[event["call_id"]] = event
+    deliveries = {}
+    for event in events:
+        if event.get("stage") != "gateway_delivery" or event.get("channel") != "stdio":
+            continue
+        identifier, call_id = event.get("downstream_request_id"), event.get("call_id")
+        _require(type(identifier) in {str, int} and call_id not in deliveries,
+                 "NATIVE_STDIO_DELIVERY_ID_INVALID")
+        request = requests.get((type(identifier), identifier))
+        intent = intents.get(call_id)
+        written = writes.get(event.get("written_sha256"))
+        _require(request is not None and intent is not None and written is not None
+                 and intent.get("name") == event.get("name")
+                 and type(intent.get("downstream_request_id")) is type(identifier)
+                 and intent["downstream_request_id"] == identifier, "NATIVE_STDIO_DELIVERY_INTENT_UNKNOWN")
+        raw, response = written
+        params, result = request.get("params", {}), response.get("result")
+        content = result.get("content") if isinstance(result, dict) else None
+        _require(request.get("method") == "tools/call" and params.get("name") == event.get("name")
+                 and type(response.get("id")) is type(identifier) and response["id"] == identifier
+                 and event.get("stdout_write_complete") is True and event.get("written_bytes") == len(raw)
+                 and isinstance(result, dict) and type(event.get("is_error")) is bool
+                 and result.get("isError", False) is event["is_error"]
+                 and isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict)
+                 and isinstance(content[0].get("text"), str)
+                 and digest_bytes(content[0]["text"].encode()) == event.get("payload_sha256"),
+                 "NATIVE_STDIO_DELIVERY_FRAME_MISMATCH")
+        deliveries[call_id] = {"event": event, "request": request,
+                               "payload": decode_json(content[0]["text"].encode())}
+    return deliveries
+
+
+def _validate_delivery_receipt(manifest: EvaluationManifest, invocation: dict, receipt: dict, events: list[dict]) -> None:
+    _require(receipt.get("invocation_id") == invocation["invocation_id"]
+             and receipt.get("mode") == invocation["mode"]
+             and receipt.get("observation_complete") is True, "GATEWAY_DELIVERY_UNOBSERVED")
+    native = _native_deliveries(events)
+    required_reads, context_calls = [], []
+    context_ids = set()
+    for event in events:
+        if event.get("stage") != "controller_context_delivery":
+            continue
+        delivery = native.get(event.get("call_id"))
+        _require(delivery is not None and not delivery["event"]["is_error"]
+                 and event.get("call_id") not in context_ids
+                 and delivery["event"]["invocation_id"] == invocation["invocation_id"]
+                 and delivery["event"]["route_ref"] == _gateway_config(manifest, invocation)["route_ref"]
+                 and event.get("written_sha256") == delivery["event"]["written_sha256"]
+                 and event.get("name") == delivery["event"]["name"]
+                 and event.get("request") == (delivery["request"].get("params", {}).get("arguments") or {})
+                 and event.get("result") == delivery["payload"], "NATIVE_CONTEXT_DELIVERY_FRAME_UNKNOWN")
+        context_ids.add(event["call_id"])
+        record = {"request": event["request"], "result": event["result"]}
+        _require(event["name"] in {"memory_required_context", "memory_context"},
+                 "NATIVE_CONTEXT_DELIVERY_KIND_INVALID")
+        (required_reads if event["name"] == "memory_required_context" else context_calls).append(record)
+    _require(required_reads and receipt.get("required_reads") == required_reads
+             and receipt.get("context_calls") == context_calls, "NATIVE_CONTEXT_RECEIPT_DRIFT")
+    stamps = [record["result"]["stamp"] for record in required_reads]
     expected = manifest.document(_gateway_config(manifest, invocation)["rules_file"])["rules"]
-    stamps = receipt.get("required_stamps")
-    _require(isinstance(stamps, list) and bool(stamps) and all(sorted(stamp.get("rules", [])) == expected for stamp in stamps), "NATIVE_REQUIRED_RULE_DELIVERY_UNKNOWN_OR_DRIFT")
+    _require(receipt.get("required_stamps") == stamps
+             and all(sorted(stamp.get("rules", [])) == expected for stamp in stamps),
+             "NATIVE_REQUIRED_RULE_DELIVERY_UNKNOWN_OR_DRIFT")
+    for final in receipt.get("final_reads", []):
+        _require(any(
+            call["request"].get("admission_id") == final.get("admission_id")
+            and call["result"].get("judgment_required") is False
+            and all(call["result"].get(key) == final.get(key) for key in ("refs", "context"))
+            for call in context_calls
+        ), "NATIVE_FINAL_CONTEXT_DELIVERY_UNOBSERVED")
     if invocation["mode"] == "required_only":
         _require(not receipt.get("final_reads") and not receipt.get("captures"), "OFF_OPTIONAL_EXPOSURE")
     if invocation["phase"] != "preflight":
-        allowed = {claim["ref"] for claim in manifest.document("corpus")["claims"]}
-        for call in receipt.get("context_calls", []):
-            payload = call["result"]
-            candidates = {item["claim_id"] for item in payload.get("candidate_manifest", [])}
-            _require(candidates <= allowed, "UNFROZEN_CORPUS_CANDIDATE")
-            context = payload.get("context")
-            if isinstance(context, str) and context != "":
-                context = decode_json(context.encode())
-            if isinstance(context, dict):
-                _require({item["ref"] for item in context.get("memory_candidates", [])} <= allowed, "UNFROZEN_CORPUS_DELIVERY")
+        for call in context_calls:
+            _validate_context_call(manifest, call)
+
+
+def _gateway_receipt(manifest: EvaluationManifest, run_dir: Path, invocation: dict) -> dict:
+    receipt = _existing(run_dir / "ledger", _key(invocation["invocation_id"]) + ".gateway.json", manifest.config["record_bytes"])
+    _require(receipt is not None, "GATEWAY_DELIVERY_UNOBSERVED")
+    _validate_delivery_receipt(
+        manifest, invocation, receipt,
+        _trace_events(manifest, run_dir, invocation["invocation_id"], "gateway"),
+    )
     return receipt
 
 
@@ -1212,6 +1496,8 @@ def _preflight_link_data(manifest: EvaluationManifest, capture: dict, events: li
     source = pointer["source_id"]
     recorded, inspected, windows = set(), {}, {}
     coverage = []
+    delivered_calls = {call_id for call_id, value in _native_deliveries(events).items()
+                       if not value["event"]["is_error"]}
     for event in events:
         if event.get("stage") != "gateway_wire":
             continue
@@ -1227,6 +1513,8 @@ def _preflight_link_data(manifest: EvaluationManifest, capture: dict, events: li
         params = request.get("params", {})
         arguments = params.get("arguments", {})
         if request.get("method") != "tools/call" or params.get("name") not in {"memory_inspect", "memory_record"}:
+            continue
+        if event.get("call_id") not in delivered_calls:
             continue
         response = decode_json(response_bytes)
         if "result" not in response or response["result"].get("isError"):

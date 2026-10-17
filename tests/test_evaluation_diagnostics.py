@@ -192,12 +192,13 @@ def make_inputs(
         limit=3,
     ).model_dump(mode="json", exclude={"admission_id", "relevance"})
     corpus = {
-        "schema": 1,
+        "schema": 2,
         "sources": [{
             "source_id": "source1",
             "revision": 1,
             "body": base64.b64encode(body).decode("ascii"),
         }],
+        "relations": [],
         "claims": [
             {
                 "ref": claim["ref"],
@@ -254,7 +255,7 @@ def make_inputs(
             "independence": "provided_unattested",
             "cases": [deepcopy(case)],
         },
-        "rules": {"schema": 1, "rules": []},
+        "rules": {"schema": 2, "rules": [], "probe": {"query": "a" * 64, "max_bytes": 6144, "limit": 5}, "applicable": []},
         "workload": {
             "retrieval": [{"case_id": "case0", "request": request}],
         },

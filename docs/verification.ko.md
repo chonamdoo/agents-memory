@@ -1271,3 +1271,22 @@ canonical checker는 공개 immutable source/checksum을 그대로 써 PR base `
 
 이 성공 receipt는 `scope:engineering`, `synthetic_native_protocol_peer:true`, `native_acceptance:false`, `original18_completed:0`을 명시한다. 실제 Claude/Codex 보호·모델 효익, human120/60task×3·180valid pairs, 실제1–2주 trial, OS·운영/egress·merge/release 증거로 확대하지 않는다.
 
+
+### 공식 리뷰의 owned publication 중단 복구 수정
+
+전체 engineering CI를 통과한 `6941c4e`의 fresh Sol6.1 독립 리뷰는2approve/4request-changes다. Claude 첫 시도는 OAuth 만료401, 나머지5건은 skipped로 투표가 아니다. 과거 component12approve나 CI 성공으로 이번 whole-source 승인·QA를 대신하지 않는다. optional-rule/관계 freeze, exact packing 의미·provenance binding, 완료된 downstream write에 의한 credit은 별도 수정 항목으로 유지한다.
+
+private writer가 intent를 hardlink한 뒤 임시 alias unlink 중 중단되는 실제 publication 경로를 새 회귀로 고정했다. 동일 node `tests/test_evaluation_controller.py::test_interrupted_private_writer_intent_is_readable_without_replay`의 source와 설치 wheel setup/call/teardown을 각각 대조했다.
+
+| 범위 | 수정 전 `805d8a15` / [Actions39062614535](https://github.com/chonamdoo/agents-memory/actions/runs/39062614535) | 수정 후 `ea496f4b` / [Actions39063259375](https://github.com/chonamdoo/agents-memory/actions/runs/39063259375) |
+|---|---|---|
+| 전체 source | 3008passed/1failed | 3009passed/0failed |
+| 별도 설치 wheel | 632passed/1failed | 633passed/0failed |
+| 위 node의 source와 설치 wheel | 각각 setup passed/call failed/teardown passed | 각각 setup/call/teardown passed |
+| 실제 Docker / MacPython3.12.13 subset | 13 /36passed | 13 /36passed |
+| skip/xfail/xpass/collection issue | 모두0 | 모두0 |
+
+수정 후 lint/comment/build/wheel-consumer와8job aggregate가 성공했다. source·설치 wheel health 각각23outcome passed 및 clean service exit0, 설치 wheel 전체 engineering producer/MCP·artifact·격리 oracle/control·scorer·명시 health link가 완료됐다. helper cleanup과 별도14owners/34resources exact cleanup은 모두 성공했다. wheel SHA256은 `7a8f7b61741194d7ce2a980dd55ee7a19db56c25cd7fc578dd660c98ff8b2f81`이다.
+
+report는 canonical record와 증명된 같은-inode private alias를 읽되 ledger bytes/link/name을 변경하지 않는다. resume만 해당 alias를 정리하고 기존 intent의 unknown/no-replay를 보존한다. 임의·추가 link를 일반 입력으로 수용하지 않으며 frozen input의 single-link 검사를 완화하지 않는다. 이 증거는 실제 kernel/PID wraparound나 native 보호 proof가 아니다. `synthetic_native_protocol_peer:true`, `native_acceptance:false`, 원래18개 완료0이며 로컬 runtime 검증은 실행하지 않았다.
+

@@ -348,7 +348,7 @@ def evaluation_evidence(artifacts: Path, tested_sha: str, source: str,
     module_map = {"controller": "evaluation", "artifacts": "evaluation_artifacts",
                   "runtime_driver": "evaluation_runtime", "native_driver": "evaluation_native",
                   "gateway_driver": "evaluation_gateway", "scoring": "evaluation_scoring",
-                  "diagnostics": "evaluation_diagnostics", "health_compiler": "evaluation_health",
+                  "diagnostics": "evaluation_diagnostics", "context_renderer": "context", "health_compiler": "evaluation_health",
                   "verifier": "evaluation_verifier", "cli": "cli"}
     observed_modules = consumed.get("module_digests")
     require(isinstance(observed_modules, dict) and set(observed_modules) == set(module_map),

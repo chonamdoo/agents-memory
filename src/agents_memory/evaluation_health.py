@@ -221,18 +221,12 @@ def _validate_native(manifest, records, invocation, terminal):
         "generation_digest": digest_bytes(generation.encode()),
     }, "EVALUATION_HEALTH_GENERATION_SCOPE")
     gateway = _json(records, prefix + ".gateway.json", terminal["evidence_refs"].get("gateway"))
-    _require(terminal["evidence_refs"].get("gateway") is not None and gateway == terminal.get("delivery")
-             and gateway.get("invocation_id") == invocation["invocation_id"]
-             and gateway.get("mode") == invocation["mode"] and gateway.get("observation_complete") is True,
+    _require(terminal["evidence_refs"].get("gateway") is not None and gateway == terminal.get("delivery"),
              "EVALUATION_HEALTH_FINAL_DELIVERY_UNKNOWN")
-    expected = manifest.document(controller._gateway_config(manifest, invocation)["rules_file"])["rules"]
-    stamps = gateway.get("required_stamps")
-    _require(isinstance(stamps, list) and bool(stamps)
-             and all(sorted(stamp.get("rules", [])) == expected for stamp in stamps),
-             "EVALUATION_HEALTH_REQUIRED_CONTROL_UNKNOWN")
-    if invocation["mode"] == "required_only":
-        _require(not gateway.get("final_reads") and not gateway.get("captures"),
-                 "EVALUATION_HEALTH_OFF_OPTIONAL_EXPOSURE")
+    controller._validate_delivery_receipt(
+        manifest, invocation, gateway,
+        _trace_events(records, manifest, invocation["invocation_id"], "gateway"),
+    )
     return native, gateway
 
 
@@ -298,11 +292,13 @@ def _validate_fence(records, manifest, invocation, channel):
     corpus = manifest.document("corpus")
     sources = {item["source_id"]: item for item in corpus["sources"]}
     claims = {item["ref"]: item for item in corpus["claims"]}
-    allowed = set(sources) | set(claims) | {"health:claim:" + ref for ref in claims}
+    relations = {item["ref"]: item for item in corpus["relations"]}
+    allowed = set(sources) | set(claims) | set(relations) | {"judgment"} | {"health:claim:" + ref for ref in claims}
     source_windows = {ref: [] for ref in sources}
     source_bytes = {ref: bytearray() for ref in sources}
     inspected, windows = {}, {}
-    required = 0
+    required = probes = 0
+    batches, relation_ids = set(), set()
     retries = set()
     for exchange, request, response in _wire_responses(_trace_events(
             records, manifest, invocation["invocation_id"], channel)):
@@ -318,7 +314,7 @@ def _validate_fence(records, manifest, invocation, channel):
         if exchange.get("path") != "/mcp" or request.get("method") != "tools/call":
             continue
         params = request.get("params", {})
-        if params.get("name") != "memory_inspect":
+        if params.get("name") not in {"memory_inspect", "memory_context"}:
             continue
         arguments = params.get("arguments", {})
         request_key = canonical_bytes(request)
@@ -332,6 +328,13 @@ def _validate_fence(records, manifest, invocation, channel):
                  and "result" in response, "EVALUATION_HEALTH_FENCE_REPLY_UNKNOWN")
         retries.discard(request_key)
         payload = controller._payload(response["result"])
+        if params["name"] == "memory_context":
+            _require(controller._normalized_retrieval_request(manifest, arguments)
+                     == controller._normalized_retrieval_request(manifest, controller._rules_probe_request(manifest))
+                     and controller._rule_snapshot(payload) == manifest.document("rules")["applicable"],
+                     "EVALUATION_HEALTH_FENCE_APPLICABLE_RULE_DRIFT")
+            probes += 1
+            continue
         ref = arguments.get("ref")
         _require(ref in allowed and arguments.get("binding_id") == manifest.config["gateway"]["binding_id"]
                  and arguments.get("snapshot") == manifest.config["gateway"]["required_request"].get("snapshot")
@@ -349,10 +352,12 @@ def _validate_fence(records, manifest, invocation, channel):
                      and len(source_bytes[ref]) <= len(expected), "EVALUATION_HEALTH_FENCE_SOURCE_BYTES")
             source_windows[ref].append({key: payload.get(key) for key in ("byte_start", "byte_end", "window_digest")})
             continue
+        batch = tuple(arguments.get("claim_ids") or ()) if ref == "judgment" else ()
+        key = (ref, batch)
         window = payload.get("draft_window")
         if isinstance(window, dict):
             digest, total = window.get("digest"), window.get("total_bytes")
-            previous_digest, previous_total, collected = windows.get(ref, (digest, total, bytearray()))
+            previous_digest, previous_total, collected = windows.get(key, (digest, total, bytearray()))
             if type(total) is not int or not 0 < total <= manifest.config["record_bytes"]:
                 raise EvaluationHealthError("EVALUATION_HEALTH_FENCE_RECORD_WINDOW")
             _require(previous_digest == digest and previous_total == total
@@ -362,17 +367,28 @@ def _validate_fence(records, manifest, invocation, channel):
             collected.extend(window["body"].encode("utf-8"))
             _require(len(collected) == window.get("byte_end") and len(collected) <= total,
                      "EVALUATION_HEALTH_FENCE_RECORD_WINDOW")
-            windows[ref] = (digest, total, collected)
+            windows[key] = (digest, total, collected)
             if window.get("next_byte") is not None:
                 _require(window["next_byte"] == len(collected), "EVALUATION_HEALTH_FENCE_RECORD_WINDOW")
                 continue
             _require(len(collected) == total and digest_bytes(collected) == digest,
                      "EVALUATION_HEALTH_FENCE_RECORD_DIGEST")
             payload = decode_json(bytes(collected))
+        if ref == "judgment":
+            _require(batch and batch not in batches and len(batch) <= 20
+                     and set(batch) <= claims.keys(), "EVALUATION_HEALTH_FENCE_RELATION_BATCH")
+            relation_ids.update(controller._relation_manifest_ids(manifest, payload, batch))
+            batches.add(batch)
+            windows.pop(key, None)
+            continue
         _require(ref not in inspected and payload.get("partial") is not True,
                  "EVALUATION_HEALTH_FENCE_RECORD_DUPLICATE_OR_PARTIAL")
         inspected[ref] = payload
-    _require(required == 1 and not retries, "EVALUATION_HEALTH_FENCE_REQUIRED_OR_RETRY_UNKNOWN")
+    claim_ids = tuple(claims)
+    expected_batches = {claim_ids[start:start + 20] for start in range(0, len(claim_ids), 20)}
+    _require(required == 1 and probes == 1 and not retries and batches == expected_batches,
+             "EVALUATION_HEALTH_FENCE_REQUIRED_PROBE_RELATION_OR_RETRY_UNKNOWN")
+    _require(relation_ids == relations.keys(), "EVALUATION_HEALTH_FENCE_RELATION_SET_DRIFT")
     for ref, source in sources.items():
         _require(bytes(source_bytes[ref]) == controller._binary(source["body"], controller._FILE_BYTES)
                  and source_windows[ref] == source["inspection_windows"],
@@ -384,6 +400,10 @@ def _validate_fence(records, manifest, invocation, channel):
         health = inspected.get("health:claim:" + ref, {})
         _require(health.get("dependency_digest") == claim["health_dependency_digest"],
                  "EVALUATION_HEALTH_FENCE_DEPENDENCY_DRIFT")
+    for ref, edge in relations.items():
+        _require(ref in inspected and all(inspected[ref].get(key) == value
+                                         for key, value in edge["projection"].items()),
+                 "EVALUATION_HEALTH_FENCE_RELATION_CONTENT_DRIFT")
 
 
 def _validate_preflight_wire(records, manifest, invocation, terminal):

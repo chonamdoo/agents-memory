@@ -11,10 +11,13 @@ from dataclasses import asdict
 from pathlib import Path
 
 import pytest
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 from test_evaluation_gateway import actual_upstream
 from test_store_authority import authority as authority
 
 from agents_memory import (
+    context as context_module,
     evaluation,
     evaluation_diagnostics,
     evaluation_gateway,
@@ -82,14 +85,16 @@ def fixture_inputs(tmp_path, *, repeats=2, retries=0, gateway=None, preflight_ga
         "gateway_driver": Path(evaluation_gateway.__file__).read_bytes(),
         "scoring": Path(evaluation_scoring.__file__).read_bytes(),
         "diagnostics": Path(evaluation_diagnostics.__file__).read_bytes(),
+        "context_renderer": Path(context_module.__file__).read_bytes(),
         "wheel": b"engineering fixture identity; not an installed-wheel attestation",
         "baseline": baseline.to_bytes(), "correct": correct.to_bytes(), "wrong": wrong.to_bytes(),
         "policy": {"baseline_digest": baseline.digest, "spans": [{"path": "program.py", "start": 0, "end": len(baseline_code)}], "creates": [], "deletes": [], "modes": []},
         "oracle": {"schema": 1, "cases": [{"case_id": "stdout", "argv": ["/usr/local/bin/python3", "-I", "-S", "/artifact/program.py"], "stdin": "", "expected_stdout": b64(b"correct\n"), "expected_stderr": "", "expected_exit": 0, "effects": []}]},
         "prompt": b"Engineering fixture only. Preserve every baseline byte outside the approved program edit. This is not an actual native or independent task acceptance sample.",
-        "corpus": {"schema": 1, "sources": [], "claims": []},
+        "corpus": {"schema": 2, "sources": [], "claims": [], "relations": []},
         "gold": {"schema": 1, "independence": "provided_unattested", "cases": [{"case_id": "no-match", "cluster_id": "source-family-one", "group": "no-match", "relevant_claim_ids": [], "irrelevant_claim_ids": [], "judgment_complete": True, "grounding_refs": []}]},
-        "rules": {"schema": 1, "rules": []}, "preflight_rules": {"schema": 1, "rules": []},
+        "rules": {"schema": 2, "rules": [], "probe": {"query": "a" * 64, "max_bytes": 6144, "limit": 5}, "applicable": []},
+        "preflight_rules": {"schema": 1, "rules": []},
         "runtime": {
             "docker_executable": "/usr/bin/docker", "docker_sha256": "a" * 64, "docker_config": str(tmp_path / "docker-config"), "docker_endpoint": "unix:///var/run/docker.sock", "image_reference": "engineering-image@sha256:" + "b" * 64, "image_id": "sha256:" + "c" * 64, "image_config_digest": "d" * 64, "image_environment": [], "python_executable": "/usr/local/bin/python3", "tool_identity": "e" * 64, "watchdog_digest": digest_bytes(WATCHDOG_SOURCE), "observer_digest": digest_bytes(OBSERVER_SOURCE),
             "limits": {"cpu_nanos": 1000000000, "memory_bytes": 134217728, "pids": 32, "file_descriptors": 64, "file_bytes": 65536, "scratch_bytes": 65536, "tmp_bytes": 65536, "shm_bytes": 65536, "wall_seconds": 2.0, "watchdog_seconds": 60.0, "operation_seconds": 2.0, "cleanup_seconds": 1.0, "stdin_bytes": 8192, "stdout_bytes": 8192, "stderr_bytes": 8192, "helper_bytes": 65536},
@@ -234,9 +239,9 @@ def test_preflight_cannot_mutate_the_measured_corpus_binding(tmp_path):
 def test_gold_anchors_bind_original_utf8_bytes_and_revision(tmp_path):
     path, config, documents = fixture_inputs(tmp_path)
     body = "한국어 조건".encode()
-    corpus = {"schema": 1, "sources": [{"source_id": "source_one", "revision": 2, "body": b64(body),
+    corpus = {"schema": 2, "sources": [{"source_id": "source_one", "revision": 2, "body": b64(body),
               "sha256": digest_bytes(body), "inspection_windows": [
-                  {"byte_start": 0, "byte_end": len(body), "window_digest": "a" * 64}]}], "claims": []}
+                  {"byte_start": 0, "byte_end": len(body), "window_digest": "a" * 64}]}], "claims": [], "relations": []}
     config["gateway"]["approved_refs"] = ["source_one"]
     update_document(path, config, "corpus", corpus)
     gold = copy.deepcopy(documents["gold"])
@@ -396,12 +401,22 @@ async def test_controller_builds_real_required_only_gateway_with_wire_evidence(a
         state = prepare_run(manifest, tmp_path / "run")
         invocation = evaluation._select(manifest, "retrieval", "no-match", "required_only")
         assert evaluation._intent(manifest, state.run_dir, invocation)
-        gateway = build_gateway(manifest, invocation["invocation_id"], state.run_dir)
-        result = await asyncio.to_thread(gateway.call_tool, "memory_required_context", config_gateway["required_request"])
-        assert json.loads(result["content"][0]["text"])["stamp"]["rules"] == []
-        with pytest.raises(DomainError):
-            await asyncio.to_thread(gateway.call_tool, "memory_inspect", {"ref": "optional-secret"})
-        gateway.close()
+        params = StdioServerParameters(command=sys.executable, args=[
+            "-m", "agents_memory.cli", "evaluation", "gateway", "--manifest", str(path),
+            "--run-dir", str(state.run_dir), "--invocation-id", invocation["invocation_id"],
+            "--expected-sha256", manifest.digest,
+        ])
+        with (tmp_path / "gateway-stderr.private").open("x") as errors:
+            Path(errors.name).chmod(0o600)
+            async with stdio_client(params, errlog=errors) as streams:
+                async with ClientSession(*streams, read_timeout_seconds=5.0) as client:
+                    await client.initialize()
+                    result = await client.call_tool("memory_required_context", config_gateway["required_request"])
+                    assert not result.is_error
+                    assert json.loads(result.content[0].text)["stamp"]["rules"] == []
+                    denied = await client.call_tool("memory_inspect", {"ref": "optional-secret"})
+                    assert denied.is_error
+                    assert json.loads(denied.content[0].text)["error"]["code"] == "OPTIONAL_TOOL_DENIED"
         events = evaluation._trace_events(manifest, state.run_dir, invocation["invocation_id"], "gateway")
         responses = [event["exchange"] for event in events if event["stage"] == "gateway_wire" and event["exchange"]["stage"] == "response"]
         assert responses and {item["path"] for item in responses} == {"/api/required-context"}
@@ -442,9 +457,11 @@ def _actual_preflight_channel(agent, producer):
             "lifetime_seconds": 5.0, "rules_file": "preflight_rules"}
 
 
-def _controller_peer(manifest_path, run_dir, complete):
-    return f'''import hashlib, json, pathlib, sys
-from agents_memory.evaluation import build_gateway, load_manifest
+def _controller_peer(manifest_path, run_dir, complete, *, invocation_id="preflight-one", final_empty=False):
+    return f'''import asyncio, hashlib, json, os, pathlib, sys
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+from agents_memory.evaluation import load_manifest
 assert sys.argv[1:] == ['app-server']
 def read():
     return json.loads(sys.stdin.readline())
@@ -463,60 +480,75 @@ reply(request, {{'thread': {{'id': 'engineering-thread'}}, 'model': 'engineering
 request = read()
 assert request['method'] == 'turn/start'
 reply(request, {{'turn': {{'id': 'engineering-turn'}}}})
-manifest = load_manifest(pathlib.Path({str(manifest_path)!r}))
+manifest_path = pathlib.Path({str(manifest_path)!r})
+manifest = load_manifest(manifest_path)
 run_dir = pathlib.Path({str(run_dir)!r})
-gateway = build_gateway(manifest, 'preflight-one', run_dir)
-def call(name, arguments):
-    response = gateway.call_tool(name, arguments)
-    assert not response.get('isError')
-    return json.loads(response['content'][0]['text'])
-def inspect(ref):
-    offset, collected = 0, bytearray()
-    while True:
-        payload = call('memory_inspect', {{'ref': ref, 'byte_start': offset, 'max_bytes': 4096}})
-        window = payload.get('draft_window')
-        if window is None:
-            return payload
-        assert window['byte_start'] == len(collected)
-        collected.extend(window['body'].encode())
-        offset = window['next_byte']
-        if offset is None:
-            assert hashlib.sha256(collected).hexdigest() == window['digest']
-            return json.loads(collected)
-call('memory_required_context', gateway.required_request)
-if {complete!r}:
-    key = hashlib.sha256(b'preflight-one').hexdigest()
-    capture = json.loads((run_dir / 'ledger' / (key + '.capture.json')).read_bytes())
-    source = capture['source_pointer']['source_id']
-    window = call('memory_inspect', {{'ref': source}})
-    span = window['span_inventory'][0]
-    selection = call('memory_record', {{
-        'kind': 'source_selection', 'idempotency_key': 'engineering-controller-selection',
-        'admission_id': window['admission_id'], 'source_id': source,
-        'source_revision': window['source_revision'], 'binding_revision': window['binding_revision'],
-        'byte_start': window['byte_start'], 'byte_end': window['byte_end'], 'window_digest': window['window_digest'],
-        'policy_revision': window['policy_revision'], 'policy_epoch': window['policy_epoch'],
-        'label': 'remember', 'coverage': 'complete_window', 'reason': 'Deterministic engineering peer, not live-model judgment.',
-        'extraction': {{'claims': [{{'assertion_id': 'a0000', 'assertion_span_id': span['span_id'],
-            'statement': span['quote'], 'kind': 'fact', 'subject': 'CacheKey', 'predicate': 'retained',
-            'object': 'offline', 'polarity': 'positive', 'modality': 'asserted', 'entities': ['CacheKey']}}],
-            'individual_qualifications': [{{'assertion_id': 'a0000', 'kind': 'condition', 'phrase': 'only offline',
-                'evidence_span_id': span['span_id']}}], 'shared_qualifications': [], 'validities': [],
-            'unused_span_ids': [item['span_id'] for item in window['span_inventory'] if item['span_id'] != span['span_id']]}}
-    }})
-    selected = inspect(selection['artifact_id'])
-    for claim_id in selected['claim_ids']:
-        inspect(claim_id)
-    recall = manifest.workload['preflight']['recall_request']
-    candidates = call('memory_context', recall)
-    for item in candidates['candidate_manifest']:
-        inspect(item['inspection_ref'])
-    final = call('memory_context', {{**recall, 'admission_id': candidates['admission_id'],
-        'relevance': [{{'claim_id': item['claim_id'], 'relevant': True,
-                       'reason': 'Engineering peer checks actual qualified final delivery.'}}
-                      for item in candidates['candidate_manifest']]}})
-    assert final['judgment_required'] is False
-gateway.close()
+identity = {invocation_id!r}
+selected_invocation = next(item for item in manifest.workload['invocations'] if item['invocation_id'] == identity)
+channel = manifest.config['preflight_gateway' if selected_invocation['phase'] == 'preflight' else 'gateway']
+async def exercise():
+    params = StdioServerParameters(command=sys.executable, args=[
+        '-m', 'agents_memory.cli', 'evaluation', 'gateway', '--manifest', str(manifest_path),
+        '--run-dir', str(run_dir), '--invocation-id', identity, '--expected-sha256', manifest.digest,
+    ], env=dict(os.environ))
+    with (pathlib.Path.cwd() / 'gateway-stderr.private').open('x') as errors:
+        os.chmod(errors.name, 0o600)
+        async with stdio_client(params, errlog=errors) as streams:
+            async with ClientSession(*streams, read_timeout_seconds=5.0) as client:
+                await client.initialize()
+                async def call(name, arguments):
+                    response = await client.call_tool(name, arguments)
+                    assert not response.is_error
+                    return json.loads(response.content[0].text)
+                async def inspect(ref):
+                    offset, collected = 0, bytearray()
+                    while True:
+                        payload = await call('memory_inspect', {{'ref': ref, 'byte_start': offset, 'max_bytes': 4096}})
+                        window = payload.get('draft_window')
+                        if window is None:
+                            return payload
+                        assert window['byte_start'] == len(collected)
+                        collected.extend(window['body'].encode())
+                        offset = window['next_byte']
+                        if offset is None:
+                            assert hashlib.sha256(collected).hexdigest() == window['digest']
+                            return json.loads(collected)
+                await call('memory_required_context', channel['required_request'])
+                if {complete!r}:
+                    key = hashlib.sha256(identity.encode()).hexdigest()
+                    capture = json.loads((run_dir / 'ledger' / (key + '.capture.json')).read_bytes())
+                    source = capture['source_pointer']['source_id']
+                    window = await call('memory_inspect', {{'ref': source}})
+                    span = window['span_inventory'][0]
+                    selection = await call('memory_record', {{
+                        'kind': 'source_selection', 'idempotency_key': 'engineering-controller-selection',
+                        'admission_id': window['admission_id'], 'source_id': source,
+                        'source_revision': window['source_revision'], 'binding_revision': window['binding_revision'],
+                        'byte_start': window['byte_start'], 'byte_end': window['byte_end'], 'window_digest': window['window_digest'],
+                        'policy_revision': window['policy_revision'], 'policy_epoch': window['policy_epoch'],
+                        'label': 'remember', 'coverage': 'complete_window', 'reason': 'Deterministic engineering peer, not live-model judgment.',
+                        'extraction': {{'claims': [{{'assertion_id': 'a0000', 'assertion_span_id': span['span_id'],
+                            'statement': span['quote'], 'kind': 'fact', 'subject': 'CacheKey', 'predicate': 'retained',
+                            'object': 'offline', 'polarity': 'positive', 'modality': 'asserted', 'entities': ['CacheKey']}}],
+                            'individual_qualifications': [{{'assertion_id': 'a0000', 'kind': 'condition', 'phrase': 'only offline',
+                                'evidence_span_id': span['span_id']}}], 'shared_qualifications': [], 'validities': [],
+                            'unused_span_ids': [item['span_id'] for item in window['span_inventory'] if item['span_id'] != span['span_id']]}}
+                    }})
+                    selected = await inspect(selection['artifact_id'])
+                    for claim_id in selected['claim_ids']:
+                        await inspect(claim_id)
+                    recall = manifest.workload['preflight']['recall_request']
+                    candidates = await call('memory_context', recall)
+                    for item in candidates['candidate_manifest']:
+                        await inspect(item['inspection_ref'])
+                    final = await call('memory_context', {{**recall, 'admission_id': candidates['admission_id'],
+                        'relevance': [{{'claim_id': item['claim_id'], 'relevant': True,
+                                       'reason': 'Engineering peer checks actual qualified final delivery.'}}
+                                      for item in candidates['candidate_manifest']]}})
+                    assert final['judgment_required'] is False
+                if {final_empty!r}:
+                    await call('memory_context', manifest.workload['retrieval'][0]['request'])
+asyncio.run(exercise())
 submission = pathlib.Path.cwd() / 'submission.json'
 submission.write_bytes(manifest.file('baseline').raw)
 emit({{'method': 'thread/tokenUsage/updated', 'params': {{'threadId': 'engineering-thread',
@@ -527,6 +559,7 @@ emit({{'method': 'turn/completed', 'params': {{'threadId': 'engineering-thread',
       'turn': {{'id': 'engineering-turn', 'status': 'completed'}}}}}})
 sys.stdin.read()
 '''
+
 
 
 @pytest.mark.parametrize("complete", [True, False])
@@ -657,9 +690,7 @@ async def test_actual_empty_candidate_response_is_a_final_read_not_missing_data(
         coding["route_ref"] = "engineering-coding-route"
         coding["rules_file"] = "rules"
         path, run_dir = tmp_path / "manifest.json", tmp_path / "run"
-        peer = _controller_peer(path, run_dir, False)
-        peer = peer.replace("'preflight-one'", "'retrieval-memory_on'")
-        peer = peer.replace("gateway.close()", "call('memory_context', manifest.workload['retrieval'][0]['request'])\ngateway.close()")
+        peer = _controller_peer(path, run_dir, False, invocation_id="retrieval-memory_on", final_empty=True)
         path, _, _ = fixture_inputs(tmp_path, repeats=1, gateway=coding, peer=peer)
         manifest = load_manifest(path)
         state = prepare_run(manifest, run_dir)

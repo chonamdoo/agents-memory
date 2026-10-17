@@ -18,6 +18,7 @@ from uuid import uuid4
 import anyio
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
+from mcp.shared.dispatcher import coerce_request_id
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from .client import HttpExchange, LocalClient
@@ -78,18 +79,29 @@ class _BoundedStdio:
             self.written_bytes = self.max_total
             raise ValueError("Gateway output total exceeded")
         self.written_bytes += len(raw)
-        self.observer("gateway_stdio_prepared", raw)
-        view = memoryview(raw)
-        while view:
-            await anyio.wait_writable(sys.stdout.fileno())
+        sent = 0
+        try:
+            self.observer("gateway_stdio_prepared", raw)
+            view = memoryview(raw)
+            while view:
+                await anyio.wait_writable(sys.stdout.fileno())
+                try:
+                    count = os.write(sys.stdout.fileno(), view)
+                except BlockingIOError:
+                    continue
+                if count <= 0:
+                    raise OSError("Gateway output made no progress")
+                sent += count
+                view = view[count:]
+            self.observer("gateway_stdio_written", raw)
+        except BaseException as error:
             try:
-                count = os.write(sys.stdout.fileno(), view)
-            except BlockingIOError:
-                continue
-            if count <= 0:
-                raise OSError("Gateway output made no progress")
-            view = view[count:]
-        self.observer("gateway_stdio_written", b"")
+                self.observer("gateway_stdio_write_failed", raw[:sent])
+            except BaseException as observation_error:
+                raise BaseExceptionGroup("Private gateway output and observation failures",
+                                         [error, observation_error]) from None
+            raise
+
 
     async def flush(self) -> None:
         # os.write above is unbuffered; there is no Python stream buffer to flush.
@@ -254,6 +266,11 @@ class EvaluationGateway:
         self._observation_failed = False
         self._required_stamps: list[dict] = []
         self._record_windows: dict[str, tuple[str, int, bytearray]] = {}
+        self._pending_delivery: dict[str | int, dict] = {}
+        self._received_ids: set[str | int] = set()
+        self._received_tools: dict[str | int, dict] = {}
+        self._answered_ids: set[str | int] = set()
+        self._cancelled_ids: set[str | int] = set()
         self._relay = _ObservedRelay(agent, self._wire)
         self._agent = self._client(agent)
         self._producer = self._client(producer) if producer is not None else None
@@ -298,6 +315,7 @@ class EvaluationGateway:
                 bounded = replace(exchange, request_body=request, response_body=response,
                                   response_complete=False)
                 self._trace_bytes = self.scope.max_trace_bytes
+                self._observation_failed = True
                 self._closed = True
                 self._trace("gateway_wire", call_id=self._current_call, exchange=bounded,
                             truncated=True, original_request_bytes=len(exchange.request_body or b""),
@@ -341,10 +359,15 @@ class EvaluationGateway:
 
     def close(self) -> None:
         with self._lock:
-            if self._active:
-                raise DomainError("GATEWAY_BUSY", "An upstream operation still needs reconciliation")
             self._closed = True
+            if self._active:
+                self._observation_failed = True
+                raise DomainError("GATEWAY_BUSY", "An upstream operation still needs reconciliation",
+                                  effect=EffectState.UNKNOWN)
+            if self._pending_delivery:
+                self._observation_failed = True
         self._trace("gateway_closed")
+
 
     def _deny(self, code: str) -> None:
         self._trace("gateway_denial", call_id=self._current_call, code=code, effect="not_started")
@@ -411,10 +434,139 @@ class EvaluationGateway:
             raise DomainError("MCP_VERSION_CHANGED", "The upstream protocol does not match the frozen version")
         self._relay.forward({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
+    def _complete_delivery(self, item: dict, channel: str, raw: bytes | None = None) -> None:
+        self._trace(
+            "gateway_delivery", name=item["name"], call_id=item["call_id"],
+            downstream_request_id=item["downstream_request_id"], channel=channel,
+            is_error=item["is_error"], stdout_write_complete=channel == "stdio",
+            written_sha256=hashlib.sha256(raw).hexdigest() if raw is not None else None,
+            written_bytes=len(raw) if raw is not None else None,
+            payload_sha256=hashlib.sha256(item["text"].encode()).hexdigest(),
+            provider_consumption=None,
+        )
+        with self._lock:
+            if self._closed:
+                self._observation_failed = True
+                raise DomainError("DELIVERY_AFTER_CLOSE", "Reconcile the completed upstream operation",
+                                  effect=EffectState.UNKNOWN)
+            if not item["is_error"]:
+                if item["stamp"] is not None:
+                    self._required_stamps.append(item["stamp"])
+                if item["final_read"] is not None:
+                    self._final_reads.append(item["final_read"])
+            if channel == "stdio":
+                key = coerce_request_id(item["downstream_request_id"])
+                self._pending_delivery.pop(key)
+                self._answered_ids.add(key)
+
+    def _result_ready(
+        self, name: str, arguments: dict, result: dict, downstream_request_id,
+        *, payload=None, stamp=None, final_read=None,
+    ) -> dict:
+        content, is_error = result.get("content"), result.get("isError", False)
+        if (type(is_error) is not bool or not isinstance(content, list) or len(content) != 1
+                or not isinstance(content[0], dict) or not isinstance(content[0].get("text"), str)):
+            raise DomainError("UPSTREAM_RESULT_INVALID", "The bounded result is unavailable",
+                              effect=EffectState.UNKNOWN)
+        item = {
+            "call_id": self._current_call, "name": name, "arguments": arguments,
+            "downstream_request_id": downstream_request_id, "is_error": is_error,
+            "text": content[0]["text"], "payload": payload, "stamp": stamp, "final_read": final_read,
+        }
+        if downstream_request_id is None:
+            self._complete_delivery(item, "direct")
+        else:
+            if type(downstream_request_id) not in {str, int}:
+                self._observation_failed = True
+                raise DomainError("DOWNSTREAM_ID_INVALID", "The response identity is unavailable",
+                                  effect=EffectState.UNKNOWN)
+            key = coerce_request_id(downstream_request_id)
+            with self._lock:
+                if (self._closed or key in self._pending_delivery or key in self._answered_ids
+                        or key in self._cancelled_ids):
+                    self._observation_failed = True
+                    raise DomainError("DOWNSTREAM_DELIVERY_AMBIGUOUS", "Reconcile the downstream response",
+                                      effect=EffectState.UNKNOWN)
+                self._pending_delivery[key] = item
+            self._trace("gateway_dispatched", name=name, call_id=item["call_id"],
+                        downstream_request_id=downstream_request_id, stdout_write_complete=False)
+        return result
+
+    def _stdio_observe(self, stage: str, raw: bytes) -> None:
+        if stage in {
+            "gateway_stdio_partial", "gateway_stdio_input_limit",
+            "gateway_stdio_output_limit", "gateway_stdio_write_failed",
+        }:
+            self._observation_failed = True
+        self._trace(stage, body=raw)
+        if stage not in {"gateway_stdio_received", "gateway_stdio_written"}:
+            return
+        try:
+            if not raw.endswith(b"\n") or raw.count(b"\n") != 1:
+                raise ValueError("Gateway protocol record is not one complete line")
+            message = decode_json(raw)
+            if not isinstance(message, dict):
+                raise ValueError("Gateway protocol record is not an object")
+            if stage == "gateway_stdio_received":
+                if message.get("method") == "notifications/cancelled":
+                    identifier = message.get("params", {}).get("requestId")
+                    if type(identifier) in {str, int}:
+                        key = coerce_request_id(identifier)
+                        with self._lock:
+                            if key in self._received_tools and key not in self._answered_ids:
+                                self._cancelled_ids.add(key)
+                                self._observation_failed = True
+                elif "id" in message and isinstance(message.get("method"), str):
+                    identifier = message["id"]
+                    if type(identifier) not in {str, int}:
+                        raise ValueError("Gateway request identity is invalid")
+                    key = coerce_request_id(identifier)
+                    with self._lock:
+                        if key in self._received_ids:
+                            raise ValueError("Gateway request identity was reused")
+                        self._received_ids.add(key)
+                        if message["method"] == "tools/call":
+                            self._received_tools[key] = message
+                return
+            identifier = message.get("id")
+            if type(identifier) not in {str, int}:
+                return
+            key = coerce_request_id(identifier)
+            with self._lock:
+                item = self._pending_delivery.get(key)
+                request = self._received_tools.get(key)
+                cancelled = key in self._cancelled_ids
+            if item is None:
+                if request is not None:
+                    if (type(identifier) is not type(request["id"]) or identifier != request["id"]
+                            or message.get("result", {}).get("isError") is not True):
+                        raise ValueError("Gateway tool response has no dispatched result")
+                    with self._lock:
+                        self._answered_ids.add(key)
+                return
+            result = message.get("result")
+            content = result.get("content") if isinstance(result, dict) else None
+            params = request.get("params", {}) if request is not None else {}
+            if (cancelled or request is None
+                    or type(identifier) is not type(item["downstream_request_id"])
+                    or identifier != item["downstream_request_id"]
+                    or type(identifier) is not type(request["id"]) or identifier != request["id"]
+                    or params.get("name") != item["name"]
+                    or (params.get("arguments") or {}) != item["arguments"]
+                    or not isinstance(result, dict) or result.get("isError", False) is not item["is_error"]
+                    or not isinstance(content, list) or len(content) != 1
+                    or not isinstance(content[0], dict) or content[0].get("text") != item["text"]):
+                raise ValueError("Gateway dispatched result was not the completed response")
+            self._complete_delivery(item, "stdio", raw)
+        except BaseException:
+            self._observation_failed = True
+            raise
+
     def call_tool(self, name: str, arguments: dict, *, downstream_request_id: str | int | None = None) -> dict:
         if not isinstance(arguments, dict):
             raise DomainError("INPUT_INVALID", "Tool arguments must be an object")
         self._enter(name, downstream_request_id)
+        original_arguments = arguments
         try:
             if name not in self._schemas:
                 self._deny("OPTIONAL_TOOL_DENIED" if self.scope.mode != "memory_on" else "TOOL_SCOPE_DENIED")
@@ -427,8 +579,9 @@ class EvaluationGateway:
                 stamp = result.get("stamp")
                 if not isinstance(stamp, dict):
                     raise DomainError("REQUIRED_STAMP_MISSING", "Required rule identity is unavailable", effect=EffectState.UNKNOWN)
-                self._required_stamps.append(stamp)
-                return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
+                response = {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
+                return self._result_ready(name, original_arguments, response, downstream_request_id,
+                                          payload=result, stamp=stamp)
             if not self._required_stamps:
                 self._deny("REQUIRED_CONTEXT_READ_REQUIRED")
             if arguments.get("binding_id", self.scope.binding_id) != self.scope.binding_id:
@@ -470,18 +623,19 @@ class EvaluationGateway:
             if not isinstance(result, dict):
                 raise DomainError("UPSTREAM_RESULT_INVALID", "The MCP result is invalid", effect=EffectState.UNKNOWN)
             final_read = None
+            payload = None
             if not result.get("isError", False):
                 content = result.get("content")
                 if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0].get("text"), str):
                     raise DomainError("UPSTREAM_RESULT_INVALID", "The MCP result has no bounded data plane", effect=EffectState.UNKNOWN)
                 payload = decode_json(content[0]["text"].encode())
                 final_read = self._observe_flow(name, arguments, payload)
-            self._trace("gateway_delivery", name=name, call_id=self._current_call,
-                        is_error=result.get("isError", False), host_observed_delivery=True,
-                        provider_consumption=None)
-            if final_read is not None:
-                self._final_reads.append(final_read)
-            return result
+            return self._result_ready(name, original_arguments, result, downstream_request_id,
+                                      payload=payload, final_read=final_read)
+        except BaseException as error:
+            if not isinstance(error, DomainError) or error.effect == EffectState.UNKNOWN:
+                self._observation_failed = True
+            raise
         finally:
             self._leave()
 
@@ -574,41 +728,55 @@ class EvaluationGateway:
         return final_read
 
     def flow_observation(self) -> dict:
-        linked_sources = []
-        delivered = {ref for read in self._final_reads for ref in (read.get("refs") or []) if isinstance(ref, str)}
-        for capture in self._captures:
-            pointer = capture["source_pointer"]
-            source = pointer["source_id"]
-            if self._source_revisions.get(source) != {(pointer["source_revision"], pointer["binding_revision"])}:
-                continue
-            covered = 0
-            for start, end in sorted(self._source_windows.get(source, [])):
-                if start > covered:
-                    break
-                covered = max(covered, end)
-            if covered != pointer["byte_length"]:
-                continue
-            for selection in self._inspected_selections:
-                if (self._selection_sources.get(selection) == source
-                        and self._selection_claims.get(selection, set()) <= self._inspected_claims
-                        and self._selection_claims.get(selection, set()) & delivered):
-                    linked_sources.append(source)
-                    break
-        return {
-            "invocation_id": self.scope.invocation_id, "mode": self.scope.mode,
-            "captures": tuple(self._captures), "source_windows": dict(self._source_windows),
-            "remembered_selections": tuple(sorted(self._selections)),
-            "inspected_selections": tuple(sorted(self._inspected_selections)),
-            "final_reads": tuple(self._final_reads), "required_stamps": tuple(self._required_stamps),
-            "final_read_attempts": tuple(self._final_read_attempts),
-            "observation_complete": not self._observation_failed,
-            "pipeline_observed": bool(linked_sources) and not self._observation_failed,
-            "linked_capture_source_ids": tuple(linked_sources),
-            "final_read_observed": bool(self._final_reads),
-            "semantic_correctness": None, "provider_consumption": None,
-            "comparable_route_evidence_present": bool(self.scope.exclusive_route_observation_ref
-                                                       and self.scope.residual_memory_observation_ref),
-        }
+        with self._lock:
+            if self._active:
+                return {
+                    "invocation_id": self.scope.invocation_id, "mode": self.scope.mode,
+                    "observation_complete": False, "pipeline_observed": False,
+                    "outstanding_upstream": True, "partial_flow_unavailable": True,
+                    "required_stamps": tuple(self._required_stamps), "final_reads": tuple(self._final_reads),
+                    "captures": (), "source_windows": {}, "remembered_selections": (),
+                    "inspected_selections": (), "final_read_attempts": (), "linked_capture_source_ids": (),
+                    "final_read_observed": bool(self._final_reads),
+                    "semantic_correctness": None, "provider_consumption": None,
+                }
+            complete = not self._observation_failed and not self._pending_delivery
+            linked_sources = []
+            delivered = {ref for read in self._final_reads for ref in (read.get("refs") or []) if isinstance(ref, str)}
+            for capture in self._captures:
+                pointer = capture["source_pointer"]
+                source = pointer["source_id"]
+                if self._source_revisions.get(source) != {(pointer["source_revision"], pointer["binding_revision"])}:
+                    continue
+                covered = 0
+                for start, end in sorted(self._source_windows.get(source, [])):
+                    if start > covered:
+                        break
+                    covered = max(covered, end)
+                if covered != pointer["byte_length"]:
+                    continue
+                for selection in self._inspected_selections:
+                    if (self._selection_sources.get(selection) == source
+                            and self._selection_claims.get(selection, set()) <= self._inspected_claims
+                            and self._selection_claims.get(selection, set()) & delivered):
+                        linked_sources.append(source)
+                        break
+            return {
+                "invocation_id": self.scope.invocation_id, "mode": self.scope.mode,
+                "captures": tuple(self._captures), "source_windows": dict(self._source_windows),
+                "remembered_selections": tuple(sorted(self._selections)),
+                "inspected_selections": tuple(sorted(self._inspected_selections)),
+                "final_reads": tuple(self._final_reads), "required_stamps": tuple(self._required_stamps),
+                "final_read_attempts": tuple(self._final_read_attempts),
+                "observation_complete": complete,
+                "pipeline_observed": bool(linked_sources) and complete,
+                "linked_capture_source_ids": tuple(linked_sources),
+                "final_read_observed": bool(self._final_reads),
+                "semantic_correctness": None, "provider_consumption": None,
+                "comparable_route_evidence_present": bool(self.scope.exclusive_route_observation_ref
+                                                           and self.scope.residual_memory_observation_ref),
+            }
+
 
     async def run_stdio(self, *, timeout_seconds: float) -> None:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
@@ -617,7 +785,7 @@ class EvaluationGateway:
             raise ValueError("Bounded gateway stdio requires the approved POSIX native context")
         transport = _BoundedStdio(
             self._relay.settings.max_http_body_bytes, self.scope.max_trace_bytes,
-            lambda stage, body: self._trace(stage, body=body),
+            self._stdio_observe,
         )
         descriptors = (sys.stdin.fileno(), sys.stdout.fileno())
         blocking = tuple(os.get_blocking(fd) for fd in descriptors)
@@ -627,9 +795,14 @@ class EvaluationGateway:
             async with asyncio.timeout(timeout_seconds):
                 async with stdio_server(stdin=transport, stdout=transport) as (read_stream, write_stream):
                     await self.server.run(read_stream, write_stream, self.server.create_initialization_options())
+        except BaseException:
+            self._observation_failed = True
+            raise
         finally:
             with self._lock:
                 self._closed = True
+                if self._active or self._pending_delivery:
+                    self._observation_failed = True
             for fd, was_blocking in zip(descriptors, blocking, strict=True):
                 os.set_blocking(fd, was_blocking)
 
