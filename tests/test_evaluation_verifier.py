@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from agents_memory import evaluation_runtime as runtime
+from agents_memory import evaluation_verifier as verifier
 from agents_memory.evaluation_artifacts import (
     ArtifactBundle,
     ArtifactEntry,
@@ -39,6 +40,7 @@ from agents_memory.evaluation_runtime import (
     publish_or_reconcile,
 )
 from agents_memory.evaluation_verifier import FileExpectation, OracleCase, compare_case
+from agents_memory.private_io import private_write
 
 
 @pytest.fixture
@@ -341,6 +343,16 @@ def test_lost_mutation_response_never_replays_or_executes(owned_runtime, monkeyp
     assert "tool" not in calls and result.execution is None
     if lost == "create":
         assert "start" not in calls
+    reopened = DockerRuntime(instance.spec, instance.owner, instance.intent_dir)
+    try:
+        monkeypatch.setattr(reopened, "inspect", lambda identity: None)
+        recovered = reopened.reconcile_all(maximum_entries=30, maximum_intents=5)
+        assert len(recovered) == 1
+        assert recovered[0].container_id == "b" * 64
+        assert recovered[0].exact_absence and not recovered[0].pending_create
+        assert calls.count(lost) == 1 and "tool" not in calls
+    finally:
+        reopened.close()
 
 
 def test_changed_resource_intent_cannot_supply_host_argv(owned_runtime):
@@ -393,3 +405,150 @@ def test_crash_recovery_does_not_clear_an_unobserved_late_create(owned_runtime, 
     monkeypatch.setattr(instance, "inspect", lambda identity: None)
     result = instance.reconcile_all(maximum_entries=30, maximum_intents=5)
     assert result[0].pending_create and not result[0].exact_absence
+
+
+def test_duplicate_claim_cannot_publish_over_inflight_observations(tmp_path, runtime_spec, limits, monkeypatch):
+    tmp_path.chmod(0o700)
+    before = bundle(limits, b"old")
+    correct = bundle(limits, b"new")
+    wrong = bundle(limits, b"bad")
+    policy = EditPolicy(before.digest, (EditableSpan("a.py", 0, 3),), (), (), ())
+    correct_proof = witness(before, correct, (ByteEdit("a.py", 0, 3, b"new"),))
+    case = OracleCase("functional", ("/candidate",), b"", b"answer\n", b"", 0, ())
+    task = verifier.OracleTask("engineering-claim-race", "1", "engineering-only", before.digest, policy, correct_proof, (case,))
+    spec = verifier.VerifierSpec(runtime_spec, "d" * 64, verifier.verifier_source_digest(), 3, 1, 1024 * 1024)
+    executor = verifier.VerifierExecutor(spec, owner(), tmp_path)
+    controls = (
+        verifier.ControlArtifact("correct", correct, correct_proof),
+        verifier.ControlArtifact("noop", before, witness(before, before)),
+        verifier.ControlArtifact("plausible_wrong", wrong, witness(before, wrong, (ByteEdit("a.py", 0, 3, b"bad"),))),
+    )
+    monkeypatch.setattr(DockerRuntime, "preflight", lambda self: None)
+    executed = []
+    def run(self, intent, *args, **kwargs):
+        executed.append(intent.case_id)
+        return observation(b"answer\n" if intent.snapshot == correct.digest else b"wrong\n")
+    monkeypatch.setattr(DockerRuntime, "run", run)
+    approval = verifier.IndependentControlApproval(task.digest, verifier.controls_digest(controls), "engineering-only")
+    assert executor.precheck(before, task, controls, approval).eligible
+    duplicates = []
+    def paused_after_claim(self):
+        names = set(tmp_path.iterdir())
+        duplicate = executor.verify(before, correct, task)
+        duplicates.append(duplicate)
+        assert duplicate.error_code == "ATTEMPT_CLAIM_UNKNOWN_OR_EXISTING"
+        assert duplicate.private_artifact is None and duplicate.terminal_artifact is None
+        assert set(tmp_path.iterdir()) == names
+    monkeypatch.setattr(DockerRuntime, "preflight", paused_after_claim)
+    result = executor.verify(before, correct, task)
+    assert len(duplicates) == 1 and len(executed) == 4
+    assert result.success and result.error_code is None
+    assert result.publication.state in {"durable", "reconciled_durable"}
+    private = (tmp_path / result.private_artifact).read_bytes()
+    assert digest_bytes(private) == result.private_sha256
+    assert b"YW5zd2VyCg==" in private
+
+
+def test_completed_nonzero_exit_still_observes_declared_effects(owned_runtime, monkeypatch):
+    instance, _ = owned_runtime
+    instance.spec = replace(instance.spec, limits=replace(instance.spec.limits, watchdog_seconds=30))
+    intent = instance.intent(case_id="nonzero-effect", snapshot="c" * 64, snapshot_path=instance.intent_dir / "snapshot", watchdog_path=instance.intent_dir / "watchdog", observer_path=instance.intent_dir / "observer")
+    removed = False
+    calls = []
+    def command(label, args, **kwargs):
+        nonlocal removed
+        calls.append(label)
+        if label == "remove":
+            removed = True
+        raw = (("b" * 64) + "\n").encode()
+        if label == "tool":
+            raw = canonical_bytes({"watchdog_secure": True, "subject_secure": True, "tool": {"engineering": True}})
+        elif label == "effect":
+            raw = canonical_bytes({"content": base64.b64encode(b"error report").decode(), "size": 12})
+        return CommandObservation("completed", 0, raw, b"", 1, True, True, True)
+    instance.spec = replace(instance.spec, tool_identity=digest_bytes(canonical_bytes({"engineering": True})))
+    intent = instance.intent(case_id=intent.case_id, snapshot=intent.snapshot, snapshot_path=Path(intent.snapshot_path), watchdog_path=Path(intent.watchdog_path), observer_path=Path(intent.observer_path))
+    value = container_fixture(instance.spec, intent)
+    monkeypatch.setattr(instance, "inspect", lambda identity: None if removed else value)
+    monkeypatch.setattr(instance, "command", command)
+    class CompletedSubject:
+        def __init__(self, *args, **kwargs):
+            self.observation = CommandObservation("completed", 2, b"", b"", 1, True, True, True)
+        def close(self, seconds):
+            return self.observation
+    monkeypatch.setattr(runtime, "CommandLease", CompletedSubject)
+    result = instance.run(intent, ("/candidate",), b"", (("report", 32),))
+    case = OracleCase("nonzero-effect", ("/candidate",), b"", b"", b"", 2, (FileExpectation("report", 32, b"error report"),))
+    assert result.effects == (("report", b"error report"),)
+    assert calls.count("effect") == 1 and result.execution.exit_code == 2
+    assert compare_case(case, result).passed
+    assert not compare_case(replace(case, expected_exit=0), result).passed
+
+
+@pytest.mark.parametrize("record_kind", ["owner", "created"])
+def test_recovery_reconciles_only_private_writer_temporary_links(owned_runtime, monkeypatch, record_kind):
+    instance, intent = owned_runtime
+    instance.record(intent.name + ".create-intent.json", asdict(intent))
+    created_name = intent.name + ".created.json"
+    instance.record(created_name, {"container_id": "b" * 64, "intent": asdict(intent)})
+    name = instance.owner.identity + ".owner.json" if record_kind == "owner" else created_name
+    temporary = instance.intent_dir / ".memory-private-0123456789abcdef"
+    os.link(instance.intent_dir / name, temporary)
+    reopened = DockerRuntime(instance.spec, instance.owner, instance.intent_dir)
+    try:
+        assert reopened.read_private_record(name)
+        assert not temporary.exists()
+        assert (instance.intent_dir / name).stat().st_nlink == 1
+        monkeypatch.setattr(reopened, "inspect", lambda identity: None)
+        result = reopened.reconcile_all(maximum_entries=30, maximum_intents=5)
+        assert result[0].container_id == "b" * 64
+        assert result[0].exact_absence and not result[0].pending_create
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("link_kind", ["unrecognized", "mismatched", "symlink", "extra-link", "nonprivate", "foreign"])
+def test_recovery_rejects_unproven_publication_links(owned_runtime, monkeypatch, link_kind):
+    instance, _ = owned_runtime
+    name = "private-record.json"
+    raw = canonical_bytes({"engineering": True})
+    private_write(instance.intent_dir / name, raw, directory=instance.directory)
+    target = instance.intent_dir / name
+    temporary = instance.intent_dir / ".memory-private-0123456789abcdef"
+    if link_kind in {"mismatched", "symlink"}:
+        private_write(temporary, raw, directory=instance.directory)
+        if link_kind == "symlink":
+            temporary.unlink()
+            temporary.symlink_to(target)
+        os.link(target, instance.intent_dir / "unrecognized")
+    else:
+        os.link(target, instance.intent_dir / "unrecognized" if link_kind == "unrecognized" else temporary)
+        if link_kind == "extra-link":
+            os.link(target, instance.intent_dir / ".memory-private-fedcba9876543210")
+        elif link_kind == "nonprivate":
+            target.chmod(0o644)
+        elif link_kind == "foreign":
+            monkeypatch.setattr(runtime.os, "getuid", lambda: target.stat().st_uid + 1)
+    with pytest.raises(RuntimeRefusal, match="RECOVERY_RECORD_IDENTITY"):
+        instance.read_private_record(name)
+    assert target.read_bytes() == raw and target.stat().st_nlink >= 2
+    if link_kind != "unrecognized":
+        assert temporary.exists()
+
+
+def test_publication_recovers_actual_private_writer_unlink_interruption(owned_runtime, monkeypatch):
+    instance, _ = owned_runtime
+    original_unlink = os.unlink
+    interrupted = []
+    def interrupt_once(path, *, dir_fd=None):
+        if str(path).startswith(".memory-private-") and dir_fd == instance.directory and not interrupted:
+            interrupted.append(str(path))
+            raise OSError("engineering interruption before temporary cleanup")
+        return original_unlink(path, dir_fd=dir_fd)
+    monkeypatch.setattr(runtime.os, "unlink", interrupt_once)
+    value = {"engineering": "retained exact observation"}
+    result = publish_or_reconcile(instance.directory, "interrupted.json", canonical_bytes(value))
+    assert result.state == "reconciled_durable" and len(interrupted) == 1
+    assert instance.read_private_record("interrupted.json") == value
+    assert not (instance.intent_dir / interrupted[0]).exists()
+    assert (instance.intent_dir / "interrupted.json").stat().st_nlink == 1

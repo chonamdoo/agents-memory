@@ -22,6 +22,8 @@ from agents_memory.evaluation_artifacts import (
 from agents_memory.evaluation_runtime import (
     OBSERVER_SOURCE,
     WATCHDOG_SOURCE,
+    CleanupObservation,
+    CommandObservation,
     DockerRuntime,
     EvaluationOwner,
     RuntimeLimits,
@@ -29,11 +31,13 @@ from agents_memory.evaluation_runtime import (
 )
 from agents_memory.evaluation_verifier import (
     ControlArtifact,
+    FileExpectation,
     IndependentControlApproval,
     OracleCase,
     OracleTask,
     VerifierExecutor,
     VerifierSpec,
+    compare_case,
     controls_digest,
     verifier_source_digest,
 )
@@ -72,7 +76,7 @@ def proof(before, after):
     return EditWitness(before.digest, after.digest, edits, (), (), ())
 
 
-def test_actual_controls_outer_oracle_and_exact_retention(tmp_path, prepared_runtime):
+def test_actual_controls_outer_oracle_and_exact_retention(tmp_path, prepared_runtime, monkeypatch):
     tmp_path.chmod(0o700)
     before = program_bundle(b"import sys\nprint(int(sys.stdin.read()))\n")
     correct = program_bundle(b"import sys\nprint(int(sys.stdin.read()) + 1)\n")
@@ -87,9 +91,22 @@ def test_actual_controls_outer_oracle_and_exact_retention(tmp_path, prepared_run
     precheck = executor.precheck(before, task, controls, approval)
     assert precheck.eligible
     assert [receipt.success for receipt in precheck.receipts] == [True, False, False]
+    original_run = DockerRuntime.run
+    duplicates = []
+    def paused_after_claim(instance, *args, **kwargs):
+        names = set(tmp_path.iterdir())
+        duplicate = executor.verify(before, correct, task)
+        duplicates.append(duplicate)
+        assert duplicate.error_code == "ATTEMPT_CLAIM_UNKNOWN_OR_EXISTING"
+        assert duplicate.private_artifact is None and duplicate.terminal_artifact is None
+        assert set(tmp_path.iterdir()) == names
+        return original_run(instance, *args, **kwargs)
+    monkeypatch.setattr(DockerRuntime, "run", paused_after_claim)
     receipt = executor.verify(before, correct, task)
     assert receipt.success and receipt.cleanup_complete
     assert receipt.publication.state in {"durable", "reconciled_durable"}
+    assert len(duplicates) == len(cases)
+    monkeypatch.setattr(DockerRuntime, "run", original_run)
     replay = executor.verify(before, correct, task)
     assert not replay.success and replay.error_code == "ATTEMPT_CLAIM_UNKNOWN_OR_EXISTING"
     damaged = ArtifactBundle((file_entry("solve.py", correct.entries[0].content), file_entry("unchanged.txt", b"deleted retained line")), before.limits)
@@ -159,6 +176,75 @@ def test_actual_declared_file_effect_uses_trusted_observer(actual_runtime):
     assert symlink.cleanup.exact_absence
 
 
+@pytest.mark.parametrize("exit_code", [0, 2])
+def test_actual_private_file_effect_and_expected_nonzero_exit(actual_runtime, exit_code):
+    raw = b"import os\nos.umask(0o077)\nwith open('/scratch/report', 'wb') as stream:\n stream.write(b'error report')\nraise SystemExit(" + str(exit_code).encode() + b")\n"
+    result = contained_program(actual_runtime, raw, effects=(("report", 32),))
+    case = OracleCase("private-report", (actual_runtime.spec.python_executable,), b"", b"", b"", exit_code, (FileExpectation("report", 32, b"error report"),))
+    assert result.execution.exit_code == exit_code
+    assert result.effects == (("report", b"error report"),)
+    assert result.cleanup.exact_absence and not result.cleanup.pending_create
+    assert compare_case(case, result).passed
+    assert not compare_case(replace(case, expected_exit=exit_code + 1), result).passed
+
+
+def test_actual_lost_create_response_recovers_full_id_without_replay(actual_runtime, monkeypatch):
+    instance = actual_runtime
+    original_command = instance.command
+    calls = []
+    def lose_create(label, args, **kwargs):
+        calls.append(label)
+        result = original_command(label, args, **kwargs)
+        if label == "create":
+            assert result.completed
+            return replace(result, state="timeout", exit_code=None, stdout=b"", stdout_complete=False, stderr_complete=False)
+        return result
+    monkeypatch.setattr(instance, "command", lose_create)
+    result = contained_program(instance, b"raise RuntimeError('must not execute')\n")
+    assert result.state == "create_unknown" and result.execution is None
+    assert result.container_id and result.cleanup.exact_absence
+    assert calls.count("create") == 1 and "start" not in calls and "tool" not in calls
+    reopened = DockerRuntime(instance.spec, instance.owner, instance.intent_dir)
+    try:
+        recovered = reopened.reconcile_all(maximum_entries=100, maximum_intents=10)
+        assert len(recovered) == 1 and recovered[0].container_id == result.container_id
+        assert recovered[0].exact_absence and not recovered[0].pending_create
+    finally:
+        reopened.close()
+    assert calls.count("create") == 1
+
+
+@pytest.mark.parametrize("record_kind", ["owner", "created"])
+def test_actual_recovery_after_created_publication_temporary_link(actual_runtime, monkeypatch, record_kind):
+    instance = actual_runtime
+    original_command = instance.command
+    created_ids = []
+    def lose_start(label, args, **kwargs):
+        if label == "start":
+            created_ids.append(args[-1])
+            return CommandObservation("timeout", None, b"", b"", 1, False, False, True)
+        return original_command(label, args, **kwargs)
+    monkeypatch.setattr(instance, "command", lose_start)
+    monkeypatch.setattr(instance, "cleanup", lambda intent, container_id, *, create_uncertain: CleanupObservation("ownership_or_cleanup_unknown", container_id, False, False, create_uncertain))
+    result = contained_program(instance, b"raise RuntimeError('must not execute')\n")
+    assert result.state == "start_unknown" and result.execution is None
+    assert not result.cleanup.exact_absence and created_ids == [result.container_id]
+    with os.scandir(instance.directory) as entries:
+        names = [item.name for item in entries if item.name.endswith(".created.json")]
+    assert len(names) == 1
+    temporary = instance.intent_dir / ".memory-private-0123456789abcdef"
+    name = instance.owner.identity + ".owner.json" if record_kind == "owner" else names[0]
+    os.link(instance.intent_dir / name, temporary)
+    reopened = DockerRuntime(instance.spec, instance.owner, instance.intent_dir)
+    try:
+        recovered = reopened.reconcile_all(maximum_entries=100, maximum_intents=10)
+        assert len(recovered) == 1 and recovered[0].exact_absence
+        assert recovered[0].state == "removed" and recovered[0].ownership_verified
+        assert not recovered[0].pending_create and not temporary.exists()
+    finally:
+        reopened.close()
+
+
 def test_actual_cancellation_preserves_failure_and_owned_cleanup(actual_runtime):
     cancelled = Event()
     cancelled.set()
@@ -198,3 +284,26 @@ def test_actual_watchdog_expires_without_host_subject_supervision(actual_runtime
     finally:
         cleanup = instance.cleanup(intent, identity, create_uncertain=identity is None)
     assert cleanup.exact_absence
+
+
+def test_actual_private_nonzero_effect_controls_enable_verification(tmp_path, prepared_runtime):
+    tmp_path.chmod(0o700)
+    def program(report):
+        return program_bundle(b"import os\nos.umask(0o077)\nwith open('/scratch/report', 'wb') as stream:\n stream.write(" + repr(report).encode() + b")\nraise SystemExit(2)\n")
+    before, correct, wrong = (program(report) for report in (b"noop", b"error report", b"wrong report"))
+    policy = EditPolicy(before.digest, (EditableSpan("solve.py", 0, len(before.entries[0].content)),), (), (), ())
+    case = OracleCase("expected-error-report", (prepared_runtime.python_executable, "-I", "-S", "/artifact/solve.py"), b"", b"", b"", 2, (FileExpectation("report", 32, b"error report"),))
+    task = OracleTask("engineering-private-error-report", "1", "engineering-only-not-human-gold", before.digest, policy, proof(before, correct), (case,))
+    spec = VerifierSpec(prepared_runtime, digest_bytes(Path(__file__).read_bytes()), verifier_source_digest(), 3, 3, 128 * 1024 * 1024)
+    executor = VerifierExecutor(spec, actual_owner(), tmp_path)
+    controls = (
+        ControlArtifact("correct", correct, proof(before, correct)),
+        ControlArtifact("noop", before, proof(before, before)),
+        ControlArtifact("plausible_wrong", wrong, proof(before, wrong)),
+    )
+    approval = IndependentControlApproval(task.digest, controls_digest(controls), "engineering-only-not-independent-approval")
+    precheck = executor.precheck(before, task, controls, approval)
+    assert precheck.eligible and [receipt.success for receipt in precheck.receipts] == [True, False, False]
+    receipt = executor.verify(before, correct, task)
+    assert receipt.success and receipt.cleanup_complete
+    assert receipt.cases[0].exit_equal and receipt.cases[0].effects_equal

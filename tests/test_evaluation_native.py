@@ -39,7 +39,7 @@ def spec_for(tmp_path, backend="codex", peer=""):
     ), output / "artifact.json"
 
 
-def codex_peer(body):
+def codex_peer(body, *, before_started=""):
     return '''import json, pathlib, sys
 assert sys.argv[1:] == ['app-server']
 def read():
@@ -60,6 +60,7 @@ request = read()
 assert request['method'] == 'turn/start'
 assert set(request['params']) == {'threadId', 'input', 'outputSchema'}
 reply(request, {'turn': {'id': 'turn-one'}})
+''' + before_started + '''
 emit({'method': 'turn/started', 'params': {'threadId': 'thread-one', 'turn': {'id': 'turn-one'}}})
 ''' + body
 
@@ -279,3 +280,98 @@ def test_immutable_submission_publication_reconciles_exact_visible_bytes(tmp_pat
     assert publications == [output]
     assert bundle["sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
     assert output.read_bytes() == spec.submission_path.read_bytes()
+
+
+def test_cancellation_discards_unsent_turn_start(tmp_path):
+    peer = codex_peer("sys.stdin.read()\n").replace(
+        "request = read()\nassert request['method'] == 'turn/start'",
+        "request = read()\npathlib.Path('received-turn.json').write_text(json.dumps(request))\n"
+        "assert request['method'] == 'turn/start'",
+    )
+    spec, output = spec_for(tmp_path, peer=peer)
+    stop = threading.Event()
+    def cancel_on_thread_response(row):
+        if row["stage"] == "native_event" and row["event_index"] == 1:
+            stop.set()
+    result = run_native_arm(spec, "cancel queued startup", invocation_id="invocation",
+                            artifact_output=output, trace_sink=cancel_on_thread_response, stop_event=stop)
+    assert result.status == "aborted"
+    assert b"thread-one" in result.stdout
+    assert not (spec.cwd / "received-turn.json").exists()
+    assert result.artifact_bundle is None
+    assert result.cleanup["leader_reaped"] is True
+
+
+def test_cancellation_terminates_partial_turn_start_without_finishing_frame(tmp_path, monkeypatch):
+    from agents_memory import evaluation_native
+
+    spec, output = spec_for(tmp_path, peer=codex_peer("sys.stdin.read()\n"))
+    stop = threading.Event()
+    original_write = evaluation_native.os.write
+    startup_writes = []
+    def write_partial_start(fd, raw):
+        if b'"method":"turn/start"' in raw and not startup_writes:
+            count = original_write(fd, raw[:16])
+            startup_writes.append(bytes(raw[:count]))
+            stop.set()
+            return count
+        count = original_write(fd, raw)
+        if stop.is_set():
+            startup_writes.append(bytes(raw[:count]))
+        return count
+    monkeypatch.setattr(evaluation_native.os, "write", write_partial_start)
+    result = run_native_arm(spec, "cancel partial startup", invocation_id="invocation",
+                            artifact_output=output, trace_sink=lambda _: None, stop_event=stop)
+    assert startup_writes and len(startup_writes[0]) == 16
+    assert len(startup_writes) == 1
+    assert b"\n" not in startup_writes[0]
+    assert result.status == "aborted"
+    assert result.stop["interrupt_sent"] is False
+    assert result.cleanup["leader_reaped"] is True
+    assert result.artifact_bundle is None
+
+
+def test_completed_turn_with_unterminated_trailing_record_cannot_publish(tmp_path):
+    peer = codex_peer('''
+import signal
+path = pathlib.Path.cwd() / 'submission.json'
+path.write_bytes(b'{"explicit":"unpublished-submission"}')
+events = [
+    {'method': 'item/completed', 'params': {'threadId': 'thread-one', 'turnId': 'turn-one',
+        'item': {'type': 'agentMessage', 'id': 'message-one', 'text': json.dumps({'submission_path': str(path)})}}},
+    {'method': 'turn/completed', 'params': {'threadId': 'thread-one',
+        'turn': {'id': 'turn-one', 'status': 'completed'}}},
+]
+sys.stdout.write(''.join(json.dumps(event) + '\\n' for event in events) + '{')
+sys.stdout.flush()
+signal.pause()
+''')
+    spec, output = spec_for(tmp_path, peer=peer)
+    result = run_native_arm(spec, "trailing partial fixture", invocation_id="invocation",
+                            artifact_output=output, trace_sink=lambda _: None)
+    assert b'"status": "completed"' in result.stdout
+    assert result.stdout.endswith(b"{")
+    assert result.status == "unknown"
+    assert result.code == "PARTIAL_PROTOCOL_RECORD"
+    assert result.effect == "unknown"
+    assert result.artifact_bundle is None
+    assert not output.exists()
+    assert spec.submission_path.read_bytes() == b'{"explicit":"unpublished-submission"}'
+    assert result.cleanup["leader_reaped"] is True
+
+
+def test_closed_native_stdin_does_not_claim_interrupt_transmission(tmp_path):
+    peer = codex_peer("import signal\nsignal.pause()\n", before_started="import os\nos.close(0)\n")
+    spec, output = spec_for(tmp_path, peer=peer)
+    stop = threading.Event()
+    def cancel_on_started_turn(row):
+        if row["stage"] == "native_event" and row["event_index"] == 3:
+            stop.set()
+    result = run_native_arm(spec, "closed interrupt pipe", invocation_id="invocation",
+                            artifact_output=output, trace_sink=cancel_on_started_turn, stop_event=stop)
+    assert result.stop["requested"] is True
+    assert result.stop["interrupt_sent"] is False
+    assert result.status != "completed"
+    assert result.effect == "unknown"
+    assert result.cleanup["leader_reaped"] is True
+    assert result.artifact_bundle is None

@@ -110,14 +110,31 @@ async def full_inspect(gateway, ref):
             return json.loads(collected)
 
 
-async def prepare_through_actual_wire(gateway):
+async def prepare_through_actual_wire(gateway, *, inspect_claims=True, second_claim=False):
+    body = "CacheKey is retained only offline."
+    if second_claim:
+        body += "\nQueueLease expires after release."
     captured = await asyncio.to_thread(gateway.capture, {
         "binding_id": gateway.scope.binding_id, "idempotency_key": "engineering-wire-capture",
-        "origin_key": "engineering-frozen-source-one", "body": "CacheKey is retained only offline.", "speaker": "document",
+        "origin_key": "engineering-frozen-source-one", "body": body, "speaker": "document",
     })
     source = captured["source_pointer"]["source_id"]
     window = await call(gateway, "memory_inspect", {"ref": source})
     span = window["span_inventory"][0]
+    claims = [{
+        "assertion_id": "a0000", "assertion_span_id": span["span_id"], "statement": span["quote"],
+        "kind": "fact", "subject": "CacheKey", "predicate": "retained", "object": "offline",
+        "polarity": "positive", "modality": "asserted", "entities": ["CacheKey"],
+    }]
+    used_spans = {span["span_id"]}
+    if second_claim:
+        other = next(item for item in window["span_inventory"] if item["quote"].startswith("QueueLease"))
+        used_spans.add(other["span_id"])
+        claims.append({
+            "assertion_id": "a0001", "assertion_span_id": other["span_id"], "statement": other["quote"],
+            "kind": "fact", "subject": "QueueLease", "predicate": "expires", "object": "release",
+            "polarity": "positive", "modality": "asserted", "entities": ["QueueLease"],
+        })
     # A controlled engineering peer authors this judgment; this is not live-native semantic proof.
     selection = await call(gateway, "memory_record", {
         "kind": "source_selection", "idempotency_key": "engineering-wire-selection",
@@ -126,16 +143,15 @@ async def prepare_through_actual_wire(gateway):
         "byte_start": window["byte_start"], "byte_end": window["byte_end"], "window_digest": window["window_digest"],
         "policy_revision": window["policy_revision"], "policy_epoch": window["policy_epoch"],
         "label": "remember", "coverage": "complete_window", "reason": "Engineering peer checked exact original spans.",
-        "extraction": {"claims": [{
-            "assertion_id": "a0000", "assertion_span_id": span["span_id"], "statement": span["quote"],
-            "kind": "fact", "subject": "CacheKey", "predicate": "retained", "object": "offline",
-            "polarity": "positive", "modality": "asserted", "entities": ["CacheKey"],
-        }], "individual_qualifications": [{"assertion_id": "a0000", "kind": "condition", "phrase": "only offline", "evidence_span_id": span["span_id"]}],
-            "shared_qualifications": [], "validities": [], "unused_span_ids": [item["span_id"] for item in window["span_inventory"][1:]]},
+        "extraction": {"claims": claims,
+            "individual_qualifications": [{"assertion_id": "a0000", "kind": "condition", "phrase": "only offline", "evidence_span_id": span["span_id"]}],
+            "shared_qualifications": [], "validities": [],
+            "unused_span_ids": [item["span_id"] for item in window["span_inventory"] if item["span_id"] not in used_spans]},
     })
     inspected = await full_inspect(gateway, selection["artifact_id"])
-    for claim in inspected["claim_ids"]:
-        await full_inspect(gateway, claim)
+    if inspect_claims:
+        for claim in inspected["claim_ids"]:
+            await full_inspect(gateway, claim)
     return captured, inspected["claim_ids"]
 
 
@@ -357,3 +373,93 @@ def test_actual_http_unknown_or_malformed_write_is_never_retried(fault_upstream,
         assert any(item.response_body == b"{malformed" for item in observations)
     else:
         assert any(item.stage == "failure" for item in observations)
+
+
+@pytest.mark.parametrize("failed_stage", ["gateway_flow", "gateway_delivery"])
+async def test_failed_final_observation_cannot_publish_pipeline_success(authority, tmp_path, failed_stage):
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        traces = []
+        armed = False
+        failed = []
+        def observe(row):
+            if armed and row["stage"] == failed_stage and row.get("name") == "memory_context":
+                failed.append(row["stage"])
+                raise OSError("Synthetic final-context observer failure")
+            traces.append(row)
+        gateway = EvaluationGateway(scope_for(agent), agent=agent, producer=producer, trace_sink=observe)
+        await call(gateway, "memory_required_context", gateway.required_request)
+        captured, claims = await prepare_through_actual_wire(gateway)
+        recall = {"query": "CacheKey offline", "max_bytes": 6144, "limit": 3}
+        candidates = await call(gateway, "memory_context", recall)
+        assert {item["claim_id"] for item in candidates["candidate_manifest"]} == set(claims)
+        for item in candidates["candidate_manifest"]:
+            await full_inspect(gateway, item["inspection_ref"])
+        arguments = {
+            **recall, "admission_id": candidates["admission_id"],
+            "relevance": [{"claim_id": item["claim_id"], "relevant": True, "reason": "Controlled complete inspection."}
+                          for item in candidates["candidate_manifest"]],
+        }
+        app = gateway.server.streamable_http_app(json_response=True, stateless_http=True, max_request_body_size=65536)
+        armed = True
+        async with app.router.lifespan_context(app):
+            status, raw = await request(app, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                "name": "memory_context", "arguments": arguments, "_meta": META,
+            }}, token=None)
+        armed = False
+        assert status == 200
+        failure = json.loads(raw)["result"]
+        assert failure["isError"] is True
+        assert json.loads(failure["content"][0]["text"])["error"] == {
+            "code": "GATEWAY_FAILURE_RECONCILE", "effect": "unknown",
+        }
+        assert failed == [failed_stage]
+        observation = gateway.flow_observation()
+        assert observation["pipeline_observed"] is False
+        assert observation["final_read_observed"] is False
+        assert observation["final_reads"] == ()
+        assert observation["captures"] == (captured,)
+        assert observation["remembered_selections"]
+        exchanges = [row["exchange"] for row in traces if row["stage"] == "gateway_wire"]
+        final_responses = [
+            exchange for exchange in exchanges if exchange.stage == "response" and exchange.path == "/mcp"
+            and json.loads(exchange.request_body).get("params", {}).get("arguments", {}).get("admission_id")
+            == candidates["admission_id"]
+        ]
+        assert len(final_responses) == 1
+        upstream = payload(json.loads(final_responses[0].response_body)["result"])
+        assert upstream["judgment_required"] is False
+        assert set(claims) <= set(upstream["refs"])
+        assert "only offline" in upstream["context"]
+        await full_inspect(gateway, claims[0])
+        assert gateway.flow_observation()["pipeline_observed"] is False
+        gateway.close()
+
+
+async def test_pipeline_requires_complete_inspection_of_every_remembered_claim(authority, tmp_path):
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        gateway = EvaluationGateway(scope_for(agent), agent=agent, producer=producer, trace_sink=lambda _: None)
+        await call(gateway, "memory_required_context", gateway.required_request)
+        captured, claims = await prepare_through_actual_wire(gateway, inspect_claims=False, second_claim=True)
+        assert len(claims) == 2
+        recall = {"query": "CacheKey offline", "max_bytes": 6144, "limit": 3}
+        candidates = await call(gateway, "memory_context", recall)
+        manifest = candidates["candidate_manifest"]
+        assert len(manifest) == 1
+        selected = manifest[0]["claim_id"]
+        assert selected in claims
+        await full_inspect(gateway, manifest[0]["inspection_ref"])
+        final = await call(gateway, "memory_context", {
+            **recall, "admission_id": candidates["admission_id"],
+            "relevance": [{"claim_id": selected, "relevant": True, "reason": "Only CacheKey matches this query."}],
+        })
+        assert final["judgment_required"] is False
+        assert selected in final["refs"]
+        observation = gateway.flow_observation()
+        assert observation["final_read_observed"] is True
+        assert observation["pipeline_observed"] is False
+        remaining = next(claim for claim in claims if claim != selected)
+        await full_inspect(gateway, remaining)
+        observation = gateway.flow_observation()
+        assert observation["pipeline_observed"] is True
+        assert observation["linked_capture_source_ids"] == (captured["source_id"],)
+        gateway.close()
