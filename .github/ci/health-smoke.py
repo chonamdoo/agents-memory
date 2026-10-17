@@ -287,12 +287,16 @@ class Smoke:
         self.check(self.principals["reviewer"].id != owner.id, "INDEPENDENT_ACTOR_IDENTITY")
         self.evidence("fixture-principals", {key: value.model_dump(mode="json") for key, value in self.principals.items()})
         self.result["setup_stage"] = "SERVICE_START"
+        # Keep the real CLI failure check reachable after Uvicorn replays TERM.
+        launcher = private_file(self.root / "serve-entry.py",
+            b"import signal\nfrom agents_memory.cli import main\n"
+            b"signal.signal(signal.SIGTERM, lambda *_: None)\nmain()\n")
         out = (self.root / "service.stdout").open("xb")
         err = (self.root / "service.stderr").open("xb")
         os.chmod(out.name, 0o600)
         os.chmod(err.name, 0o600)
         try:
-            self.server = await asyncio.create_subprocess_exec(*self.python, "-m", "agents_memory.cli",
+            self.server = await asyncio.create_subprocess_exec(*self.python, str(launcher),
                 "--config", str(self.config), "serve", cwd=self.root, env=self.env,
                 stdin=asyncio.subprocess.DEVNULL, stdout=out, stderr=err)
             self.evidence("owned-service", {"pid": self.server.pid,

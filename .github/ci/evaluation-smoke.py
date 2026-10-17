@@ -55,7 +55,11 @@ from agents_memory.evaluation_verifier import (
     OracleTask,
     controls_digest,
 )
-from agents_memory.health import HealthAssessmentCommand, HealthPolicyCommand, HealthWorkspaceCommand
+from agents_memory.health import (
+    HealthAssessmentCommand,
+    HealthPolicyCommand,
+    HealthWorkspaceCommand,
+)
 from agents_memory.health_code import pin_root
 from agents_memory.journal import DeletionJournal
 from agents_memory.migrations import migrate
@@ -528,6 +532,8 @@ def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, list]:
                                          *("health:claim:" + item["id"] for item in claims)})
         gateway.close()
         gateway = fixture_gateway(config, trace)
+        require(call("memory_required_context", config["required_request"])["stamp"]["rules"] == rules,
+                "REQUIRED_RULE_IDENTITY_CHANGED")
         window = call("memory_inspect", {"ref": source, "byte_start": 0, "max_bytes": 4096})
         health_views = {item["id"]: call("memory_inspect", {"ref": "health:claim:" + item["id"]})
                         for item in claims}

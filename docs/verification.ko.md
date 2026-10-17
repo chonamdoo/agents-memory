@@ -1194,3 +1194,13 @@ full-evaluation은 이제 exact checkout에 body-free receipt를 남겼다. actu
 
 새 helper는 DomainError의 bounded ASCII code만 추가 보존하며 message/body/traceback을 공개하지 않는다. 이 fixture 수정과 note/feedback의 source backlog 대 기존 health 후보 구분 문서는 다음 checkpoint의 미검증 변경이다. 아직 full invocation/control/functional verifier·health evidence linkage 성공이나 whole-source formal approval은 없다. local 검증0, original18 완료0을 유지한다.
 
+### 후속 798195a: source health23 통과와 종료·gateway 증거 분리
+
+[Actions39052419412](https://github.com/chonamdoo/agents-memory/actions/runs/39052419412)의 source3000/별도 installed624/실제 Docker13/Mac36은 각각 pass, failed/skip/xfail/xpass/수집 오류0이다. build와 wheel consumer도 pass이나 새 import 한 곳의 실제 Ruff I001로 lint가 실패해 installed health step과 distribution 게시는 실행되지 않았다. 원격 Ruff가 제시한 multiline import를 수동 반영했고 로컬 formatter/code action은 실행하지 않았다.
+
+source health23개는 모두 pass다. 8,330-byte 한국어 proposal의10개 window·별도 actor 승인·변경 뒤 옛 승인 거절, code 변경/admission/final delivery fence·operator Reject/Accept/rebind·required rule 보존·관측 session/늦은 입력/부분 판단을 실제 HTTP/CLI로 확인했다. 그러나 child의 실제 exit=-15, service_exit_clean=false여서 전체 smoke/gate는 정직하게 실패했다. 이 source 증거를 아직 실행하지 않은 installed health나 실제 native 보호로 확대하지 않는다.
+
+잠긴 실제 Uvicorn0.54.0의 [signal source](https://github.com/Kludex/uvicorn/blob/0.54.0/uvicorn/server.py)는 shutdown 뒤 이전 handler를 복원하고 받은 TERM을 다시 보낸다. 다음 CI-owned private launcher는 **이전 TERM handler만** 명시하고 원래 CLI main을 호출한다. Uvicorn은 자기 실제 handler로 shutdown하고 원래 CLI의 `app.raise_for_lifecycle_failure()`가 정상 종료0 또는 실패1을 결정한다. -15를 clean으로 허용하지 않으며 기존 cleanup0·forced-kill 거절·15초/5초 한도는 그대로다. product/Uvicorn source·native trust·guard는 바꾸지 않았고 일반 native 기본 signal 동작의 검증이라고 주장하지 않는다. 아직 이 launcher의 성공은 미관측이다.
+
+full-evaluation의 현재 실제 code는 `REQUIRED_CONTEXT_READ_REQUIRED`다. health session 등록 뒤 새로 만든 gateway에서 첫 required context 없이 inspect를 시작한 fixture 순서 오류다. 새 gateway도 실제 required context를 먼저 읽고 기존 rule identity와 같아야 진행하도록 바꿨다. gateway 보호를 끄거나 옛 stamp를 주입하지 않았다. 전체 evaluation/cleanup·strict aggregate·새 whole-source review/CI-only QA/handoff는 계속 미완료이며 모든 실패와 original18 완료0을 유지한다.
+
