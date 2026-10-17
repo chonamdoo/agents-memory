@@ -260,9 +260,11 @@ class Smoke:
         self.settings.journal_dir.mkdir(mode=0o700)
         private_file(self.config, self.settings.model_dump_json().encode())
         self.store = Store(self.settings, DeletionJournal(self.settings.journal_dir, self.settings.deployment_id))
+        self.result["setup_stage"] = "STORE_OPEN"
         await self.store.open()
         for role in ("operator", "agent", "producer", "reviewer"):
             self.tokens[role] = private_file(self.root / (role + ".token"), (secrets.token_urlsafe(48) + "\n").encode())
+        self.result["setup_stage"] = "BOOTSTRAP"
         owner = await self.store.bootstrap(self.tokens["operator"].read_text().strip(), "engineering_owner")
         binding = await self.store.register_binding(owner, "Owned engineering health fixture", str(self.project), "register")
         self.binding = binding.id
@@ -284,6 +286,7 @@ class Smoke:
         self.principals["reviewer"] = await self.store.authenticate(self.tokens["reviewer"].read_text().strip())
         self.check(self.principals["reviewer"].id != owner.id, "INDEPENDENT_ACTOR_IDENTITY")
         self.evidence("fixture-principals", {key: value.model_dump(mode="json") for key, value in self.principals.items()})
+        self.result["setup_stage"] = "SERVICE_START"
         out = (self.root / "service.stdout").open("xb")
         err = (self.root / "service.stderr").open("xb")
         os.chmod(out.name, 0o600)
@@ -302,12 +305,14 @@ class Smoke:
         import httpx
 
         async with asyncio.timeout(20):
+            self.result["setup_stage"] = "READINESS"
             async with httpx.AsyncClient(timeout=1, trust_env=False) as client:
                 while True:
                     self.check(self.server.returncode is None, "SERVICE_EXITED")
                     try:
                         response = await client.get(self.settings.base_url + "/readyz")
                         if response.status_code == 200 and response.json().get("ready") is True:
+                            self.result["setup_stage"] = "READINESS_EVIDENCE"
                             self.evidence("readiness", response.json())
                             break
                     except httpx.TransportError:
@@ -732,7 +737,11 @@ class Smoke:
             self.result["failure_stage"] = self.active if self.active in CASES else "UNKNOWN"
             self.result["failure_type"] = type(error).__name__ if type(error).__name__ in {
                 "ValueError", "OSError", "TimeoutError", "RuntimeError", "DomainError",
-                "TypeError", "KeyError", "AttributeError", "CancelledError", "SmokeFailure"} else "BoundaryError"
+                "TypeError", "KeyError", "AttributeError", "CancelledError", "SmokeFailure",
+                "NameError", "ValidationError", "FileNotFoundError", "PermissionError",
+                "ProcessLookupError", "JSONDecodeError", "NotImplementedError", "InvalidURL",
+                "UniqueViolationError", "UndefinedTableError", "NotNullViolationError",
+                "ForeignKeyViolationError", "InterfaceError", "DataError"} else "BoundaryError"
         finally:
             await self.cleanup()
             loop.remove_signal_handler(signal.SIGTERM)

@@ -291,6 +291,14 @@ def run(result_dir: Path, wheel: Path) -> int:
                        "--wheel", str(wheel), "--expected-wheel-sha256", value["wheel_sha256"],
                        "--consumption", "installed", "--result-dir", ".ci-results"], 900, env=environment)
         value["phases"]["full-smoke"] = full.public()
+        diagnostic = json.loads(full.stdout)
+        if isinstance(diagnostic, dict) and diagnostic.get("tested_sha") in (None, os.environ["CI_TESTED_SHA"]):
+            value["smoke_diagnostic"] = {
+                name: diagnostic[name] for name in ("code", "error_type", "failure_code")
+                if isinstance(diagnostic.get(name), str)
+                and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", diagnostic[name])
+            }
+            value["smoke_diagnostic"]["source_identity_admitted"] = diagnostic.get("tested_sha") == os.environ["CI_TESTED_SHA"]
         require_completed(full)
         value["complete"] = True
     except Exception as error:

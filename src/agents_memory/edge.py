@@ -86,10 +86,10 @@ SCHEMAS = {
     "memory_feedback": FeedbackCommand,
 }
 DESCRIPTIONS = {
-    "memory_context": "Retrieve candidates for your query and expansions, inspect them, then submit relevance for the complete saved manifest. Only agent-judged memories enter context; mandatory rules remain independent.",
+    "memory_context": "Query candidates with expansions, inspect, then judge relevance for the complete saved manifest. Only agent-judged memory enters context; required rules are independent.",
     "memory_inspect": "Read sources, claims, judgments, records and health work; never execution authority. judgment: unique claim_ids, no byte windows. required_rejection_ids index prior decisions, not meaning verdicts; optional rejection_cursor=history follows rejections_next_cursor even on empty pages. Join draft_window.body via next_byte, verify digest then decode UTF-8; stored_record omits live epoch. judgment_context_refs identify live inputs; every page rechecks eligibility. judge: read-only agent/opt-in Jev metadata. health lists work; health:item:<pending_id> admits evidence/coverage; health:claim:<id> is history, not reuse authority. Follow continuation.",
     "memory_record": "source_selection/remember must include extraction atomically; no later extension. Preserve original spans, qualifications and validity. Judge all required_rejection_ids (unrelated/reopen); rejection_review_ids are optional. Reopen needs new independent human/tool/document evidence. Overlapping complete remember/discard has one winner (SELECTION_ALREADY_RECORDED). Unknown outcome: explicitly retry SAME judgment/admission_id to reconcile; new retry key if needed, never assume no effect. claim_judgment records relations. Notes/inactive rules are not independent evidence. code_link/health_assessment require exact inspected/admitted inputs, not human approval/deletion/policy authority or freshness proof.",
-    "memory_feedback": "Persist rejection reasons or correction/retract-request candidates. Reject durably affects target evidence, not just this query; query-only irrelevance belongs in memory_context.relevance. Rejection is not deletion/retraction. Never approve or purge.",
+    "memory_feedback": "Record rejection reasons or correction/retract-request candidates. Reject affects evidence beyond this query, not deletion or retraction. Query-only irrelevance is memory_context.relevance. No approval/purge.",
 }
 
 
