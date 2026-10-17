@@ -1148,9 +1148,11 @@ Linux 다섯 job은 UTC04:11:27, Mac은04:11:33에 시작해 겹쳐 실행됐고
 
 이 수정은 검증 코드의 단일 Popen 소유권과 controlled IPC에 한정된다. 외부·동시 reaper, 임의 코드 격리, group/session 탈출, 실제 native 보호·운영 배포·PMPA/semantic matrix·독립 human gold/180 valid pairs·실제 pilot 경과·volume 정리·merge/release의 증명이 아니다. 원래18개는 완료0개이고 평가 harness/workload/verifier 구현은 여전히 assistant 소유의 다음 작업이다. 로컬 검증 명령은 실행하지 않았다. 편집 도구의 비요청 LSP 경고는 별도 보존하고 검증 결과로 쓰지 않았으며 공유 LSP/settings를 바꾸거나 중단하지 않았다. 이 문서 head의 정확한 Actions와 새 독립 리뷰·CI-only QA/handoff는 [PR9 기록](https://github.com/chonamdoo/agents-memory/pull/9)을 따른다.
 
-## 승인된 health·평가 engineering과 누락 A–D 통합 — CI 통과·공식 review 대기
+## 승인된 health·평가 engineering과 누락 A–D 통합 — CI와 독립 review 판정 분리
 
 최신 명시 지시는 제한된 네 health 경로, 평가 engineering8개와 전수조사 A–D의 구현이다. 조사 원문·기존83개 todo·OSS86개·과거 실패/취소/timeout·original18은 보존한다. `7cf75ff`의 genuine12 approve와 CI-only QA/handoff는 위 finalizer delta의 실제 완료이며 현재 whole-source 승인으로 재사용하지 않는다. 로컬 runtime/import/test·collection/collect-only·ruff/lint·build·syntax/format·reproduction·추가 smoke는 실행하지 않았다.
+
+이 절은 run별 관측 시점의 성공·실패와 한계를 기록한다. 새 whole-source 공식 review/CI-only QA/handoff의 source별 최신 판정은 [PR9](https://github.com/chonamdoo/agents-memory/pull/9)을 따르며 이전 run의 승인·실패를 현재 source로 승계하지 않는다.
 
 ### 실제 GitHub Actions와 성공 범위
 
@@ -1265,7 +1267,7 @@ source health29.444초·installed health28.364초는 각각23개 outcome과 clea
 
 helper의 verifier/product/Store/schema cleanup과 별도14owners/34resources의 CLEAN reconciliation, 정확한 process/schema/prerequisite 부재를 실제로 확인했다. 이전 skipped/incomplete/failed receipt는 지우지 않는다. source·설치 wheel 및 이 전체 consumer 경로가 배열 reader 수정의 after proof이며 로컬 runtime 검증은 하지 않았다.
 
-canonical checker는 공개 immutable source/checksum을 그대로 써 PR base `2892ca25e199386c672f23a0ba11841acaa023b3`부터96개 eligible code file의 전체 old/new4350657bytes를11.994초에 검사했다. coverage complete/finding0이고 구현 완료 후 changed-code diff의 수동 final comment-authoring pass도 마쳤다. 새 공식 whole-source12review/CI-only QA/handoff는 미완료다. independent packing input의 frozen 의미 연결 범위도 그 공식 review focus로 보존한다.
+canonical checker는 공개 immutable source/checksum을 그대로 써 PR base `2892ca25e199386c672f23a0ba11841acaa023b3`부터96개 eligible code file의 전체 old/new4350657bytes를11.994초에 검사했다. coverage complete/finding0이고 구현 완료 후 changed-code diff의 수동 final comment-authoring pass도 마쳤다. 이 CI 관측 시점의 새 공식 whole-source12review/CI-only QA/handoff는 미완료다. independent packing input의 frozen 의미 연결 범위도 그 공식 review focus로 보존한다.
 
 이 성공 receipt는 `scope:engineering`, `synthetic_native_protocol_peer:true`, `native_acceptance:false`, `original18_completed:0`을 명시한다. 실제 Claude/Codex 보호·모델 효익, human120/60task×3·180valid pairs, 실제1–2주 trial, OS·운영/egress·merge/release 증거로 확대하지 않는다.
 

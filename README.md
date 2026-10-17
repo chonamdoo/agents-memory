@@ -240,7 +240,7 @@ Raw note·feedback reason·memory echo는 미판단 coverage에 포함하지 않
 
 ## 기억 건강 관리
 
-네 경로와 기존 API/CLI 연결의 engineering 구현은 source·설치 wheel health smoke와 전체 평가 smoke를 통과했다. health는 기본 비활성이며 operator의 명시 정책·workspace 등록과 현재 권한이 필요하다. 평가 smoke의 native peer는 합성 engineering fixture이며 실제 host·model 검증이 아니다. 새 whole-source 공식 review/QA는 아직 미완료이며 정확한 source·실패 이력·검증 범위는 [검증 기록](docs/verification.ko.md)을 따른다.
+네 경로와 기존 API/CLI 연결의 engineering 구현은 source·설치 wheel health smoke와 전체 평가 smoke를 통과했다. health는 기본 비활성이며 operator의 명시 정책·workspace 등록과 현재 권한이 필요하다. 평가 smoke의 native peer는 합성 engineering fixture이며 실제 host·model 검증이 아니다. 이 CI 증거는 새 whole-source 공식 review/QA의 완료 주장이 아니다. 정확한 source·실패 이력·검증 범위는 [검증 기록](docs/verification.ko.md), source별 독립 review/QA 판정은 [PR9](https://github.com/chonamdoo/agents-memory/pull/9)을 따른다.
 
 | 경로 | 구현 계약과 한계 |
 |---|---|
