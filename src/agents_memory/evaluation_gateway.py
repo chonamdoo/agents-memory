@@ -610,10 +610,11 @@ class EvaluationGateway:
                 self._deny("BINDING_SCOPE_DENIED")
             arguments = {**arguments, "binding_id": self.scope.binding_id}
             model = SCHEMAS[name]
-            validate_wire(model, arguments)
+            parsed = validate_wire(model, arguments)
             if name == "memory_context":
-                for key in ("paths", "purpose", "host", "snapshot"):
-                    if arguments.get(key) != self.required_request.get(key):
+                normalized = parsed.model_dump(mode="json", exclude_none=True)
+                for key in ("paths", "purpose", "host", "snapshot", "code_workspace_id", "limit", "max_bytes"):
+                    if normalized.get(key) != self.required_request.get(key):
                         self._deny("REQUIRED_SELECTORS_CHANGED")
             if name == "memory_inspect":
                 ref = arguments.get("ref")

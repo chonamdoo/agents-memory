@@ -244,7 +244,10 @@ class VerifierExecutor:
         os.close(fd)
         self._controls: ControlReceipt | None = None
 
-    def precheck(self, baseline: ArtifactBundle, task: OracleTask, controls: tuple[ControlArtifact, ...], approval: IndependentControlApproval) -> ControlReceipt:
+    def precheck(
+        self, baseline: ArtifactBundle, task: OracleTask, controls: tuple[ControlArtifact, ...],
+        approval: IndependentControlApproval, *, stop_event: Event | None = None,
+    ) -> ControlReceipt:
         if type(controls) is not tuple or tuple(item.role for item in controls) != ("correct", "noop", "plausible_wrong"):
             raise RuntimeRefusal("THREE_ORDERED_CONTROLS_REQUIRED")
         identity = controls_digest(controls)
@@ -253,13 +256,23 @@ class VerifierExecutor:
         if controls[1].bundle.digest != baseline.digest or len({item.bundle.digest for item in controls}) != 3:
             raise RuntimeRefusal("CONTROL_IDENTITIES")
         self._controls = None
-        receipts = tuple(self._verify(baseline, item.bundle, replace(task, witness=item.witness), role="control_" + item.role, require_controls=False, stop_event=None) for item in controls)
-        correct, noop, wrong = receipts
-        eligible = correct.success and correct.cleanup_complete and all(case.passed for case in correct.cases)
-        for rejected in (noop, wrong):
-            observed = all(case.observation is not None and case.observation.execution is not None and case.observation.state == "completed" and case.observation.execution.state == "completed" and case.observation.execution.stdout_complete and case.observation.execution.stderr_complete and case.observation.execution.helper_cleanup for case in rejected.cases)
-            eligible = eligible and not rejected.success and rejected.cleanup_complete and rejected.structural is not None and rejected.structural.passed and observed and rejected.error_code is None
-        eligible = eligible and all(receipt.publication.state in {"durable", "reconciled_durable"} for receipt in receipts)
+        observed = []
+        for item in controls:
+            if stop_event is not None and stop_event.is_set():
+                break
+            observed.append(self._verify(
+                baseline, item.bundle, replace(task, witness=item.witness), role="control_" + item.role,
+                require_controls=False, stop_event=stop_event,
+            ))
+        receipts = tuple(observed)
+        eligible = False
+        if len(receipts) == 3 and not (stop_event is not None and stop_event.is_set()):
+            correct, noop, wrong = receipts
+            eligible = correct.success and correct.cleanup_complete and all(case.passed for case in correct.cases)
+            for rejected in (noop, wrong):
+                completed = all(case.observation is not None and case.observation.execution is not None and case.observation.state == "completed" and case.observation.execution.state == "completed" and case.observation.execution.stdout_complete and case.observation.execution.stderr_complete and case.observation.execution.helper_cleanup for case in rejected.cases)
+                eligible = eligible and not rejected.success and rejected.cleanup_complete and rejected.structural is not None and rejected.structural.passed and completed and rejected.error_code is None
+            eligible = eligible and all(receipt.publication.state in {"durable", "reconciled_durable"} for receipt in receipts)
         result = ControlReceipt(task.digest, self.spec.digest, identity, approval.approval_reference, receipts, bool(eligible))
         runtime = DockerRuntime(self.spec.runtime, self.owner, self.intent_dir)
         try:

@@ -571,6 +571,7 @@ def _validate_documents(manifest: EvaluationManifest) -> None:
         if native_identity["backend"] == "claude":
             _require({"tools", "mcp_servers"} <= fields.keys() | variant.keys(), "NATIVE_TOOL_ROUTE_IDENTITY_REQUIRED")
     _require(all(_native(item["native"]).backend == native_identity["backend"] for item in invocations), "MIXED_NATIVE_BACKENDS")
+    _native_tool_routes(manifest)
     if config["scope"] == "evaluation":
         _require(len(tasks) == 60 and len(clusters) == 60 and config["repeats"] == 3 and len(cases) >= 120 and len(groups) == 10 and min(groups.values()) >= 12, "ORIGINAL_EVALUATION_TARGETS_REQUIRED")
 
@@ -633,7 +634,7 @@ def load_manifest(path: Path, *, expected_sha256: str | None = None) -> Evaluati
         _require(total <= _TOTAL_BYTES, "FROZEN_INPUT_TOTAL_BOUND")
         files.append(FrozenFile(name, source, item["sha256"], maximum, content))
     _require({"wheel", "controller", "verifier", "native_driver", "gateway_driver", "scoring", "diagnostics", "context_renderer",
-              "corpus", "gold", "workload", "rules", "native_identity", "runtime"} <= names,
+              "corpus", "gold", "workload", "rules", "native_identity", "native_tool_mapping", "runtime"} <= names,
              "REQUIRED_FROZEN_INPUTS")
     result = EvaluationManifest(path, digest, raw, tuple(files))
     _require(result.file("controller").sha256 == value["controller_digest"], "CONTROLLER_FILE_IDENTITY")
@@ -1074,6 +1075,107 @@ def _native_identity(manifest: EvaluationManifest, observed: dict, mode: str) ->
     return True
 
 
+def _native_tool_routes(manifest: EvaluationManifest) -> list[dict]:
+    mapping = manifest.document("native_tool_mapping")
+    _keys(mapping, {"schema", "backend", "routes"})
+    _require(type(mapping["schema"]) is int and mapping["schema"] == 1
+             and mapping["backend"] == manifest.document("native_identity")["backend"], "NATIVE_TOOL_MAPPING_SCHEMA")
+    expected = {manifest.config[name]["route_ref"] for name in ("gateway", "preflight_gateway")}
+    routes = _array(mapping["routes"], 2)
+    _require(len(routes) == len(expected) and {route.get("route_ref") for route in routes} == expected,
+             "NATIVE_TOOL_MAPPING_ROUTES")
+    for route in routes:
+        _keys(route, {"route_ref", "server", "tools"})
+        server = _text(route["server"], 128)
+        tools = route["tools"]
+        _require(isinstance(tools, dict) and tools.keys() == {"memory_required_context", *gateway_module.SCHEMAS},
+                 "NATIVE_TOOL_MAPPING_TOOLS")
+        names = [_text(value, 512) for value in tools.values()]
+        _require(len(set(names)) == len(names), "NATIVE_TOOL_MAPPING_AMBIGUOUS")
+        if mapping["backend"] == "claude":
+            _require(all(name.startswith("mcp__" + server + "__") for name in names),
+                     "NATIVE_TOOL_MAPPING_SERVER_PREFIX")
+    return routes
+
+
+def _native_content_digest(content: object) -> str:
+    if isinstance(content, list):
+        _require(len(content) == 1 and isinstance(content[0], dict) and content[0].get("type") == "text",
+                 "NATIVE_TOOL_RESULT_CONTENT_UNKNOWN")
+        content = content[0].get("text")
+    _require(isinstance(content, str), "NATIVE_TOOL_RESULT_CONTENT_UNKNOWN")
+    try:
+        value = decode_json(content.encode())
+    except (ValueError, UnicodeError):
+        raise EvaluationError("NATIVE_TOOL_RESULT_CONTENT_UNKNOWN") from None
+    _require(isinstance(value, dict), "NATIVE_TOOL_RESULT_CONTENT_UNKNOWN")
+    return digest_bytes(canonical_bytes(value))
+
+
+def _native_tool_link(manifest: EvaluationManifest, invocation: dict, native: dict, receipt: dict, deliveries: dict) -> dict:
+    route_ref = _gateway_config(manifest, invocation)["route_ref"]
+    mapping = next(route for route in _native_tool_routes(manifest) if route["route_ref"] == route_ref)
+    _require(native.get("invocation_id") == invocation["invocation_id"], "NATIVE_TOOL_INVOCATION_MISMATCH")
+    backend = manifest.document("native_identity")["backend"]
+    try:
+        calls = native_module.observe_native_tool_calls(
+            native, backend=backend, server=mapping["server"], tools=mapping["tools"],
+        )
+    except ValueError as error:
+        raise EvaluationError(str(error)) from None
+    indexed, wire = {}, {}
+    for call in calls:
+        signature = (call["name"], digest_bytes(canonical_bytes(call["arguments"])), _native_content_digest(call["content"]))
+        key = call["action_id"] if backend == "codex" else signature
+        indexed.setdefault(key, []).append((call, signature))
+    for call_id, delivery in deliveries.items():
+        event, request = delivery["event"], delivery["request"]
+        _require(event.get("invocation_id") == invocation["invocation_id"] and event.get("route_ref") == route_ref,
+                 "NATIVE_TOOL_GATEWAY_SCOPE_MISMATCH")
+        _require(event["is_error"] is False, "NATIVE_TOOL_DELIVERY_UNOBSERVED")
+        arguments = request["params"].get("arguments") or {}
+        signature = (event["name"], digest_bytes(canonical_bytes(arguments)), _native_content_digest(delivery["content"]))
+        if backend == "codex":
+            lineage = request["params"].get("_meta")
+            _require(isinstance(lineage, dict) and isinstance(lineage.get("callId"), str)
+                     and lineage.get("threadId") == native["identity"].get("thread_id"),
+                     "NATIVE_TOOL_LINEAGE_UNOBSERVED_OR_FOREIGN")
+            key = lineage["callId"]
+        else:
+            key = signature
+        wire.setdefault(key, []).append((call_id, delivery, signature))
+    _require(indexed and indexed.keys() == wire.keys(), "NATIVE_TOOL_DELIVERY_UNOBSERVED")
+    links = []
+    for key, native_calls in indexed.items():
+        native_calls.sort(key=lambda item: item[0]["start_event_index"])
+        wire_calls = sorted(wire[key], key=lambda item: item[1]["request_index"])
+        _require(len(native_calls) == len(wire_calls), "NATIVE_TOOL_MAPPING_AMBIGUOUS")
+        for previous, current in zip(native_calls, native_calls[1:]):
+            _require(previous[0]["result_event_index"] < current[0]["start_event_index"],
+                     "NATIVE_TOOL_MAPPING_AMBIGUOUS")
+        for previous, current in zip(wire_calls, wire_calls[1:]):
+            _require(previous[1]["written_index"] < current[1]["request_index"], "NATIVE_TOOL_MAPPING_AMBIGUOUS")
+        for (call, signature), (call_id, delivery, dispatched) in zip(native_calls, wire_calls, strict=True):
+            _require(signature == dispatched, "NATIVE_TOOL_REQUEST_OR_RESULT_MISMATCH")
+            event = delivery["event"]
+            links.append({
+                "native_action_id": call["action_id"], "native_tool": mapping["tools"][event["name"]],
+                "native_start_event_digest": call["start_event_digest"], "native_result_event_digest": call["result_event_digest"],
+                "native_start_observed_ns": call["start_observed_ns"], "native_result_observed_ns": call["result_observed_ns"],
+                "native_start_event_index": call["start_event_index"], "native_result_event_index": call["result_event_index"],
+                "gateway_call_id": call_id, "downstream_request_id": event["downstream_request_id"],
+                "gateway_request_index": delivery["request_index"], "gateway_written_index": delivery["written_index"],
+                "gateway_written_sha256": event["written_sha256"], "arguments_digest": signature[1], "content_digest": signature[2],
+                "mapping_basis": "native_metadata" if backend == "codex" else ("exact_serial" if len(native_calls) > 1 else "exact_unique"),
+            })
+    return {"schema": 1, "manifest_digest": manifest.digest, "invocation_id": invocation["invocation_id"],
+            "backend": backend, "route_ref": route_ref, "server": mapping["server"],
+            "mapping_digest": manifest.file("native_tool_mapping").sha256,
+            "native_receipt_digest": digest_bytes(canonical_bytes(native)),
+            "gateway_receipt_digest": digest_bytes(canonical_bytes(receipt)),
+            "links": links, "provider_consumption": None}
+
+
 def _owner(manifest: EvaluationManifest, invocation_id: str, nonce: str) -> EvaluationOwner:
     return EvaluationOwner(**manifest.config["owner"], attempt_id=invocation_id, nonce=nonce)
 
@@ -1180,7 +1282,7 @@ def _validate_context_call(manifest: EvaluationManifest, record: dict) -> None:
 
 def _native_deliveries(events: list[dict]) -> dict[str, dict]:
     requests, writes, intents, request_ids = {}, {}, {}, set()
-    for event in events:
+    for event_index, event in enumerate(events):
         if event.get("stage") in {"gateway_stdio_received", "gateway_stdio_written"}:
             raw = _unbytes(event["body"])
             _require(raw.endswith(b"\n") and raw.count(b"\n") == 1, "NATIVE_STDIO_RECORD_INCOMPLETE")
@@ -1191,14 +1293,14 @@ def _native_deliveries(events: list[dict]) -> dict[str, dict]:
                     continue
                 digest = digest_bytes(raw)
                 _require(digest not in writes, "NATIVE_STDIO_RESPONSE_REUSED")
-                writes[digest] = (raw, message)
+                writes[digest] = (raw, message, event_index)
             elif "id" in message and isinstance(message.get("method"), str):
                 identifier = message["id"]
                 _require(type(identifier) in {str, int}, "NATIVE_STDIO_ID_INVALID")
                 key, correlated = (type(identifier), identifier), coerce_request_id(identifier)
                 _require(correlated not in request_ids, "NATIVE_STDIO_REQUEST_REUSED")
                 request_ids.add(correlated)
-                requests[key] = message
+                requests[key] = (message, event_index)
         elif event.get("stage") == "gateway_intent":
             _require(event.get("call_id") not in intents, "NATIVE_GATEWAY_INTENT_REUSED")
             intents[event["call_id"]] = event
@@ -1209,14 +1311,15 @@ def _native_deliveries(events: list[dict]) -> dict[str, dict]:
         identifier, call_id = event.get("downstream_request_id"), event.get("call_id")
         _require(type(identifier) in {str, int} and call_id not in deliveries,
                  "NATIVE_STDIO_DELIVERY_ID_INVALID")
-        request = requests.get((type(identifier), identifier))
+        requested = requests.get((type(identifier), identifier))
         intent = intents.get(call_id)
         written = writes.get(event.get("written_sha256"))
-        _require(request is not None and intent is not None and written is not None
+        _require(requested is not None and intent is not None and written is not None
                  and intent.get("name") == event.get("name")
                  and type(intent.get("downstream_request_id")) is type(identifier)
                  and intent["downstream_request_id"] == identifier, "NATIVE_STDIO_DELIVERY_INTENT_UNKNOWN")
-        raw, response = written
+        request, request_index = requested
+        raw, response, written_index = written
         params, result = request.get("params", {}), response.get("result")
         content = result.get("content") if isinstance(result, dict) else None
         _require(request.get("method") == "tools/call" and params.get("name") == event.get("name")
@@ -1229,11 +1332,12 @@ def _native_deliveries(events: list[dict]) -> dict[str, dict]:
                  and digest_bytes(content[0]["text"].encode()) == event.get("payload_sha256"),
                  "NATIVE_STDIO_DELIVERY_FRAME_MISMATCH")
         deliveries[call_id] = {"event": event, "request": request,
-                               "payload": gateway_module._tool_payload(result)}
+                               "payload": gateway_module._tool_payload(result), "content": content,
+                               "request_index": request_index, "written_index": written_index}
     return deliveries
 
 
-def _validate_delivery_receipt(manifest: EvaluationManifest, invocation: dict, receipt: dict, events: list[dict]) -> None:
+def _validate_delivery_receipt(manifest: EvaluationManifest, invocation: dict, receipt: dict, events: list[dict]) -> dict:
     _require(receipt.get("invocation_id") == invocation["invocation_id"]
              and receipt.get("mode") == invocation["mode"]
              and receipt.get("observation_complete") is True, "GATEWAY_DELIVERY_UNOBSERVED")
@@ -1276,16 +1380,17 @@ def _validate_delivery_receipt(manifest: EvaluationManifest, invocation: dict, r
     if invocation["phase"] != "preflight":
         for call in context_calls:
             _validate_context_call(manifest, call)
+    return native
 
 
-def _gateway_receipt(manifest: EvaluationManifest, run_dir: Path, invocation: dict) -> dict:
+def _gateway_receipt(manifest: EvaluationManifest, run_dir: Path, invocation: dict) -> tuple[dict, dict]:
     receipt = _existing(run_dir / "ledger", _key(invocation["invocation_id"]) + ".gateway.json", manifest.config["record_bytes"])
     _require(receipt is not None, "GATEWAY_DELIVERY_UNOBSERVED")
-    _validate_delivery_receipt(
+    deliveries = _validate_delivery_receipt(
         manifest, invocation, receipt,
         _trace_events(manifest, run_dir, invocation["invocation_id"], "gateway"),
     )
-    return receipt
+    return receipt, deliveries
 
 
 def _functional_observation(receipt, task: OracleTask) -> bool | None:
@@ -1384,7 +1489,8 @@ def _run_one(
         output = run_dir / "artifacts" / (invocation["invocation_id"] + ".submission.json")
         native = run_native_arm(spec, prompt, invocation_id=invocation["invocation_id"], artifact_output=output, trace_sink=PrivateTrace(manifest, run_dir, invocation["invocation_id"], "native"), stop_event=stop_event)
         result.update(status=native.status, code=native.code)
-        result["evidence_refs"]["native"] = _publish(run_dir / "ledger", _key(invocation["invocation_id"]) + ".native.json", _private_value(native), config["trace_bytes"])
+        native_record = _private_value(native)
+        result["evidence_refs"]["native"] = _publish(run_dir / "ledger", _key(invocation["invocation_id"]) + ".native.json", native_record, config["trace_bytes"])
         _usage(result, native)
         identity_matches = _native_identity(manifest, native.identity, invocation["mode"])
         result["native_identity_observed"] = identity_matches
@@ -1406,7 +1512,11 @@ def _run_one(
         elif native.status == "completed":
             raise EvaluationError("NATIVE_GENERATION_UNOBSERVED")
         _require(native.status == "completed", "NATIVE_NOT_COMPLETED")
-        delivery = _gateway_receipt(manifest, run_dir, invocation)
+        delivery, deliveries = _gateway_receipt(manifest, run_dir, invocation)
+        native_link = _native_tool_link(manifest, invocation, native_record, delivery, deliveries)
+        result["evidence_refs"]["native_tool_link"] = _publish(
+            run_dir / "ledger", _key(invocation["invocation_id"]) + ".native-tool-link.json", native_link, config["record_bytes"],
+        )
         result["evidence_refs"]["gateway"] = digest_bytes(canonical_bytes(delivery))
         result["delivery"] = delivery
         _require(native.artifact_bundle is not None, "IMMUTABLE_SUBMISSION_MISSING")
@@ -1591,7 +1701,7 @@ def _run_pair(manifest: EvaluationManifest, run_dir: Path, item, enabled: bool, 
         controls = None
         if enabled and not (stop_event is not None and stop_event.is_set()):
             try:
-                controls = _prepare_pair_controls(manifest, run_dir, invocations)
+                controls = _prepare_pair_controls(manifest, run_dir, invocations, stop_event=stop_event)
             except Exception as error:
                 code = str(error) if isinstance(error, EvaluationError) and re.fullmatch(
                     r"[A-Z0-9_]{1,128}", str(error)) else "PAIR_CONTROL_PREPARATION_FAILED"
@@ -1886,7 +1996,9 @@ def _pair_verifier_id(manifest: EvaluationManifest, invocation: dict) -> str:
     ]))
 
 
-def _prepare_pair_controls(manifest: EvaluationManifest, run_dir: Path, invocations: list[dict]) -> _PairControls | None:
+def _prepare_pair_controls(
+    manifest: EvaluationManifest, run_dir: Path, invocations: list[dict], *, stop_event=None,
+) -> _PairControls | None:
     from .private_io import private_write
 
     config = manifest.config
@@ -1929,7 +2041,7 @@ def _prepare_pair_controls(manifest: EvaluationManifest, run_dir: Path, invocati
     verifier = VerifierExecutor(_verifier_spec(manifest), owner, verifier_directory)
     approval = IndependentControlApproval(task["approved_task_digest"], task["approved_controls_digest"],
                                          task["approval_reference"])
-    control = verifier.precheck(baseline, oracle, controls, approval)
+    control = verifier.precheck(baseline, oracle, controls, approval, stop_event=stop_event)
     raw = canonical_bytes(_private_value(control))
     _publish(run_dir / "ledger", identifier + ".controls.json", raw, config["record_bytes"])
     _require(control.eligible, "SAME_EXECUTOR_CONTROL_PRECHECK_FAILED")

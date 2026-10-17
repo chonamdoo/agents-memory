@@ -223,10 +223,14 @@ def _validate_native(manifest, records, invocation, terminal):
     gateway = _json(records, prefix + ".gateway.json", terminal["evidence_refs"].get("gateway"))
     _require(terminal["evidence_refs"].get("gateway") is not None and gateway == terminal.get("delivery"),
              "EVALUATION_HEALTH_FINAL_DELIVERY_UNKNOWN")
-    controller._validate_delivery_receipt(
+    deliveries = controller._validate_delivery_receipt(
         manifest, invocation, gateway,
         _trace_events(records, manifest, invocation["invocation_id"], "gateway"),
     )
+    linked = _json(records, prefix + ".native-tool-link.json", terminal["evidence_refs"].get("native_tool_link"))
+    _require(terminal["evidence_refs"].get("native_tool_link") is not None
+             and linked == controller._native_tool_link(manifest, invocation, native, gateway, deliveries),
+             "EVALUATION_HEALTH_NATIVE_TOOL_LINK_UNKNOWN")
     return native, gateway
 
 
@@ -503,6 +507,7 @@ def load_evaluation_health_evidence(
                  "EVALUATION_HEALTH_RETAINED_RECORD_MISSING")
         native = decode_json(take(prefix + ".native.json", manifest.config["trace_bytes"]))
         take(prefix + ".gateway.json")
+        take(prefix + ".native-tool-link.json")
         generation = native["identity"].get("thread_id") or native["identity"].get("session_id")
         _require(isinstance(generation, str), "EVALUATION_HEALTH_GENERATION_UNKNOWN")
         take("ledger/generation-" + digest_bytes(generation.encode()) + ".json")

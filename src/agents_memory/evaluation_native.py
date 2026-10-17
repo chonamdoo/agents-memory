@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 from .domain import DomainError
+from .evaluation_artifacts import canonical_bytes, digest_bytes
 from .native_status import _signal_process_group
 from .private_io import private_read, private_write
 from .wire import decode_json
@@ -104,6 +105,81 @@ def _identifier(value: object) -> str:
     if not isinstance(value, str) or not value or len(value.encode()) > 512:
         raise _ProtocolError("IDENTITY_INVALID")
     return value
+
+
+def observe_native_tool_calls(record: dict, *, backend: str, server: str, tools: dict[str, str]) -> list[dict]:
+    names = {native: product for product, native in tools.items()}
+    started, completed = {}, {}
+    identity = record["identity"]
+    for event_index, observed in enumerate(record["protocol_events"]):
+        message = observed["message"]
+        if backend == "codex":
+            method, params = message.get("method"), message.get("params", {})
+            item = params.get("item", {})
+            if (method not in {"item/started", "item/completed"} or item.get("type") != "mcpToolCall"
+                    or item.get("server") != server or item.get("tool") not in names):
+                continue
+            if (not identity.get("thread_id") or not identity.get("turn_id")
+                    or params.get("threadId") != identity["thread_id"] or params.get("turnId") != identity["turn_id"]):
+                raise ValueError("NATIVE_TOOL_GENERATION_MISMATCH")
+            entries = [(item, method == "item/started")]
+        else:
+            if message.get("type") not in {"assistant", "user"}:
+                continue
+            entries = [(item, item.get("type") == "tool_use")
+                       for item in message.get("message", {}).get("content", [])
+                       if item.get("type") == "tool_use" and item.get("name") in names
+                       or item.get("type") == "tool_result" and item.get("tool_use_id") in started]
+            if entries and (not identity.get("session_id") or message.get("session_id") != identity["session_id"]):
+                raise ValueError("NATIVE_TOOL_GENERATION_MISMATCH")
+        if not entries:
+            continue
+        observed_ns = observed.get("observed_ns")
+        if (type(observed_ns) is not int or not record["started_ns"] <= observed_ns <= record["finished_ns"]):
+            raise ValueError("NATIVE_TOOL_OBSERVATION_SCOPE")
+        event_digest = digest_bytes(canonical_bytes(message))
+        for item, beginning in entries:
+            action = item.get("id") if beginning or backend == "codex" else item.get("tool_use_id")
+            if not isinstance(action, str) or action not in record["action_ids"]:
+                raise ValueError("NATIVE_TOOL_ACTION_UNOBSERVED")
+            if beginning:
+                if action in started:
+                    raise ValueError("NATIVE_TOOL_ACTION_REUSED")
+                if backend == "claude" and message["type"] != "assistant":
+                    raise ValueError("NATIVE_TOOL_ROLE_MISMATCH")
+                arguments = item.get("arguments" if backend == "codex" else "input")
+                if not isinstance(arguments, dict):
+                    raise ValueError("NATIVE_TOOL_ARGUMENTS_UNOBSERVED")
+                started[action] = {
+                    "action_id": action, "name": names[item["tool" if backend == "codex" else "name"]],
+                    "arguments": arguments, "start_event_digest": event_digest, "start_observed_ns": observed_ns,
+                    "start_event_index": event_index,
+                }
+                continue
+            call = started.get(action)
+            if call is None or action in completed:
+                raise ValueError("NATIVE_TOOL_RESULT_UNCORRELATED")
+            if backend == "codex":
+                if (names[item["tool"]] != call["name"]
+                        or canonical_bytes(item.get("arguments")) != canonical_bytes(call["arguments"])):
+                    raise ValueError("NATIVE_TOOL_COMPLETED_REQUEST_CHANGED")
+                if item.get("status") not in {"completed", "failed"}:
+                    raise ValueError("NATIVE_TOOL_RESULT_UNOBSERVED")
+                failed = item["status"] == "failed" or item.get("error") is not None
+                result = item.get("result")
+                if not failed and not isinstance(result, dict):
+                    raise ValueError("NATIVE_TOOL_RESULT_UNOBSERVED")
+                content = result.get("content") if isinstance(result, dict) else None
+            else:
+                if message["type"] != "user" or type(item.get("is_error", False)) is not bool:
+                    raise ValueError("NATIVE_TOOL_ROLE_MISMATCH")
+                failed, content = item.get("is_error", False), item.get("content")
+            completed[action] = {**call, "failed": failed, "content": content,
+                                 "result_event_digest": event_digest, "result_observed_ns": observed_ns,
+                                 "result_event_index": event_index}
+    if started.keys() != completed.keys():
+        raise ValueError("NATIVE_TOOL_RESULT_UNOBSERVED")
+    return [call for call in completed.values() if not call["failed"]]
 
 
 def _counts(value: object) -> dict[str, int]:

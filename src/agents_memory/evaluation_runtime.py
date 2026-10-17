@@ -345,14 +345,16 @@ class CommandLease:
         self._state = "completed"
         self._eof = {"stdout": False, "stderr": False}
         self._closed = False
+        selector = None
+        constructor_errors: list[BaseException] = []
         try:
             self.process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd="/", start_new_session=True)
         except OSError:
             return
         process = self.process
-        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
-        selector = selectors.DefaultSelector()
         try:
+            assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+            selector = selectors.DefaultSelector()
             for stream, tag in ((process.stdout, "stdout"), (process.stderr, "stderr")):
                 os.set_blocking(stream.fileno(), False)
                 selector.register(stream, selectors.EVENT_READ, tag)
@@ -404,11 +406,57 @@ class CommandLease:
                             break
                 if self._state != "completed":
                     break
-        except (OSError, ValueError):
-            self._state = "io_unknown"
+        except (OSError, ValueError) as error:
+            if selector is None:
+                constructor_errors.append(error)
+            else:
+                self._state = "io_unknown"
+        except BaseException as error:
+            constructor_errors.append(error)
         finally:
-            selector.close()
+            if selector is not None:
+                try:
+                    selector.close()
+                except BaseException as error:
+                    constructor_errors.append(error)
+        if constructor_errors:
+            self._fail_initialization(constructor_errors, seconds)
         self._refresh(False)
+
+    def _fail_initialization(self, errors: list[BaseException], seconds: float) -> None:
+        self._closed = True
+        self._state = "io_unknown"
+        cleanup = True
+        process = self.process
+        assert process is not None
+        try:
+            if process.returncode is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                cleanup = False
+        except BaseException as error:
+            cleanup = False
+            errors.append(error)
+        try:
+            if process.returncode is None:
+                process.wait(timeout=max(0.001, self._started + seconds - time.monotonic()))
+        except BaseException as error:
+            cleanup = False
+            errors.append(error)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except BaseException as error:
+                    cleanup = False
+                    errors.append(error)
+        self._refresh(cleanup)
+        if len(errors) == 1:
+            raise errors[0]
+        raise BaseExceptionGroup("Helper initialization and owned cleanup failed", errors)
 
     def _refresh(self, cleanup: bool) -> None:
         self.observation = CommandObservation(self._state, self._exit, bytes(self._stdout), bytes(self._stderr), time.monotonic() - self._started, self._eof["stdout"], self._eof["stderr"], cleanup)

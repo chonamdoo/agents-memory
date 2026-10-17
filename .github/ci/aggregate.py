@@ -90,6 +90,7 @@ EVALUATION_OUTCOMES = {
     "strict_scorer_report": True, "source_unchanged": True,
     "explicit_evaluation_health_link": True, "no_automatic_health_or_human_approval": True,
     "forged_evidence_refused": 5,
+    "native_tool_event_mapping": True, "native_link_forgeries_refused": 2,
 }
 PAIR_DRIFT_OUTCOMES = {
     "complete": True, "all_attempts": 5, "completed_attempts": 4, "blocked_attempts": 1,

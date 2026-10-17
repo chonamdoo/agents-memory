@@ -311,6 +311,9 @@ invocation = next(item for item in workload['invocations'] if item['native']['cw
 identity = invocation['invocation_id']
 channel = manifest['preflight_gateway' if invocation['phase'] == 'preflight' else 'gateway']
 assert json.loads(prompt.decode().splitlines()[-1])['invocation_id'] == identity
+mapping_ref = next(item for item in manifest['files'] if item['name'] == 'native_tool_mapping')
+mapping = next(item for item in decode_json(pathlib.Path(mapping_ref['path']).read_bytes())['routes']
+               if item['route_ref'] == channel['route_ref'])
 session_id = 'engineering-claude-protocol-' + uuid.uuid4().hex
 
 def emit(value):
@@ -334,10 +337,20 @@ async def exercise():
                 emit({'type':'system', 'subtype':'init', 'session_id':session_id,
                       'model':'engineering-protocol-peer-not-a-model', 'claude_code_version':'engineering-protocol-r1',
                       'permissionMode':'engineering-fixture-no-native-permission-attestation',
-                      'tools':names, 'mcp_servers':[{'name':'engineering-scoped-gateway','status':'connected'}]})
+                      'tools':sorted(mapping['tools'][name] for name in names),
+                      'mcp_servers':[{'name':mapping['server'],'status':'connected'}]})
                 async def call(name, arguments):
+                    action = 'native-tool-' + uuid.uuid4().hex
+                    emit({'type':'assistant', 'session_id':session_id,
+                          'message':{'content':[{'type':'tool_use','id':action,
+                              'name':mapping['tools'][name],'input':arguments}]}})
                     result = await client.call_tool(name, arguments)
                     assert not result.is_error and len(result.content) == 1
+                    emit({'type':'user', 'session_id':session_id,
+                          'message':{'content':[{'type':'tool_result','tool_use_id':action,
+                              'is_error':False,'content':[
+                                  entry.model_dump(mode='json', by_alias=True, exclude_none=True)
+                                  for entry in result.content]}]}})
                     return decode_json(result.content[0].text.encode())
                 async def inspect(ref):
                     offset, data, stamp = 0, bytearray(), None
@@ -360,6 +373,7 @@ async def exercise():
                     raise ValueError('fixture-inspection-bound')
                 required = await call('memory_required_context', channel['required_request'])
                 assert required['stamp']['rules']
+                await call('memory_required_context', channel['required_request'])
                 if invocation['mode'] == 'required_only':
                     refusal = await client.call_tool('memory_context', channel['required_request'])
                     assert refusal.is_error
@@ -598,12 +612,17 @@ def freeze_manifest(
             "ownership_boundary_ref": "engineering-own-processes-not-hostile-native-isolation",
             "exclusive_optional_route_observed": True, "residual_memory_absence_observed": True,
             "fresh_generation_observed": True}
-    tools_on = sorted(["memory_required_context", *evaluation_gateway.SCHEMAS])
+    tools = {name: "mcp__engineering-scoped-gateway__" + name
+             for name in ("memory_required_context", *evaluation_gateway.SCHEMAS)}
+    documents["native_tool_mapping"] = {"schema": 1, "backend": "claude",
+        "routes": [{"route_ref": selected["route_ref"], "server": "engineering-scoped-gateway", "tools": tools}
+                   for selected in (measured, preflight)]}
+    tools_on = sorted(tools.values())
     documents["native_identity"] = {"schema": 1, "backend": "claude", "executable_sha256": digest_bytes(peer.read_bytes()),
         "fields": {"model": "engineering-protocol-peer-not-a-model", "claude_code_version": "engineering-protocol-r1",
                    "permissionMode": "engineering-fixture-no-native-permission-attestation",
                    "mcp_servers": [{"name": "engineering-scoped-gateway", "status": "connected"}]},
-        "mode_fields": {"memory_on": {"tools": tools_on}, "required_only": {"tools": ["memory_required_context"]}}}
+        "mode_fields": {"memory_on": {"tools": tools_on}, "required_only": {"tools": [tools["memory_required_context"]]}}}
     invocations = []
     def invocation(identity, phase, target, mode):
         cwd = native / identity
@@ -805,6 +824,30 @@ async def exercise_health_link(root: Path, run: Path, expected: str, store, acto
             require(str(error) == code, "EXACT_EVALUATION_HEALTH_REFUSAL_REQUIRED")
         else:
             raise ValueError("FORGED_EVALUATION_HEALTH_ACCEPTED")
+    records = dict(evidence.records)
+    preflight_id = evidence.manifest.workload["preflight"]["invocation_id"]
+    prefix = "ledger/" + digest_bytes(preflight_id.encode())
+    other = next(item for item in evidence.manifest.workload["invocations"] if item["phase"] == "retrieval")
+    foreign = records["ledger/" + digest_bytes(other["invocation_id"].encode()) + ".native-tool-link.json"]
+    altered = decode_json(records[prefix + ".native-tool-link.json"])
+    altered["links"][0]["gateway_written_sha256"] = "0" * 64
+    native_refusals = (foreign, canonical_bytes(altered))
+    for replacement in native_refusals:
+        changed = dict(records)
+        changed[prefix + ".native-tool-link.json"] = replacement
+        terminal = decode_json(records[prefix + ".terminal.json"])
+        terminal["evidence_refs"]["native_tool_link"] = digest_bytes(replacement)
+        changed[prefix + ".terminal.json"] = canonical_bytes(terminal)
+        ledger = {name: decode_json(raw) for name, raw in changed.items()
+                  if name.startswith("ledger/") and name.endswith((".intent.json", ".terminal.json", ".gateway.json"))}
+        forged_report = evaluation._report_from_records(evidence.manifest, ledger, adjudication=changed.get("adjudication.json"))
+        retained = replace(evidence, records=tuple(sorted(changed.items())), report_bytes=canonical_bytes(forged_report))
+        try:
+            await asyncio.to_thread(link, retained, views, work)
+        except evaluation_health.EvaluationHealthError as error:
+            require(str(error) == "EVALUATION_HEALTH_NATIVE_TOOL_LINK_UNKNOWN", "EXACT_NATIVE_LINK_REFUSAL_REQUIRED")
+        else:
+            raise ValueError("FOREIGN_OR_UNWRITTEN_NATIVE_LINK_ACCEPTED")
     path = root / "explicit-health-command.json"
     save(path, command.model_dump(mode="json"))
     result = await cli(
@@ -822,7 +865,8 @@ async def exercise_health_link(root: Path, run: Path, expected: str, store, acto
                 and current["health"]["operator_review"] is None,
                 "TASK_SUCCESS_MUST_NOT_INVENT_MEMORY_TRUTH_OR_HUMAN_APPROVAL")
     return {"explicit_evaluation_health_link": True, "no_automatic_health_or_human_approval": True,
-            "forged_evidence_refused": len(refusals)}
+            "forged_evidence_refused": len(refusals), "native_tool_event_mapping": True,
+            "native_link_forgeries_refused": len(native_refusals)}
 
 
 def reconcile_verifiers(run: Path, frozen: evaluation.EvaluationManifest) -> bool:

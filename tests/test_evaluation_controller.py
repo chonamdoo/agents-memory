@@ -429,7 +429,7 @@ async def test_controller_builds_real_required_only_gateway_with_wire_evidence(a
         assert responses and {item["path"] for item in responses} == {"/api/required-context"}
         assert all(item["http_status"] == 200 for item in responses)
         assert all(b"optional-secret" not in evaluation._unbytes(item["request_body"]) for item in responses)
-        receipt = evaluation._gateway_receipt(manifest, state.run_dir, invocation)
+        receipt, _ = evaluation._gateway_receipt(manifest, state.run_dir, invocation)
         assert receipt["required_reads"] and receipt["final_reads"] == []
         with pytest.raises(FileExistsError):
             build_gateway(manifest, invocation["invocation_id"], state.run_dir)
@@ -520,7 +520,9 @@ async def exercise():
                         emit({{'method': 'item/started', 'params': {{**scope, 'item': item}}}})
                         if event_mode == 'duplicate':
                             emit({{'method': 'item/started', 'params': {{**scope, 'item': item}}}})
-                    response = await client.call_tool(name, arguments)
+                    meta = {{'callId': 'foreign-action' if event_mode == 'call-id-meta' else action_id,
+                            'threadId': 'foreign-thread' if event_mode == 'foreign-meta' else 'engineering-thread'}}
+                    response = await client.call_tool(name, arguments, meta=meta)
                     assert not response.is_error
                     content = [entry.model_dump(mode='json', by_alias=True, exclude_none=True) for entry in response.content]
                     if event_mode == 'result':
@@ -543,6 +545,8 @@ async def exercise():
                             assert hashlib.sha256(collected).hexdigest() == window['digest']
                             return json.loads(collected)
                 await call('memory_required_context', channel['required_request'])
+                if event_mode == 'valid':
+                    await call('memory_required_context', channel['required_request'])
                 if {complete!r}:
                     key = hashlib.sha256(identity.encode()).hexdigest()
                     capture = json.loads((run_dir / 'ledger' / (key + '.capture.json')).read_bytes())
@@ -618,12 +622,25 @@ async def test_actual_controller_producer_native_peer_mcp_preflight_is_not_funct
         if complete:
             assert result["comparable"] is True
             assert result["delivery"]["final_reads"]
+            receipt, deliveries = evaluation._gateway_receipt(manifest, state.run_dir, invocation)
+            foreign = copy.deepcopy(native_record)
+            foreign["invocation_id"] = "retrieval-memory_on"
+            with pytest.raises(evaluation.EvaluationError, match="NATIVE_TOOL_INVOCATION_MISMATCH"):
+                evaluation._native_tool_link(manifest, invocation, foreign, receipt, deliveries)
+            foreign = copy.deepcopy(native_record)
+            foreign["identity"]["thread_id"] = "another-native-invocation"
+            with pytest.raises(evaluation.EvaluationError, match="NATIVE_TOOL_GENERATION_MISMATCH"):
+                evaluation._native_tool_link(manifest, invocation, foreign, receipt, deliveries)
+            foreign_deliveries = copy.deepcopy(deliveries)
+            next(iter(foreign_deliveries.values()))["event"]["invocation_id"] = "retrieval-memory_on"
+            with pytest.raises(evaluation.EvaluationError, match="NATIVE_TOOL_GATEWAY_SCOPE_MISMATCH"):
+                evaluation._native_tool_link(manifest, invocation, native_record, receipt, foreign_deliveries)
         else:
             assert not result["comparable"]
             assert "PRODUCER_NATIVE_MCP_PIPELINE_INCOMPLETE" in result["comparability_reasons"]
 
 
-@pytest.mark.parametrize("event_mode", ["missing", "arguments", "result", "server", "duplicate"])
+@pytest.mark.parametrize("event_mode", ["missing", "arguments", "result", "server", "duplicate", "foreign-meta", "call-id-meta"])
 async def test_actual_native_completion_cannot_credit_unlinked_gateway_delivery(authority, tmp_path, event_mode):
     async with actual_upstream(authority, tmp_path) as (agent, producer):
         path, run_dir = tmp_path / "manifest.json", tmp_path / "run"
