@@ -23,7 +23,7 @@ from agents_memory import (
     evaluation_verifier,
 )
 from agents_memory.client import HttpExchange
-from agents_memory.domain import DomainError
+from agents_memory.domain import DomainError, RuleApproval, RuleProposal, RuleScope
 from agents_memory.evaluation import (
     EvaluationError,
     PrivateTrace,
@@ -674,3 +674,27 @@ async def test_actual_empty_candidate_response_is_a_final_read_not_missing_data(
         assert observed.manifest_complete is True
         assert observed.final_context_digest and observed.comparable
         assert missing.returned_claim_ids is None and missing.manifest_complete is None
+
+
+async def test_frozen_fence_rejects_new_applicable_optional_rule(authority, tmp_path):
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        coding = _actual_preflight_channel(agent, producer)
+        coding["route_ref"] = "engineering-coding-route"
+        coding["rules_file"] = "rules"
+        path, _, _ = fixture_inputs(tmp_path, gateway=coding)
+        manifest = load_manifest(path)
+        state = prepare_run(manifest, tmp_path / "run")
+        invocation = evaluation._select(manifest, "retrieval", "no-match", "memory_on")
+        await asyncio.to_thread(evaluation._fence, manifest, state.run_dir, invocation, "before")
+        proposal = await authority.store.propose_rule(authority.actor, RuleProposal(
+            binding_id=authority.binding_id, idempotency_key="frozen-optional-rule",
+            body="Preserve the offline condition.", required=False,
+        ))
+        await authority.store.approve_rule(authority.actor, RuleApproval(
+            proposal_id=proposal["proposal_id"], expected_digest=proposal["digest"],
+            scope=RuleScope.LOCAL_PROJECT, target_bindings=(authority.binding_id,),
+            target_set_revision=proposal["target_set_revision"],
+            idempotency_key="frozen-optional-rule-approval",
+        ))
+        with pytest.raises(EvaluationError):
+            await asyncio.to_thread(evaluation._fence, manifest, state.run_dir, invocation, "after")

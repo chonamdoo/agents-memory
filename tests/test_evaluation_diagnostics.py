@@ -159,18 +159,18 @@ def make_inputs(
     claims = [
         {
             "ref": ref,
-            "interpretation_role": "candidate",
+            "interpretation_role": "model_derived_candidate",
             "statement": f"{ref}: 조건을 보존한다.",
             "polarity": "positive",
-            "modality": "assertion",
+            "modality": "asserted",
             "conditions": ["오프라인인 경우"],
             "exceptions": [],
             "evidence": [{
                 "source": "source1",
                 "revision": 1,
-                "source_speaker": "engineering-fixture",
+                "source_speaker": "document",
                 "source_event_time": None,
-                "source_recorded_at": None,
+                "source_recorded_at": "2026-10-01T00:00:00Z",
                 "bytes": [0, len(body)],
                 "quote": quote,
             }],
@@ -202,8 +202,46 @@ def make_inputs(
             {
                 "ref": claim["ref"],
                 "projection": {
-                    "snapshot": "snapshot1",
-                    "evidence": [deepcopy(span)],
+                    "id": claim["ref"],
+                    "kind": "claim",
+                    "state": "active",
+                    "revision": 1,
+                    "statement": claim["statement"],
+                    "snapshot": claim["snapshot"],
+                    "interpretation_role": claim["interpretation_role"],
+                    "input_source_ids": ["source1"],
+                    "selection_id": "selection1",
+                    "policy_revision": 1,
+                    "awaiting_revalidation": False,
+                    "judgment_context_refs": [],
+                    "draft": {
+                        "statement": claim["statement"],
+                        "kind": "fact",
+                        "subject": claim["ref"],
+                        "predicate": "preserves",
+                        "object": "conditions",
+                        "polarity": claim["polarity"],
+                        "modality": claim["modality"],
+                        "conditions": list(claim["conditions"]),
+                        "exceptions": list(claim["exceptions"]),
+                        "valid_from": None,
+                        "valid_until": None,
+                        "entities": [],
+                        "evidence": [{
+                            "source_id": "source1", "quote": quote,
+                            "byte_start": 0, "byte_end": len(body),
+                        }],
+                    },
+                    "evidence": [{
+                        "source_id": item["source"],
+                        "source_revision": item["revision"],
+                        "source_speaker": item["source_speaker"],
+                        "source_event_time": item["source_event_time"],
+                        "source_recorded_at": item["source_recorded_at"],
+                        "byte_start": item["bytes"][0],
+                        "byte_end": item["bytes"][1],
+                        "quote": item["quote"],
+                    } for item in claim["evidence"]],
                 },
             }
             for claim in claims
@@ -696,3 +734,36 @@ def test_late_actual_content_mismatch_leaves_postrun_quality_unknown(
     assert result["condition_omission_unknown"] == 1
     assert result["false_promotion_unknown"] == 1
     assert "QUALITY_JUDGMENT_MISSING_OR_MISMATCH" in result["reasons"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("statement", "x"),
+    ("polarity", "negative"),
+    ("modality", "uncertain"),
+    ("conditions", []),
+    ("exceptions", ["Only with explicit operator permission."]),
+    ("interpretation_role", "verbatim_candidate"),
+    ("valid_time", ["2026-10-02T00:00:00+00:00", None]),
+    ("source_speaker", "assistant"),
+    ("source_event_time", "2026-10-02T00:00:00+00:00"),
+    ("source_recorded_at", "2026-10-03T00:00:00+00:00"),
+])
+def test_rehashed_packing_cannot_replace_frozen_claim_meaning_or_provenance(field, value):
+    inputs = make_inputs()
+    manifest, spec = inputs.freeze()
+    assert load_diagnostic_gold(manifest, spec).gold[0].feasibility.complete
+    claim = inputs.documents["packing"]["claims"][0]
+    if field.startswith("source_"):
+        claim["evidence"][0][field] = value
+    else:
+        claim[field] = value
+    budget_digest = digest_bytes(inputs.raw("packing"))
+    inputs.row["budget"]["sha256"] = budget_digest
+    for scope in (
+        inputs.row["scope"], inputs.row["eligibility"]["scope"],
+        *(judgment["scope"] for judgment in inputs.row["judgments"]),
+    ):
+        scope["budget_digest"] = budget_digest
+    changed_manifest, changed_spec = inputs.freeze()
+    with pytest.raises(DiagnosticInputError):
+        load_diagnostic_gold(changed_manifest, changed_spec)

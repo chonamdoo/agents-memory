@@ -462,3 +462,32 @@ async def test_pipeline_requires_complete_inspection_of_every_remembered_claim(a
         assert observation["pipeline_observed"] is True
         assert observation["linked_capture_source_ids"] == (captured["source_id"],)
         gateway.close()
+
+
+async def test_unwritten_downstream_final_result_cannot_publish_delivery(authority, tmp_path):
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        traces = []
+        gateway = EvaluationGateway(scope_for(agent), agent=agent, producer=producer, trace_sink=traces.append)
+        await call(gateway, "memory_required_context", gateway.required_request)
+        captured, claims = await prepare_through_actual_wire(gateway)
+        recall = {"query": "CacheKey offline", "max_bytes": 6144, "limit": 3}
+        candidates = await call(gateway, "memory_context", recall)
+        for item in candidates["candidate_manifest"]:
+            await full_inspect(gateway, item["inspection_ref"])
+        result = await asyncio.to_thread(gateway.call_tool, "memory_context", {
+            **recall, "admission_id": candidates["admission_id"],
+            "relevance": [{"claim_id": item["claim_id"], "relevant": True,
+                           "reason": "Engineering fixture inspected the original evidence."}
+                          for item in candidates["candidate_manifest"]],
+        }, downstream_request_id="unwritten-final-response")
+        final = payload(result)
+        assert final["judgment_required"] is False
+        assert set(claims) <= set(final["refs"])
+        assert "only offline" in final["context"]
+        gateway.close()
+        observed = gateway.flow_observation()
+        assert observed["final_read_attempts"]
+        assert observed["captures"] == (captured,)
+        assert observed["final_reads"] == ()
+        assert observed["observation_complete"] is False
+        assert observed["pipeline_observed"] is False
