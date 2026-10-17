@@ -574,8 +574,9 @@ def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, dict]:
 def freeze_manifest(
     root: Path, measured: dict, preflight: dict, corpus: dict, gold: dict,
     rules: dict, preflight_rules: list, args, runtime_raw: bytes,
+    *, native_root: Path,
 ) -> tuple[Path, Path, evaluation.EvaluationManifest]:
-    inputs, native = root / "inputs", root.parent.parent / "full-smoke-native"
+    inputs, native = root / "inputs", native_root
     private_directory(inputs)
     private_directory(native)
     manifest_path, run = root / "manifest.json", root / "controller"
@@ -865,7 +866,8 @@ def reconcile_verifiers(run: Path, frozen: evaluation.EvaluationManifest) -> boo
 
 async def exercise_optional_pair_drift(args, root, measured, preflight, corpus, gold, rules, pre_rules, runtime_raw, store, actor):
     private_directory(root)
-    _, run, frozen = freeze_manifest(root, measured, preflight, corpus, gold, rules, pre_rules, args, runtime_raw)
+    _, run, frozen = freeze_manifest(root, measured, preflight, corpus, gold, rules, pre_rules, args, runtime_raw,
+                                    native_root=admitted_root() / "pair-drift-native")
     first_done = asyncio.Event()
     release = threading.Event()
     stop = threading.Event()
@@ -1085,7 +1087,8 @@ async def smoke(args, root: Path, summary: dict) -> None:
         pre_rules = await asyncio.to_thread(preflight_rules, channels["preflight"])
         require(rules["rules"] and pre_rules, "REAL_REQUIRED_RULES_REQUIRED")
         manifest, run, frozen = freeze_manifest(root, channels["measured"], channels["preflight"], corpus, gold,
-                                               rules, pre_rules, args, runtime_raw)
+                                               rules, pre_rules, args, runtime_raw,
+                                               native_root=root.parent.parent / "full-smoke-native")
         expected = digest_bytes(manifest.read_bytes())
         common = ["--manifest", str(manifest), "--run-dir", str(run), "--expected-sha256", expected]
         await cli(root, "prepare", ["prepare", *common], 60)
