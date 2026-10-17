@@ -45,6 +45,7 @@ COMPAT_SELECTORS = (
     "tests/test_native_status.py::test_native_inventory_survives_real_normal_shutdown",
     "tests/test_native_status.py::test_native_inventory_ends_descendants_and_closes_pipes_on_failure",
     "tests/test_ci_accounting.py::test_timed_out_check_kills_descendant_after_parent_exits_successfully",
+    "tests/test_ci_accounting.py::test_owned_cleanup_releases_child_after_leader_is_reaped",
 )
 COMPAT_RUNTIME = {"platform": "darwin", "implementation": "cpython", "python": [3, 12, 13]}
 
@@ -201,8 +202,9 @@ def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_j
     require(compat.get("runtime") == COMPAT_RUNTIME, "Wrong compatibility runtime")
     require(compat.get("collection_issues") == [], "Compatibility collection failed")
     expected_compat = sorted(item for item in collection
-                             if any(item.startswith(selector + "[") for selector in COMPAT_SELECTORS))
-    require(all(any(item.startswith(selector + "[") for item in expected_compat)
+                             if any(item == selector or item.startswith(selector + "[")
+                                    for selector in COMPAT_SELECTORS))
+    require(all(any(item == selector or item.startswith(selector + "[") for item in expected_compat)
                 for selector in COMPAT_SELECTORS), "Missing compatibility boundary")
     require(nodeids(compat.get("all_nodeids"), "compatibility collection") == expected_compat,
             "Compatibility collection differs from the declared source cases")

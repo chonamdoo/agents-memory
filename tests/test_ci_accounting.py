@@ -61,7 +61,8 @@ def evidence(tmp_path):
         "tests/test_native_status.py::test_native_inventory_survives_real_normal_shutdown[term]",
     ])
     source_ids = [*wheel_ids,
-                  "tests/test_ci_accounting.py::test_timed_out_check_kills_descendant_after_parent_exits_successfully"]
+                  "tests/test_ci_accounting.py::test_timed_out_check_kills_descendant_after_parent_exits_successfully",
+                  "tests/test_ci_accounting.py::test_owned_cleanup_releases_child_after_leader_is_reaped"]
     compat_ids = sorted([item for item in source_ids
                          if any(item == selector or item.startswith(selector + "[")
                                 for selector in module["COMPAT_SELECTORS"])])
@@ -291,12 +292,11 @@ def test_junit_preserves_failure_without_exporting_credentials_or_captured_outpu
 
 @pytest.mark.skipif(os.name != "posix", reason="CI process supervision requires POSIX")
 def test_timed_out_check_kills_descendant_after_parent_exits_successfully(
-    tmp_path, monkeypatch, group_reuse_witness,
+    monkeypatch, owned_descendants,
 ):
     check = runpy.run_path(str(CI / "run-checks.py"))["check"]
-    lifetime = tmp_path / "descendant-lifetime"
-    os.mkfifo(lifetime, 0o600)
-    observer = os.open(lifetime, os.O_RDONLY | os.O_NONBLOCK)
+    lifetime = owned_descendants.lifetime
+    observer = owned_descendants.observer
     command = [sys.executable, "-c", textwrap.dedent(f"""
         import os
         import signal
@@ -304,41 +304,67 @@ def test_timed_out_check_kills_descendant_after_parent_exits_successfully(
         signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
         if os.fork() == 0:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
-            lifetime = os.open({str(lifetime)!r}, os.O_WRONLY)
+            release = os.open({str(owned_descendants.control)!r}, os.O_RDONLY | os.O_NONBLOCK)
+            os.set_blocking(release, True)
+            lifetime = os.open({str(lifetime)!r}, os.O_WRONLY | os.O_NONBLOCK)
             os.write(lifetime, b"R")
-            while True:
-                signal.pause()
+            os.read(release, 1)
+            os._exit(0)
         while True:
             signal.pause()
     """)]
     real_popen = subprocess.Popen
-    processes = []
+    processes = owned_descendants.processes
 
     def start(*args, **kwargs):
         process = real_popen(*args, **kwargs)
-        group_reuse_witness[process.pid] = process
-        processes.append(process)
+        owned_descendants.track(process)
         assert select.select([observer], [], [], 5)[0] == [observer]
         return process
 
     monkeypatch.setattr(subprocess, "Popen", start)
-    try:
-        result = check(command, timeout=1)
-        assert result["timeout"] is True
-        assert result["exit_code"] == 0
-        assert "error" not in result
-        assert processes[0].returncode == 0
-        assert os.read(observer, 1) == b"R"
-        assert select.select([observer], [], [], 2)[0] == [observer]
-        assert os.read(observer, 1) == b""
-    finally:
-        try:
-            for process in processes:
-                with suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=2)
-        finally:
-            os.close(observer)
+    result = check(command, timeout=1)
+    assert result["timeout"] is True
+    assert result["exit_code"] == 0
+    assert "error" not in result
+    assert processes[0][0].returncode == 0
+    assert os.read(observer, 1) == b"R"
+    assert select.select([observer], [], [], 2)[0] == [observer]
+    assert os.read(observer, 1) == b""
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Owned descendant cleanup requires POSIX")
+def test_owned_cleanup_releases_child_after_leader_is_reaped(owned_descendants):
+    observer = owned_descendants.observer
+    command = [sys.executable, "-c", textwrap.dedent(f"""
+        import os
+        import signal
+
+        ready_read, ready_write = os.pipe()
+        if os.fork() == 0:
+            os.close(ready_read)
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            release = os.open({str(owned_descendants.control)!r}, os.O_RDONLY | os.O_NONBLOCK)
+            os.set_blocking(release, True)
+            lifetime = os.open({str(owned_descendants.lifetime)!r}, os.O_WRONLY | os.O_NONBLOCK)
+            os.write(lifetime, b"R")
+            os.write(ready_write, b"R")
+            os.close(ready_write)
+            os.read(release, 1)
+            os._exit(0)
+        os.close(ready_write)
+        os.read(ready_read, 1)
+        os._exit(0)
+    """)]
+    process = subprocess.Popen(
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    owned_descendants.track(process)
+    assert select.select([observer], [], [], 2)[0] == [observer]
+    assert os.read(observer, 1) == b"R"
+    assert process.wait(timeout=2) == 0
+    assert select.select([observer], [], [], 0)[0] == []
 
 
 @pytest.fixture

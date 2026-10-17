@@ -94,12 +94,11 @@ def test_unavailable_native_process_is_bounded_and_no_raw_output_escapes(tmp_pat
 @pytest.mark.parametrize("failure", ["malformed", "timeout"])
 @pytest.mark.parametrize("wait_failure", [None, "timeout", "oserror"])
 def test_native_inventory_ends_descendants_and_closes_pipes_on_failure(
-    tmp_path, monkeypatch, parent_mode, failure, wait_failure, group_reuse_witness,
+    tmp_path, monkeypatch, parent_mode, failure, wait_failure, owned_descendants,
 ):
     monkeypatch.setenv("HOME", str(tmp_path))
-    lifetime = tmp_path / "descendant-lifetime"
-    os.mkfifo(lifetime, 0o600)
-    observer = os.open(lifetime, os.O_RDONLY | os.O_NONBLOCK)
+    lifetime = owned_descendants.lifetime
+    observer = owned_descendants.observer
     executable = tmp_path / "native-probe"
     executable.write_text("#!" + sys.executable + "\n" + textwrap.dedent(f"""
         import os
@@ -115,7 +114,9 @@ def test_native_inventory_ends_descendants_and_closes_pipes_on_failure(
             os.close(ready_read)
             os.close(parent_write)
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
-            lifetime = os.open({str(lifetime)!r}, os.O_WRONLY)
+            release = os.open({str(owned_descendants.control)!r}, os.O_RDONLY | os.O_NONBLOCK)
+            os.set_blocking(release, True)
+            lifetime = os.open({str(lifetime)!r}, os.O_WRONLY | os.O_NONBLOCK)
             os.write(lifetime, b"R")
             os.write(ready_write, b"R")
             os.close(ready_write)
@@ -124,8 +125,8 @@ def test_native_inventory_ends_descendants_and_closes_pipes_on_failure(
                 if {failure!r} == "malformed":
                     print("never-display-provider-error", flush=True)
             os.close(parent_read)
-            while True:
-                signal.pause()
+            os.read(release, 1)
+            os._exit(0)
         os.close(ready_write)
         os.close(parent_read)
         os.read(ready_read, 1)
@@ -142,12 +143,11 @@ def test_native_inventory_ends_descendants_and_closes_pipes_on_failure(
     monkeypatch.setattr(native_status, "_DEADLINE_SECONDS", 1)
     monkeypatch.setattr(native_status, "_CLEANUP_SECONDS", 0.15)
     real_popen = subprocess.Popen
-    processes = []
+    processes = owned_descendants.processes
 
     def start(*args, **kwargs):
         process = real_popen(*args, **kwargs)
-        group_reuse_witness[process.pid] = process
-        processes.append((process, process.wait))
+        owned_descendants.track(process)
         if wait_failure is not None:
             def fail_wait(timeout):
                 if wait_failure == "timeout":
@@ -158,29 +158,20 @@ def test_native_inventory_ends_descendants_and_closes_pipes_on_failure(
         return process
 
     monkeypatch.setattr(native_status.subprocess, "Popen", start)
-    try:
-        started = time.monotonic()
-        with pytest.raises(DomainError) as caught:
-            native_status._codex_inventory(tmp_path, executable)
-        assert time.monotonic() - started < 4
-        assert caught.value.code == "HOST_NATIVE_STATUS_UNAVAILABLE"
-        assert caught.value.public()["effect"] == "not_started"
-        assert "never-display" not in json.dumps(caught.value.public())
-        assert os.read(observer, 1) == b"R"
-        assert select.select([observer], [], [], 1)[0] == [observer]
-        assert os.read(observer, 1) == b""
-        process, real_wait = processes[0]
-        assert all(stream.closed for stream in (process.stdin, process.stdout, process.stderr))
-        expected = {"parent_first": 0, "parent_on_term": -signal.SIGTERM, "parent_ignores_term": -signal.SIGKILL}
-        assert real_wait(timeout=1) == expected[parent_mode]
-    finally:
-        for process, real_wait in processes:
-            with suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
-            real_wait(timeout=2)
-            for stream in (process.stdin, process.stdout, process.stderr):
-                stream.close()
-        os.close(observer)
+    started = time.monotonic()
+    with pytest.raises(DomainError) as caught:
+        native_status._codex_inventory(tmp_path, executable)
+    assert time.monotonic() - started < 4
+    assert caught.value.code == "HOST_NATIVE_STATUS_UNAVAILABLE"
+    assert caught.value.public()["effect"] == "not_started"
+    assert "never-display" not in json.dumps(caught.value.public())
+    assert os.read(observer, 1) == b"R"
+    assert select.select([observer], [], [], 1)[0] == [observer]
+    assert os.read(observer, 1) == b""
+    process, real_wait = processes[0]
+    assert all(stream.closed for stream in (process.stdin, process.stdout, process.stderr))
+    expected = {"parent_first": 0, "parent_on_term": -signal.SIGTERM, "parent_ignores_term": -signal.SIGKILL}
+    assert real_wait(timeout=1) == expected[parent_mode]
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Native inventory process supervision requires POSIX")
