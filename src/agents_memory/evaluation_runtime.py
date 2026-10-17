@@ -106,12 +106,12 @@ class Publication:
     sha256: str
 
 
-def _reconcile_publication_links(directory: int, name: str, fd: int) -> os.stat_result:
+def _publication_alias(directory: int, name: str, fd: int) -> tuple[os.stat_result, str | None]:
     info = os.fstat(fd)
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
     if info.st_nlink == 1:
-        return info
+        return info, None
     if info.st_nlink != 2 or stat.S_IMODE(info.st_mode) != 0o600:
         raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
     identity = (info.st_dev, info.st_ino)
@@ -127,12 +127,20 @@ def _reconcile_publication_links(directory: int, name: str, fd: int) -> os.stat_
     if (current.st_dev, current.st_ino) != identity:
         raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
     if os.fstat(fd).st_nlink == 1:
-        return os.fstat(fd)
+        return os.fstat(fd), None
     if temporary is None:
         raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
     candidate = os.stat(temporary, dir_fd=directory, follow_symlinks=False)
     if (candidate.st_dev, candidate.st_ino) != identity or candidate.st_nlink != 2:
         raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
+    return info, temporary
+
+
+def _reconcile_publication_links(directory: int, name: str, fd: int) -> os.stat_result:
+    info, temporary = _publication_alias(directory, name, fd)
+    if temporary is None:
+        return info
+    identity = (info.st_dev, info.st_ino)
     os.fsync(fd)
     os.unlink(temporary, dir_fd=directory)
     os.fsync(directory)
@@ -141,6 +149,46 @@ def _reconcile_publication_links(directory: int, name: str, fd: int) -> os.stat_
     if info.st_nlink != 1 or (current.st_dev, current.st_ino) != identity:
         raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
     return info
+
+
+def read_publication_bytes(
+    directory: int, name: str, maximum: int, *, reconcile: bool = False,
+) -> bytes:
+    if not re.fullmatch(r"[a-zA-Z0-9_.-]+", name):
+        raise RuntimeRefusal("RECEIPT_NAME")
+    if type(maximum) is not int or maximum <= 0:
+        raise RuntimeRefusal("RECOVERY_RECORD_BOUND")
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    try:
+        try:
+            if reconcile:
+                before = _reconcile_publication_links(directory, name, fd)
+                temporary = None
+            else:
+                before, temporary = _publication_alias(directory, name, fd)
+            if before.st_size > maximum:
+                raise RuntimeRefusal("RECOVERY_RECORD_BOUND")
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                raw = stream.read(maximum + 1)
+            after = os.fstat(fd)
+            current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if len(raw) > maximum:
+                raise RuntimeRefusal("RECOVERY_RECORD_BOUND")
+            if (before.st_dev != after.st_dev or before.st_ino != after.st_ino
+                    or before.st_mode != after.st_mode or before.st_uid != after.st_uid
+                    or before.st_nlink != after.st_nlink or before.st_size != after.st_size
+                    or before.st_mtime_ns != after.st_mtime_ns or before.st_ctime_ns != after.st_ctime_ns
+                    or (current.st_dev, current.st_ino) != (after.st_dev, after.st_ino)):
+                raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
+            if temporary is not None:
+                alias = os.stat(temporary, dir_fd=directory, follow_symlinks=False)
+                if (alias.st_dev, alias.st_ino) != (after.st_dev, after.st_ino):
+                    raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
+            return raw
+        except OSError:
+            raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY") from None
+    finally:
+        os.close(fd)
 
 
 def publish_or_reconcile(directory: int, name: str, raw: bytes) -> Publication:
@@ -587,23 +635,11 @@ class DockerRuntime:
         return self.cleanup(intent, container_id, create_uncertain=container_id is None)
 
     def read_private_record(self, name: str) -> dict:
-        if not re.fullmatch(r"[a-zA-Z0-9_.-]+", name):
-            raise RuntimeRefusal("RECEIPT_NAME")
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.directory)
-        try:
-            info = _reconcile_publication_links(self.directory, name, fd)
-            if info.st_size > self.spec.limits.helper_bytes:
-                raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
-            with os.fdopen(fd, "rb", closefd=False) as stream:
-                raw = stream.read(self.spec.limits.helper_bytes + 1)
-            if len(raw) > self.spec.limits.helper_bytes:
-                raise RuntimeRefusal("RECOVERY_RECORD_BOUND")
-            value = decode_json_value(raw)
-            if not isinstance(value, dict):
-                raise RuntimeRefusal("RECOVERY_RECORD_SHAPE")
-            return value
-        finally:
-            os.close(fd)
+        raw = read_publication_bytes(self.directory, name, self.spec.limits.helper_bytes, reconcile=True)
+        value = decode_json_value(raw)
+        if not isinstance(value, dict):
+            raise RuntimeRefusal("RECOVERY_RECORD_SHAPE")
+        return value
 
     def reconcile_all(self, *, maximum_entries: int, maximum_intents: int) -> tuple[CleanupObservation, ...]:
         if maximum_entries <= 0 or maximum_intents <= 0:

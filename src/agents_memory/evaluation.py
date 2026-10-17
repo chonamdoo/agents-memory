@@ -46,6 +46,7 @@ from .evaluation_runtime import (
     RuntimeLimits,
     RuntimeSpec,
     publish_or_reconcile,
+    read_publication_bytes,
 )
 from .evaluation_scoring import ArmObservation, RetrievalObservation, ScoringProtocol
 from .evaluation_verifier import (
@@ -187,10 +188,14 @@ def _publish(directory: Path, name: str, value: object, maximum: int) -> str:
 
 
 def _existing(directory: Path, name: str, maximum: int) -> dict | None:
+    descriptor = open_private_directory(directory)
     try:
-        return decode_json(_read(directory / name, maximum, private=True))
-    except FileNotFoundError:
-        return None
+        try:
+            return decode_json(read_publication_bytes(descriptor, name, maximum))
+        except FileNotFoundError:
+            return None
+    finally:
+        os.close(descriptor)
 
 
 def _bounded_names(fd: int, maximum: int) -> list[str]:
@@ -755,8 +760,8 @@ def _intent(manifest: EvaluationManifest, run_dir: Path, invocation: dict) -> bo
         try:
             private_write(run_dir / "ledger" / name, canonical_bytes(value), directory=fd)
         except FileExistsError:
-            existing = _existing(run_dir / "ledger", name, manifest.config["record_bytes"])
-            _require(existing == value, "ATTEMPT_INTENT_CONFLICT")
+            publication = publish_or_reconcile(fd, name, canonical_bytes(value))
+            _require(publication.state in {"durable", "reconciled_durable"}, "ATTEMPT_INTENT_CONFLICT")
             return False
     finally:
         os.close(fd)
