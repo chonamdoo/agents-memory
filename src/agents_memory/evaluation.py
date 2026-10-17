@@ -1008,13 +1008,14 @@ def _fence(manifest: EvaluationManifest, run_dir: Path, invocation: dict, stage:
     trace = PrivateTrace(manifest, run_dir, invocation["invocation_id"], stage)
     corpus = manifest.document("corpus")
     relation_refs = tuple(edge["ref"] for edge in corpus["relations"])
-    scope = replace(_scope(manifest, invocation, ("judgment", *relation_refs)), mode="memory_on", phase="coding")
+    scope = replace(_scope(manifest, invocation, ("judgment", *relation_refs)), mode="memory_on", phase="coding",
+                    required_request=_rules_probe_request(manifest))
     gateway = EvaluationGateway(scope, agent=_upstream(manifest, "agent", invocation), producer=None, trace_sink=trace)
     try:
         required = _payload(gateway.call_tool("memory_required_context", scope.required_request))
         rules = sorted(required["stamp"]["rules"])
         _require(rules == manifest.document("rules")["rules"], "REQUIRED_RULE_IDENTITY_DRIFT")
-        probe = _payload(gateway.call_tool("memory_context", _rules_probe_request(manifest)))
+        probe = _payload(gateway.call_tool("memory_context", scope.required_request))
         _require(_rule_snapshot(probe) == manifest.document("rules")["applicable"],
                  "APPLICABLE_RULE_SET_OR_CONTENT_DRIFT")
         for source in corpus["sources"]:

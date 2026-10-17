@@ -1322,3 +1322,23 @@ measured corpus/rules를 schema2로 전환하고 실제 context renderer를 froz
 
 native credit은 원래 JSON-RPC ID/tool/arguments/payload/metadata stamp와 일치하는 response의 실제 완전한 write에만 붙인다. source/installed의 실제 OS pipe에서 output cap·부분 write·broken pipe·취소·deadline·ID 충돌·응답 교체·post-write 관측 실패를 검사했다. 미전송·모호한 결과는 완료로 바꾸지 않으며 완전한 write도 host/model 소비나 native 보호 증거가 아니다. 새 whole-source 공식12review/QA는 미완료이고 원래18개 완료0·로컬 runtime 검증 금지를 유지한다.
 
+
+### 공식 재리뷰 R5–R9: control 취소·동결 scope·native 연결·helper 회수
+
+정확한 `9969c28d3e86dede0d80429f651912d80dd07e97` / [Actions39071666379](https://github.com/chonamdoo/agents-memory/actions/runs/39071666379)는 이전 engineering 전체 성공을 재확인했다. 이후 정상 fresh review는 Sol2approve/4request-changes로 다섯 새 지적을 냈다. Claude의 실제 OAuth 만료401과 나머지5skipped는 투표가 아니며, 과거 finalizer12approve나 이전 녹색 CI로 이번 whole-source 승인·QA를 대신하지 않는다.
+
+| source / Actions | 전체 source / 별도 설치 wheel | 관측된 범위 |
+|---|---|---|
+| `1f437169` / [39074706901](https://github.com/chonamdoo/agents-memory/actions/runs/39074706901) | 3041pass13fail /665pass13fail | test-only before. budget4·workspace4·실제 helper interruption/selector5 negative의 call 실패, setup/teardown pass. 정규화된 default/null positive는 pass |
+| `ed25e3e0` / [39075415545](https://github.com/chonamdoo/agents-memory/actions/runs/39075415545) | 3041pass18fail /665pass18fail | 제품 source는 그대로인 test-only before. native event 누락·arguments/result/server 불일치·중복 action5개가 추가로 call 실패. 실제 Docker current-control 취소는13pass1fail, 해당 setup/teardown pass |
+| `8d5cee86` / [39076164713](https://github.com/chonamdoo/agents-memory/actions/runs/39076164713) | 3057pass4fail /681pass4fail | 새21개 source/installed scope·native·helper 검사 전 phase pass, 실제 Docker14pass/실패0. 기존 controller fence4개와 전체 helper 준비는 REQUIRED_SELECTORS_CHANGED로 실패: controller-only rule probe limit5가 native limit3 scope를 공유하던 caller 누락. 전체 workflow/aggregate는 failure |
+
+두 before의 collection issue·skip·xfail·xpass는0이다. lint·canonical comments·build 자체는 각각 exit0이고 설치 회귀 실패로 checks job이 실패했다. distribution artifact 부재를 build 실패로 바꿔 적지 않는다. 테스트와 call별 phase 원본, full API/job/artifact/log는 현재 run의 `actions-1f43716-frozen-scope-lease-before`와 `actions-ed25e3e-native-control-before`에 보존했다.
+
+수정본은 같은 stop event를 실행 중인 control까지 전달하고 취소 후 나머지 control·eligible 승격을 막으며 부분 receipt·intent·owned cleanup을 유지한다. gateway는 candidate/final dispatch 전에 정규화한 limit/max_bytes/code_workspace_id를 고정한다. helper post-spawn interruption·selector 실패에서 원래/동시 cleanup 실패와 각 pipe·unreaped owner를 보존한다. 실패·미관측을 정상 종료로 숨기거나 grace/timeout을 늘리지 않는다.
+
+`8d5cee86`의 실제 설치 wheel Docker scenario에서 R5 current-control 취소·후속 control 미실행·부분 receipt/cleanup을 확인했다. R7 workspace4개와 R9 actual helper5개는 같은 node의 source/installed setup/call/teardown을 각각 대조했다. 해당 engineering component만 완료하며 whole-source 승인·전체 consumer 완료로 바꾸지 않는다. R6는 native guard를 완화하지 않고 controller-only fence와 corpus 준비의 required request를 각각 원래 frozen `rules.probe` scope에 연결하도록 수정했다. health fence replay도 같은 probe request를 검사하고 준비 gateway의 관측 invocation ID를 구별한다. 이 caller 수정의 새 Actions 결과는 아직 미확인이다.
+
+새 `native_tool_mapping`은 frozen measured/preflight route·server·native tool 이름을 요구한다. 실제 같은 invocation/generation의 native tool start/result와 gateway 요청·완전 write를 연결한 immutable native-tool-link를 만들고 health export/replay에서도 재검증한다. Codex는 [고정 native source의 callId/threadId](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/core/src/mcp_tool_call.rs)를 JSON-RPC ID와 구별한다. Claude의 동일 요청·결과 반복은 양쪽 관측 stream의 비중첩 순서가 필요하고 모호한 병렬 반복은 비교 불가다. after fixture에는 실제 Codex metadata와 반복 required read를 추가했으며 이를 before의 byte-identical fixture라고 표현하지 않는다. `8d5cee86`의 source/installed native 부정7개와 실제 positive 안의 다른 invocation/generation/gateway 거절은 pass다. 전체 CLI의 Claude 연결·health replay 및 self-consistent foreign-link/unwritten-hash 두 거절은 준비 단계 실패 때문에 아직 미실행이다.
+
+이 변경은 실제 native host 신뢰·first-action/stop/recovery 보호, provider input/의미 소비, 독립 human120/60task×3·180validpair, 실제1–2주 trial·OS·운영/egress·merge/release 승인이나 완료가 아니다. 원래18개 완료0과 모든 협업자의 로컬 runtime/test/collection/lint/build/syntax/format/reproduction/추가 smoke 금지를 유지한다.

@@ -494,7 +494,7 @@ def channel(settings: Settings, binding: str, files: dict, phase: str, *, rules_
             "lifetime_seconds": 90.0, "rules_file": rules_file}
 
 
-def fixture_gateway(config: dict, trace) -> EvaluationGateway:
+def fixture_gateway(config: dict, trace, *, invocation_id: str) -> EvaluationGateway:
     upstream = {}
     for role in ("agent", "producer"):
         item = config[role]
@@ -502,7 +502,7 @@ def fixture_gateway(config: dict, trace) -> EvaluationGateway:
         endpoint["state_dir"] = Path(endpoint["state_dir"])
         upstream[role] = GatewayUpstream(RelayEndpoint(**endpoint), Path(item["token_file"]), role,
                                         config["binding_id"], item["approval_ref"])
-    scope = GatewayScope("engineering-corpus-preparation", config["route_ref"], "memory_on", "preflight",
+    scope = GatewayScope(invocation_id, config["route_ref"], "memory_on", "preflight",
                          config["binding_id"], tuple(config["approved_upstream_urls"]), tuple(config["approved_refs"]), config["protocol_version"],
                          config["max_calls"], config["max_trace_bytes"], config["required_request"])
     return EvaluationGateway(scope, agent=upstream["agent"], producer=upstream["producer"], trace_sink=trace)
@@ -516,7 +516,7 @@ def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, dict]:
         require(len(raw) <= 4 * 1024 * 1024 and sequence < 1000, "CORPUS_TRACE_BOUND")
         save(evidence / f"corpus-{sequence:04}.json", raw)
         sequence += 1
-    gateway = fixture_gateway(config, trace)
+    gateway = fixture_gateway(config, trace, invocation_id="engineering-corpus-preparation")
     def call(name, arguments):
         result = gateway.call_tool(name, arguments)
         require(not result.get("isError"), "CORPUS_REAL_MCP_FAILURE")
@@ -547,7 +547,7 @@ def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, dict]:
         config["approved_refs"] = sorted({source, *(item["id"] for item in claims),
                                          *("health:claim:" + item["id"] for item in claims)})
         gateway.close()
-        gateway = fixture_gateway(config, trace)
+        gateway = fixture_gateway(config, trace, invocation_id="engineering-corpus-post-publication")
         require(call("memory_required_context", config["required_request"])["stamp"]["rules"] == rules,
                 "REQUIRED_RULE_IDENTITY_CHANGED")
         window = call("memory_inspect", {"ref": source, "byte_start": 0, "max_bytes": 4096})
@@ -556,10 +556,17 @@ def prepare_corpus(config: dict, evidence: Path) -> tuple[dict, dict, dict]:
         probe = {"query": digest_bytes(b"engineering bounded zero-candidate rule probe"), "max_bytes": 6144, "limit": 5}
         request = {**{key: value for key, value in config["required_request"].items()
                       if key not in {"query", "query_expansions", "max_bytes", "limit"}}, **probe}
-        rules_snapshot = {
-            "schema": 2, "rules": sorted(rules), "probe": probe,
-            "applicable": evaluation._rule_snapshot(call("memory_context", request)),
-        }
+        probe_gateway = fixture_gateway({**config, "required_request": request}, trace,
+                                        invocation_id="engineering-frozen-rule-probe")
+        try:
+            probe_required = evaluation._payload(probe_gateway.call_tool("memory_required_context", request))
+            require(probe_required["stamp"]["rules"] == rules, "PROBE_REQUIRED_RULE_IDENTITY_CHANGED")
+            rules_snapshot = {
+                "schema": 2, "rules": sorted(rules), "probe": probe,
+                "applicable": evaluation._rule_snapshot(evaluation._payload(probe_gateway.call_tool("memory_context", request))),
+            }
+        finally:
+            probe_gateway.close()
         evaluation._validate_rule_snapshot(rules_snapshot)
         judgment = evaluation._inspect(
             gateway, "judgment", 4 * 1024 * 1024,
@@ -1121,7 +1128,8 @@ async def smoke(args, root: Path, summary: dict) -> None:
         corpus, gold, rules = await asyncio.to_thread(prepare_corpus, channels["measured"], evidence)
         def preflight_rules(selected):
             gateway = fixture_gateway(selected, lambda value: save(evidence / ("preflight-" + secrets.token_hex(8) + ".json"),
-                canonical_bytes(evaluation._private_value(value))))
+                canonical_bytes(evaluation._private_value(value))),
+                invocation_id="engineering-preflight-rules-" + selected["binding_id"])
             try:
                 response = gateway.call_tool("memory_required_context", selected["required_request"])
                 require(not response.get("isError"), "PREFLIGHT_REQUIRED_CONTEXT_FAILED")

@@ -309,7 +309,7 @@ def _validate_fence(records, manifest, invocation, channel):
         if exchange.get("path") == "/api/required-context":
             _require(exchange.get("method") == "POST" and exchange.get("http_status") == 200
                      and controller._normalized_retrieval_request(manifest, request)
-                     == controller._normalized_retrieval_request(manifest, manifest.config["gateway"]["required_request"])
+                     == controller._normalized_retrieval_request(manifest, controller._rules_probe_request(manifest))
                      and isinstance(response.get("stamp"), dict)
                      and sorted(response["stamp"].get("rules", [])) == manifest.document("rules")["rules"],
                      "EVALUATION_HEALTH_FENCE_REQUIRED_SCOPE")
