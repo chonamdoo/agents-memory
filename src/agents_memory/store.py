@@ -2136,13 +2136,16 @@ class Store:
                 proposal_id = ref if kind == "proposal" else row["proposal_id"]
                 proposal = row if kind == "proposal" else await connection.fetchrow(
                     "SELECT * FROM am_proposals WHERE id=$1", proposal_id)
-                if proposal is None or proposal["binding_id"] not in current.bindings:
+                if proposal is None:
                     raise _denied()
                 dependencies = await self._dependencies(connection, "am_proposal_sources", "proposal_id", proposal_id)
-                if not dependencies or any(source["binding_id"] not in current.bindings for source in dependencies):
+                complete_approval_view = (
+                    proposal["binding_id"] in current.bindings and bool(dependencies)
+                    and all(source["binding_id"] in current.bindings for source in dependencies))
+                if kind == "proposal" and not complete_approval_view:
                     raise _denied()
                 body_source = next((source for source in dependencies if source["id"] == proposal["source_id"]), None)
-                if body_source is None:
+                if complete_approval_view and body_source is None:
                     raise DomainError("INPUT_INELIGIBLE", "The exact proposed body is unavailable")
                 if kind == "rule":
                     active = await self._active_rule(connection, row)
@@ -2152,17 +2155,21 @@ class Store:
                 else:
                     result.update(digest=proposal["digest"], target_set_revision=proposal["target_set_revision"])
                 result.update(
-                    proposal_id=proposal_id, proposal_digest=proposal["digest"],
-                    body=body_source["body"],
-                    body_source_ref={"id": body_source["id"], "revision": body_source["revision"]},
+                    body=body_source["body"] if complete_approval_view else active.body,
                     required=proposal["required"], selector=_decode(proposal["selector"]),
                     exceptions=_decode(proposal["exceptions"]), candidate=kind == "proposal",
-                    input_sources=[{"id": source["id"], "revision": source["expected_revision"]} for source in dependencies],
+                    input_sources=[{"id": source["id"], "revision": source["expected_revision"]}
+                        for source in dependencies if source["binding_id"] in current.bindings],
+                    approval_inspection_complete=complete_approval_view,
                     inspection_authority={
                         "credential_id": current.credential_id, "generation": current.generation,
                         "realm": current.realm, "binding_id": binding_id,
                         "binding_revision": await connection.fetchval(
                             "SELECT revision FROM am_bindings WHERE id=$1", binding_id)})
+                if complete_approval_view:
+                    result.update(
+                        proposal_id=proposal_id, proposal_digest=proposal["digest"],
+                        body_source_ref={"id": body_source["id"], "revision": body_source["revision"]})
                 if byte_start != 0 or max_bytes != 4096 or measure_json(result) > representation_bytes:
                     return stored_record_window(result, byte_start, max_bytes, representation_bytes, measure_json=measure_json)
             elif kind == "feedback":

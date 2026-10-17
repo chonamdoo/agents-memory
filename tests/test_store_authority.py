@@ -529,6 +529,8 @@ async def test_shared_rule_does_not_disclose_ungranted_origin_or_target_ids(auth
     assert rules[0].target_bindings == (other.id,) and not rules[0].source_ids
     metadata = await store.inspect(reader, other.id, active.id)
     assert metadata["target_bindings"] == (other.id,)
+    assert metadata["body"] == active.body and metadata["exceptions"] == list(active.exceptions)
+    assert metadata["approval_inspection_complete"] is False
     assert authority.binding_id not in json.dumps(metadata)
     assert proposal["source_id"] not in json.dumps(metadata)
     delivered = await store.delivery(reader, other.id, (), ((active.id, active.revision, active.digest),))

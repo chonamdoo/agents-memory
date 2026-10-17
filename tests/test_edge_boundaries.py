@@ -620,7 +620,7 @@ async def test_record_union_preserves_original_note_role_and_inactive_rule_path(
     body = "Never expose credentials."
     async with running(judgment_authority) as edge:
         arguments = {
-            "binding_id": judgment_authority.binding_id,
+            "binding_id": None if kind is None else judgment_authority.binding_id,
             "idempotency_key": "original-record-path", "body": body,
         }
         if kind is not None:

@@ -121,6 +121,31 @@ def _compact_schema(schema: dict) -> dict:
         return json.dumps(node, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     strip_titles(schema)
+    original_definitions = schema.get("$defs", {})
+    definition_names = {name: f"d{index}" for index, name in enumerate(original_definitions)}
+    references = {
+        f"#/$defs/{name.replace('~', '~0').replace('/', '~1')}": f"#/$defs/{short}"
+        for name, short in definition_names.items()
+    }
+
+    def shorten_references(node):
+        if node.get("$ref") in references:
+            node["$ref"] = references[node["$ref"]]
+        discriminator = node.get("discriminator")
+        if isinstance(discriminator, dict):
+            mapping = discriminator.get("mapping", {})
+            for tag, reference in mapping.items():
+                if reference in references:
+                    mapping[tag] = references[reference]
+        for _, _, child in children(node):
+            if isinstance(child, dict):
+                shorten_references(child)
+
+    shorten_references(schema)
+    if original_definitions:
+        schema["$defs"] = {
+            definition_names[name]: definition for name, definition in original_definitions.items()
+        }
     definitions = schema.setdefault("$defs", {})
     sequence = 0
     while True:
@@ -197,10 +222,12 @@ def record_schema() -> dict:
             "else": conditional,
         }
     for _, variant in variants:
+        # Root fields validate common types; each branch retains exact keys and refinements.
+        variant["propertyNames"] = {"enum": list(variant["properties"])}
         variant["properties"] = {
-            name: {"$ref": f"#/properties/{name}"} if schema == properties[name] else schema
-            for name, schema in variant["properties"].items()
+            name: schema for name, schema in variant["properties"].items() if schema != properties[name]
         }
+        variant.pop("additionalProperties", None)
     return {
         "type": "object", "properties": properties, "additionalProperties": False,
         "required": sorted(set.intersection(*(set(item.get("required", ())) for _, item in variants))),

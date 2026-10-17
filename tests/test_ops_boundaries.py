@@ -1753,6 +1753,9 @@ async def test_forward_migration_activates_only_candidate_rejection_feedback(
     ))
     async with store.pool.acquire() as connection:
         await connection.execute("UPDATE am_feedback SET state='candidate' WHERE id=$1", correction.artifact_id)
+        await connection.execute(
+            "DELETE FROM am_pending_judgments WHERE binding_id=$1 AND kind='health' AND health_key=$2",
+            binding.id, "feedback:" + correction.artifact_id)
     await historical_schema_fixture(store, historical_index)
     await store.close()
     result = await ops.migrate_authority(

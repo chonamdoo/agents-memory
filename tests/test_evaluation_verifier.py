@@ -477,15 +477,14 @@ def test_identical_payloads_have_distinct_invocations_but_changed_payload_cannot
     monkeypatch.setattr(DockerRuntime, "run", run)
     approval = verifier.IndependentControlApproval(task.digest, verifier.controls_digest(controls), "engineering-only")
     assert executor.precheck(before, task, controls, approval).eligible
-    on = executor.verify(before, correct, task, proof, invocation_id="memory-on-one")
-    off = executor.verify(before, correct, task, proof, invocation_id="required-only-one")
+    on = executor.verify(before, correct, task, invocation_id="memory-on-one")
+    off = executor.verify(before, correct, task, invocation_id="required-only-one")
     assert on.success and off.success
     assert on.error_code is off.error_code is None
     assert on.terminal_artifact != off.terminal_artifact
     completed = (tmp_path / on.terminal_artifact).read_bytes()
     changed = executor.verify(
-        before, wrong, task, witness(before, wrong, (ByteEdit("a.py", 0, 3, b"bad"),)),
-        invocation_id="memory-on-one")
+        before, wrong, task, invocation_id="memory-on-one")
     assert changed.error_code == "ATTEMPT_CLAIM_UNKNOWN_OR_EXISTING"
     assert len(executed) == 5
     assert (tmp_path / on.terminal_artifact).read_bytes() == completed

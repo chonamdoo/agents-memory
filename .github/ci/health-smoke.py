@@ -25,7 +25,6 @@ import traceback
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-
 CASES = (
     "real_authority_ready", "producer_observer_body_free", "explicit_policy_opt_in",
     "frozen_workspace_preparation", "registration_and_exact_retry", "explicit_initial_observation",

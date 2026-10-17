@@ -154,7 +154,15 @@ def require_execution(observation, expected):
     if actual != expected:
         raise ScenarioFailure("EVALUATION_SCENARIO_" + expected.upper() + "_STATE_" + actual.upper())
     if not observation.cleanup.exact_absence or observation.cleanup.pending_create:
-        raise ScenarioFailure("EVALUATION_SCENARIO_" + expected.upper() + "_CLEANUP_INCOMPLETE")
+        cleanup_code = {
+            "removal_unknown": "RU", "ownership_or_cleanup_unknown": "OU", "pending_create": "PC",
+        }.get(observation.cleanup.state, "UNKNOWN")
+        remove_state = next((item.state for stage, item in reversed(observation.operations) if stage == "remove"), None)
+        remove_code = {
+            "completed": "DONE", "timeout": "TIMEOUT", "output_limit": "OUTPUT",
+            "io_unknown": "IO", "spawn_failed": "SPAWN", "cancelled": "CANCEL",
+        }.get(remove_state, "UNKNOWN")
+        raise ScenarioFailure("EVALUATION_SCENARIO_" + expected.upper() + "_CLEANUP_" + cleanup_code + "_RM_" + remove_code)
 
 
 def test_actual_timeout_and_output_overflow_are_not_zero_exit_success(actual_runtime):

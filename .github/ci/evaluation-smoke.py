@@ -49,7 +49,12 @@ from agents_memory.evaluation_artifacts import (
 )
 from agents_memory.evaluation_gateway import EvaluationGateway, GatewayScope, GatewayUpstream
 from agents_memory.evaluation_runtime import CommandLease, DockerRuntime, EvaluationOwner
-from agents_memory.evaluation_verifier import ControlArtifact, OracleCase, OracleTask, controls_digest
+from agents_memory.evaluation_verifier import (
+    ControlArtifact,
+    OracleCase,
+    OracleTask,
+    controls_digest,
+)
 from agents_memory.health import HealthAssessmentCommand, HealthPolicyCommand
 from agents_memory.journal import DeletionJournal
 from agents_memory.migrations import migrate

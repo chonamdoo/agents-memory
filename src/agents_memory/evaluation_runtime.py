@@ -718,10 +718,13 @@ class DockerRuntime:
             if state != "create_unknown":
                 state = "runtime_unknown" if create_uncertain or container_id is not None else "not_started"
         finally:
-            if create_uncertain or container_id is not None:
-                cleanup = self.cleanup(intent, container_id, create_uncertain=create_uncertain)
-            if lease is not None:
-                execution = lease.close(limit.cleanup_seconds)
-                self.operations.append(("exec", execution))
+            try:
+                # An undrained exec stream can block Docker removal after an output bound.
+                if lease is not None:
+                    execution = lease.close(limit.cleanup_seconds)
+                    self.operations.append(("exec", execution))
+            finally:
+                if create_uncertain or container_id is not None:
+                    cleanup = self.cleanup(intent, container_id, create_uncertain=create_uncertain)
         return SubjectObservation(intent.case_id, state, execution, tuple(observed_effects), cleanup, container_id, digest_bytes(canonical_bytes(asdict(intent))), tuple(self.operations))
 
