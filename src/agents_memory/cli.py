@@ -73,6 +73,54 @@ def json_array_file(path: Path) -> list:
     return value
 
 
+async def inspect_complete(client, payload: dict, max_total_bytes: int) -> dict:
+    from hashlib import sha256
+
+    if (payload["byte_start"] != 0 or payload.get("claim_ids") or payload.get("rejection_cursor")
+            or type(max_total_bytes) is not int or not 1 <= max_total_bytes <= 8388608):
+        raise DomainError("INPUT_INVALID", "Complete stored JSON inspection requires its initial cursor and bounded total")
+    cursor, chunks, identity = 0, [], None
+    while True:
+        page = await client.call("/api/inspect", {**payload, "byte_start": cursor})
+        if not isinstance(page, dict):
+            raise DomainError("INSPECTION_INCOMPLETE", "The stored JSON representation is incomplete")
+        window = page.get("draft_window")
+        if window is None and cursor == 0:
+            if page.get("partial"):
+                raise DomainError("INSPECTION_INCOMPLETE", "This partial representation is not a stored JSON continuation")
+            return page
+        if (not isinstance(window, dict) or window.get("encoding") != "utf-8-json"
+                or window.get("scope") != "stored_record" or not isinstance(window.get("body"), str)):
+            raise DomainError("INSPECTION_INCOMPLETE", "The stored JSON continuation is invalid")
+        chunk = window["body"].encode()
+        total, stop = window.get("total_bytes"), window.get("byte_end")
+        current_identity = (window.get("digest"), total)
+        if identity is None:
+            identity = current_identity
+        if (current_identity != identity or type(total) is not int or not 1 <= total <= max_total_bytes
+                or type(stop) is not int or type(window.get("byte_start")) is not int
+                or window["byte_start"] != cursor or stop != cursor + len(chunk) or not cursor < stop <= total
+                or len(chunk) > payload["max_bytes"]):
+            raise DomainError("INSPECTION_CHANGED", "The stored JSON changed or exceeded its declared bounds")
+        chunks.append(chunk)
+        next_byte = window.get("next_byte")
+        if next_byte is None:
+            if stop != total:
+                raise DomainError("INSPECTION_INCOMPLETE", "The stored JSON ended before its declared length")
+            raw = b"".join(chunks)
+            if sha256(raw).hexdigest() != identity[0]:
+                raise DomainError("INSPECTION_CHANGED", "The stored JSON digest does not match its complete bytes")
+            document = decode_json(raw)
+            if any(document.get(key) != page[key] for key in ("id", "kind", "state", "revision") if key in page):
+                raise DomainError("INSPECTION_CHANGED", "The stored JSON identity changed during inspection")
+            if "epoch" in page:
+                document["epoch"] = page["epoch"]
+            return document
+        if type(next_byte) is not int or next_byte != stop:
+            raise DomainError("INSPECTION_INCOMPLETE", "The stored JSON continuation did not advance exactly")
+        cursor = next_byte
+
+
 def text_file(path: Path | None) -> str:
     if path is None:
         raw = sys.stdin.buffer.read(131073)
@@ -297,6 +345,68 @@ async def _install_remote_host(args, settings: RemoteClientSettings) -> dict:
 
 
 async def execute(args) -> dict | None:
+    if args.command == "evaluation":
+        from .evaluation import build_gateway, load_manifest, prepare_run, report_evaluation, run_evaluation
+
+        if args.evaluation_action == "report":
+            return await asyncio.to_thread(report_evaluation, args.run_dir)
+        manifest = await asyncio.to_thread(load_manifest, args.manifest, expected_sha256=args.expected_sha256)
+        if args.evaluation_action == "prepare":
+            state = await asyncio.to_thread(prepare_run, manifest, args.run_dir)
+            return {"prepared": True, "manifest_digest": state.manifest_digest,
+                    "scheduled_pairs": len(state.schedule), "scope": manifest.config["scope"],
+                    "original18_completed": 0}
+        if args.evaluation_action == "gateway":
+            gateway = build_gateway(manifest, args.invocation_id, args.run_dir)
+            phase = gateway.scope.phase
+            channel = manifest.config["preflight_gateway" if phase == "preflight" else "gateway"]
+            await gateway.run_stdio(timeout_seconds=channel["lifetime_seconds"])
+            return None
+        import signal
+        import threading
+
+        stopped = threading.Event()
+        loop = asyncio.get_running_loop()
+        handled = []
+        try:
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                previous = signal.getsignal(signum)
+                loop.add_signal_handler(signum, stopped.set)
+                handled.append((signum, previous))
+            return await asyncio.to_thread(run_evaluation, manifest, args.run_dir, stop_event=stopped)
+        finally:
+            stopped.set()
+            for signum, previous in handled:
+                loop.remove_signal_handler(signum)
+                signal.signal(signum, previous)
+    if args.command == "health" and args.health_action in {"workspace-prepare", "observe"}:
+        from pydantic import TypeAdapter
+
+        from .health import CodeObservationTarget
+        from .health_producer import (
+            load_health_preparation, observe_health_workspace, prepare_health_registration,
+        )
+        from .hosts import load_receipt
+
+        receipt = load_receipt(args.receipt)
+        if args.health_action == "workspace-prepare":
+            preparation = await asyncio.to_thread(
+                prepare_health_registration, receipt, args.workspace_id, args.producer_credential_id,
+                expected_binding_revision=args.binding_revision,
+                expected_workspace_revision=args.workspace_revision, idempotency_key=args.key,
+                next_agent=args.next_agent,
+                reuse=load_health_preparation(args.reuse_prepared) if args.reuse_prepared else None,
+            )
+            private_write(args.prepared_file, preparation.model_dump_json() + "\n")
+            return {"prepared_file": str(args.prepared_file), "workspace_id": preparation.config.workspace_id,
+                    "root_fingerprint": preparation.config.pin.fingerprint, "configured": False}
+        paths = None
+        if args.paths_file is not None:
+            targets = validate_wire(TypeAdapter(list[CodeObservationTarget]), json_array_file(args.paths_file))
+            if not 1 <= len(targets) <= 32 or len({target.relative_path for target in targets}) != len(targets):
+                raise DomainError("INPUT_INVALID", "Choose one to 32 distinct explicit code paths")
+            paths = tuple((target.relative_path, tuple(target.symbol_names)) for target in targets)
+        return await asyncio.to_thread(observe_health_workspace, receipt, require_committed=True, explicit_paths=paths)
     if args.command == "native-status":
         from .native_status import native_status
 
@@ -335,6 +445,7 @@ async def execute(args) -> dict | None:
             state_dir=Path(receipt["runtime_dir"]).parent.parent,
             deployment_id=receipt["deployment_id"],
             remote_settings=receipt_connection(receipt),
+            health_receipt=args.receipt,
         )
         await run_stdio(endpoint, Path(receipt["agent_token_file"]))
         return None
@@ -461,6 +572,7 @@ async def execute(args) -> dict | None:
                     status=503, effect=EffectState.NOT_STARTED,
                 ) from None
             await server.serve(sockets=[listener])
+        app.raise_for_lifecycle_failure()
         if args.command == "service-run":
             try:
                 require_service_enabled(settings)
@@ -471,6 +583,27 @@ async def execute(args) -> dict | None:
                 raise DomainError("SERVICE_UNAVAILABLE",
                     "The managed authority exited before an explicit service stop", status=503)
         return None
+    if args.command == "health":
+        client = client_from_settings(settings, token_path(args))
+        if args.health_action == "apply":
+            from .health import HEALTH_ADAPTER
+
+            command = validate_wire(HEALTH_ADAPTER, json_file(args.command_file))
+            return await client.call("/api/health", command.model_dump(mode="json"))
+        if args.health_action == "observer":
+            from .health import HealthObserverRequest
+
+            return await client.call("/api/health/observer", HealthObserverRequest(
+                binding_id=args.binding).model_dump(mode="json"))
+        from .health_producer import load_health_preparation, register_health_workspace
+        from .hosts import load_receipt
+
+        receipt = load_receipt(args.receipt)
+        if (settings.deployment_id != receipt["deployment_id"]
+                or settings.base_url.rstrip("/") != receipt["base_url"].rstrip("/")):
+            raise DomainError("HEALTH_WORKSPACE_SCOPE", "Registration and the explicit native receipt require one authority")
+        return await asyncio.to_thread(register_health_workspace, receipt,
+                                       load_health_preparation(args.prepared_file), client)
     if args.command == "stdio":
         from .stdio import RelayEndpoint, run_stdio
 
@@ -495,6 +628,7 @@ async def execute(args) -> dict | None:
                 host=args.host,
                 snapshot=args.snapshot,
                 causal_operation=args.causal_operation,
+                code_workspace_id=args.code_workspace_id,
                 max_bytes=args.max_bytes,
                 limit=args.limit,
             )
@@ -503,11 +637,14 @@ async def execute(args) -> dict | None:
         elif args.command == "feedback":
             command = FeedbackCommand(binding_id=args.binding, idempotency_key=args.key, target_ref=args.ref, kind=args.kind, body=text_file(args.body_file) if args.body_file else None)
         elif args.command == "inspect":
-            return await client.call("/api/inspect", {
+            payload = {
                 "binding_id": args.binding, "ref": args.ref, "snapshot": args.snapshot,
                 "byte_start": args.byte_start, "max_bytes": args.max_bytes, "claim_ids": args.claim_id,
                 "rejection_cursor": args.rejection_cursor,
-            })
+            }
+            if args.complete:
+                return await inspect_complete(client, payload, args.max_total_bytes)
+            return await client.call("/api/inspect", payload)
         else:
             command = validate_wire(CaptureCommand, json_file(args.envelope_file))
             if args.command == "correct":
@@ -655,7 +792,7 @@ async def execute(args) -> dict | None:
             deadline = time.monotonic() + args.deadline
             while time.monotonic() < deadline:
                 operation = await store.operation(actor, binding, args.operation)
-                if operation.state in {"captured", "selection_recorded", "candidate_ready", "semantic_ready", "blocked", "failed", "retracted"}:
+                if operation.state in {"captured", "selection_recorded", "candidate_ready", "semantic_ready", "health_recorded", "blocked", "failed", "retracted"}:
                     return operation.model_dump(mode="json")
                 await asyncio.sleep(0.25)
             raise DomainError("OPERATION_PENDING", "The durable operation has not reached a terminal state")
@@ -726,6 +863,38 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--config", type=Path, default=Path.home() / ".config/agents-memory/personal.json")
     root.add_argument("--token-file", type=Path)
     commands = root.add_subparsers(dest="command", required=True)
+    evaluation = commands.add_parser("evaluation", help="Frozen actual evaluation; no native configuration or approval changes")
+    evaluation_actions = evaluation.add_subparsers(dest="evaluation_action", required=True)
+    for action in ("prepare", "run", "report", "gateway"):
+        evaluation_parser = evaluation_actions.add_parser(action)
+        evaluation_parser.add_argument("--run-dir", type=Path, required=True, help="Absolute private retained run directory")
+        if action != "report":
+            evaluation_parser.add_argument("--manifest", type=Path, required=True, help="One complete frozen execution manifest")
+            evaluation_parser.add_argument("--expected-sha256", required=True, help="SHA256 of exact original manifest file bytes")
+        if action == "gateway":
+            evaluation_parser.add_argument("--invocation-id", required=True)
+    health = commands.add_parser("health", help="Explicit bounded health control; no implicit native activation or model egress")
+    health_actions = health.add_subparsers(dest="health_action", required=True)
+    health_apply = health_actions.add_parser("apply", help="Submit one complete strict health command; retain its exact retry key")
+    health_apply.add_argument("--command-file", type=Path, required=True)
+    health_observer = health_actions.add_parser("observer", help="Read producer-safe metadata, never source or claim bodies")
+    health_observer.add_argument("--binding", required=True)
+    prepare = health_actions.add_parser("workspace-prepare", help="Persist a private frozen registration; does not activate health")
+    prepare.add_argument("--receipt", type=Path, required=True)
+    prepare.add_argument("--workspace-id", required=True, help="Reserved global identity beginning workspace_ or workspace-")
+    prepare.add_argument("--producer-credential-id", required=True)
+    prepare.add_argument("--binding-revision", type=int, required=True)
+    prepare.add_argument("--workspace-revision", type=int, required=True)
+    prepare.add_argument("--key", required=True)
+    prepare.add_argument("--next-agent", action="store_true", help="Opt into a hint for the next already-authorized native context")
+    prepare.add_argument("--reuse-prepared", type=Path, help="Retain the exact root identity for an explicitly revised registration")
+    prepare.add_argument("--prepared-file", type=Path, required=True, help="New private frozen file; never overwritten")
+    register = health_actions.add_parser("workspace-register", help="Register the frozen command and activate only after current authority confirmation")
+    register.add_argument("--receipt", type=Path, required=True)
+    register.add_argument("--prepared-file", type=Path, required=True, help="Reuse unchanged after an ambiguous response; never regenerate its root nonce")
+    observe = health_actions.add_parser("observe", help="Observe linked paths, or explicit bootstrap paths; upload metadata only")
+    observe.add_argument("--receipt", type=Path, required=True)
+    observe.add_argument("--paths-file", type=Path, help="Bounded JSON array of relative_path and symbol_names; no recursive discovery")
     hook = commands.add_parser("host-hook")
     hook.add_argument("--receipt", type=Path, required=True)
     hook.add_argument("--envelope", action="store_true")
@@ -879,6 +1048,7 @@ def parser() -> argparse.ArgumentParser:
     context.add_argument("--host", choices=("generic", "claude", "codex", "omp", "agent-flow"), default="generic")
     context.add_argument("--snapshot")
     context.add_argument("--causal-operation")
+    context.add_argument("--code-workspace-id", help="Explicit observed worktree identity; never inferred from the project locator")
     context.add_argument("--max-bytes", type=int, default=2400)
     context.add_argument("--limit", type=int, default=3)
     record = commands.add_parser("record")
@@ -901,6 +1071,8 @@ def parser() -> argparse.ArgumentParser:
     inspect.add_argument("--max-bytes", type=int, default=4096, help="Byte budget (1–4096); stored JSON windows must be reassembled before decoding")
     inspect.add_argument("--claim-id", action="append", help="Select claims only for ref=judgment admission, without byte-window arguments")
     inspect.add_argument("--rejection-cursor", help="Continue rejection history only for a source ref")
+    inspect.add_argument("--complete", action="store_true", help="Reassemble and digest-check stored JSON windows; not source or catalog pagination")
+    inspect.add_argument("--max-total-bytes", type=int, default=1048576, help="Complete stored JSON ceiling, up to 8388608 bytes")
     for name in ("capture", "correct"):
         capture = commands.add_parser(name)
         capture.add_argument("--envelope-file", type=Path, required=True)

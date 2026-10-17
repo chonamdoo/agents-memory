@@ -67,10 +67,28 @@ class HealthPolicyCommand(HealthMutation):
 
 class HealthWorkspaceCommand(HealthMutation):
     kind: Literal["health_workspace"] = "health_workspace"
-    workspace_id: Handle
+    workspace_id: Annotated[Handle, StringConstraints(pattern=r"^workspace[-_][A-Za-z0-9_.:-]+$")]
     expected_workspace_revision: HealthVersion
     root_fingerprint: Digest
     producer_credential_id: Handle
+
+
+class CodeObservationTarget(TypedModel):
+    relative_path: RelativePath
+    symbol_names: list[SymbolName] = Field(default_factory=list, max_length=16)
+
+    @field_validator("relative_path")
+    @classmethod
+    def normalized_relative_path(cls, value: str) -> str:
+        return relative_code_path(value)
+
+    @field_validator("symbol_names")
+    @classmethod
+    def distinct_symbol_names(cls, values: list[str]) -> list[str]:
+        _distinct(values, "symbol names")
+        if any(ord(char) < 32 or ord(char) == 127 for value in values for char in value):
+            raise ValueError("symbol names must not contain control characters")
+        return values
 
 
 class CodeSymbolObservation(TypedModel):

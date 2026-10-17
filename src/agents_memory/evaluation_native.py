@@ -436,7 +436,8 @@ def run_native_arm(
     effect: Literal["not_started", "unknown"] = "not_started"
     truncated = False
     cleanup = {"leader_reaped": False, "group_signals_completed": False, "escaped_descendants_absent": None}
-    stop: dict = {"requested": False, "interrupt_sent": False, "interrupted_terminal": False}
+    stop: dict = {"requested": False, "interrupt_queued": False, "interrupt_sent": False,
+                  "interrupted_terminal": False}
     artifact = None
     process: subprocess.Popen[bytes] | None = None
     reasons = []
@@ -481,6 +482,7 @@ def run_native_arm(
             deadline = time.monotonic() + spec.timeout_seconds
             pending = bytearray(protocol.initial())
             sent = 0
+            frame_partial = False
             stopping = False
             group_gone = False
             terminal_deadline: float | None = None
@@ -498,16 +500,47 @@ def run_native_arm(
                     stopping = True
                     stop["requested"] = True
                     terminal_deadline = time.monotonic() + spec.cleanup_seconds
-                    interrupt = protocol.interrupt()
+                    pending.clear()
+                    interrupt = b"" if frame_partial or process.stdin.closed else protocol.interrupt()
                     if interrupt:
                         pending.extend(interrupt)
-                        stop["interrupt_sent"] = True
+                        stop["interrupt_queued"] = True
                         try:
                             selector.get_key(process.stdin)
                         except KeyError:
                             selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
-                    elif spec.backend == "claude":
+                    else:
+                        if not process.stdin.closed:
+                            try:
+                                selector.unregister(process.stdin)
+                            except KeyError:
+                                pass
+                            process.stdin.close()
                         group_gone = not _signal_process_group(process, signal.SIGTERM)
+
+                def consume_stdout(chunk: bytes, *, dispatch: bool) -> None:
+                    partial.extend(chunk)
+                    while b"\n" in partial:
+                        line, _, rest = partial.partition(b"\n")
+                        partial[:] = rest
+                        if len(line) > spec.max_record_bytes:
+                            raise _ProtocolError("RECORD_LIMIT")
+                        if not line:
+                            continue
+                        outgoing = protocol.consume(bytes(line))
+                        trace_sink({"stage": "native_event", "invocation_id": invocation_id,
+                                    "observed_ns": protocol.events[-1]["observed_ns"],
+                                    "event_index": len(protocol.events) - 1})
+                        if outgoing and dispatch and not stopping:
+                            pending.extend(outgoing)
+                            if len(pending) > spec.max_input_bytes + spec.max_record_bytes * 8:
+                                raise _ProtocolError("PROTOCOL_INPUT_LIMIT")
+                            try:
+                                selector.get_key(process.stdin)
+                            except KeyError:
+                                selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
+                    if len(partial) > spec.max_record_bytes:
+                        raise _ProtocolError("RECORD_LIMIT")
 
                 try:
                     while True:
@@ -537,13 +570,22 @@ def run_native_arm(
                             break
                         for key, _ in selector.select(min(0.05, max(0, (terminal_deadline or deadline) - now))):
                             if key.data == "stdin":
+                                if stop_event is not None and stop_event.is_set() and not stopping:
+                                    status, code = "aborted", "STOP_REQUESTED"
+                                    stop_owned()
+                                if process.stdin.closed:
+                                    continue
                                 if pending:
                                     count = os.write(key.fd, pending[:65536])
+                                    if count:
+                                        frame_partial = pending[count - 1] != ord("\n")
                                     sent += count
                                     if sent > spec.max_input_bytes + spec.max_record_bytes * 8:
                                         raise _ProtocolError("PROTOCOL_INPUT_LIMIT")
                                     del pending[:count]
                                 if not pending:
+                                    if stop["interrupt_queued"]:
+                                        stop["interrupt_sent"] = True
                                     selector.unregister(key.fileobj)
                                     if spec.backend == "claude":
                                         process.stdin.close()
@@ -562,28 +604,7 @@ def run_native_arm(
                                 truncated = True
                                 raise _ProtocolError("OUTPUT_LIMIT")
                             if key.data == "stdout":
-                                partial.extend(chunk)
-                                while b"\n" in partial:
-                                    line, _, rest = partial.partition(b"\n")
-                                    partial[:] = rest
-                                    if len(line) > spec.max_record_bytes:
-                                        raise _ProtocolError("RECORD_LIMIT")
-                                    if not line:
-                                        continue
-                                    outgoing = protocol.consume(bytes(line))
-                                    trace_sink({"stage": "native_event", "invocation_id": invocation_id,
-                                                "observed_ns": protocol.events[-1]["observed_ns"],
-                                                "event_index": len(protocol.events) - 1})
-                                    if outgoing and not stopping:
-                                        pending.extend(outgoing)
-                                        if len(pending) > spec.max_input_bytes + spec.max_record_bytes * 8:
-                                            raise _ProtocolError("PROTOCOL_INPUT_LIMIT")
-                                        try:
-                                            selector.get_key(process.stdin)
-                                        except KeyError:
-                                            selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
-                                if len(partial) > spec.max_record_bytes:
-                                    raise _ProtocolError("RECORD_LIMIT")
+                                consume_stdout(chunk, dispatch=True)
                     if protocol.terminal is not None and status == "unknown":
                         status, code = protocol.terminal, protocol.code
                     stop["interrupted_terminal"] = protocol.code == "NATIVE_INTERRUPTED"
@@ -616,6 +637,20 @@ def run_native_arm(
                                     truncated = True
                                     if status == "completed":
                                         status, code = "unknown", "OUTPUT_LIMIT_DURING_CLEANUP"
+                                if key.data == "stdout" and "protocol_error" not in cleanup:
+                                    try:
+                                        consume_stdout(chunk[:available], dispatch=False)
+                                    except Exception as error:
+                                        cleanup["protocol_error"] = (
+                                            str(error) if isinstance(error, _ProtocolError)
+                                            else "NATIVE_PROTOCOL_OR_OBSERVATION_FAILED"
+                                        )
+                                        if status == "completed":
+                                            status, code = "unknown", cleanup["protocol_error"]
+                        if partial:
+                            cleanup["partial_protocol_record"] = True
+                            if status == "completed":
+                                status, code = "unknown", "PARTIAL_PROTOCOL_RECORD"
                     finally:
                         try:
                             process.wait(timeout=spec.cleanup_seconds)

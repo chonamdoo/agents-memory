@@ -15,6 +15,7 @@ from typing import Any
 
 from .config import Settings
 from .domain import Claim, DomainError, Role
+from .health_inference import HealthInputs
 from .jev import JevClient, JevFailure, JevResult, SystemOneClient
 from .judge import (
     JudgeState,
@@ -185,6 +186,8 @@ class WorkerCounts:
     escalated: int = 0
     requests: int = 0
     input_tokens: int = 0
+    unknown_usage_requests: int = 0
+    health_assessments_recorded: int = 0
 
 
 @dataclass
@@ -244,6 +247,10 @@ class JudgeWorker:
             except TimeoutError:
                 return {"local_drained": False, "durable_work_recoverable": True}
         return {"local_drained": True, "durable_work_recoverable": True}
+
+    async def wait_closed(self) -> None:
+        if self._task is not None:
+            await asyncio.shield(self._task)
 
     async def run(self) -> None:
         while not self._stop.is_set():
@@ -346,9 +353,14 @@ class JudgeWorker:
                         await self._source_item(actor, binding_id, snapshot, item, client, state, budget)
                     elif item["kind"] == "cleanup":
                         await self._cleanup_item(actor, binding_id, snapshot, item, client, state, budget)
+                    elif item["kind"] == "health":
+                        await self._health_item(actor, binding_id, snapshot, item, client, state, budget)
                 except DomainError as error:
                     if error.code in CYCLE_ERRORS:
                         raise
+                    if item["kind"] == "health":
+                        self.last_error = "HEALTH_PENDING_REVIEW"
+                        continue
                     # A changed or ineligible item waits for the coding agent; the cycle continues.
                     self._escalate(("pending", item["id"]), "item_" + error.code.lower())
             if not page["partial"] or page["next_cursor"] is None:
@@ -369,6 +381,63 @@ class JudgeWorker:
             self.counts.input_tokens += result.input_tokens or 0
             answers.update(result.answers)
         return answers
+
+    async def _health_current(self, actor, binding_id, state, revision: int) -> None:
+        self._current(state)
+        if self._stop.is_set():
+            raise ProviderChanged("SERVICE_DRAINING")
+        policy = await self.store.health_policy(actor, binding_id)
+        if (
+            policy.get("enabled") is not True or policy.get("allow_jev_health") is not True
+            or policy.get("revision") != revision
+        ):
+            raise ProviderChanged("HEALTH_EGRESS_DENIED")
+
+    async def _ask_health(self, actor, binding_id, client, state, revision, payload, questions) -> dict:
+        answers = {}
+        loop = asyncio.get_running_loop()
+
+        def before_attempt() -> None:
+            future = asyncio.run_coroutine_threadsafe(
+                self._health_current(actor, binding_id, state, revision), loop,
+            )
+            future.result()
+
+        for chunk in _chunks(list(questions), QUESTIONS_PER_REQUEST):
+            await self._health_current(actor, binding_id, state, revision)
+            result = await asyncio.to_thread(
+                client.system_one, payload, {identifier: questions[identifier] for identifier in chunk},
+                before_attempt=before_attempt,
+            )
+            await self._health_current(actor, binding_id, state, revision)
+            self.counts.requests += 1
+            if result.input_tokens is None:
+                self.counts.unknown_usage_requests += 1
+            else:
+                self.counts.input_tokens += result.input_tokens
+            answers.update(result.answers)
+        return answers
+
+    async def _health_item(self, actor, binding_id, snapshot, item, client, state, budget) -> None:
+        budget.windows -= 1
+        policy = await self.store.health_policy(actor, binding_id)
+        if policy.get("enabled") is not True or policy.get("allow_jev_health") is not True:
+            return
+        revision = policy["revision"]
+        await self._health_current(actor, binding_id, state, revision)
+        bundle = await self.application.inspect(actor, f"health:item:{item['id']}", binding_id, snapshot)
+        if bundle.get("policy", {}).get("revision") != revision:
+            return
+        inputs = HealthInputs.from_bundle(bundle)
+        payload, questions = inputs.evidence_questions()
+        selections = await self._ask_health(actor, binding_id, client, state, revision, payload, questions)
+        payload, questions = inputs.support_questions(selections)
+        supports = await self._ask_health(actor, binding_id, client, state, revision, payload, questions)
+        command = inputs.command(selections, supports)
+        async with judge_guard(self.settings):
+            await self._health_current(actor, binding_id, state, revision)
+            await self.application.record(actor, command)
+        self.counts.health_assessments_recorded += 1
 
     def _escalate(self, key: tuple, reason: str) -> str:
         self._skipped.add(key)

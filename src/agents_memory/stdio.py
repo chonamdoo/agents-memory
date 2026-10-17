@@ -36,6 +36,7 @@ class RelayEndpoint:
     state_dir: Path | None = None
     deployment_id: str | None = None
     remote_settings: RemoteClientSettings | None = None
+    health_receipt: Path | None = None
 
     def __post_init__(self) -> None:
         if self.remote_settings is not None:
@@ -75,6 +76,34 @@ class StdioRelay:
     def forward(self, message: dict) -> dict | None:
         deadline = time.monotonic() + 120
         try:
+            if (isinstance(self.settings, RelayEndpoint) and self.settings.health_receipt is not None
+                    and message.get("method") == "tools/call"
+                    and isinstance(message.get("params"), dict)
+                    and message["params"].get("name") == "memory_context"):
+                from .health_producer import health_before_context
+                from .hosts import load_receipt
+
+                receipt = load_receipt(self.settings.health_receipt)
+                if (receipt["base_url"] != self.settings.base_url
+                        or receipt["deployment_id"] != self.settings.deployment_id
+                        or Path(receipt["agent_token_file"]) != self.token_file):
+                    raise DomainError("HEALTH_WORKSPACE_SCOPE", "The relay receipt changed scope")
+                observed = health_before_context(receipt)
+                arguments = message["params"].get("arguments", {})
+                if not isinstance(arguments, dict):
+                    return self.error(message, "RPC_ENVELOPE_INVALID")
+                workspace_id = observed.get("workspace_id")
+                if (arguments.get("code_workspace_id") is not None
+                        and arguments["code_workspace_id"] != workspace_id):
+                    raise DomainError("HEALTH_WORKSPACE_SCOPE", "The caller selected another code workspace")
+                if workspace_id is not None:
+                    message = {
+                        **message,
+                        "params": {
+                            **message["params"],
+                            "arguments": {**arguments, "code_workspace_id": workspace_id},
+                        },
+                    }
             # A request without a session would be refused by the SDK, so recover before sending it.
             if (self.recovery_pending and message.get("method") != "initialize"
                     and not self._reinitialize(deadline=deadline)):

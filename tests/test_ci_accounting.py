@@ -23,109 +23,12 @@ from agents_memory import native_status
 CI = Path(__file__).resolve().parents[1] / ".github" / "ci"
 
 
-def preparation(tested_sha, postgres):
-    observed = {"python": [3, 13, 16], "sqlite": [3, 54, 0], "node": "v24.0.0", "uv": "uv 0.13.0"}
-    if postgres:
-        observed.update(postgres={"server": "18.6", "vector": "0.8.7"},
-                        postgres_clients={}, postgres_image="sha256:" + "d" * 64,
-                        operations_mode="local", age="v1.3.2", age_keygen="v1.3.2",
-                        age_archive_sha256="e" * 64)
-    return {"schema": 1, "complete": True, "tested_sha": tested_sha,
-            "postgres_enabled": postgres, "observed": observed}
 
 
 @pytest.fixture
 def evidence(tmp_path):
-    module = runpy.run_path(str(CI / "aggregate.py"))
-    tested_sha, source = "a" * 40, "b" * 64
-    wheel_ids = sorted([
-        "tests/test_host_import_isolation.py::test_shadowed_import",
-        "tests/test_cli_bind.py::test_occupied_listen_address_refuses_before_database_or_journal_work",
-        "tests/test_service.py::test_managed_readiness_preserves_the_owned_config_upgrade_refusal",
-        "tests/test_inspection_stability.py::test_minimum_mcp_cap_can_inspect_a_plain_captured_source[modern]",
-        "tests/test_edge_boundaries.py::test_producer_capture_authority_never_grants_memory_read_authority",
-        "tests/test_judge_settings.py::test_waiting_judge_mutations_recheck_live_operator_authority[revoke-allow]",
-        "tests/test_judge_settings.py::test_judge_file_failures_keep_publication_identity_and_explicit_recovery[before-effect-policy]",
-        "tests/test_native_status.py::test_native_inventory_ends_descendants_and_closes_pipes_on_failure[None-malformed-parent_first]",
-        "tests/test_recovery.py::test_remote_bad_first_outbox_cannot_starve_retained_healthy_batch[None]",
-        "tests/test_remote_cancellation.py::test_readonly_ready_stop_cancels_real_tls_response_before_business_dispatch[headers]",
-        "tests/test_remote_cancellation.py::test_already_dispatched_business_request_drains_response_without_retry",
-        "tests/test_ci_accounting.py::test_cleanup_after_esrch_cannot_kill_a_reused_group[probe-native]",
-        "tests/test_ci_accounting.py::test_cleanup_after_esrch_cannot_kill_a_reused_group[term-native]",
-        "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[after-probe-native]",
-        "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[already-reaped-native]",
-        "tests/test_ci_accounting.py::test_real_exited_group_cleanup_keeps_other_owned_process[native]",
-        "tests/test_ci_accounting.py::test_live_group_permission_error_is_not_terminal[native]",
-        "tests/test_ci_accounting.py::test_exited_leader_permission_error_with_live_member[with-member-native]",
-        "tests/test_native_status.py::test_native_inventory_survives_real_normal_shutdown[eof]",
-        "tests/test_native_status.py::test_native_inventory_survives_real_normal_shutdown[term]",
-    ])
-    source_ids = [*wheel_ids,
-                  "tests/test_ci_accounting.py::test_timed_out_check_kills_descendant_after_parent_exits_successfully",
-                  "tests/test_ci_accounting.py::test_owned_cleanup_releases_child_after_leader_is_reaped"]
-    compat_ids = sorted([item for item in source_ids
-                         if any(item == selector or item.startswith(selector + "[")
-                                for selector in module["COMPAT_SELECTORS"])])
-    compat_ids = sorted([*compat_ids, *(item.removesuffix("native]") + "ci]" for item in compat_ids
-                                      if item.endswith("native]"))])
-    all_ids = sorted([*(f"tests/cases.py::test_case_{index}" for index in range(64)),
-                      *wheel_ids, *(item for item in compat_ids if item not in wheel_ids)])
-    paths = []
-    for index in range(4):
-        selected = [item for item in all_ids
-                    if int.from_bytes(hashlib.sha256(item.encode()).digest(), "big") % 4 == index]
-        value = {
-            "schema": 1, "complete": True, "tested_sha": tested_sha,
-            "source_before": source, "source_after": source, "index": index, "count": 4,
-            "all_nodeids": all_ids, "selected_nodeids": selected, "pytest_exit_code": 0,
-            "collection_issues": [], "counts": {"passed": len(selected), "failed": 0,
-                "skipped": 0, "xfailed": 0, "xpassed": 0},
-            "reports": {item: {phase: {"outcome": "passed", "xfail": False}
-                        for phase in ("setup", "call", "teardown")} for item in selected},
-        }
-        path = tmp_path / str(index) / "shard.json"
-        path.parent.mkdir()
-        path.write_text(json.dumps(value))
-        (path.parent / "prerequisites.json").write_text(json.dumps(preparation(tested_sha, True)))
-        paths.append(path)
-    checks = tmp_path / "checks" / "checks.json"
-    checks.parent.mkdir()
-    checks.write_text(json.dumps({
-        "schema": 1, "complete": True, "tested_sha": tested_sha,
-        "source_before": source, "source_after": source,
-        "checks": {name: {"command": command, "exit_code": 0, "timeout": False}
-                   for name, command in module["CHECK_COMMANDS"].items()},
-    }))
-    (checks.parent / "prerequisites.json").write_text(json.dumps(preparation(tested_sha, True)))
-    distribution = tmp_path / "distribution" / "candidate.whl"
-    distribution.parent.mkdir()
-    distribution.write_bytes(b"synthetic artifact bytes for accounting regression")
-    wheel = checks.parent / "wheel-consumer.json"
-    wheel.write_text(json.dumps({
-        "schema": 1, "complete": True, "tested_sha": tested_sha,
-        "source_before": source, "source_after": source,
-        "wheel_sha256": hashlib.sha256(distribution.read_bytes()).hexdigest(),
-        "selected_nodeids": wheel_ids, "collection_issues": [], "pytest_exit_code": 0,
-        "counts": {"passed": len(wheel_ids), "failed": 0, "skipped": 0, "xfailed": 0, "xpassed": 0},
-        "reports": {item: {phase: {"outcome": "passed", "xfail": False}
-                    for phase in ("setup", "call", "teardown")} for item in wheel_ids},
-    }))
-    compat = tmp_path / "compatibility" / "compatibility.json"
-    compat.parent.mkdir()
-    compat.write_text(json.dumps({
-        "schema": 1, "complete": True, "tested_sha": tested_sha,
-        "source_before": source, "source_after": source, "runtime": module["COMPAT_RUNTIME"],
-        "all_nodeids": compat_ids, "selected_nodeids": compat_ids,
-        "collection_issues": [], "pytest_exit_code": 0,
-        "counts": {"passed": len(compat_ids), "failed": 0, "skipped": 0, "xfailed": 0, "xpassed": 0},
-        "reports": {item: {phase: {"outcome": "passed", "xfail": False}
-                    for phase in ("setup", "call", "teardown")} for item in compat_ids},
-    }))
-    return SimpleNamespace(root=tmp_path, paths=paths, checks=checks, wheel=wheel, distribution=distribution,
-                           sha=tested_sha, ids=all_ids, compat=compat,
-                           jobs={name: {"result": "success"}
-                                 for name in ("tests", "checks", "compatibility")},
-                           aggregate=module["aggregate"])
+    module = runpy.run_path(str(Path(__file__).with_name("test_ci_evaluation_gate.py")))
+    return module["complete_evidence"](tmp_path)
 
 
 @pytest.mark.parametrize("fault", ["missing", "wrong-runtime", "omitted-case"])

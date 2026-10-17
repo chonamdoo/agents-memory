@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
+import zipfile
 from pathlib import Path
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -35,6 +37,22 @@ WHEEL_SELECTORS = (
     "tests/test_ci_accounting.py::test_real_exited_group_cleanup_keeps_other_owned_process[native]",
     "tests/test_ci_accounting.py::test_live_group_permission_error_is_not_terminal[native]",
     "tests/test_ci_accounting.py::test_exited_leader_permission_error_with_live_member[with-member-native]",
+    "tests/test_health_backend.py",
+    "tests/test_health_code.py",
+    "tests/test_health_inference.py",
+    "tests/test_health_producer_hosts.py",
+    "tests/test_health_producer_wire.py",
+    "tests/test_health_runtime_http.py",
+    "tests/test_health_runtime_lifecycle.py",
+    "tests/test_health_runtime_worker.py",
+    "tests/test_evaluation_native.py",
+    "tests/test_evaluation_gateway.py",
+    "tests/test_evaluation_verifier.py",
+    "tests/test_evaluation_controller.py",
+    "tests/test_evaluation_scoring.py",
+    "tests/test_evaluation_runtime_preparation.py",
+    "tests/test_evaluation_smoke_inputs.py",
+    "tests/test_ci_evaluation_gate.py",
 )
 COMPAT_SELECTORS = (
     "tests/test_ci_accounting.py::test_cleanup_after_esrch_cannot_kill_a_reused_group",
@@ -48,6 +66,41 @@ COMPAT_SELECTORS = (
     "tests/test_ci_accounting.py::test_owned_cleanup_releases_child_after_leader_is_reaped",
 )
 COMPAT_RUNTIME = {"platform": "darwin", "implementation": "cpython", "python": [3, 12, 13]}
+HEALTH_CASES = {
+    "real_authority_ready", "producer_observer_body_free", "explicit_policy_opt_in",
+    "frozen_workspace_preparation", "registration_and_exact_retry", "explicit_initial_observation",
+    "grounded_claim_publication", "long_korean_complete_inspect", "independent_exact_approval",
+    "dependency_change_refuses_approval", "complete_inspect_current_authority", "required_rule_approved",
+    "exact_code_link_admission", "workspace_scoped_context", "changed_file_invalidates",
+    "late_delivery_fenced", "operator_review_role_denial", "operator_reject_accept",
+    "current_code_rebind", "required_rules_survive_ordinary_rejection",
+    "observed_session_work", "late_session_input_fence", "bounded_session_assessment",
+}
+EVALUATION_OUTCOMES = {
+    "producer_http_native_mcp_preflight": True, "separate_preflight_binding": True,
+    "actual_gateway_stdio": True, "all_attempts": 5, "coding_arms": 2, "valid_pairs": 1,
+    "retrieval_final_reads": 2, "fresh_engineering_generations": 5,
+    "correct_noop_wrong_external_controls": True, "all_blackbox_cases": True,
+    "unchanged_corpus_rules": True, "on_off_scope": True, "unknown_costs_preserved": True,
+    "strict_scorer_report": True, "source_unchanged": True,
+}
+SCENARIO_NODEIDS = sorted("tests/evaluation_docker_scenarios.py::" + name for name in (
+    "test_actual_controls_outer_oracle_and_exact_retention",
+    "test_actual_timeout_and_output_overflow_are_not_zero_exit_success",
+    "test_actual_root_watchdog_cannot_be_killed_by_subject",
+    "test_actual_double_fork_and_inherited_output_are_whole_container_cleanup",
+    "test_actual_declared_file_effect_uses_trusted_observer",
+    "test_actual_private_file_effect_and_expected_nonzero_exit[0]",
+    "test_actual_private_file_effect_and_expected_nonzero_exit[2]",
+    "test_actual_lost_create_response_recovers_full_id_without_replay",
+    "test_actual_recovery_after_created_publication_temporary_link[owner]",
+    "test_actual_recovery_after_created_publication_temporary_link[created]",
+    "test_actual_cancellation_preserves_failure_and_owned_cleanup",
+    "test_actual_watchdog_expires_without_host_subject_supervision",
+    "test_actual_private_nonzero_effect_controls_enable_verification",
+))
+EVALUATION_PHASES = ("image-acquisition", "runtime-prepare", "scenarios", "full-smoke")
+EVALUATION_IMAGE = "docker.io/library/python@sha256:2ed6491b93cd49272ee6de2b5a38440c3448360322c089fc23e370722d74179d"
 
 
 def require(condition: bool, message: str) -> None:
@@ -67,7 +120,18 @@ def wheel_nodeids(collection: list[str]) -> list[str]:
 
 
 def receipt(path: Path) -> dict:
-    value = json.loads(path.read_text(encoding="utf-8"))
+    def unique_object(pairs: list[tuple[str, object]]) -> dict:
+        result = {}
+        for key, item in pairs:
+            require(key not in result, "Duplicate receipt JSON key")
+            result[key] = item
+        return result
+
+    def invalid_constant(value: str) -> None:
+        raise ValueError("Nonfinite receipt JSON number")
+
+    value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object,
+                       parse_constant=invalid_constant)
     require(isinstance(value, dict), f"Invalid receipt object: {path.name}")
     return value
 
@@ -124,11 +188,205 @@ def prerequisites(path: Path, tested_sha: str, postgres: bool) -> None:
     require(isinstance(observed, dict) and required <= set(observed), "Missing actual prerequisite observations")
 
 
+def one_receipt(artifacts: Path, name: str) -> dict:
+    paths = list(artifacts.rglob(name))
+    require(len(paths) == 1, f"Missing or duplicate {name}")
+    return receipt(paths[0])
+
+
+def actions_identity(value: dict, job: str) -> tuple[str, str]:
+    owner = value.get("actions")
+    require(isinstance(owner, dict) and set(owner) == {"run_id", "run_attempt", "job_id"},
+            "Missing Actions ownership")
+    require(owner["job_id"] == job, "Wrong Actions job ownership")
+    require(all(isinstance(owner[key], str) and re.fullmatch(r"[1-9][0-9]*", owner[key])
+                for key in ("run_id", "run_attempt")), "Invalid Actions run identity")
+    for key, environment in (("run_id", "GITHUB_RUN_ID"), ("run_attempt", "GITHUB_RUN_ATTEMPT")):
+        require(environment not in os.environ or owner[key] == os.environ[environment],
+                "Evidence belongs to another Actions run")
+    return owner["run_id"], owner["run_attempt"]
+
+
+def command_observation(value: dict) -> None:
+    require(isinstance(value, dict) and value.get("state") == "completed"
+            and type(value.get("exit_code")) is int and value["exit_code"] == 0,
+            "An evaluation phase did not complete")
+    require(all(value.get(key) is True for key in
+                ("stdout_complete", "stderr_complete", "helper_cleanup")),
+            "An evaluation phase has incomplete output or process cleanup")
+    require(all(type(value.get(key)) is int and value[key] >= 0
+                for key in ("stdout_bytes", "stderr_bytes")), "Invalid phase byte accounting")
+    require(all(isinstance(value.get(key), str) and DIGEST.fullmatch(value[key]) is not None
+                for key in ("stdout_sha256", "stderr_sha256")), "Missing phase observation digests")
+    elapsed = value.get("elapsed_seconds")
+    require(type(elapsed) in (int, float) and math.isfinite(elapsed) and elapsed >= 0,
+            "Missing measured phase elapsed time")
+
+
+def health_evidence(value: dict, tested_sha: str, source: str, surface: str,
+                    wheel_digest: str, modules: dict[str, str]) -> tuple[str, str]:
+    identity(value, tested_sha, source)
+    owner = actions_identity(value, "tests" if surface == "source" else "checks")
+    require(value.get("consumption") == surface, "Wrong health consumer surface")
+    command_observation(value.get("execution"))
+    require(value.get("wheel_sha256") == (wheel_digest if surface == "installed" else None),
+            "Health installed wheel provenance mismatch")
+    health = value.get("health")
+    require(isinstance(health, dict) and health.get("complete") is True
+            and health.get("tested_sha") == tested_sha and health.get("source_unchanged") is True,
+            "Health smoke incomplete or source-mismatched")
+    require(health.get("surface") == "health-api-cli" and type(health.get("schema")) is int and health["schema"] == 1
+            and type(health.get("original18_completed")) is int and health["original18_completed"] == 0,
+            "Wrong health evidence kind")
+    require(health.get("outcomes") == dict.fromkeys(HEALTH_CASES, "passed"),
+            "Health semantic outcomes missing, failed or unknown")
+    consumed = health.get("consumed")
+    require(isinstance(consumed, dict) and consumed.get("child_identity_matches") is True,
+            "Health child imported a different package")
+    require(consumed.get("module_identity") == "agents_memory"
+            and isinstance(consumed.get("distribution"), str)
+            and re.fullmatch(r"[A-Za-z0-9.+_-]{1,64}", consumed["distribution"]) is not None,
+            "Health distribution identity is missing")
+    require(isinstance(consumed.get("module_tree_digest"), str)
+            and DIGEST.fullmatch(consumed["module_tree_digest"]) is not None
+            and consumed["module_tree_digest"] == consumed.get("module_tree_digest_after"),
+            "Health package changed")
+    observed = consumed.get("modules")
+    names = {"cli", "config", "store", "application", "edge", "health", "health_producer", "health_code"}
+    require(isinstance(observed, dict) and set(observed) == names, "Missing health module identities")
+    for name, details in observed.items():
+        require(details == {"identity": "agents_memory." + name,
+                            "sha256": modules.get("agents_memory/" + name + ".py")},
+                "Health consumed bytes differ from the source-bound public wheel")
+    cleanup = health.get("owned_cleanup")
+    expected = {"project_adapter": "removed", "child_service": "stopped", "fixture_store": "closed",
+                "private_schema": "removed", "admin_connection": "closed", "private_evidence": "retained"}
+    require(isinstance(cleanup, dict) and all(cleanup.get(key) == state for key, state in expected.items())
+            and cleanup.get("service_exit_clean") is True
+            and type(cleanup.get("service_exit_code")) is int and cleanup["service_exit_code"] == 0
+            and cleanup.get("service_forced", False) is False, "Health exact owned cleanup incomplete")
+    return owner
+
+
+def evaluation_evidence(artifacts: Path, tested_sha: str, source: str,
+                        modules: dict[str, str], owner: tuple[str, str]) -> dict:
+    value = one_receipt(artifacts, "evaluation-job.json")
+    identity(value, tested_sha, source)
+    require(actions_identity(value, "evaluation") == owner, "Evaluation run identity mismatch")
+    require(value.get("consumption") == "installed"
+            and value.get("wheel_origin") == "evaluation-job-built",
+            "Evaluation wheel consumer provenance is missing")
+    require(isinstance(value.get("wheel_sha256"), str)
+            and DIGEST.fullmatch(value["wheel_sha256"]) is not None
+            and value.get("installed_modules") == modules, "Evaluation wheel does not contain the tested source")
+    phases = value.get("phases")
+    require(isinstance(phases, dict) and set(phases) == set(EVALUATION_PHASES),
+            "Missing or unexpected evaluation phases")
+    for phase in phases.values():
+        command_observation(phase)
+    require(value.get("image_reference") == EVALUATION_IMAGE, "Wrong acquired CI-only image")
+    prepared = one_receipt(artifacts, "evaluation-runtime-prepare.json")
+    identity(prepared, tested_sha, source)
+    require(actions_identity(prepared, "evaluation") == owner, "Runtime preparation ownership mismatch")
+    require(prepared.get("stage") == "prepare" and prepared.get("code") == "READY"
+            and prepared.get("complete") is True and prepared.get("cleanup_complete") is True,
+            "Runtime was not actually prepared and probe-cleaned")
+    for field in ("runtime_digest", "image_config_digest", "tool_digest"):
+        require(isinstance(prepared.get(field), str) and DIGEST.fullmatch(prepared[field]) is not None,
+                "Missing measured runtime identity")
+    measured = value.get("runtime")
+    runtime_fields = {"runtime_digest", "runtime_spec_sha256", "docker_sha256", "tool_identity",
+                      "image_id_digest", "image_config_digest", "python_executable_sha256"}
+    require(isinstance(measured, dict) and set(measured) == runtime_fields
+            and all(isinstance(item, str) and DIGEST.fullmatch(item) is not None for item in measured.values()),
+            "Missing actual evaluator runtime/interpreter measurements")
+    require(measured["runtime_digest"] == prepared["runtime_digest"]
+            and measured["image_config_digest"] == prepared["image_config_digest"]
+            and measured["tool_identity"] == prepared["tool_digest"], "Prepared runtime measurement mismatch")
+    scenarios = one_receipt(artifacts, "evaluation-scenarios.json")
+    identity(scenarios, tested_sha, source)
+    require(actions_identity(scenarios, "evaluation") == owner, "Scenario ownership mismatch")
+    require(scenarios.get("runtime_digest") == prepared["runtime_digest"]
+            and scenarios.get("wheel_sha256") == value["wheel_sha256"]
+            and scenarios.get("installed_modules") == modules,
+            "Scenarios did not consume the prepared runtime and exact installed wheel")
+    require(scenarios.get("collection_issues") == []
+            and nodeids(scenarios.get("all_nodeids"), "scenario collection") == SCENARIO_NODEIDS
+            and nodeids(scenarios.get("selected_nodeids"), "scenario execution") == SCENARIO_NODEIDS,
+            "The actual Docker scenarios were not executed exactly once")
+    execution(scenarios, SCENARIO_NODEIDS)
+    smoke = one_receipt(artifacts, "evaluation-smoke.json")
+    require(type(smoke.get("schema")) is int and smoke["schema"] == 1
+            and smoke.get("code") == "COMPLETED", "Unknown or incomplete full-smoke receipt")
+    require(smoke.get("complete") is True and smoke.get("tested_sha") == tested_sha
+            and smoke.get("scope") == "engineering" and smoke.get("native_acceptance") is False
+            and smoke.get("synthetic_native_protocol_peer") is True
+            and type(smoke.get("original18_completed")) is int and smoke["original18_completed"] == 0,
+            "Full engineering smoke incomplete or misrepresented")
+    outcomes = smoke.get("outcomes")
+    require(isinstance(outcomes, dict) and outcomes == EVALUATION_OUTCOMES
+            and all(type(outcomes[key]) is type(expected) for key, expected in EVALUATION_OUTCOMES.items()),
+            "Full smoke semantic accounting incomplete")
+    consumed = smoke.get("identity")
+    require(isinstance(consumed, dict) and consumed.get("consumption") == "installed"
+            and consumed.get("wheel_sha256") == value["wheel_sha256"]
+            and consumed.get("runtime_digest") == prepared["runtime_digest"]
+            and consumed.get("tool_identity") == prepared["tool_digest"],
+            "Full smoke wheel/runtime provenance mismatch")
+    require(all(consumed.get(key) == measured[key] for key in runtime_fields - {"image_config_digest"}),
+            "Full smoke used another measured runtime or interpreter")
+    require(isinstance(consumed.get("distribution_version"), str)
+            and re.fullmatch(r"[A-Za-z0-9.+_-]{1,64}", consumed["distribution_version"]) is not None,
+            "Full smoke distribution identity missing")
+    module_map = {"controller": "evaluation", "artifacts": "evaluation_artifacts",
+                  "runtime_driver": "evaluation_runtime", "native_driver": "evaluation_native",
+                  "gateway_driver": "evaluation_gateway", "scoring": "evaluation_scoring",
+                  "verifier": "evaluation_verifier", "cli": "cli"}
+    observed_modules = consumed.get("module_digests")
+    require(isinstance(observed_modules, dict) and set(observed_modules) == set(module_map),
+            "Full smoke missing consumed module identities")
+    require(all(modules.get("agents_memory/" + module + ".py") == observed_modules[name]
+                for name, module in module_map.items()), "Full smoke consumed different source")
+    module_digest = hashlib.sha256(json.dumps(observed_modules, ensure_ascii=False, sort_keys=True,
+                                             separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+    require(consumed.get("modules_digest") == module_digest, "Full smoke module inventory digest mismatch")
+    for key in ("manifest_digest", "report_digest", "evidence_inventory_digest"):
+        require(isinstance(smoke.get(key), str) and DIGEST.fullmatch(smoke[key]) is not None,
+                "Full smoke missing retained evidence identities")
+    cleanup = smoke.get("owned_cleanup")
+    require(isinstance(cleanup, dict) and all(cleanup.get(key) is True for key in
+            ("complete", "verifiers_exact_absent", "product_service_stopped", "store_closed",
+             "schema_exact_absent", "private_evidence_retained"))
+            and cleanup.get("failure_evidence_publication_complete", True) is True,
+            "Full smoke exact cleanup missing")
+    final = one_receipt(artifacts, "evaluation-cleanup.json")
+    identity(final, tested_sha, source)
+    require(actions_identity(final, "evaluation") == owner
+            and final.get("runtime_digest") == prepared["runtime_digest"],
+            "Always-cleanup belongs to another runtime")
+    require(all(final.get(key) is True for key in
+                ("runtime_exact_absent", "schema_exact_absent", "prerequisites_exact_absent",
+                 "processes_reaped", "private_evidence_retained")),
+            "Always-cleanup is incomplete")
+    runtime_cleanup = one_receipt(artifacts, "evaluation-runtime-cleanup.json")
+    identity(runtime_cleanup, tested_sha, source)
+    require(actions_identity(runtime_cleanup, "evaluation") == owner, "Runtime cleanup ownership mismatch")
+    require(runtime_cleanup.get("stage") == "cleanup" and runtime_cleanup.get("code") == "CLEAN"
+            and runtime_cleanup.get("complete") is True and runtime_cleanup.get("cleanup_complete") is True
+            and runtime_cleanup.get("probe_cleanup") in {"removed", "absent"},
+            "Actual runtime cleanup is missing or ambiguous")
+    require(all(type(runtime_cleanup.get(key)) is int and runtime_cleanup[key] > 0
+                for key in ("owners", "resources")), "No actual owned runtime resources were reconciled")
+    prerequisites(artifacts / "ci-evaluation" / "prerequisites.json", tested_sha, True)
+    return {"wheel_sha256": value["wheel_sha256"], "runtime_digest": prepared["runtime_digest"],
+            "scenarios_passed": len(SCENARIO_NODEIDS), "full_smoke": True, "exact_cleanup": True}
+
+
 def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_jobs: dict) -> dict:
     require(SHA.fullmatch(tested_sha) is not None, "An exact tested head SHA is required")
     require(type(expected_shards) is int and 1 <= expected_shards <= 32, "Invalid shard count")
     require(isinstance(upstream_jobs, dict)
-            and set(upstream_jobs) == {"tests", "checks", "compatibility"},
+            and set(upstream_jobs) == {"tests", "checks", "compatibility", "evaluation"},
             "Missing upstream job results")
     require(all(isinstance(job, dict) and job.get("result") == "success"
                 for job in upstream_jobs.values()), "An upstream job failed, was skipped or was cancelled")
@@ -136,7 +394,7 @@ def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_j
     require(len(paths) == expected_shards, "Missing or duplicate shard artifacts")
     checks_paths = list(artifacts.rglob("checks.json"))
     require(len(checks_paths) == 1, "Missing or duplicate lint/build artifact")
-    require(len(list(artifacts.rglob("prerequisites.json"))) == expected_shards + 1,
+    require(len(list(artifacts.rglob("prerequisites.json"))) == expected_shards + 2,
             "Missing or duplicate prerequisite artifacts")
     source = None
     collection = None
@@ -195,6 +453,19 @@ def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_j
     with distributions[0].open("rb") as stream:
         wheel_digest = hashlib.file_digest(stream, "sha256").hexdigest()
     require(wheel.get("wheel_sha256") == wheel_digest, "The public wheel differs from the exercised artifact")
+    with zipfile.ZipFile(distributions[0]) as archive:
+        module_names = [name for name in archive.namelist()
+                        if name.startswith("agents_memory/") and name.endswith(".py")]
+        require(bool(module_names) and len(module_names) == len(set(module_names)),
+                "Public wheel module inventory is missing or duplicated")
+        modules = {name: hashlib.sha256(archive.read(name)).hexdigest() for name in module_names}
+    require(wheel.get("installed_modules") == modules, "Installed-wheel module provenance is incomplete")
+    health_source = health_evidence(one_receipt(artifacts, "health-source.json"), tested_sha,
+                                    source, "source", wheel_digest, modules)
+    health_installed = health_evidence(one_receipt(artifacts, "health-installed.json"), tested_sha,
+                                       source, "installed", wheel_digest, modules)
+    require(health_source == health_installed, "Health surfaces belong to different Actions runs")
+    evaluation_result = evaluation_evidence(artifacts, tested_sha, source, modules, health_source)
     compat_paths = list(artifacts.rglob("compatibility.json"))
     require(len(compat_paths) == 1, "Missing or duplicate platform compatibility artifact")
     compat = receipt(compat_paths[0])
@@ -219,6 +490,7 @@ def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_j
         "wheel_consumer": {"sha256": wheel_digest, "passed": len(selected),
                           "artifact": distributions[0].name},
         "compatibility": {"runtime": compat["runtime"], "passed": len(expected_compat)},
+        "health": {"source": True, "installed": True}, "evaluation": evaluation_result,
     }
 
 

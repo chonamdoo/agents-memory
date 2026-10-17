@@ -228,6 +228,7 @@ class ContextCommand(TypedModel):
     purpose: PurposeText | None = None
     host: Literal["claude", "codex", "omp", "generic", "agent-flow"] | None = None
     snapshot: SnapshotText | None = None
+    code_workspace_id: Handle | None = None
     causal_operation: Handle | None = None
     max_bytes: int = Field(default=2400, ge=256, le=6144)
     limit: int = Field(default=3, ge=1, le=5)
@@ -398,7 +399,7 @@ class Operation(TypedModel):
     id: Handle
     binding_id: Handle
     kind: str
-    state: Literal["accepted", "semantic_ready", "captured", "selection_recorded", "candidate_ready", "pending", "blocked", "failed", "retracted"]
+    state: Literal["accepted", "semantic_ready", "captured", "selection_recorded", "health_recorded", "candidate_ready", "pending", "blocked", "failed", "retracted"]
     source_id: Handle | None = None
     artifact_id: Handle | None = None
     successor_operation_id: Handle | None = None
@@ -433,6 +434,7 @@ class NonmodelAdmission(TypedModel):
     snapshot: SnapshotText | None
     deadline: datetime
     request_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    health_manifest_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     rejection_ids: tuple[Handle, ...] = Field(default=(), max_length=8)
     pending_id: Handle | None = None
 

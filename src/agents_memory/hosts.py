@@ -37,6 +37,12 @@ from .domain import (
     canonical_digest,
     reject_source_secrets,
 )
+from .health_producer import (
+    health_before_context,
+    health_next_agent_hint,
+    observe_health_workspace,
+    observe_host_session,
+)
 from .native_memory import native_memory_status
 from .private_io import private_read, private_write, sync_file
 from .spool import ProducerSpool, require_supported_sqlite
@@ -1628,12 +1634,14 @@ def _generation_state(raw: bytes | None) -> dict:
 
 
 def _context(receipt: dict, query: str, paths: tuple[str, ...] | None, *, required: bool) -> dict:
+    health = health_before_context(receipt)
     denial_code = max(ACTION_CONTEXT_CODES, key=len) if required and receipt["strict"] and receipt["host"] != "omp" else None
     budget = min(receipt["context_budget_bytes"], HOST_CONTEXT_BYTES) - len(_context_prefix(denial_code).encode())
     service_budget = budget
     command = ContextCommand(
         binding_id=receipt["binding_id"], query=query, paths=paths,
         host=receipt["host"], max_bytes=service_budget,
+        code_workspace_id=health.get("workspace_id"),
     )
     result = LocalClient(
         receipt["base_url"], Path(receipt["agent_token_file"]), timeout=4,
@@ -1660,6 +1668,18 @@ def _context(receipt: dict, query: str, paths: tuple[str, ...] | None, *, requir
         if size + len(separator) + len(RELEVANCE_HANDOFF.encode("utf-8")) <= budget:
             result["context"] = text + separator + RELEVANCE_HANDOFF
             result["context_bytes"] = len(result["context"].encode("utf-8"))
+    if not required and receipt["capabilities"]["prompt_context"] != "disabled":
+        try:
+            hint = health_next_agent_hint(receipt)
+        except (DomainError, OSError, sqlite3.Error, ValidationError, ValueError, UnicodeError):
+            hint = ""
+        if hint:
+            separator = "\n" if result["context"] else ""
+            combined = result["context"] + separator + hint
+            if len(combined.encode("utf-8")) <= budget:
+                result["context"] = combined
+                result["context_bytes"] = len(combined.encode("utf-8"))
+    result["health_observation"] = health
     return result
 
 
@@ -1706,6 +1726,14 @@ def _capture(receipt: dict, event: dict, identity: dict, event_name: str) -> dic
     native_event = identity["native_turn"] or identity["instance"]
     origin = "host:" + canonical_digest({"host": host, "root": identity["root"], "path": identity["path"], "event": event_name, "native_event": native_event})
     command = command.model_copy(update={"idempotency_key": origin, "origin_key": origin})
+    try:
+        code_observation = observe_health_workspace(receipt)
+    except (DomainError, OSError, sqlite3.Error, ValidationError, ValueError, UnicodeError) as error:
+        code_observation = {
+            "state": "gap",
+            "code": error.code if isinstance(error, DomainError) else "HOST_HEALTH_UNAVAILABLE",
+        }
+    health_origin = observe_host_session(receipt, identity, "capture_origin", origin_key=origin)
     spool = None
     try:
         spool = ProducerSpool(Path(receipt["runtime_dir"]) / "capture.sqlite3", receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
@@ -1721,12 +1749,22 @@ def _capture(receipt: dict, event: dict, identity: dict, event_name: str) -> dic
             remote_settings=receipt_connection(receipt),
         ), limit=4)
         delivery = {"state": "gap"} if enqueue_error else spool.disposition(command.idempotency_key)
+        health_capture = observe_host_session(
+            receipt, identity,
+            "capture_committed" if delivery.get("source_pointer") else "capture_checkpoint",
+            origin_key=origin, source_pointer=delivery.get("source_pointer"),
+            gap=accepted.get("code") if enqueue_error else None,
+        )
         return {
             **accepted, **result,
             **delivery,
             "candidate_ready": "not_claimed",
             "capture_key": command.idempotency_key,
             "identity": "native_event" if identity["native_turn"] else "hook_instance_only",
+            "health": {
+                "code_observation": code_observation,
+                "session": health_capture if health_capture.get("state") != "disabled" else health_origin,
+            },
         }
     except (sqlite3.Error, OSError):
         return {"state": "gap", "code": "HOST_SPOOL_UNAVAILABLE", "gaps": {"HOST_SPOOL_UNAVAILABLE": 1}}
@@ -1737,7 +1775,7 @@ def _capture(receipt: dict, event: dict, identity: dict, event_name: str) -> dic
             spool.close()
 
 
-def _capture_replay(receipt: dict, key: str) -> dict:
+def _capture_replay(receipt: dict, key: str, *, identity: dict | None = None) -> dict:
     spool = None
     try:
         spool = ProducerSpool(Path(receipt["runtime_dir"]) / "capture.sqlite3", receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
@@ -1746,7 +1784,7 @@ def _capture_replay(receipt: dict, key: str) -> dict:
             state_dir=Path(receipt["runtime_dir"]).parent.parent, deployment_id=receipt["deployment_id"],
             remote_settings=receipt_connection(receipt),
         ), limit=4)
-        return spool.disposition(key)
+        result = spool.disposition(key)
     except (sqlite3.Error, OSError):
         return {"state": "gap", "code": "HOST_SPOOL_UNAVAILABLE", "gaps": {"HOST_SPOOL_UNAVAILABLE": 1}}
     except DomainError as error:
@@ -1754,6 +1792,12 @@ def _capture_replay(receipt: dict, key: str) -> dict:
     finally:
         if spool is not None:
             spool.close()
+    if identity is not None:
+        result["health"] = observe_host_session(
+            receipt, identity, "capture_replay", origin_key=key,
+            source_pointer=result.get("source_pointer"),
+        )
+    return result
 
 
 def _capture_offer(receipt: dict, event_name: str, result: dict, capture: dict) -> dict:
@@ -1947,9 +1991,18 @@ def handle_hook(receipt_path: Path, event: dict) -> dict:
                 result = _native_result(host, event_name, code=preparation_refusal, strict=strict)
                 result["capture"] = {"state": "gap", "code": preparation_refusal, "effect": "not_started"}
             elif event_name in LIFECYCLE_EVENTS:
+                try:
+                    health_observation = observe_health_workspace(receipt)
+                except (DomainError, OSError, sqlite3.Error, ValidationError, ValueError, UnicodeError) as error:
+                    health_observation = {
+                        "state": "gap",
+                        "code": error.code if isinstance(error, DomainError) else "HOST_HEALTH_UNAVAILABLE",
+                    }
+                lifecycle = observe_host_session(receipt, identity, event_name)
                 state["generation"] += 1
                 state["turn"], state["offered"], state["capture"] = None, None, None
                 result = _native_result(host, event_name)
+                result["health"] = {"code_observation": health_observation, "session": lifecycle}
             elif event_name in PROVIDER_EVENTS:
                 # No payload, headers, request IDs or provider bodies are persisted.
                 result = _native_result(host, event_name, code="HOST_PROVIDER_INPUT_UNOBSERVABLE", strict=strict)
@@ -2013,7 +2066,7 @@ def handle_hook(receipt_path: Path, event: dict) -> dict:
                     result["capture"] = capture
                     result = _capture_offer(receipt, event_name, result, capture)
                 elif host == "omp" and state["capture"] is not None:
-                    capture = _capture_replay(receipt, state["capture"]["key"])
+                    capture = _capture_replay(receipt, state["capture"]["key"], identity=identity)
                     result["capture"] = capture
                     result = _capture_offer(receipt, event_name, result, capture)
                     state["capture"] = None

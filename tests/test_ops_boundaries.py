@@ -663,7 +663,7 @@ def test_known_legacy_archive_keeps_exact_old_table_scope(settings):
         entries = [f"{number}; 0 0 {kind} memory {table} memory"
             for number, (table, kind) in enumerate(
                 ((table, kind) for table in sorted(tables) for kind in ("TABLE", "TABLE DATA")), 1)]
-        if tables == ops._ARCHIVE_TABLES["0006_agent_judged"]:
+        if tables in (ops._ARCHIVE_TABLES["0006_agent_judged"], ops._ARCHIVE_TABLES["0007_memory_health"]):
             entries.extend([
                 "900; 0 0 SEQUENCE memory am_pending_judgments_sequence_seq memory",
                 "901; 0 0 SEQUENCE SET memory am_pending_judgments_sequence_seq memory",
@@ -708,7 +708,7 @@ def test_versioned_sequence_inventory_is_exact(revision):
         "902; 0 0 SEQUENCE memory am_claims_cleanup_sequence_seq memory",
         "903; 0 0 SEQUENCE SET memory am_claims_cleanup_sequence_seq memory",
     ]
-    expected = sequence_entries if revision == "0006_agent_judged" else []
+    expected = sequence_entries if revision in {"0006_agent_judged", "0007_memory_health"} else []
     ops._validate_toc(
         "\n".join([*table_entries, *expected]).encode(), "memory", tables
     )
@@ -720,7 +720,7 @@ def test_versioned_sequence_inventory_is_exact(revision):
                 for index in range(len(sequence_entries))
             ],
         ]
-        if revision == "0006_agent_judged"
+        if revision in {"0006_agent_judged", "0007_memory_health"}
         else [
             sequence_entries,
             sequence_entries[:2],

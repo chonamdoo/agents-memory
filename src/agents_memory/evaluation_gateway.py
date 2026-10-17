@@ -250,6 +250,8 @@ class EvaluationGateway:
         self._captures: list[dict] = []
         self._capture_http_status: int | None = None
         self._final_reads: list[dict] = []
+        self._final_read_attempts: list[dict] = []
+        self._observation_failed = False
         self._required_stamps: list[dict] = []
         self._record_windows: dict[str, tuple[str, int, bytearray]] = {}
         self._relay = _ObservedRelay(agent, self._wire)
@@ -274,8 +276,12 @@ class EvaluationGateway:
         )
 
     def _trace(self, stage: str, **fields) -> None:
-        self.trace_sink({"stage": stage, "invocation_id": self.scope.invocation_id,
-                         "route_ref": self.scope.route_ref, "observed_ns": time.monotonic_ns(), **fields})
+        try:
+            self.trace_sink({"stage": stage, "invocation_id": self.scope.invocation_id,
+                             "route_ref": self.scope.route_ref, "observed_ns": time.monotonic_ns(), **fields})
+        except Exception:
+            self._observation_failed = True
+            raise
 
     def _wire(self, exchange: HttpExchange) -> None:
         size = len(exchange.request_body or b"") + len(exchange.response_body or b"")
@@ -461,20 +467,24 @@ class EvaluationGateway:
             result = response["result"]
             if not isinstance(result, dict):
                 raise DomainError("UPSTREAM_RESULT_INVALID", "The MCP result is invalid", effect=EffectState.UNKNOWN)
+            final_read = None
             if not result.get("isError", False):
                 content = result.get("content")
                 if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0].get("text"), str):
                     raise DomainError("UPSTREAM_RESULT_INVALID", "The MCP result has no bounded data plane", effect=EffectState.UNKNOWN)
                 payload = decode_json(content[0]["text"].encode())
-                self._observe_flow(name, arguments, payload)
+                final_read = self._observe_flow(name, arguments, payload)
             self._trace("gateway_delivery", name=name, call_id=self._current_call,
                         is_error=result.get("isError", False), host_observed_delivery=True,
                         provider_consumption=None)
+            if final_read is not None:
+                self._final_reads.append(final_read)
             return result
         finally:
             self._leave()
 
-    def _observe_flow(self, name: str, arguments: dict, payload: dict) -> None:
+    def _observe_flow(self, name: str, arguments: dict, payload: dict) -> dict | None:
+        final_read = None
         if name == "memory_inspect" and isinstance(payload.get("draft_window"), dict):
             window = payload["draft_window"]
             ref = arguments["ref"]
@@ -553,11 +563,13 @@ class EvaluationGateway:
                 selected_ids = [item.get("claim_id") for item in decisions]
                 if (identity == original and len(selected_ids) == len(ids) and set(selected_ids) == ids
                         and ids <= self._inspected_claims):
-                    self._final_reads.append({"admission_id": admission, "refs": payload.get("refs"),
-                                              "observed_ns": time.monotonic_ns(), "context": payload.get("context")})
+                    final_read = {"admission_id": admission, "refs": payload.get("refs"),
+                                  "observed_ns": time.monotonic_ns(), "context": payload.get("context")}
+                    self._final_read_attempts.append(final_read)
         self._trace("gateway_flow", name=name, operation_id=payload.get("id"),
                     source_id=payload.get("source_id"), admission_id=payload.get("admission_id"),
                     artifact_id=payload.get("artifact_id"), refs=payload.get("refs"))
+        return final_read
 
     def flow_observation(self) -> dict:
         linked_sources = []
@@ -576,6 +588,7 @@ class EvaluationGateway:
                 continue
             for selection in self._inspected_selections:
                 if (self._selection_sources.get(selection) == source
+                        and self._selection_claims.get(selection, set()) <= self._inspected_claims
                         and self._selection_claims.get(selection, set()) & delivered):
                     linked_sources.append(source)
                     break
@@ -585,7 +598,9 @@ class EvaluationGateway:
             "remembered_selections": tuple(sorted(self._selections)),
             "inspected_selections": tuple(sorted(self._inspected_selections)),
             "final_reads": tuple(self._final_reads), "required_stamps": tuple(self._required_stamps),
-            "pipeline_observed": bool(linked_sources),
+            "final_read_attempts": tuple(self._final_read_attempts),
+            "observation_complete": not self._observation_failed,
+            "pipeline_observed": bool(linked_sources) and not self._observation_failed,
             "linked_capture_source_ids": tuple(linked_sources),
             "final_read_observed": bool(self._final_reads),
             "semantic_correctness": None, "provider_consumption": None,

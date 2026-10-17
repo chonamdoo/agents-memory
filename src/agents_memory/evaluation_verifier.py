@@ -269,11 +269,24 @@ class VerifierExecutor:
         self._controls = result
         return result
 
-    def verify(self, baseline: ArtifactBundle, submission: ArtifactBundle, task: OracleTask, *, stop_event: Event | None = None) -> VerifierReceipt:
-        return self._verify(baseline, submission, task, role="evaluation", require_controls=True, stop_event=stop_event)
+    def verify(
+        self, baseline: ArtifactBundle, submission: ArtifactBundle, task: OracleTask, *,
+        stop_event: Event | None = None, invocation_id: str | None = None,
+    ) -> VerifierReceipt:
+        if invocation_id is not None and (not isinstance(invocation_id, str)
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", invocation_id) is None):
+            raise RuntimeRefusal("VERIFICATION_INVOCATION_IDENTITY")
+        return self._verify(baseline, submission, task, role="evaluation", require_controls=True,
+                            stop_event=stop_event, invocation_id=invocation_id)
 
-    def _verify(self, baseline: ArtifactBundle, submission: ArtifactBundle, task: OracleTask, *, role: str, require_controls: bool, stop_event: Event | None) -> VerifierReceipt:
-        key = digest_bytes(canonical_bytes([self.owner.identity, self.spec.digest, task.digest, submission.digest, witness_digest(task.witness), role]))
+    def _verify(
+        self, baseline: ArtifactBundle, submission: ArtifactBundle, task: OracleTask, *,
+        role: str, require_controls: bool, stop_event: Event | None, invocation_id: str | None = None,
+    ) -> VerifierReceipt:
+        identity = [self.owner.identity, self.spec.digest, task.digest, submission.digest, witness_digest(task.witness), role]
+        if invocation_id is not None:
+            identity = [self.owner.identity, self.spec.digest, task.digest, role, invocation_id]
+        key = digest_bytes(canonical_bytes(identity))
         runtime = DockerRuntime(self.spec.runtime, self.owner, self.intent_dir)
         structural = None
         cases = tuple(CaseOutcome(case.case_id, "not_started", False, None, None, None, None, None) for case in task.cases)
@@ -281,12 +294,16 @@ class VerifierExecutor:
         control_identity = self._controls.controls_digest if self._controls is not None else None
         private_name, private_digest = None, None
         terminal_name = key + ".terminal.json"
+        claimed = False
         try:
             claim = {"owner": self.owner.identity, "verifier": self.spec.digest, "task": task.digest, "baseline": baseline.digest, "submission": submission.digest, "witness": witness_digest(task.witness), "role": role}
+            if invocation_id is not None:
+                claim["invocation_id"] = invocation_id
             try:
                 private_write(Path(key + ".attempt-intent.json"), canonical_bytes(claim), directory=runtime.directory)
             except Exception:
                 return VerifierReceipt(1, "unknown", False, role, self.owner.identity, self.spec.digest, task.digest, baseline.digest, submission.digest, None, cases, False, control_identity, None, None, None, Publication("claim_unknown_or_existing", digest_bytes(canonical_bytes(claim))), "ATTEMPT_CLAIM_UNKNOWN_OR_EXISTING")
+            claimed = True
             if require_controls and (self._controls is None or not self._controls.eligible or self._controls.task_digest != task.digest or self._controls.verifier_digest != self.spec.digest):
                 raise RuntimeRefusal("CONTROL_PRECHECK_REQUIRED")
             if baseline.digest != task.baseline_digest or len(task.cases) > self.spec.max_cases or sum(len(case.effects) for case in task.cases) > self.spec.max_effects:
@@ -341,15 +358,16 @@ class VerifierExecutor:
             error_code = str(error) if isinstance(error, RuntimeRefusal) else "VERIFIER_BOUNDARY_" + type(error).__name__.upper()
         finally:
             try:
-                raw = _private_observations(cases)
-                if len(raw) > self.spec.private_receipt_bytes:
-                    error_code = "PRIVATE_OBSERVATION_BOUND"
-                else:
-                    private_name = key + ".observations.json"
-                    private_digest = digest_bytes(raw)
-                    result = publish_or_reconcile(runtime.directory, private_name, raw)
-                    if result.state not in {"durable", "reconciled_durable"}:
-                        error_code = "PRIVATE_PUBLICATION_" + result.state.upper()
+                if claimed:
+                    raw = _private_observations(cases)
+                    if len(raw) > self.spec.private_receipt_bytes:
+                        error_code = "PRIVATE_OBSERVATION_BOUND"
+                    else:
+                        private_name = key + ".observations.json"
+                        private_digest = digest_bytes(raw)
+                        result = publish_or_reconcile(runtime.directory, private_name, raw)
+                        if result.state not in {"durable", "reconciled_durable"}:
+                            error_code = "PRIVATE_PUBLICATION_" + result.state.upper()
             finally:
                 runtime.close()
         cleanup_complete = all(case.observation is None or (case.observation.cleanup.exact_absence and not case.observation.cleanup.pending_create and case.observation.cleanup.state in {"removed", "absent"}) for case in cases)

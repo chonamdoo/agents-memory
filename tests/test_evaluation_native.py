@@ -13,7 +13,6 @@ from agents_memory.evaluation_native import (
     NativeDriverSpec,
     _Protocol,
     _ProtocolError,
-    _argv,
     run_native_arm,
 )
 
@@ -159,6 +158,7 @@ def test_claude_uses_normal_flags_and_records_permission_denial(tmp_path):
     peer = '''import json, sys
 assert sys.argv[1:5] == ['-p', '--output-format', 'stream-json', '--verbose']
 assert sys.argv[5] == '--json-schema'
+assert not any(flag in sys.argv for flag in ('--allowedTools', '--permission-mode', '--mcp-config'))
 sys.stdin.read()
 for event in [
     {'type':'system','subtype':'init','session_id':'session-one','model':'peer-model','permissionMode':'default'},
@@ -175,7 +175,6 @@ for event in [
     assert result.usage["basis"] == "terminal_main_loop_only"
     assert result.approval_requests[0]["tool_use_id"] == "denied-action"
     assert result.identity["permissionMode"] == "default"
-    assert not any(flag in _argv(spec) for flag in ("--allowedTools", "--permission-mode", "--mcp-config"))
 
 
 def test_normal_approval_is_required_even_for_claude_print(tmp_path):

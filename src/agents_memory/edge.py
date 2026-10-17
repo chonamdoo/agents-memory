@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
@@ -30,6 +30,7 @@ from .domain import (
     TypedModel,
     reject_source_secrets,
 )
+from .health import HEALTH_ADAPTER, HealthObserverRequest
 from .ingress import (
     OAUTH_METADATA_PATH,
     ClientBootstrapBounds,
@@ -54,7 +55,7 @@ HTTP_BODY_SECONDS = 15.0
 
 
 class InspectCommand(TypedModel):
-    ref: Handle
+    ref: str = Field(min_length=1, max_length=512, pattern=r"^[A-Za-z0-9_.:-]+$")
     binding_id: Handle | None = None
     snapshot: str | None = Field(default=None, min_length=1, max_length=512)
     byte_start: int = Field(default=0, ge=0, le=9223372036854775807)
@@ -90,6 +91,14 @@ DESCRIPTIONS = {
     "memory_record": "For recallable memory submit source_selection/remember WITH extraction atomically. A complete remember without extraction stores no claim and cannot be extended later. assertion_id is a plus four digits, e.g. a0000. Use individual_qualifications for one assertion; shared_qualifications needs at least two assertion_ids. Preserve original spans, conditions, exceptions and validity. Compare every required_rejection_id as unrelated/reopen; optional review receipts use rejection_review_ids. Reopening rejected evidence needs new independent human/tool/document evidence. Complete remember/discard is single-winner per overlapping window (SELECTION_ALREADY_RECORDED). After unknown outcome resend the same judgment/admission_id, even with a new explicit retry key, to reconcile its operation. claim_judgment records relations; notes/inactive rule candidates are not independent evidence. Never approve policy.",
     "memory_feedback": "Persist rejection reasons or correction/retract-request candidates. Reject durably affects target evidence, not just this query; query-only irrelevance belongs in memory_context.relevance. Rejection is not deletion/retraction. Never approve or purge.",
 }
+DESCRIPTIONS["memory_inspect"] += (
+    " ref=health lists bounded health work; health:item:<pending_id> returns exact admitted evidence and coverage. "
+    "health:claim:<claim_id> exposes review/health history, not reuse authority. Follow explicit continuation."
+)
+DESCRIPTIONS["memory_record"] += (
+    " code_link adds exact inspected code dependencies; health_assessment judges the complete admitted health "
+    "manifest with exact byte evidence. Neither is human Accept/Reject, deletion, policy approval or freshness proof."
+)
 
 
 
@@ -193,8 +202,55 @@ class SecurityEdge:
         self.oauth = OAuthVerifier(ingress.oauth, application.store) if ingress is not None and ingress.oauth is not None else None
         self.sessions: dict[str, tuple[tuple, float]] = {}
         self.active = 0
+        self.lifecycle_failures: list[BaseException] = []
+        self.lifecycle_status = {"stage": "idle", "failed": False, "local_drained": True, "incomplete": []}
+
+    @property
+    def lifecycle_failed(self) -> bool:
+        return bool(self.lifecycle_failures) or self.lifecycle_status["failed"] is True
+
+    def raise_for_lifecycle_failure(self) -> None:
+        if self.lifecycle_failed:
+            raise DomainError(
+                "SERVICE_LIFECYCLE_FAILED", "The service lifecycle failed; inspect bounded lifecycle status",
+                status=503,
+            ) from None
+
+    async def _lifespan(self, scope, receive, send) -> None:
+        stage = "startup"
+        sent_failure = False
+
+        async def safe_send(message):
+            nonlocal stage, sent_failure
+            kind = message["type"]
+            if kind in {"lifespan.startup.failed", "lifespan.shutdown.failed"}:
+                sent_failure = True
+                stage = "startup" if kind == "lifespan.startup.failed" else "shutdown"
+                self.lifecycle_status.update(stage=stage, failed=True)
+                message = {
+                    "type": kind,
+                    "message": json.dumps({
+                        "stage": stage, "code": "SERVICE_LIFECYCLE_FAILED", "type": "LifecycleFailure",
+                    }, separators=(",", ":")),
+                }
+            elif kind == "lifespan.startup.complete":
+                stage = "shutdown"
+            await send(message)
+
+        try:
+            await self.inner(scope, receive, safe_send)
+        except BaseException as error:
+            if not any(error is failure for failure in self.lifecycle_failures):
+                if not isinstance(error, BaseExceptionGroup) or not self.lifecycle_failures:
+                    self.lifecycle_failures.append(error)
+            self.lifecycle_status.update(stage=stage, failed=True)
+            if not sent_failure:
+                await safe_send({"type": f"lifespan.{stage}.failed"})
 
     async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "lifespan":
+            await self._lifespan(scope, receive, send)
+            return
         if scope["type"] != "http" or scope.get("path") == "/healthz":
             await self._handle(scope, receive, send)
             return
@@ -218,9 +274,11 @@ class SecurityEdge:
                 release()
 
         stream = scope.get("method") == "GET" and scope.get("path") == "/mcp"
+        self.application.inflight += 1
         try:
             await self._handle(scope, receive, stream_send if stream else send)
         finally:
+            self.application.inflight -= 1
             release()
 
     async def _handle(self, scope, receive, send) -> None:
@@ -260,14 +318,19 @@ class SecurityEdge:
         if path == "/healthz":
             await JSONResponse({"alive": True})(scope, receive, send)
             return
-        if path == "/readyz" and b"authorization" not in headers:
-            await self.inner(scope, receive, send)
-            return
         if not self.application.accepting:
+            if path == "/readyz":
+                await JSONResponse({
+                    "ready": False, "accepting": False, "lifecycle": self.lifecycle_status,
+                }, status_code=503)(scope, receive, send)
+                return
             await error_response(DomainError(
                 "SERVICE_UNAVAILABLE", "The local database authority is not ready",
                 status=503, effect=EffectState.NOT_STARTED,
             ))(scope, receive, send)
+            return
+        if path == "/readyz" and b"authorization" not in headers:
+            await self.inner(scope, receive, send)
             return
         auth = headers.get(b"authorization", b"")
         try:
@@ -431,11 +494,7 @@ class SecurityEdge:
                 await forward_start(response_start)
                 await send({"type": "http.response.body", "body": bytes(response_body), "more_body": False})
 
-        self.application.inflight += 1
-        try:
-            await self.inner(scope, receive, bound_send)
-        finally:
-            self.application.inflight -= 1
+        await self.inner(scope, receive, bound_send)
 
 
 def readiness_judgment(settings: Settings) -> dict:
@@ -529,9 +588,18 @@ def create_app(settings: Settings):
                     }),
                 )
                 return JSONResponse(result.model_dump(mode="json"))
-            roles = (Role.PRODUCER, Role.OPERATOR) if name in {"capture", "correct"} else (Role.AGENT, Role.OPERATOR)
+            roles = (
+                (Role.PRODUCER, Role.OPERATOR) if name in {"capture", "correct", "health-observer"}
+                else (Role.AGENT, Role.PRODUCER, Role.OPERATOR) if name == "health"
+                else (Role.AGENT, Role.OPERATOR)
+            )
             actor = await actor_from_scope(application, request.scope, roles)
             data = request.scope.get("agents_memory_json", {})
+            if name == "health":
+                return JSONResponse(await application.health(actor, command_from_wire(HEALTH_ADAPTER, data)))
+            if name == "health-observer":
+                command = command_from_wire(HealthObserverRequest, data)
+                return JSONResponse(await application.health_observer(actor, command.binding_id))
             if name == "context":
                 return JSONResponse(await application.context(actor, command_from_wire(ContextCommand, data)))
             if name == "required-context":
@@ -585,6 +653,10 @@ def create_app(settings: Settings):
             "native_hook_trust": "not_attested_by_service",
         }, status_code=200 if ready["ready"] else 503)
 
+    async def health_observer_api(request: Request):
+        request.path_params["action"] = "health-observer"
+        return await api(request)
+
     server = Server(
         "agents-memory",
         version="0.1.0",
@@ -611,49 +683,102 @@ def create_app(settings: Settings):
             ],
         ),
         custom_starlette_routes=[
+            Route("/api/health/observer", health_observer_api, methods=["POST"]),
             Route("/api/{action}", api, methods=["POST"]),
             Route("/readyz", readiness, methods=["GET"]),
         ],
     )
     sdk_lifespan = inner.router.lifespan_context
 
+
     @asynccontextmanager
     async def lifespan(app):
         from .ops import authority_lock
 
-        with authority_lock(settings):
-            await store.open()
+        failures: list[BaseException] = []
+
+        def remember(error: BaseException) -> None:
+            if not any(error is existing for existing in failures):
+                failures.append(error)
+
+        async def stop(name, callback):
             try:
-                await store.reconcile_journal()
-                async with sdk_lifespan(app) as state:
-                    failures = []
+                result = await callback()
+                if isinstance(result, dict) and result.get("local_drained") is False:
+                    edge.lifecycle_status["incomplete"].append(name)
+                    edge.lifecycle_status["local_drained"] = False
+                    remember(DomainError(
+                        "LOCAL_DRAIN_INCOMPLETE", "A local owner exceeded its drain deadline", status=503,
+                    ))
+            except BaseException as error:
+                remember(error)
 
-                    async def stop(callback):
-                        try:
-                            await callback()
-                        except BaseException as error:
-                            failures.append(error)
+        async def join(name, owner):
+            try:
+                await owner.wait_closed()
+            except BaseException as error:
+                remember(error)
+            if name in edge.lifecycle_status["incomplete"]:
+                edge.lifecycle_status["incomplete"].remove(name)
 
-                    async with AsyncExitStack() as shutdown:
-                        shutdown.push_async_callback(stop, application.drain)
-                        shutdown.push_async_callback(stop, worker.stop)
-                        shutdown.push_async_callback(stop, judge.stop)
-                        shutdown.push_async_callback(stop, recovery.stop)
+        async def shutdown_owners():
+            for name, callback in (
+                ("recovery", recovery.stop), ("judge", judge.stop),
+                ("scheduler", worker.stop), ("application", application.drain),
+            ):
+                await stop(name, callback)
+            await asyncio.gather(*(
+                join(name, owner) for name, owner in (
+                    ("recovery", recovery), ("judge", judge),
+                    ("scheduler", worker), ("application", application),
+                )
+            ))
+            edge.lifecycle_status.update(local_drained=not edge.lifecycle_status["incomplete"])
+
+        async def finish(callback):
+            task = asyncio.create_task(callback())
+            while True:
+                try:
+                    return await asyncio.shield(task)
+                except asyncio.CancelledError as error:
+                    remember(error)
+                    if task.done():
+                        return task.result()
+
+        try:
+            with authority_lock(settings):
+                try:
+                    await store.open()
+                    await store.reconcile_journal()
+                    async with sdk_lifespan(app) as state:
                         try:
                             worker.start()
                             judge.start()
                             recovery.start()
+                            edge.lifecycle_status.update(stage="running")
                             yield state
                         except BaseException as error:
-                            failures.append(error)
+                            remember(error)
                         finally:
                             application.accepting = False
-                    if len(failures) == 1:
-                        raise failures[0]
-                    if failures:
-                        raise BaseExceptionGroup("Local service lifecycle failed", failures)
-            finally:
-                await store.close()
+                            edge.lifecycle_status.update(stage="draining", local_drained=False)
+                            await finish(shutdown_owners)
+                except BaseException as error:
+                    remember(error)
+                finally:
+                    try:
+                        await finish(store.close)
+                    except BaseException as error:
+                        remember(error)
+        except BaseException as error:
+            remember(error)
+        if failures:
+            edge.lifecycle_failures.extend(failures)
+            edge.lifecycle_status.update(stage="failed", failed=True)
+            if len(failures) == 1:
+                raise failures[0]
+            raise BaseExceptionGroup("Local service lifecycle failed", failures)
+        edge.lifecycle_status.update(stage="closed")
 
     inner.router.lifespan_context = lifespan
     edge = SecurityEdge(inner, application, settings, ingress)

@@ -106,6 +106,43 @@ class Publication:
     sha256: str
 
 
+def _reconcile_publication_links(directory: int, name: str, fd: int) -> os.stat_result:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
+    if info.st_nlink == 1:
+        return info
+    if info.st_nlink != 2 or stat.S_IMODE(info.st_mode) != 0o600:
+        raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
+    identity = (info.st_dev, info.st_ino)
+    temporary = None
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if entry.name != name and re.fullmatch(r"\.memory-private-[0-9a-f]{16}", entry.name):
+                candidate = os.stat(entry.name, dir_fd=directory, follow_symlinks=False)
+                if (candidate.st_dev, candidate.st_ino) == identity:
+                    temporary = entry.name
+                    break
+    current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    if (current.st_dev, current.st_ino) != identity:
+        raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
+    if os.fstat(fd).st_nlink == 1:
+        return os.fstat(fd)
+    if temporary is None:
+        raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
+    candidate = os.stat(temporary, dir_fd=directory, follow_symlinks=False)
+    if (candidate.st_dev, candidate.st_ino) != identity or candidate.st_nlink != 2:
+        raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
+    os.fsync(fd)
+    os.unlink(temporary, dir_fd=directory)
+    os.fsync(directory)
+    info = os.fstat(fd)
+    current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    if info.st_nlink != 1 or (current.st_dev, current.st_ino) != identity:
+        raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
+    return info
+
+
 def publish_or_reconcile(directory: int, name: str, raw: bytes) -> Publication:
     if not re.fullmatch(r"[a-zA-Z0-9_.-]+", name):
         raise RuntimeRefusal("RECEIPT_NAME")
@@ -116,8 +153,8 @@ def publish_or_reconcile(directory: int, name: str, raw: bytes) -> Publication:
         try:
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
             try:
-                info = os.fstat(fd)
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1 or info.st_size != len(raw):
+                info = _reconcile_publication_links(directory, name, fd)
+                if info.st_size != len(raw):
                     return Publication("conflict", digest_bytes(raw))
                 with os.fdopen(fd, "rb", closefd=False) as stream:
                     existing = stream.read(len(raw) + 1)
@@ -130,6 +167,8 @@ def publish_or_reconcile(directory: int, name: str, raw: bytes) -> Publication:
                 os.close(fd)
         except FileNotFoundError:
             return Publication("absent", digest_bytes(raw))
+        except RuntimeRefusal:
+            return Publication("conflict", digest_bytes(raw))
         except OSError:
             return Publication("visible_or_unknown", digest_bytes(raw))
 
@@ -552,8 +591,8 @@ class DockerRuntime:
             raise RuntimeRefusal("RECEIPT_NAME")
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.directory)
         try:
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1 or info.st_size > self.spec.limits.helper_bytes:
+            info = _reconcile_publication_links(self.directory, name, fd)
+            if info.st_size > self.spec.limits.helper_bytes:
                 raise RuntimeRefusal("RECOVERY_RECORD_IDENTITY")
             with os.fdopen(fd, "rb", closefd=False) as stream:
                 raw = stream.read(self.spec.limits.helper_bytes + 1)
@@ -637,6 +676,7 @@ class DockerRuntime:
                 value = self.inspect(intent.name)
                 if value is not None:
                     container_id = self.validate_container(value, intent)
+                    self.record(intent.name + ".created.json", {"container_id": container_id, "intent": asdict(intent)})
                     create_uncertain = False
                 state = "create_unknown"
                 raise RuntimeRefusal("CREATE_UNKNOWN")
@@ -661,10 +701,10 @@ class DockerRuntime:
                 lease = CommandLease([str(self.spec.docker_executable), "exec", "--interactive", "--user", "65532:65532", "--workdir", "/scratch", "--env", "HOME=/scratch", "--env", "TMPDIR=/tmp", "--env", "PYTHONDONTWRITEBYTECODE=1", container_id, *argv], self.environment, stdin=stdin, seconds=limit.wall_seconds, stdout_limit=limit.stdout_bytes, stderr_limit=limit.stderr_bytes, stop_event=stop_event)
                 execution = lease.observation
                 state = execution.state
-                if execution.state == "completed" and execution.exit_code == 0 and execution.stdout_complete and execution.stderr_complete:
+                if execution.state == "completed" and execution.stdout_complete and execution.stderr_complete:
                     for index, (path, maximum) in enumerate(effects):
                         self.record(intent.name + f".effect-{index}-intent.json", {"container_id": container_id, "path": path, "maximum": maximum})
-                        result = self.command("effect", ["exec", "--user", "0:0", "--workdir", "/", container_id, self.spec.python_executable, "-I", "-S", "/observer.py", path, str(maximum)])
+                        result = self.command("effect", ["exec", "--user", "65532:65532", "--workdir", "/", container_id, self.spec.python_executable, "-I", "-S", "/observer.py", path, str(maximum)])
                         content = None
                         if result.completed:
                             value = self._object(result)

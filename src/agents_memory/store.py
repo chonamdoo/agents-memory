@@ -75,6 +75,35 @@ _DISCLOSURE_CONTEXT: ContextVar[tuple[tuple[str, ...], list[int], dict] | None] 
     "rejection_disclosure_context", default=None,
 )
 
+_HEALTH_REUSE_SQL = """
+    NOT EXISTS(SELECT 1 FROM am_claim_health h WHERE h.claim_id=c.id AND
+        (h.claim_revision<>c.revision OR h.operator_review='reject' OR h.needs_review
+            OR h.restore_unknown OR h.freshness='stale'))
+    AND NOT EXISTS(SELECT 1 FROM am_claim_sources d JOIN am_sources s ON s.id=d.source_id
+        WHERE d.claim_id=c.id AND s.health_restore_revision=d.source_revision
+        AND NOT EXISTS(SELECT 1 FROM am_claim_health h WHERE h.claim_id=c.id
+            AND h.claim_revision=c.revision AND h.operator_review='accept' AND NOT h.restore_unknown))
+    AND NOT EXISTS(SELECT 1 FROM am_code_links l
+        LEFT JOIN am_code_observations o ON o.id=l.observation_id
+        LEFT JOIN am_code_workspaces w ON w.id=o.workspace_id
+        LEFT JOIN am_credentials p ON p.id=w.producer_credential_id
+        LEFT JOIN am_bindings b ON b.id=w.binding_id
+        LEFT JOIN am_health_policies hp ON hp.binding_id=w.binding_id
+        WHERE l.claim_id=c.id AND l.claim_revision=c.revision AND
+            (o.id IS NULL OR o.state<>'active' OR o.metadata IS NULL OR o.binding_id<>c.binding_id
+             OR w.state<>'active' OR w.binding_id<>c.binding_id OR w.revision<>o.workspace_revision
+             OR hp.enabled IS NOT TRUE
+             OR w.binding_revision<>b.revision OR NOT p.active OR p.generation<>w.producer_generation
+             OR p.role<>'producer' OR p.realm<>b.realm
+             OR NOT EXISTS(SELECT 1 FROM am_grants g WHERE g.credential_id=p.id AND g.binding_id=c.binding_id)
+             OR o.metadata->>'status'<>'present'
+             OR (o.symbol_name<>'' AND COALESCE(o.metadata->'symbol','null'::jsonb)='null'::jsonb)))
+"""
+_CODE_CONTEXT_SQL = """NOT EXISTS(SELECT 1 FROM am_code_links l
+    JOIN am_code_observations o ON o.id=l.observation_id
+    WHERE l.claim_id=c.id AND l.claim_revision=c.revision
+        AND ({workspace}::text IS NULL OR o.workspace_id<>{workspace}))"""
+
 
 def _id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
@@ -290,7 +319,9 @@ class Store:
                         "am_jobs", "am_admissions", "am_origin_reservations",
                         "am_selection_policies", "am_source_selections", "am_selection_sources",
                         "am_pending_judgments", "am_retired_jobs", "am_claim_judgments",
-                        "am_rejection_evidence", "am_rejection_tokens"}
+                        "am_rejection_evidence", "am_rejection_tokens",
+                        "am_health_policies", "am_code_workspaces", "am_code_observations", "am_claim_health",
+                        "am_code_links", "am_health_events", "am_session_observations"}
                     if names - expected:
                         raise DomainError("INITIALIZATION_SCOPE_DENIED", "The authority schema contains unrelated state", status=403)
                     clock = await connection.fetchrow("SELECT * FROM am_clock WHERE singleton")
@@ -491,7 +522,7 @@ class Store:
         async with self._tx(lock=False) as (connection, _):
             await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR))
             rows = await connection.fetch("""SELECT DISTINCT snapshot FROM am_pending_judgments WHERE binding_id=$1
-                AND state='pending' AND kind IN ('source_selection','cleanup')
+                AND state='pending' AND kind IN ('source_selection','cleanup','health')
                 ORDER BY snapshot NULLS FIRST LIMIT 64""", binding_id)
             return tuple(row["snapshot"] for row in rows)
 
@@ -501,11 +532,11 @@ class Store:
         """Byte ranges already holding a complete remember/discard, matching pending resolution."""
         async with self._tx(lock=False) as (connection, _):
             await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR))
-            rows = await connection.fetch("""SELECT byte_start,byte_end FROM am_source_selections WHERE binding_id=$1
-                AND source_id=$2 AND source_revision=$3 AND state='active' AND label IN ('remember','discard')
-                AND coverage='complete_window' AND policy_revision=$4 AND request_snapshot IS NOT DISTINCT FROM $5
-                ORDER BY byte_start""", binding_id, source_id, source_revision, selection_contract_revision(), snapshot)
-            return tuple((row["byte_start"], row["byte_end"]) for row in rows)
+            rows = await self._current_selection_rows(connection, binding_id, snapshot)
+            return tuple(
+                (row["byte_start"], row["byte_end"]) for row in rows
+                if row["source_id"] == source_id and row["source_revision"] == source_revision
+                and row["label"] in {"remember", "discard"} and row["coverage"] == "complete_window")
 
     async def _credential_revocation_impact(self, connection, actor: Principal, credential_id: str) -> dict:
         target = await connection.fetchrow("SELECT * FROM am_credentials WHERE id=$1 AND realm=$2 AND principal_id=$3", credential_id, actor.realm, actor.id)
@@ -549,7 +580,9 @@ class Store:
     async def _new_operation(self, connection, actor, binding_id, kind, state="accepted", error=None):
         operation_id = _id("operation")
         epoch = await self._tick(connection)
-        return await connection.fetchrow("INSERT INTO am_operations(id,binding_id,credential_id,kind,state,error_code,epoch) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *", operation_id, binding_id, actor.credential_id, kind, state, error, epoch)
+        return await connection.fetchrow("""INSERT INTO am_operations(id,binding_id,credential_id,kind,state,error_code,epoch,actor_generation)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *""",
+            operation_id, binding_id, actor.credential_id, kind, state, error, epoch, actor.generation)
 
     async def _insert_source(
         self, connection, actor, command: CaptureCommand, operation_id: str,
@@ -598,6 +631,7 @@ class Store:
                    ) VALUES($1,$2,'source_selection',$3,$4)""",
                 _id("pending"), command.binding_id, [source_id], command.snapshot,
             )
+            await self._refresh_late_session_capture(connection, command.binding_id, command.origin_key)
         return source_id
 
     async def _point_operation(self, connection, operation_id: str, source_id: str) -> None:
@@ -1003,16 +1037,7 @@ class Store:
         await self._point_operation(connection, row["id"], source.id)
         await connection.execute("UPDATE am_operations SET artifact_id=$2,selection_label=$3 WHERE id=$1", row["id"], selection_id, command.label)
         if command.label != "review":
-            await connection.execute("""UPDATE am_pending_judgments p SET state='resolved',resolved_at=clock_timestamp()
-                WHERE p.binding_id=$1 AND p.state IN ('pending','held') AND p.kind IN ('source_selection','legacy_revalidation')
-                AND $2=ANY(p.source_ids) AND NOT EXISTS(SELECT 1 FROM unnest(p.source_ids) AS i(id)
-                    LEFT JOIN am_sources s ON s.id=i.id WHERE s.id IS NULL OR s.state<>'active' OR s.body IS NULL
-                    OR NOT COALESCE((SELECT range_agg(int8range(q.byte_start::bigint,q.byte_end::bigint,'[)'))
-                        FROM am_source_selections q WHERE q.source_id=s.id AND q.source_revision=s.revision
-                        AND q.state='active' AND q.label IN ('remember','discard') AND q.coverage='complete_window'
-                        AND (q.request_snapshot IS NULL OR q.request_snapshot IS NOT DISTINCT FROM p.snapshot)
-                        AND q.policy_revision=$3), '{}'::int8multirange)
-                        @> int8range(0,octet_length(s.body)::bigint,'[)'))""", binding_id, source.id, command.policy_revision)
+            await self._resolve_current_source_work(connection, binding_id, source.id)
         await self._save_receipt(connection, actor, binding_id, "record", command.idempotency_key, digest, row["id"],
             self._consumed_record(admission, command, binding_id))
         await connection.execute("DELETE FROM am_admissions WHERE id=$1", admission.id)
@@ -1066,6 +1091,10 @@ class Store:
         binding_id = resolve_binding(actor, command.binding_id)
         async with self._tx() as (connection, clock):
             current = await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR))
+            from .health import CodeLinkCommand, HealthAssessmentCommand
+
+            if isinstance(command, (CodeLinkCommand, HealthAssessmentCommand)):
+                return await self._record_health(connection, clock, current, command, receipt_kind="record")
             if isinstance(command, SourceSelectionCommand):
                 return await self._record_selection(connection, clock, current, binding_id, command)
             if isinstance(command, ClaimJudgmentCommand):
@@ -1153,6 +1182,9 @@ class Store:
             await connection.execute("INSERT INTO am_feedback(id,binding_id,target_ref,kind,source_id,reason,rejected_source_ids) VALUES($1,$2,$3,$4,$5,$6,$7)", artifact_id, binding_id, command.target_ref, command.kind, source_id, command.body, rejected_sources)
             if command.kind == "reject":
                 await self._index_rejection(connection, binding_id, artifact_id)
+            if command.kind in {"correct", "retract_request"}:
+                await self._enqueue_health(connection, binding_id, "feedback:" + artifact_id,
+                    payload={"cause": "feedback_candidate", "feedback_ref": artifact_id})
             await connection.execute("UPDATE am_operations SET source_id=$2,artifact_id=$3 WHERE id=$1", operation["id"], source_id, artifact_id)
             await self._save_receipt(connection, current, binding_id, "feedback", command.idempotency_key, digest, operation["id"])
             return self._operation(await self._operation_row(connection, binding_id, operation["id"]))
@@ -1195,6 +1227,13 @@ class Store:
                 "INPUT_INELIGIBLE",
                 "The feedback reason source or its target lineage is not currently eligible",
             )
+        owners = await connection.fetch("""SELECT * FROM am_health_events WHERE binding_id=$1
+            AND reason_source_id=$2 ORDER BY id LIMIT 17""", binding_id, source_id)
+        if len(owners) > 16:
+            raise DomainError("INPUT_INELIGIBLE", "The complete health reason ownership exceeds its bound")
+        for owner in owners:
+            if not await self._health_event_visible(connection, binding_id, owner, snapshot):
+                raise DomainError("INPUT_INELIGIBLE", "The health reason or its exact target lineage is unavailable")
         return row
 
     async def source(self, actor: Principal, binding_id: str, source_id: str) -> Source:
@@ -1243,6 +1282,8 @@ class Store:
             ("selection", "am_source_selections"),
             ("judgment", "am_claim_judgments"),
             ("pending", "am_pending_judgments"),
+            ("health_event", "am_health_events"), ("session_observation", "am_session_observations"),
+            ("code_observation", "am_code_observations"), ("health_workspace", "am_code_workspaces"),
         ):
             row = await connection.fetchrow(f"SELECT * FROM {table} WHERE id=$1 AND binding_id=$2", ref, binding_id)
             if row is not None:
@@ -1265,19 +1306,26 @@ class Store:
             raise DomainError("INPUT_INELIGIBLE", "An actual input is no longer eligible")
         return rows
 
-    async def _new_caller_admission(self, connection, clock, actor, binding_id, purpose, request_digest, snapshot, claims=(), sources=(), relation_ids=(), rejection_ids=(), pending_id=None) -> NonmodelAdmission:
+    async def _new_caller_admission(self, connection, clock, actor, binding_id, purpose, request_digest, snapshot,
+        claims=(), sources=(), relation_ids=(), rejection_ids=(), pending_id=None, *, health_manifest=None, code_workspace_id=None) -> NonmodelAdmission:
         policy = await self._selection_contract(connection, actor, binding_id)
+        if health_manifest is None:
+            health_manifest = await self._admitted_health_manifest(connection, binding_id,
+                [item.id for item in claims], relation_ids,
+                code_workspace_id=code_workspace_id, workspace_scoped=purpose == 'caller_recall')
         await connection.execute("""DELETE FROM am_admissions WHERE id IN (SELECT id FROM am_admissions
             WHERE kind='nonmodel' AND deadline<=clock_timestamp() LIMIT 64)""")
         row = await connection.fetchrow("""INSERT INTO am_admissions(id,binding_id,credential_id,credential_generation,epoch,
             deletion_generation,route_revision,purpose,route_epochs,sources,claim_ids,deadline,snapshot,
-            kind,binding_revision,realm,policy_revision,policy_epoch,relation_ids,request_digest,claim_revisions,rejection_ids,pending_id)
+            kind,binding_revision,realm,policy_revision,policy_epoch,relation_ids,request_digest,claim_revisions,
+            rejection_ids,pending_id,health_manifest)
             VALUES($1,$2,$3,$4,$5,$6,NULL,$7,'{}',$8::jsonb,$9,clock_timestamp()+$10*interval '1 second',
-            $11,'nonmodel',$12,$13,$14,0,$15,$16,$17::jsonb,$18,$19) RETURNING *""",
-            _id("admission"), binding_id, actor.credential_id, actor.generation, clock["epoch"], clock["deletion_generation"],
+            $11,'nonmodel',$12,$13,$14,0,$15,$16,$17::jsonb,$18,$19,$20::jsonb) RETURNING *""",
+            _id('admission'), binding_id, actor.credential_id, actor.generation, clock['epoch'], clock['deletion_generation'],
             purpose, _json([item.model_dump() for item in sources]), [item.id for item in claims],
-            self.settings.read_admission_timeout_seconds, snapshot, policy["binding_revision"], actor.realm,
-            policy["revision"], list(relation_ids), request_digest, _json([item.model_dump() for item in claims]), list(rejection_ids), pending_id)
+            self.settings.read_admission_timeout_seconds, snapshot, policy['binding_revision'], actor.realm,
+            policy['revision'], list(relation_ids), request_digest, _json([item.model_dump() for item in claims]),
+            list(rejection_ids), pending_id, _json(health_manifest))
         return self._nonmodel_admission(row)
 
     async def _judgment_inputs(self, connection, binding_id, snapshot, claim_ids=None) -> tuple[tuple[RevisionRef, ...], tuple[RevisionRef, ...]]:
@@ -1292,6 +1340,7 @@ class Store:
         async for item in rows:
             try:
                 row = await self._claim_row(connection, binding_id, item["id"], snapshot)
+                await self._reuse_claim(connection, row)
             except DomainError as error:
                 if error.code == "CLAIM_INELIGIBLE":
                     continue
@@ -1403,6 +1452,7 @@ class Store:
                         return False
                     await self._relation_row(
                         connection, binding_id, relation_id, snapshot,
+                        reuse=False,
                     )
         except DomainError as error:
             if error.code not in {
@@ -1884,6 +1934,13 @@ class Store:
             raise DomainError("INPUT_INVALID", "Rejection cursors apply only to source inspection", status=400)
         async with self._tx() as (connection, clock):
             current = await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR, Role.APPROVER))
+            if ref == "health" or ref.startswith("health:"):
+                if current.role == Role.APPROVER:
+                    raise _denied()
+                return await self._inspect_health(
+                    connection, clock, current, binding_id, ref, snapshot,
+                    byte_start=byte_start, max_bytes=max_bytes,
+                    representation_bytes=representation_bytes, measure_json=measure_json)
             if ref == "pending":
                 return await self._pending_page(connection, clock, binding_id, snapshot, byte_start, max_bytes)
             if ref == "judgment":
@@ -1891,14 +1948,29 @@ class Store:
                     raise DomainError("JUDGMENT_MANIFEST_INVALID", "Window arguments require a stored record reference")
                 return {"kind": "claim_judgment", **await self._judgment_manifest(connection, clock, current, binding_id, snapshot, claim_ids=claim_ids)}
             kind, row = await self._ref_metadata(connection, binding_id, ref)
+            if kind in {"health_event", "session_observation", "code_observation", "health_workspace"}:
+                if current.role == Role.APPROVER:
+                    raise _denied()
+                if kind == "health_event":
+                    return await self._inspect_health(
+                        connection, clock, current, binding_id, "health:event:" + ref, snapshot,
+                        byte_start=byte_start, max_bytes=max_bytes,
+                        representation_bytes=representation_bytes, measure_json=measure_json)
             if rejection_cursor is not None and kind != "source":
                 raise DomainError("INPUT_INVALID", "Rejection cursors apply only to source inspection", status=400)
-            if kind not in {"source", "claim", "judgment", "selection", "feedback"} and (byte_start != 0 or max_bytes != 4096):
-                raise DomainError("SOURCE_WINDOW_INVALID", "Window arguments require a source or stored claim, judgment, selection or feedback record")
+            if kind not in {"source", "claim", "judgment", "selection", "feedback", "proposal", "rule"} and (byte_start != 0 or max_bytes != 4096):
+                raise DomainError("SOURCE_WINDOW_INVALID", "Window arguments require a source or stored record")
             if kind in {"pending", "judgment"} and row["snapshot"] is not None and row["snapshot"] != snapshot:
                 raise DomainError("SNAPSHOT_INELIGIBLE", "The judgment belongs to a different snapshot")
             result = {"id": ref, "kind": kind, "epoch": clock["epoch"], "state": row.get("state", "candidate")}
             if kind == "pending":
+                if row["kind"] == "health":
+                    if current.role == Role.APPROVER:
+                        raise _denied()
+                    return await self._inspect_health(
+                        connection, clock, current, binding_id, "health:item:" + row["id"], snapshot,
+                        byte_start=byte_start, max_bytes=max_bytes,
+                        representation_bytes=representation_bytes, measure_json=measure_json)
                 result.update(pending_kind=row["kind"], source_ids=row["source_ids"], claim_ids=row["claim_ids"],
                     reason=row["reason"], original_job_id=row["original_job_id"])
                 if row["kind"] == "cleanup" and row["state"] in {"pending", "held"}:
@@ -2045,7 +2117,7 @@ class Store:
                     partial=len(sentences) < len(draft.sentences) or len(limitations) < len(draft.limitations),
                 )
             elif kind == "relation":
-                relation = await self._relation_row(connection, binding_id, ref, snapshot)
+                relation = await self._relation_row(connection, binding_id, ref, snapshot, reuse=False)
                 result.update(
                     left_id=relation["left_id"],
                     right_id=relation["right_id"],
@@ -2062,19 +2134,37 @@ class Store:
                 )
             elif kind in {"proposal", "rule"}:
                 proposal_id = ref if kind == "proposal" else row["proposal_id"]
-                proposal = row if kind == "proposal" else await connection.fetchrow("SELECT * FROM am_proposals WHERE id=$1", proposal_id)
-                await self._dependencies(connection, "am_proposal_sources", "proposal_id", proposal_id)
+                proposal = row if kind == "proposal" else await connection.fetchrow(
+                    "SELECT * FROM am_proposals WHERE id=$1", proposal_id)
+                if proposal is None or proposal["binding_id"] not in current.bindings:
+                    raise _denied()
+                dependencies = await self._dependencies(connection, "am_proposal_sources", "proposal_id", proposal_id)
+                if not dependencies or any(source["binding_id"] not in current.bindings for source in dependencies):
+                    raise _denied()
+                body_source = next((source for source in dependencies if source["id"] == proposal["source_id"]), None)
+                if body_source is None:
+                    raise DomainError("INPUT_INELIGIBLE", "The exact proposed body is unavailable")
                 if kind == "rule":
                     active = await self._active_rule(connection, row)
-                    result.update(digest=active.digest, revision=active.revision, scope=active.scope.value, target_bindings=tuple(target for target in active.target_bindings if target in current.bindings))
+                    result.update(
+                        digest=active.digest, revision=active.revision, scope=active.scope.value,
+                        target_bindings=tuple(target for target in active.target_bindings if target in current.bindings))
                 else:
                     result.update(digest=proposal["digest"], target_set_revision=proposal["target_set_revision"])
-                body = (await self._source_row(connection, proposal["binding_id"], proposal["source_id"]))["body"]
-                result.update(required=proposal["required"], selector=_decode(proposal["selector"]), candidate=kind == "proposal")
-                if len(body.encode()) <= 4096:
-                    result["body"] = body
-                else:
-                    result["partial"] = True
+                result.update(
+                    proposal_id=proposal_id, proposal_digest=proposal["digest"],
+                    body=body_source["body"],
+                    body_source_ref={"id": body_source["id"], "revision": body_source["revision"]},
+                    required=proposal["required"], selector=_decode(proposal["selector"]),
+                    exceptions=_decode(proposal["exceptions"]), candidate=kind == "proposal",
+                    input_sources=[{"id": source["id"], "revision": source["expected_revision"]} for source in dependencies],
+                    inspection_authority={
+                        "credential_id": current.credential_id, "generation": current.generation,
+                        "realm": current.realm, "binding_id": binding_id,
+                        "binding_revision": await connection.fetchval(
+                            "SELECT revision FROM am_bindings WHERE id=$1", binding_id)})
+                if byte_start != 0 or max_bytes != 4096 or measure_json(result) > representation_bytes:
+                    return stored_record_window(result, byte_start, max_bytes, representation_bytes, measure_json=measure_json)
             elif kind == "feedback":
                 if not await self._feedback_disclosure(connection, binding_id, row, snapshot):
                     return {name: result[name] for name in ("id", "kind", "epoch", "state")}
@@ -2085,6 +2175,78 @@ class Store:
                 if byte_start != 0 or max_bytes != 4096 or measure_json(result) > representation_bytes:
                     return stored_record_window(result, byte_start, max_bytes, representation_bytes, measure_json=measure_json)
             return result
+
+    async def _current_selection_rows(self, connection, binding_id: str, snapshot: str | None) -> list:
+        rows = connection.cursor("""SELECT q.* FROM am_source_selections q
+            JOIN am_sources s ON s.id=q.source_id
+            WHERE q.binding_id=$1 AND q.state='active'
+            AND q.policy_revision=$3 AND q.label IN ('remember','discard','review')
+            AND (q.snapshot IS NULL OR q.snapshot IS NOT DISTINCT FROM $2)
+            AND (q.request_snapshot IS NULL OR q.request_snapshot IS NOT DISTINCT FROM $2)
+            AND s.binding_id=$1 AND s.realm=$4 AND s.state='active' AND s.body IS NOT NULL
+            AND s.revision=q.source_revision ORDER BY q.source_id,q.byte_start,q.id""",
+            binding_id, snapshot, selection_contract_revision(), self.settings.realm, prefetch=32)
+        current = []
+        async for row in rows:
+            if await self._selection_disclosure(connection, binding_id, row, snapshot):
+                current.append(row)
+        return current
+
+    @staticmethod
+    def _ranges_cover(rows, length: int) -> bool:
+        end = 0
+        for row in sorted(rows, key=lambda item: (item["byte_start"], item["byte_end"])):
+            if row["byte_start"] > end:
+                return False
+            end = max(end, row["byte_end"])
+            if end >= length:
+                return True
+        return length == 0
+
+    async def _current_coverage(self, connection, binding_id: str, snapshot: str | None) -> tuple[dict, list]:
+        rows = await self._current_selection_rows(connection, binding_id, snapshot)
+        classified, ranges, labels = set(), {}, {}
+        for row in rows:
+            labels[row["label"]] = labels.get(row["label"], 0) + 1
+            if row["label"] in {"remember", "discard"}:
+                classified.add(row["source_id"])
+                if row["coverage"] == "complete_window":
+                    ranges.setdefault(row["source_id"], []).append(row)
+        unclassified = incomplete = 0
+        sources = connection.cursor("""SELECT id,octet_length(body) AS size,capture_coverage
+            FROM am_sources WHERE binding_id=$1 AND realm=$3 AND state='active' AND body IS NOT NULL
+            AND speaker NOT IN ('memory','agent_note') AND (snapshot IS NULL OR snapshot=$2)
+            ORDER BY id""", binding_id, snapshot, self.settings.realm, prefetch=32)
+        async for source in sources:
+            coverage = _decode(source["capture_coverage"])
+            unclassified += source["id"] not in classified
+            incomplete += (
+                coverage.get("status") != "observed_window" or bool(coverage.get("gaps"))
+                or not self._ranges_cover(ranges.get(source["id"], ()), source["size"]))
+        return {"unclassified_sources": unclassified, "incomplete_sources": incomplete}, [
+            {"label": label, "count": count} for label, count in sorted(labels.items())]
+
+    async def _resolve_current_source_work(self, connection, binding_id: str, source_id: str) -> None:
+        pending = connection.cursor("""SELECT * FROM am_pending_judgments WHERE binding_id=$1
+            AND kind IN ('source_selection','legacy_revalidation') AND state IN ('pending','held')
+            AND $2=ANY(source_ids) ORDER BY sequence""", binding_id, source_id, prefetch=32)
+        async for item in pending:
+            rows = await self._current_selection_rows(connection, binding_id, item["snapshot"])
+            complete = True
+            for identifier in item["source_ids"]:
+                source = await connection.fetchrow("""SELECT octet_length(body) AS size FROM am_sources
+                    WHERE id=$1 AND binding_id=$2 AND realm=$3 AND state='active' AND body IS NOT NULL
+                    AND (snapshot IS NULL OR snapshot IS NOT DISTINCT FROM $4)""",
+                    identifier, binding_id, self.settings.realm, item["snapshot"])
+                decided = [
+                    row for row in rows if row["source_id"] == identifier
+                    and row["label"] in {"remember", "discard"} and row["coverage"] == "complete_window"]
+                if source is None or not self._ranges_cover(decided, source["size"]):
+                    complete = False
+                    break
+            if complete:
+                await connection.execute("""UPDATE am_pending_judgments SET state='resolved',
+                    resolved_at=clock_timestamp() WHERE id=$1""", item["id"])
 
     async def _stats(self, connection, binding_id: str, epoch: int, snapshot: str | None = None) -> dict:
         sources = await connection.fetchval("SELECT count(*) FROM am_sources WHERE binding_id=$1 AND state='active' AND body IS NOT NULL AND (snapshot IS NULL OR snapshot=$2)", binding_id, snapshot)
@@ -2138,28 +2300,12 @@ class Store:
                 "recovery_jobs": [dict(job) for job in recovery],
                 "recovery_partial": job_counts.get("blocked", 0) + job_counts.get("failed", 0) > len(recovery)}
         if lexical:
-            coverage = await connection.fetchrow("""SELECT
-                count(*) FILTER (WHERE NOT EXISTS(SELECT 1 FROM am_source_selections q
-                    WHERE q.source_id=s.id AND q.source_revision=s.revision AND q.state='active'
-                        AND q.label IN ('remember','discard'))) AS unclassified_sources,
-                count(*) FILTER (WHERE s.capture_coverage->>'status'<>'observed_window'
-                    OR s.capture_coverage->'gaps'<>'[]'::jsonb
-                    OR NOT COALESCE((SELECT range_agg(int8range(q.byte_start::bigint,q.byte_end::bigint,'[)'))
-                        FROM am_source_selections q WHERE q.source_id=s.id AND q.source_revision=s.revision
-                        AND q.state='active' AND q.label IN ('remember','discard') AND q.coverage='complete_window'), '{}'::int8multirange)
-                        @> int8range(0,octet_length(s.body)::bigint,'[)')) AS incomplete_sources
-                FROM am_sources s WHERE s.binding_id=$1 AND s.state='active' AND s.body IS NOT NULL
-                AND s.speaker NOT IN ('memory','agent_note')
-                AND (s.snapshot IS NULL OR s.snapshot=$2)""", binding_id, snapshot)
-            labels = await connection.fetch("""SELECT q.label,count(*) AS count FROM am_source_selections q
-                WHERE q.binding_id=$1 AND q.state='active' AND (q.snapshot IS NULL OR q.snapshot=$2)
-                AND NOT EXISTS(SELECT 1 FROM am_selection_sources d JOIN am_sources s ON s.id=d.source_id
-                    WHERE d.selection_id=q.id AND (s.state<>'active' OR s.body IS NULL OR s.revision<>d.source_revision))
-                GROUP BY q.label""", binding_id, snapshot)
+            coverage, labels = await self._current_coverage(connection, binding_id, snapshot)
             result.update(coverage={**dict(coverage), "previous_policy_claims": indexed["previous_policy"]},
                 classification_labels={row["label"]: row["count"] for row in labels})
         result["legacy_claims_awaiting_revalidation"] = await connection.fetchval("SELECT count(*) FROM am_claims WHERE binding_id=$1 AND state='active' AND awaiting_revalidation", binding_id)
         result["retired_jobs"] = await connection.fetchval("SELECT count(*) FROM am_jobs WHERE binding_id=$1 AND retired_at IS NOT NULL", binding_id)
+        result["health"] = await self._current_health_stats(connection, binding_id, snapshot)
         return result
 
     async def stats(self, actor: Principal, binding_id: str, snapshot: str | None = None) -> dict:
@@ -2175,9 +2321,13 @@ class Store:
             epoch=row["epoch"], deletion_generation=row["deletion_generation"], policy_revision=row["policy_revision"],
             policy_epoch=row["policy_epoch"], sources=tuple(RevisionRef.model_validate(item) for item in _decode(row["sources"])),
             claim_ids=tuple(row["claim_ids"]), snapshot=row["snapshot"], deadline=row["deadline"], request_digest=row["request_digest"],
+            health_manifest_digest=canonical_digest(_decode(row["health_manifest"])),
             relation_ids=tuple(row["relation_ids"]), rejection_ids=tuple(row["rejection_ids"]), pending_id=row["pending_id"])
 
-    async def _lexical_relations(self, connection, binding_id: str, claim_ids: tuple[str, ...], snapshot: str | None) -> list:
+    async def _lexical_relations(
+        self, connection, binding_id: str, claim_ids: tuple[str, ...], snapshot: str | None, *,
+        code_workspace_id: str | None = None, workspace_scoped: bool = False,
+    ) -> list:
         rows = await connection.fetch("""SELECT * FROM am_relations WHERE binding_id=$1 AND state='active' AND judgment_id IS NOT NULL
             AND (left_id=ANY($2::text[]) OR right_id=ANY($2::text[])) ORDER BY id""", binding_id, list(claim_ids))
         eligible = []
@@ -2187,7 +2337,9 @@ class Store:
             if key in seen:
                 continue
             try:
-                await self._relation_row(connection, binding_id, row["id"], snapshot)
+                await self._relation_row(
+                    connection, binding_id, row["id"], snapshot,
+                    code_workspace_id=code_workspace_id, workspace_scoped=workspace_scoped)
             except DomainError as error:
                 if error.code not in {"RELATION_INELIGIBLE", "INPUT_INELIGIBLE", "CLAIM_INELIGIBLE"}:
                     raise
@@ -2198,7 +2350,10 @@ class Store:
             eligible.append(row)
         return eligible
 
-    async def search_lexical(self, actor: Principal, binding_id: str, lexical_tokens: list[str], snapshot: str | None, limit: int = 20, *, request_digest: str) -> tuple[list[tuple[Claim, tuple[str, ...]]], NonmodelAdmission]:
+    async def search_lexical(
+        self, actor: Principal, binding_id: str, lexical_tokens: list[str], snapshot: str | None, limit: int = 20, *,
+        request_digest: str, code_workspace_id: str | None = None,
+    ) -> tuple[list[tuple[Claim, tuple[str, ...]]], NonmodelAdmission]:
         if not re.fullmatch(r"[a-f0-9]{64}", request_digest):
             raise DomainError("ADMISSION_REQUEST_INVALID", "A canonical recall request digest is required")
         if type(limit) is not int or not 1 <= limit <= 20 or len(lexical_tokens) > 2048 or any(
@@ -2207,12 +2362,13 @@ class Store:
             raise DomainError("SEARCH_LIMIT_INVALID", "The retrieval bounds are invalid")
         async with self._tx() as (connection, clock):
             current = await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR))
-            rows = await connection.fetch("""WITH eligible AS MATERIALIZED (
+            rows = await connection.fetch(f"""WITH eligible AS MATERIALIZED (
                 SELECT c.* FROM am_claims c JOIN am_source_selections q ON q.id=c.selection_id
                 WHERE c.binding_id=$1 AND c.state='active' AND c.draft IS NOT NULL AND c.superseded_by IS NULL
                 AND c.capability='agent_judged' AND q.state='active' AND q.realm=$4
                 AND (c.snapshot IS NULL OR c.snapshot=$3)
                 AND (c.valid_from IS NULL OR c.valid_from<=clock_timestamp()) AND (c.valid_until IS NULL OR c.valid_until>clock_timestamp())
+                AND ({_HEALTH_REUSE_SQL}) AND ({_CODE_CONTEXT_SQL.format(workspace="$7")})
                 AND EXISTS(SELECT 1 FROM am_claim_sources d WHERE d.claim_id=c.id)
                 AND NOT EXISTS(SELECT 1 FROM am_claim_sources d JOIN am_sources s ON s.id=d.source_id WHERE d.claim_id=c.id
                     AND (s.state<>'active' OR s.body IS NULL OR s.revision<>d.source_revision OR s.binding_id<>$1 OR s.realm<>$4
@@ -2233,9 +2389,11 @@ class Store:
                 FROM arms GROUP BY id ORDER BY score DESC,id LIMIT $5
             ) SELECT c.*,f.arms FROM fused f JOIN eligible c ON c.id=f.id ORDER BY f.score DESC,c.id""",
                 binding_id, list(dict.fromkeys(lexical_tokens)), snapshot, current.realm, limit,
-                list(dict.fromkeys(_entity(token) for token in lexical_tokens)))
+                list(dict.fromkeys(_entity(token) for token in lexical_tokens)), code_workspace_id)
             claim_ids = tuple(row["id"] for row in rows)
-            relations = await self._lexical_relations(connection, binding_id, claim_ids, snapshot)
+            relations = await self._lexical_relations(
+                connection, binding_id, claim_ids, snapshot,
+                code_workspace_id=code_workspace_id, workspace_scoped=True)
             dependencies = await connection.fetch("""SELECT DISTINCT source_id FROM am_claim_sources WHERE claim_id=ANY($1::text[])
                 UNION SELECT source_id FROM am_relation_sources WHERE relation_id=ANY($2::text[]) ORDER BY source_id""",
                 list(claim_ids), [row["id"] for row in relations])
@@ -2256,43 +2414,62 @@ class Store:
                 request_digest, snapshot,
                 claims=tuple(RevisionRef(id=claim["id"], revision=claim["revision"]) for claim in rows),
                 sources=tuple(RevisionRef.model_validate(source) for source in sources),
-                relation_ids=tuple(relation["id"] for relation in relations))
+                relation_ids=tuple(relation["id"] for relation in relations), code_workspace_id=code_workspace_id)
             return [(await self._claim(connection, claim), tuple(claim["arms"])) for claim in rows], admission
 
     async def _recheck_nonmodel(self, connection, clock, actor: Principal, admission: NonmodelAdmission):
-        row = await connection.fetchrow("SELECT * FROM am_admissions WHERE id=$1 AND kind='nonmodel' AND deadline>clock_timestamp()", admission.id)
+        row = await connection.fetchrow("""SELECT * FROM am_admissions WHERE id=$1 AND kind='nonmodel'
+            AND deadline>clock_timestamp()""", admission.id)
         if row is None or self._nonmodel_admission(row) != admission:
-            raise DomainError("ADMISSION_STALE", "The durable nonmodel input admission expired or changed")
+            raise DomainError('ADMISSION_STALE', 'The durable nonmodel input admission expired or changed')
         current = await self._actor(connection, actor, admission.binding_id, (Role.AGENT, Role.OPERATOR))
-        if current.credential_id != admission.credential_id or current.generation != admission.credential_generation or current.realm != admission.realm:
-            raise DomainError("ADMISSION_STALE", "The admitted credential changed")
+        if (current.credential_id, current.generation, current.realm) != (
+            admission.credential_id, admission.credential_generation, admission.realm):
+            raise DomainError('ADMISSION_STALE', 'The admitted credential changed')
         policy = await self._selection_contract(connection, current, admission.binding_id)
-        if (policy["revision"], policy["epoch"], policy["binding_revision"], clock["deletion_generation"]) != (
-            admission.policy_revision, admission.policy_epoch, admission.binding_revision, admission.deletion_generation
-        ):
-            raise DomainError("ADMISSION_STALE", "The binding, selection policy or deletion generation changed")
+        if (policy['revision'], policy['epoch'], policy['binding_revision'], clock['deletion_generation']) != (
+            admission.policy_revision, admission.policy_epoch, admission.binding_revision, admission.deletion_generation):
+            raise DomainError('ADMISSION_STALE', 'The binding, selection policy or deletion generation changed')
+        saved_health = _decode(row['health_manifest'])
+        if row['purpose'] == 'health_work':
+            live_health, _ = await self._health_work_manifest(connection, admission.binding_id, saved_health['pending_id'])
+        elif row['purpose'] == 'health_claim':
+            live_health, _ = await self._claim_review_manifest(connection, admission.binding_id,
+                admission.claim_ids[0], admission.snapshot, saved_health['nominated'])
+        elif row['purpose'] == 'health_feedback':
+            live_health, _ = await self._feedback_health_manifest(connection, admission.binding_id, saved_health['feedback_ref'])
+        else:
+            live_health = await self._admitted_health_manifest(connection, admission.binding_id,
+                admission.claim_ids, admission.relation_ids,
+                code_workspace_id=saved_health['workspace']['id'], workspace_scoped=saved_health['workspace']['scoped'])
+        if live_health != saved_health:
+            raise DomainError('ADMISSION_STALE', 'An actual health, code, review, policy or work dependency changed')
         if admission.pending_id is not None:
             pending = await connection.fetchrow("""SELECT * FROM am_pending_judgments WHERE id=$1 AND binding_id=$2
                 AND kind='cleanup' AND state IN ('pending','held') AND (snapshot IS NULL OR snapshot=$3)""",
                 admission.pending_id, admission.binding_id, admission.snapshot)
             if pending is None:
-                raise DomainError("ADMISSION_STALE", "The admitted cleanup item is no longer pending")
-            claims, sources = await self._judgment_inputs(connection, admission.binding_id, admission.snapshot, pending["claim_ids"])
-            if [item.model_dump() for item in claims] != _decode(row["claim_revisions"]) or sources != admission.sources:
-                raise DomainError("ADMISSION_STALE", "The cleanup's eligible revision manifest changed")
+                raise DomainError('ADMISSION_STALE', 'The admitted cleanup item is no longer pending')
+            claims, sources = await self._judgment_inputs(connection, admission.binding_id, admission.snapshot, pending['claim_ids'])
+            if [item.model_dump() for item in claims] != _decode(row['claim_revisions']) or sources != admission.sources:
+                raise DomainError('ADMISSION_STALE', 'The eligible cleanup manifest changed')
         for item in admission.sources:
             source = await self._source_row(connection, admission.binding_id, item.id, admission.snapshot, True)
-            if source["revision"] != item.revision:
-                raise DomainError("ADMISSION_STALE", "An actual source revision changed")
-        revisions = {item["id"]: item["revision"] for item in _decode(row["claim_revisions"])}
+            if source['revision'] != item.revision:
+                raise DomainError('ADMISSION_STALE', 'An actual source revision changed')
+        revisions = {item['id']: item['revision'] for item in _decode(row['claim_revisions'])}
         for claim_id in admission.claim_ids:
             claim = await self._claim_row(connection, admission.binding_id, claim_id, admission.snapshot)
-            if claim["capability"] != "agent_judged" or claim["revision"] != revisions.get(claim_id):
-                raise DomainError("ADMISSION_STALE", "An actual candidate origin or revision changed")
-        relations = await self._lexical_relations(connection, admission.binding_id, admission.claim_ids, admission.snapshot)
-        if tuple(item["id"] for item in relations) != tuple(row["relation_ids"]):
-            raise DomainError("ADMISSION_STALE", "The complete relation snapshot changed")
-        if row["purpose"] == "source_selection":
+            if claim['capability'] != 'agent_judged' or claim['revision'] != revisions.get(claim_id):
+                raise DomainError('ADMISSION_STALE', 'An actual candidate origin or revision changed')
+            if row['purpose'] not in {'health_claim', 'health_work'}:
+                await self._reuse_claim(connection, claim)
+        if row['purpose'] not in {'health_claim', 'health_work', 'health_feedback'}:
+            relations = await self._lexical_relations(connection, admission.binding_id, admission.claim_ids, admission.snapshot,
+                code_workspace_id=saved_health['workspace']['id'], workspace_scoped=saved_health['workspace']['scoped'])
+            if tuple(item['id'] for item in relations) != tuple(row['relation_ids']):
+                raise DomainError('ADMISSION_STALE', 'The complete relation snapshot changed')
+        if row['purpose'] == 'source_selection':
             await self._recheck_rejection_inputs(connection, row)
         return row
 
@@ -2307,7 +2484,10 @@ class Store:
             claims = [await self._claim(connection, await self._claim_row(connection, binding_id, claim_id, snapshot)) for claim_id in admission.claim_ids]
             return admission, claims
 
-    async def _relation_row(self, connection, binding_id: str, relation_id: str, snapshot: str | None):
+    async def _relation_row(
+        self, connection, binding_id: str, relation_id: str, snapshot: str | None, *,
+        reuse: bool = True, code_workspace_id: str | None = None, workspace_scoped: bool = False,
+    ):
         row = await connection.fetchrow("SELECT * FROM am_relations WHERE id=$1 AND binding_id=$2 AND state='active'", relation_id, binding_id)
         if row is None:
             raise DomainError("RELATION_INELIGIBLE", "The relation is no longer current")
@@ -2317,6 +2497,11 @@ class Store:
             raise DomainError("RELATION_INELIGIBLE", "The complete relation input manifest is unavailable")
         claims = {claim_id: await self._claim_row(connection, binding_id, claim_id, snapshot)
             for claim_id in {row["left_id"], row["right_id"], *(item["claim_id"] for item in manifest)}}
+        if reuse:
+            for claim in claims.values():
+                await self._reuse_claim(connection, claim)
+                if workspace_scoped:
+                    await self._require_workspace_claim(connection, claim, code_workspace_id)
         if row["judgment_id"] is not None:
             judgment = await connection.fetchrow("""SELECT * FROM am_claim_judgments
                 WHERE id=$1 AND binding_id=$2 AND state='active'""", row["judgment_id"], binding_id)
@@ -2636,6 +2821,8 @@ class Store:
             proposal = await connection.fetchrow("SELECT * FROM am_proposals WHERE id=$1", proposal_id)
             source_ids = [proposal["source_id"]]
             artifacts = tuple(sorted({*artifacts, ("proposal", proposal_id)}))
+        elif kind == "health_event":
+            source_ids = [row["reason_source_id"]] if row["reason_source_id"] else []
         elif kind in {"operation", "feedback"}:
             if kind == "operation" and row["artifact_id"]:
                 descendants, derived = await self._deletion_targets(connection, binding_id, row["artifact_id"])
@@ -2691,6 +2878,29 @@ class Store:
             UNION SELECT id,source_id FROM am_feedback WHERE source_id IS NOT NULL
             UNION SELECT source_id,id FROM am_feedback WHERE source_id IS NOT NULL
             UNION SELECT unnest(rejected_source_ids),source_id FROM am_feedback WHERE source_id IS NOT NULL
+            UNION SELECT target_ref,id FROM am_health_events WHERE target_ref IS NOT NULL AND kind<>'feedback_resolution'
+            UNION SELECT target_ref,reason_source_id FROM am_health_events
+                WHERE kind='feedback_resolution' AND target_ref IS NOT NULL AND reason_source_id IS NOT NULL
+            UNION SELECT payload->>'assessment_event_id',id FROM am_health_events
+                WHERE kind='health_assessment' AND payload ? 'assessment_event_id'
+            UNION SELECT d.value,p.id FROM am_pending_judgments p
+                CROSS JOIN LATERAL jsonb_array_elements_text(
+                    COALESCE(p.health_payload->'session_observation_ids','[]')) d WHERE p.kind='health'
+            UNION SELECT unnest(source_ids),id FROM am_health_events
+            UNION SELECT unnest(claim_ids),id FROM am_health_events
+            UNION SELECT id,reason_source_id FROM am_health_events WHERE reason_source_id IS NOT NULL
+            UNION SELECT reason_source_id,id FROM am_health_events WHERE reason_source_id IS NOT NULL
+            UNION SELECT workspace_id,id FROM am_code_observations
+            UNION SELECT unnest(source_ids),id FROM am_pending_judgments WHERE kind='health'
+            UNION SELECT unnest(claim_ids),id FROM am_pending_judgments WHERE kind='health'
+            UNION SELECT d->>'id',o.id FROM am_session_observations o
+                CROSS JOIN LATERAL jsonb_array_elements(COALESCE(o.payload->'source_refs','[]')) d
+            UNION SELECT d->>'id',o.id FROM am_session_observations o
+                CROSS JOIN LATERAL jsonb_array_elements(COALESCE(o.payload->'claim_refs','[]')) d
+            UNION SELECT s.id,o.id FROM am_session_observations o JOIN am_sources s
+                ON s.binding_id=o.binding_id AND s.producer_generation=o.credential_generation
+                AND o.payload->'origin_keys' ? s.origin_key
+                JOIN am_operations p ON p.id=s.operation_id AND p.credential_id=o.credential_id
         )"""
 
     async def _floored_artifact_ids(self, connection, tokens: set[str]) -> list[str]:
@@ -2699,7 +2909,9 @@ class Store:
         tables = {"claim": "am_claims", "selection": "am_source_selections", "relation": "am_relations",
             "reflection": "am_reflections", "proposal": "am_proposals", "rule": "am_rules",
             "operation": "am_operations", "feedback": "am_feedback", "judgment": "am_claim_judgments",
-            "pending": "am_pending_judgments"}
+            "pending": "am_pending_judgments", "health_event": "am_health_events",
+            "session_observation": "am_session_observations", "code_observation": "am_code_observations",
+            "health_workspace": "am_code_workspaces"}
         refs = []
         for kind, table in tables.items():
             refs.extend((kind, row["id"]) for row in await connection.fetch(f"SELECT id FROM {table}"))
@@ -2738,7 +2950,9 @@ class Store:
         source_ids = [row["id"] for row in sources]
         tables = {"claim": "am_claims", "selection": "am_source_selections", "relation": "am_relations",
             "reflection": "am_reflections", "proposal": "am_proposals", "rule": "am_rules",
-            "operation": "am_operations", "feedback": "am_feedback", "judgment": "am_claim_judgments"}
+            "operation": "am_operations", "feedback": "am_feedback", "judgment": "am_claim_judgments",
+            "health_event": "am_health_events", "session_observation": "am_session_observations",
+            "code_observation": "am_code_observations", "health_workspace": "am_code_workspaces"}
         refs = []
         for kind, table in tables.items():
             refs.extend((kind, row["id"]) for row in await connection.fetch(f"SELECT id FROM {table}"))
@@ -2783,6 +2997,7 @@ class Store:
         await connection.execute("""UPDATE am_feedback SET reason=NULL
             WHERE (id=ANY($1::text[]) OR source_id=ANY($2::text[]) OR rejected_source_ids && $2::text[])
             AND reason IS NOT NULL""", targets["feedback"], source_ids)
+        await self._apply_health_deletions(connection, scrub=True)
 
     async def _reopen_source_work(
         self, connection, source_ids: tuple[str, ...],
@@ -2887,6 +3102,8 @@ class Store:
                 "proposal": "am_proposals", "rule": "am_rules", "operation": "am_operations", "feedback": "am_feedback",
                 "selection": "am_source_selections",
                 "judgment": "am_claim_judgments", "pending": "am_pending_judgments",
+                "health_event": "am_health_events", "session_observation": "am_session_observations",
+                "code_observation": "am_code_observations", "health_workspace": "am_code_workspaces",
             }
             refs = []
             for kind, table in tables.items():
@@ -2986,6 +3203,7 @@ class Store:
                 WHERE d.reflection_id=r.id AND c.state<>'active'))""")
         await connection.execute("""UPDATE am_rules r SET state='retracted',revision=revision+1 WHERE state='active'
             AND EXISTS(SELECT 1 FROM am_proposals p WHERE p.id=r.proposal_id AND p.state='retracted')""")
+        await self._apply_health_deletions(connection, scrub=False)
         await connection.execute("""UPDATE am_operations o SET state='retracted',error_code='SOURCE_RETRACTED',
             source_pointer=NULL,capture_disposition=CASE WHEN source_id IS NOT NULL THEN 'retracted' ELSE capture_disposition END
             WHERE state<>'retracted' AND (
@@ -3126,6 +3344,9 @@ class Store:
                 epoch = await connection.fetchval("SELECT epoch FROM am_clock WHERE singleton")
                 result = await self._deletion_status(connection, [source["id"] for source in sources], epoch, "retracted")
                 result.update(ref=ref, head=journal["head"])
+                operation = await self._new_operation(connection, current, binding_id, "retract", "retracted")
+                await connection.execute("UPDATE am_operations SET artifact_id=$2 WHERE id=$1", operation["id"], ref)
+                result.update(operation_id=operation["id"])
                 await self._save_receipt(connection, current, binding_id, "retract", key, digest, ref, result)
                 return result
         except DomainError as error:
@@ -3310,6 +3531,15 @@ class Store:
             epoch = await self._tick(connection)
             await connection.execute("UPDATE am_routes SET enabled=false,epoch=$1", epoch)
             await connection.execute("UPDATE am_selection_policies SET enabled=false,epoch=$1", epoch)
+            await connection.execute("UPDATE am_sources SET health_restore_revision=revision WHERE state='active' AND body IS NOT NULL")
+            await connection.execute("""INSERT INTO am_claim_health(claim_id,claim_revision,binding_id)
+                SELECT id,revision,binding_id FROM am_claims WHERE state='active' AND draft IS NOT NULL
+                ON CONFLICT DO NOTHING""")
+            await connection.execute("""UPDATE am_claim_health h SET version=version+1,restore_unknown=true,
+                needs_review=true,support='unknown',freshness='unknown',operator_review=NULL,
+                review_event_id=NULL,assessment_event_id=NULL
+                FROM am_claims c WHERE c.id=h.claim_id AND c.state='active' AND c.draft IS NOT NULL""")
+            await connection.execute("UPDATE am_health_policies SET revision=revision+1,enabled=false,allow_jev_health=false")
             await connection.execute("DELETE FROM am_admissions")
             await connection.execute("""UPDATE am_jobs SET state='blocked',error_code='AUTH_REISSUE_REQUIRED',generation=generation+1,
                 lease_token=NULL,deadline=NULL WHERE state IN ('pending','leased','blocked','failed') AND retired_at IS NULL""")
@@ -3865,7 +4095,7 @@ class Store:
                         return None
 
             elif kind == "relation":
-                await self._relation_row(connection, binding_id, ref, snapshot)
+                await self._relation_row(connection, binding_id, ref, snapshot, reuse=False)
                 if not await source_dependencies("am_relation_sources", "relation_id"):
                     return None
                 claims = await connection.fetch(
@@ -3918,3 +4148,1122 @@ class Store:
             if error.code not in _DISCLOSURE_ERRORS:
                 raise
             return None
+
+
+    async def _health_policy(self, connection, binding_id: str) -> dict:
+        row = await connection.fetchrow('SELECT * FROM am_health_policies WHERE binding_id=$1', binding_id)
+        return dict(row) if row else {'binding_id': binding_id, 'revision': 0, 'enabled': False,
+            'allow_jev_health': False, 'max_audit_sources': 16, 'max_audit_claims': 20, 'max_audit_bytes': 32768}
+
+    async def health_policy(self, actor: Principal, binding_id: str) -> dict:
+        async with self._tx(lock=False) as (connection, _):
+            await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR))
+            return await self._health_policy(connection, binding_id)
+
+    async def _health_state(self, connection, claim) -> dict:
+        row = await connection.fetchrow('SELECT * FROM am_claim_health WHERE claim_id=$1', claim['id'])
+        if row is not None and row['claim_revision'] != claim['revision']:
+            raise DomainError('HEALTH_STALE', 'The exact claim health revision changed')
+        if row is None:
+            restored = await connection.fetchval('''SELECT EXISTS(SELECT 1 FROM am_claim_sources d
+                JOIN am_sources s ON s.id=d.source_id WHERE d.claim_id=$1
+                AND s.health_restore_revision=d.source_revision)''', claim['id'])
+            return {'claim_id': claim['id'], 'claim_revision': claim['revision'], 'binding_id': claim['binding_id'],
+                'version': 1, 'support': 'unknown', 'freshness': 'unknown', 'needs_review': restored,
+                'restore_unknown': restored, 'operator_review': None, 'review_event_id': None,
+                'assessment_event_id': None}
+        return dict(row)
+
+    async def _ensure_health_state(self, connection, claim) -> dict:
+        initial = await self._health_state(connection, claim)
+        await connection.execute('''INSERT INTO am_claim_health(claim_id,claim_revision,binding_id,restore_unknown,needs_review)
+            VALUES($1,$2,$3,$4,$4) ON CONFLICT DO NOTHING''',
+            claim['id'], claim['revision'], claim['binding_id'], initial['restore_unknown'])
+        return await self._health_state(connection, claim)
+
+    async def _code_dependencies(self, connection, claim) -> list[dict]:
+        rows = await connection.fetch('''SELECT o.* FROM am_code_links d
+            JOIN am_code_observations o ON o.id=d.observation_id
+            WHERE d.claim_id=$1 AND d.claim_revision=$2 ORDER BY o.workspace_id,o.relative_path,o.symbol_name,o.id''',
+            claim['id'], claim['revision'])
+        policy_enabled = (await self._health_policy(connection, claim['binding_id']))['enabled'] if rows else False
+        dependencies = []
+        for row in rows:
+            workspace = await connection.fetchrow('SELECT * FROM am_code_workspaces WHERE id=$1', row['workspace_id'])
+            valid = (policy_enabled and row['state'] == 'active' and row['metadata'] is not None and workspace is not None
+                and workspace['state'] == 'active' and workspace['revision'] == row['workspace_revision']
+                and workspace['binding_id'] == claim['binding_id'] and workspace['binding_revision'] ==
+                await connection.fetchval('SELECT revision FROM am_bindings WHERE id=$1', claim['binding_id']))
+            if valid:
+                try:
+                    producer = await self._credential(connection, workspace['producer_credential_id'])
+                    valid = (producer.generation == workspace['producer_generation'] and producer.role == Role.PRODUCER
+                        and claim['binding_id'] in producer.bindings)
+                except DomainError as error:
+                    if error.code not in {'AUTH_DENIED', 'SCOPE_DENIED'}:
+                        raise
+                    valid = False
+            metadata = _decode(row['metadata']) if row['metadata'] else None
+            valid = valid and metadata['status'] == 'present' and (not row['symbol_name'] or metadata.get('symbol') is not None)
+            dependencies.append({'ref': row['id'], 'workspace_id': row['workspace_id'],
+                'workspace_revision': row['workspace_revision'], 'relative_path': row['relative_path'],
+                'symbol_name': row['symbol_name'], 'fingerprint': row['fingerprint'], 'usable': bool(valid)})
+        return dependencies
+
+    async def _claim_health_manifest(self, connection, claim) -> dict:
+        return {'claim': {'id': claim['id'], 'revision': claim['revision']},
+            'health': await self._health_state(connection, claim),
+            'code': await self._code_dependencies(connection, claim)}
+
+    async def _reuse_claim(self, connection, claim) -> None:
+        eligible = await connection.fetchval(f'''SELECT EXISTS(SELECT 1 FROM am_claims c WHERE c.id=$1
+            AND c.binding_id=$2 AND c.revision=$3 AND ({_HEALTH_REUSE_SQL}))''',
+            claim['id'], claim['binding_id'], claim['revision'])
+        if not eligible:
+            raise DomainError('CLAIM_INELIGIBLE', 'This ordinary claim requires current health review before reuse')
+
+    async def _require_workspace_claim(self, connection, claim, workspace_id: str | None) -> None:
+        eligible = await connection.fetchval(f"""SELECT EXISTS(SELECT 1 FROM am_claims c
+            WHERE c.id=$1 AND c.binding_id=$2 AND c.revision=$3
+            AND ({_CODE_CONTEXT_SQL.format(workspace="$4")}))""",
+            claim["id"], claim["binding_id"], claim["revision"], workspace_id)
+        if not eligible:
+            raise DomainError("CLAIM_INELIGIBLE", "The ordinary claim belongs to another explicit code workspace")
+
+    async def _admitted_health_manifest(
+        self, connection, binding_id: str, claim_ids, relation_ids=(), *,
+        code_workspace_id: str | None = None, workspace_scoped: bool = False,
+    ) -> dict:
+        workspace = {"id": code_workspace_id, "scoped": workspace_scoped}
+        if workspace_scoped and code_workspace_id is not None:
+            registered = await connection.fetchrow("""SELECT w.* FROM am_code_workspaces w
+                JOIN am_bindings b ON b.id=w.binding_id WHERE w.id=$1 AND w.binding_id=$2
+                AND w.state='active' AND w.binding_revision=b.revision""", code_workspace_id, binding_id)
+            if registered is None:
+                raise DomainError("HEALTH_WORKSPACE_SCOPE", "The explicit code workspace is no longer registered")
+            producer = await self._credential(connection, registered["producer_credential_id"])
+            if (producer.role != Role.PRODUCER or producer.generation != registered["producer_generation"]
+                    or binding_id not in producer.bindings):
+                raise DomainError("HEALTH_WORKSPACE_SCOPE", "The registered observation authority changed")
+            workspace.update(
+                revision=registered["revision"], root_fingerprint=registered["root_fingerprint"],
+                producer_credential_id=producer.credential_id, producer_generation=producer.generation)
+        ids = set(claim_ids)
+        if relation_ids:
+            rows = await connection.fetch("""SELECT claim_id FROM am_relation_claims WHERE relation_id=ANY($1::text[])
+                UNION SELECT left_id FROM am_relations WHERE id=ANY($1::text[])
+                UNION SELECT right_id FROM am_relations WHERE id=ANY($1::text[])""", list(relation_ids))
+            ids.update(row["claim_id"] for row in rows)
+        if len(ids) > 64:
+            raise DomainError("MANIFEST_TOO_LARGE", "The complete relation health manifest exceeds its bound")
+        result = []
+        for identifier in sorted(ids):
+            claim = await connection.fetchrow("SELECT * FROM am_claims WHERE id=$1 AND binding_id=$2", identifier, binding_id)
+            if claim is None:
+                raise DomainError("CLAIM_INELIGIBLE", "A health dependency is unavailable")
+            if workspace_scoped:
+                await self._require_workspace_claim(connection, claim, code_workspace_id)
+            result.append(await self._claim_health_manifest(connection, claim))
+        return {"claims": result, "workspace": workspace}
+
+    async def _health_event(self, connection, actor, command, operation_id, *, target=None,
+        source_ids=(), claim_ids=(), payload=None, reason=None) -> str:
+        identifier = _id('health')
+        reason_source = None
+        if reason:
+            reason_source = await self._insert_source(connection, actor, CaptureCommand(
+                binding_id=command.binding_id, idempotency_key=command.idempotency_key,
+                origin_key=f'health-reason:{identifier}', body=reason, speaker='agent_note'), operation_id)
+        await connection.execute('''INSERT INTO am_health_events(id,binding_id,operation_id,kind,
+            credential_id,credential_generation,realm,role,target_ref,reason_source_id,source_ids,claim_ids,payload)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)''',
+            identifier, command.binding_id, operation_id, command.kind, actor.credential_id, actor.generation,
+            actor.realm, actor.role.value, target, reason_source, list(source_ids), list(claim_ids), _json(payload or {}))
+        return identifier
+
+    async def _enqueue_health(self, connection, binding_id: str, key: str, *, sources=(), claims=(), payload=None) -> str:
+        existing = await connection.fetchrow('''SELECT * FROM am_pending_judgments
+            WHERE binding_id=$1 AND kind='health' AND health_key=$2''', binding_id, key)
+        data = payload or {}
+        source_ids, claim_ids = sorted(set(sources)), sorted(set(claims))
+        scopes = await connection.fetch('''SELECT DISTINCT snapshot FROM (
+            SELECT snapshot FROM am_sources WHERE id=ANY($1::text[]) AND binding_id=$3
+            UNION SELECT snapshot FROM am_claims WHERE id=ANY($2::text[]) AND binding_id=$3
+            ) scopes WHERE snapshot IS NOT NULL''', source_ids, claim_ids, binding_id)
+        if len(scopes) > 1:
+            raise DomainError('SESSION_SNAPSHOT_CONFLICT', 'Split incompatible snapshot observations into separate segments')
+        snapshot = scopes[0]['snapshot'] if scopes else None
+        if len(source_ids) > 128 or len(claim_ids) > 20:
+            raise DomainError('MANIFEST_TOO_LARGE', 'Split the explicit health work into bounded manifests')
+        if existing is not None:
+            changed = (source_ids != list(existing['source_ids']) or claim_ids != list(existing['claim_ids'])
+                or data != _decode(existing['health_payload']) or snapshot != existing['snapshot'])
+            if changed:
+                await connection.execute('''UPDATE am_pending_judgments SET source_ids=$2,claim_ids=$3,
+                    health_payload=$4::jsonb,health_revision=health_revision+1,state='pending',resolved_at=NULL,snapshot=$5 WHERE id=$1''',
+                    existing['id'], source_ids, claim_ids, _json(data), snapshot)
+            return existing['id']
+        count = await connection.fetchval('''SELECT count(*) FROM am_pending_judgments
+            WHERE binding_id=$1 AND kind='health' AND state IN ('pending','held')''', binding_id)
+        if count >= self.settings.queue_limit:
+            raise DomainError('QUEUE_FULL', 'The bounded health backlog is full', status=429)
+        identifier = _id('pending')
+        await connection.execute('''INSERT INTO am_pending_judgments(id,binding_id,kind,source_ids,claim_ids,
+            health_key,health_revision,health_payload,snapshot) VALUES($1,$2,'health',$3,$4,$5,1,$6::jsonb,$7)''',
+            identifier, binding_id, source_ids, claim_ids, key, _json(data), snapshot)
+        return identifier
+
+    async def health(self, actor: Principal, command) -> Operation:
+        from .health import HEALTH_ADAPTER
+        command = HEALTH_ADAPTER.validate_python(command)
+        async with self._tx() as (connection, clock):
+            return await self._record_health(connection, clock, actor, command)
+
+    async def _record_health(self, connection, clock, actor, command, *, receipt_kind='health') -> Operation:
+        from .health import (CodeLinkCommand, CodeObservationCommand, FeedbackResolutionCommand,
+            HealthAssessmentCommand, HealthPolicyCommand, HealthWorkspaceCommand, MemoryReviewCommand,
+            SessionObservationCommand)
+        if isinstance(command, (HealthPolicyCommand, HealthWorkspaceCommand, MemoryReviewCommand, FeedbackResolutionCommand)):
+            roles = (Role.OPERATOR,)
+        elif isinstance(command, (CodeObservationCommand, SessionObservationCommand)):
+            roles = (Role.PRODUCER, Role.OPERATOR)
+        else:
+            roles = (Role.AGENT, Role.OPERATOR)
+        current = await self._actor(connection, actor, command.binding_id, roles)
+        digest = canonical_digest(command)
+        receipt = await self._receipt(connection, current, command.binding_id, receipt_kind, command.idempotency_key, digest)
+        if receipt:
+            return self._operation(await self._operation_row(connection, command.binding_id, receipt['target_id']))
+        if command.kind in {'code_link', 'health_assessment'}:
+            other_kind = 'record' if receipt_kind == 'health' else 'health'
+            other = await self._receipt(connection, current, command.binding_id, other_kind, command.idempotency_key, digest)
+            if other:
+                await self._save_receipt(connection, current, command.binding_id, receipt_kind,
+                    command.idempotency_key, digest, other['target_id'])
+                return self._operation(await self._operation_row(connection, command.binding_id, other['target_id']))
+        revision = await connection.fetchval('SELECT revision FROM am_bindings WHERE id=$1', command.binding_id)
+        if revision != command.expected_binding_revision:
+            raise DomainError('HEALTH_STALE', 'The binding revision changed')
+        if isinstance(command, (CodeObservationCommand, SessionObservationCommand, HealthAssessmentCommand)):
+            if not (await self._health_policy(connection, command.binding_id))['enabled']:
+                raise DomainError('HEALTH_DISABLED', 'Health processing requires current explicit authorization')
+        operation = await self._new_operation(connection, current, command.binding_id, command.kind, 'health_recorded')
+        if isinstance(command, HealthPolicyCommand):
+            policy = await self._health_policy(connection, command.binding_id)
+            if policy['revision'] != command.expected_policy_revision:
+                raise DomainError('HEALTH_STALE', 'The health policy revision changed')
+            await connection.execute('''INSERT INTO am_health_policies(binding_id,revision,enabled,allow_jev_health,
+                max_audit_sources,max_audit_claims,max_audit_bytes) VALUES($1,$2,$3,$4,$5,$6,$7)
+                ON CONFLICT(binding_id) DO UPDATE SET revision=EXCLUDED.revision,enabled=EXCLUDED.enabled,
+                allow_jev_health=EXCLUDED.allow_jev_health,max_audit_sources=EXCLUDED.max_audit_sources,
+                max_audit_claims=EXCLUDED.max_audit_claims,max_audit_bytes=EXCLUDED.max_audit_bytes''',
+                command.binding_id, policy['revision'] + 1, command.enabled, command.allow_jev_health,
+                command.max_audit_sources, command.max_audit_claims, command.max_audit_bytes)
+            artifact = await self._health_event(connection, current, command, operation['id'],
+                payload={'policy_revision': policy['revision'] + 1})
+        elif isinstance(command, HealthWorkspaceCommand):
+            workspace = await connection.fetchrow('SELECT * FROM am_code_workspaces WHERE id=$1', command.workspace_id)
+            if workspace and workspace['binding_id'] != command.binding_id:
+                raise _denied()
+            if workspace is not None and workspace["state"] != "active":
+                raise DomainError("HEALTH_WORKSPACE_RETRACTED", "A withdrawn workspace cannot be reactivated; register a new identity")
+            if (workspace['revision'] if workspace else 0) != command.expected_workspace_revision:
+                raise DomainError('HEALTH_STALE', 'The workspace revision changed')
+            producer = await self._credential(connection, command.producer_credential_id)
+            if producer.role != Role.PRODUCER or command.binding_id not in producer.bindings:
+                raise _denied()
+            if workspace is None and await connection.fetchval(
+                'SELECT count(*) FROM am_code_workspaces WHERE binding_id=$1', command.binding_id) >= 16:
+                raise DomainError('MANIFEST_TOO_LARGE', 'The binding workspace registry is full')
+            await connection.execute('''INSERT INTO am_code_workspaces(id,binding_id,revision,root_fingerprint,
+                producer_credential_id,producer_generation,binding_revision) VALUES($1,$2,$3,$4,$5,$6,$7)
+                ON CONFLICT(id) DO UPDATE SET revision=EXCLUDED.revision,root_fingerprint=EXCLUDED.root_fingerprint,
+                producer_credential_id=EXCLUDED.producer_credential_id,producer_generation=EXCLUDED.producer_generation,
+                binding_revision=EXCLUDED.binding_revision,last_sequence=0,state='active' ''',
+                command.workspace_id, command.binding_id, command.expected_workspace_revision + 1,
+                command.root_fingerprint, producer.credential_id, producer.generation, revision)
+            await connection.execute("UPDATE am_code_observations SET state='retracted' WHERE workspace_id=$1", command.workspace_id)
+            await self._stale_workspace_claims(connection, command.binding_id, command.workspace_id)
+            artifact = command.workspace_id
+            await self._health_event(connection, current, command, operation['id'], target=artifact,
+                payload={'workspace_revision': command.expected_workspace_revision + 1})
+        elif isinstance(command, CodeObservationCommand):
+            artifact = await self._record_code_observation(connection, current, command, operation['id'])
+        elif isinstance(command, SessionObservationCommand):
+            artifact = await self._record_session_observation(connection, current, command, operation['id'])
+        elif isinstance(command, (CodeLinkCommand, MemoryReviewCommand)):
+            artifact = await self._record_claim_health(connection, clock, current, command, operation['id'])
+        elif isinstance(command, HealthAssessmentCommand):
+            artifact = await self._record_health_assessment(connection, clock, current, command, operation['id'])
+        else:
+            artifact = await self._resolve_health_feedback(connection, clock, current, command, operation['id'])
+        if isinstance(command, (HealthWorkspaceCommand, CodeObservationCommand, CodeLinkCommand)):
+            if isinstance(command, CodeLinkCommand):
+                producer_ids = await connection.fetch('''SELECT DISTINCT w.producer_credential_id AS id
+                    FROM am_code_links l JOIN am_code_observations o ON o.id=l.observation_id
+                    JOIN am_code_workspaces w ON w.id=o.workspace_id WHERE l.claim_id=$1''', command.claim_ref.id)
+            else:
+                producer_ids = await connection.fetch('''SELECT producer_credential_id AS id FROM am_code_workspaces
+                    WHERE id=$1 AND binding_id=$2''', command.workspace_id, command.binding_id)
+            for producer_row in producer_ids:
+                producer = await self._credential(connection, producer_row['id'])
+                await self._health_observer(connection, producer, command.binding_id)
+        await connection.execute('UPDATE am_operations SET artifact_id=$2 WHERE id=$1', operation['id'], artifact)
+        await self._save_receipt(connection, current, command.binding_id, receipt_kind,
+            command.idempotency_key, digest, operation['id'])
+        return self._operation(await self._operation_row(connection, command.binding_id, operation['id']))
+
+    async def _stale_workspace_claims(self, connection, binding_id: str, workspace_id: str, *, changed_paths=None) -> None:
+        rows = await connection.fetch('''SELECT DISTINCT c.* FROM am_claims c JOIN am_code_links d ON d.claim_id=c.id
+            AND d.claim_revision=c.revision JOIN am_code_observations o ON o.id=d.observation_id
+            WHERE c.binding_id=$1 AND c.state='active' AND o.workspace_id=$2
+            AND (o.state<>'active' OR o.workspace_revision<>(SELECT revision FROM am_code_workspaces WHERE id=$2))
+            AND ($3::text[] IS NULL OR o.relative_path=ANY($3))''',
+            binding_id, workspace_id, sorted(changed_paths) if changed_paths is not None else None)
+        for claim in rows:
+            await self._ensure_health_state(connection, claim)
+            await connection.execute("""UPDATE am_claim_health SET version=version+1,freshness='stale',needs_review=true
+                WHERE claim_id=$1""", claim['id'])
+            sources = await connection.fetch('SELECT source_id FROM am_claim_sources WHERE claim_id=$1', claim['id'])
+            await self._enqueue_health(connection, binding_id, 'code:' + claim['id'],
+                claims=[claim['id']], sources=[source['source_id'] for source in sources],
+                payload={'cause': 'code_dependency_changed', 'health_version': (await self._health_state(connection, claim))['version']})
+
+    async def _record_code_observation(self, connection, actor, command, operation_id: str) -> str:
+        workspace = await connection.fetchrow('SELECT * FROM am_code_workspaces WHERE id=$1 AND binding_id=$2',
+            command.workspace_id, command.binding_id)
+        if workspace is None or workspace['state'] != 'active':
+            raise _denied()
+        producer = await self._credential(connection, workspace['producer_credential_id'])
+        if (producer.role != Role.PRODUCER or producer.generation != workspace['producer_generation']
+            or command.binding_id not in producer.bindings
+            or (actor.role == Role.PRODUCER and actor.credential_id != producer.credential_id)):
+            raise _denied()
+        if (workspace['revision'] != command.expected_workspace_revision
+            or workspace['binding_revision'] != command.expected_binding_revision
+            or workspace['root_fingerprint'] != command.root_fingerprint):
+            raise DomainError('HEALTH_STALE', 'The registered workspace identity changed')
+        if command.sequence <= workspace['last_sequence']:
+            raise DomainError('OBSERVATION_OUT_OF_ORDER', 'A newer registered workspace observation already exists')
+        old_paths = set(await connection.fetchval("""SELECT COALESCE(array_agg(DISTINCT relative_path),'{}')
+            FROM am_code_observations WHERE workspace_id=$1 AND state='active'""", workspace['id']))
+        if len(old_paths | {file.relative_path for file in command.files}) > 32:
+            raise DomainError('MANIFEST_TOO_LARGE', 'A workspace supports at most32 explicit observed paths')
+        refs, changed_paths = [], set()
+        for file in command.files:
+            base = file.model_dump(mode='json', exclude={'symbols'})
+            # Every symbol witness remains file-digest bound. Even an unchanged symbol stales when its file changes.
+            desired = {'': {**base, 'symbol': None}}
+            for symbol in file.symbols:
+                if symbol.qualified_name in desired:
+                    raise DomainError('CODE_ANCHOR_AMBIGUOUS', 'A qualified symbol must identify exactly one bounded span')
+                desired[symbol.qualified_name] = {**base, 'symbol': symbol.model_dump(mode='json')}
+            previous = await connection.fetch("""SELECT * FROM am_code_observations WHERE workspace_id=$1
+                AND relative_path=$2 AND state='active' ORDER BY symbol_name""", workspace['id'], file.relative_path)
+            previous = {row['symbol_name']: row for row in previous}
+            for name in sorted(set(previous) | set(desired)):
+                prior = previous.get(name)
+                metadata = desired.get(name)
+                fingerprint = canonical_digest(metadata) if metadata else None
+                if prior and fingerprint == prior['fingerprint'] and prior['workspace_revision'] == workspace['revision']:
+                    refs.append(prior['id'])
+                    continue
+                changed_paths.add(file.relative_path)
+                if prior:
+                    await connection.execute("UPDATE am_code_observations SET state='retracted' WHERE id=$1", prior['id'])
+                if metadata is None:
+                    continue
+                identifier = _id('code')
+                await connection.execute('''INSERT INTO am_code_observations(id,binding_id,workspace_id,workspace_revision,
+                    relative_path,symbol_name,sequence,fingerprint,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)''',
+                    identifier, command.binding_id, workspace['id'], workspace['revision'], file.relative_path, name,
+                    command.sequence, fingerprint, _json(metadata))
+                refs.append(identifier)
+        await connection.execute('UPDATE am_code_workspaces SET last_sequence=$2 WHERE id=$1', workspace['id'], command.sequence)
+        if changed_paths:
+            await self._stale_workspace_claims(connection, command.binding_id, workspace['id'], changed_paths=changed_paths)
+        return await self._health_event(connection, actor, command, operation_id, target=workspace['id'],
+            payload={'observation_refs': refs, 'sequence': command.sequence,
+                'coverage': command.coverage, 'provenance': 'producer_reported',
+                'observed_at': command.observed_at.isoformat()})
+
+    async def _usable_observations(self, connection, binding_id: str, refs) -> list:
+        if len(set(refs)) != len(refs):
+            raise DomainError('CODE_ANCHOR_INVALID', 'Code observations must be distinct')
+        if refs and not (await self._health_policy(connection, binding_id))['enabled']:
+            raise DomainError('HEALTH_DISABLED', 'Code anchors require currently authorized observation')
+        rows = []
+        for identifier in refs:
+            row = await connection.fetchrow('''SELECT o.*,w.producer_credential_id,w.producer_generation,w.binding_revision,
+                w.revision AS current_workspace_revision,w.state AS workspace_state FROM am_code_observations o
+                JOIN am_code_workspaces w ON w.id=o.workspace_id WHERE o.id=$1 AND o.binding_id=$2''', identifier, binding_id)
+            if row is None or row['state'] != 'active' or row['workspace_state'] != 'active' or row['metadata'] is None:
+                raise DomainError('CODE_ANCHOR_INVALID', 'Every required code anchor must remain available')
+            producer = await self._credential(connection, row['producer_credential_id'])
+            revision = await connection.fetchval('SELECT revision FROM am_bindings WHERE id=$1', binding_id)
+            if (producer.role != Role.PRODUCER or producer.generation != row['producer_generation']
+                or binding_id not in producer.bindings or row['workspace_revision'] != row['current_workspace_revision']
+                or revision != row['binding_revision']):
+                raise DomainError('CODE_ANCHOR_INVALID', 'The registered code authority changed')
+            metadata = _decode(row['metadata'])
+            if metadata['status'] != 'present' or (row['symbol_name'] and metadata.get('symbol') is None):
+                raise DomainError('CODE_ANCHOR_INVALID', 'An unavailable anchor cannot be waived by a review')
+            rows.append(row)
+        return rows
+
+    async def _health_admission(self, connection, clock, actor, binding_id: str, admission_id: str, purpose: str):
+        row = await connection.fetchrow("""SELECT * FROM am_admissions WHERE id=$1 AND binding_id=$2
+            AND purpose=$3 AND kind='nonmodel'""", admission_id, binding_id, purpose)
+        if row is None:
+            raise DomainError('ADMISSION_STALE', 'Inspect the current bounded health input first')
+        await self._recheck_nonmodel(connection, clock, actor, self._nonmodel_admission(row))
+        return row, _decode(row['health_manifest'])
+
+    async def _record_claim_health(self, connection, clock, actor, command, operation_id: str) -> str:
+        from .health import CodeLinkCommand
+        _, manifest = await self._health_admission(connection, clock, actor, command.binding_id,
+            command.admission_id, 'health_claim')
+        claim = await self._claim_row(connection, command.binding_id, command.claim_ref.id, manifest['snapshot'])
+        state = await self._ensure_health_state(connection, claim)
+        if (claim['revision'] != command.claim_ref.revision or state['version'] != command.expected_health_version
+            or manifest['claims'][0]['claim'] != command.claim_ref.model_dump()):
+            raise DomainError('HEALTH_STALE', 'The exact inspected claim or health version changed')
+        if isinstance(command, CodeLinkCommand):
+            rows = await self._usable_observations(connection, command.binding_id, command.observation_refs)
+            permitted = set(manifest['available_observation_refs'])
+            if not set(command.observation_refs).issubset(permitted):
+                raise DomainError('ADMISSION_STALE', 'Inspect every code observation before linking it')
+            for row in rows:
+                await connection.execute('''INSERT INTO am_code_links(claim_id,claim_revision,observation_id)
+                    VALUES($1,$2,$3) ON CONFLICT DO NOTHING''', claim['id'], claim['revision'], row['id'])
+            count = await connection.fetchval('SELECT count(*) FROM am_code_links WHERE claim_id=$1 AND claim_revision=$2',
+                claim['id'], claim['revision'])
+            if count > 32:
+                raise DomainError('MANIFEST_TOO_LARGE', 'A claim supports at most32 explicit code dependencies')
+            event = await self._health_event(connection, actor, command, operation_id, target=claim['id'],
+                claim_ids=[claim['id']], payload={'claim_ref': command.claim_ref.model_dump(),
+                    'added_observation_refs': command.observation_refs}, reason=command.reason)
+            await connection.execute('UPDATE am_claim_health SET version=version+1 WHERE claim_id=$1', claim['id'])
+        else:
+            if state['review_event_id'] != command.expected_review_event_id:
+                raise DomainError('HEALTH_STALE', 'The prior operator review event changed')
+            old = await self._code_dependencies(connection, claim)
+            if command.decision == 'accept':
+                rows = await self._usable_observations(connection, command.binding_id, command.revalidated_observation_refs)
+                if not set(command.revalidated_observation_refs).issubset(set(manifest['available_observation_refs'])):
+                    raise DomainError('ADMISSION_STALE', 'Inspect every revalidation observation before accepting')
+                expected = {(item['workspace_id'], item['relative_path'], item['symbol_name']) for item in old}
+                actual = {(item['workspace_id'], item['relative_path'], item['symbol_name']) for item in rows}
+                if len(actual) != len(rows) or expected != actual:
+                    raise DomainError('CODE_ANCHOR_INVALID', 'Accept must revalidate the complete existing dependency identities')
+                # Only an explicit exact operator Accept can replace stale links; agents can only add links.
+                await connection.execute('DELETE FROM am_code_links WHERE claim_id=$1 AND claim_revision=$2',
+                    claim['id'], claim['revision'])
+                for row in rows:
+                    await connection.execute('INSERT INTO am_code_links(claim_id,claim_revision,observation_id) VALUES($1,$2,$3)',
+                        claim['id'], claim['revision'], row['id'])
+            event = await self._health_event(connection, actor, command, operation_id, target=claim['id'],
+                claim_ids=[claim['id']], payload={'claim_ref': command.claim_ref.model_dump(),
+                    'decision': command.decision, 'prior_review_event_id': state['review_event_id'],
+                    'prior_health_version': state['version'], 'provenance': 'human_presence_unattested',
+                    'revalidated_observation_refs': command.revalidated_observation_refs}, reason=command.reason)
+            await connection.execute('''UPDATE am_claim_health SET version=version+1,operator_review=$2,review_event_id=$3,
+                needs_review=CASE WHEN $2='accept' THEN false ELSE needs_review END,
+                restore_unknown=CASE WHEN $2='accept' THEN false ELSE restore_unknown END,
+                freshness=CASE WHEN $2='accept' THEN $4 ELSE freshness END WHERE claim_id=$1''',
+                claim['id'], command.decision, event, 'observed_current' if old else 'unknown')
+            if command.decision == 'accept':
+                await connection.execute('''UPDATE am_pending_judgments SET state='resolved',resolved_at=clock_timestamp()
+                    WHERE binding_id=$1 AND kind='health' AND health_key=$2 AND state IN ('pending','held')''',
+                    command.binding_id, 'code:' + claim['id'])
+        await connection.execute('DELETE FROM am_admissions WHERE id=$1', command.admission_id)
+        return event
+
+    async def _record_session_observation(self, connection, actor, command, operation_id: str) -> str:
+        if len(command.claim_refs) > 20:
+            raise DomainError('MANIFEST_TOO_LARGE', 'A segment supports at most 20 exact target claims')
+        if actor.role == Role.PRODUCER and not await connection.fetchval('''SELECT EXISTS(SELECT 1 FROM am_code_workspaces
+            WHERE binding_id=$1 AND producer_credential_id=$2 AND producer_generation=$3 AND state='active'
+            AND binding_revision=$4)''', command.binding_id, actor.credential_id, actor.generation,
+            command.expected_binding_revision):
+            raise _denied()
+        prior = await connection.fetchrow('''SELECT * FROM am_session_observations WHERE binding_id=$1
+            AND credential_id=$2 AND credential_generation=$3 AND stream_id=$4 AND segment_id=$5
+            AND (event_id=$6 OR sequence=$7)''', command.binding_id, actor.credential_id, actor.generation,
+            command.stream_id, command.segment_id, command.event_id, command.sequence)
+        digest = canonical_digest(command.model_dump(mode='json', exclude={'idempotency_key'}))
+        if prior is not None:
+            if prior['digest'] != digest or prior['state'] != 'active':
+                raise DomainError('SESSION_OBSERVATION_CONFLICT', 'The segment event identity already names different data')
+            return prior['id']
+        count = await connection.fetchval('''SELECT count(*) FROM am_session_observations WHERE binding_id=$1
+            AND credential_id=$2 AND credential_generation=$3 AND stream_id=$4 AND segment_id=$5''',
+            command.binding_id, actor.credential_id, actor.generation, command.stream_id, command.segment_id)
+        if count >= 128:
+            raise DomainError('MANIFEST_TOO_LARGE', 'Close a new explicitly identified bounded segment')
+        identifier = _id('session')
+        await connection.execute('''INSERT INTO am_session_observations(id,binding_id,credential_id,credential_generation,
+            stream_id,segment_id,event_id,sequence,digest,payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)''',
+            identifier, command.binding_id, actor.credential_id, actor.generation, command.stream_id,
+            command.segment_id, command.event_id, command.sequence, digest,
+            _json(command.model_dump(mode='json', exclude={'idempotency_key'})))
+        await self._refresh_session_work(connection, command.binding_id, actor.credential_id, actor.generation,
+            command.stream_id, command.segment_id)
+        return identifier
+
+    async def _refresh_session_work(self, connection, binding_id, credential_id, generation, stream_id, segment_id) -> None:
+        rows = await connection.fetch('''SELECT * FROM am_session_observations WHERE binding_id=$1 AND credential_id=$2
+            AND credential_generation=$3 AND stream_id=$4 AND segment_id=$5 AND state='active' ORDER BY sequence''',
+            binding_id, credential_id, generation, stream_id, segment_id)
+        if not rows:
+            return
+        events = [_decode(row['payload']) for row in rows]
+        if any(event is None for event in events):
+            return
+        current_revision = await connection.fetchval('SELECT revision FROM am_bindings WHERE id=$1', binding_id)
+        if any(event['expected_binding_revision'] != current_revision for event in events):
+            raise DomainError('HEALTH_STALE', 'The observed segment binding authority changed')
+        sources, claims, origins, gaps = {}, {}, set(), set()
+        roots = {event['root_run_id'] for event in events}
+        agents = {event['agent_path'] for event in events}
+        if len(roots) != 1 or len(agents) != 1:
+            raise DomainError('SESSION_OBSERVATION_CONFLICT', 'A segment cannot change its declared root or agent identity')
+        root, agent_path = next(iter(roots)), next(iter(agents))
+        for event in events:
+            gaps.update(event['gaps'])
+            if event['coverage'] != 'observed_segment':
+                gaps.add('SESSION_PARTIAL_CAPTURE')
+            origins.update(event['origin_keys'])
+            for ref in event['source_refs']:
+                if ref['id'] in sources and sources[ref['id']] != ref['revision']:
+                    raise DomainError('HEALTH_STALE', 'A session declares conflicting exact source revisions')
+                sources[ref['id']] = ref['revision']
+            for ref in event['claim_refs']:
+                if ref['id'] in claims and claims[ref['id']] != ref['revision']:
+                    raise DomainError('HEALTH_STALE', 'A session declares conflicting exact claim revisions')
+                claims[ref['id']] = ref['revision']
+        if len(origins) > 128 or len(sources) > 128 or len(claims) > 20:
+            raise DomainError('MANIFEST_TOO_LARGE', 'Split the observed session into bounded segments')
+        producer = await self._credential(connection, credential_id)
+        for origin in sorted(origins):
+            found = await connection.fetchrow('''SELECT s.* FROM am_sources s JOIN am_operations o ON o.id=s.operation_id
+                WHERE s.binding_id=$1 AND s.origin_key=$2 AND o.credential_id=$3 AND s.producer_generation=$4''',
+                binding_id, origin, credential_id, generation)
+            if found is None:
+                gaps.add('SESSION_ORIGIN_PENDING')
+            else:
+                sources[found['id']] = found['revision']
+        for identifier, revision in sources.items():
+            source = await connection.fetchrow('''SELECT s.*,o.credential_id FROM am_sources s
+                JOIN am_operations o ON o.id=s.operation_id WHERE s.id=$1 AND s.binding_id=$2''', identifier, binding_id)
+            if (source is None or source['state'] != 'active' or source['body'] is None or source['revision'] != revision
+                or source['speaker'] in {'agent_note', 'memory'} or source['realm'] != producer.realm
+                or source['credential_id'] != credential_id or source['producer_generation'] != generation
+                or source['root_run_id'] != root or source['agent_path'] != agent_path):
+                raise DomainError('SESSION_SOURCE_INVALID', 'A segment source must match its registered producer and declared lineage')
+        for identifier, revision in claims.items():
+            claim = await connection.fetchrow('''SELECT revision,state,draft FROM am_claims
+                WHERE id=$1 AND binding_id=$2''', identifier, binding_id)
+            if claim is None or claim['state'] != 'active' or claim['draft'] is None or claim['revision'] != revision:
+                raise DomainError('HEALTH_STALE', 'An observed target claim revision changed')
+        boundaries = [event for event in events if event['event'] != 'checkpoint']
+        closed = bool(boundaries) and boundaries[-1]['event'] in {'end', 'interrupted'}
+        if not closed:
+            gaps.add('SESSION_CLOSE_UNOBSERVED')
+        if not boundaries or boundaries[0]['event'] not in {'start', 'resume'}:
+            gaps.add('SESSION_START_UNOBSERVED')
+        if rows[0]['sequence'] != 1 or any(b['sequence'] != a['sequence'] + 1 for a, b in zip(rows, rows[1:])):
+            gaps.add('SESSION_SEQUENCE_GAP')
+        if boundaries and boundaries[-1]['event'] == 'interrupted':
+            gaps.add('SESSION_INTERRUPTED')
+        if len(sources) > 128:
+            raise DomainError('MANIFEST_TOO_LARGE', 'The complete session origin manifest exceeds128 sources')
+        key = 'session:' + canonical_digest({'credential_id': credential_id, 'generation': generation,
+            'stream_id': stream_id, 'segment_id': segment_id})
+        pending_id = await self._enqueue_health(connection, binding_id, key, sources=sources, claims=claims,
+            payload={'cause': 'observed_session', 'session_observation_ids': [row['id'] for row in rows],
+                'source_refs': [{'id': identifier, 'revision': revision} for identifier, revision in sorted(sources.items())],
+                'claim_refs': [{'id': identifier, 'revision': revision} for identifier, revision in sorted(claims.items())],
+                'unresolved_origin_keys': sorted(origins) if 'SESSION_ORIGIN_PENDING' in gaps else [],
+                'coverage': 'partial' if gaps else 'observed_segment', 'gaps': sorted(gaps),
+                'scope': 'authorized_observed_segment_not_full_session', 'human_presence': 'unattested'})
+        if not closed or not sources:
+            await connection.execute('''UPDATE am_pending_judgments SET state='held',
+                reason='Awaiting observed segment close and independent captured-source watermark' WHERE id=$1''', pending_id)
+
+    async def _refresh_late_session_capture(self, connection, binding_id, origin_key: str) -> None:
+        rows = connection.cursor('''SELECT DISTINCT o.credential_id,o.credential_generation,o.stream_id,o.segment_id
+            FROM am_session_observations o JOIN am_credentials c ON c.id=o.credential_id
+                AND c.active AND c.generation=o.credential_generation
+            WHERE o.binding_id=$1 AND o.state='active' AND o.payload->'origin_keys' ? $2''',
+            binding_id, origin_key, prefetch=16)
+        async for row in rows:
+            try:
+                await self._refresh_session_work(connection, binding_id, row['credential_id'], row['credential_generation'],
+                    row['stream_id'], row['segment_id'])
+            except DomainError as error:
+                if error.code not in {'HEALTH_STALE', 'SESSION_SOURCE_INVALID', 'SESSION_SNAPSHOT_CONFLICT',
+                    'MANIFEST_TOO_LARGE', 'QUEUE_FULL', 'CLAIM_INELIGIBLE'}:
+                    raise
+                # Health metadata must not roll back an independently valid source capture.
+                key = 'session:' + canonical_digest({'credential_id': row['credential_id'],
+                    'generation': row['credential_generation'], 'stream_id': row['stream_id'], 'segment_id': row['segment_id']})
+                await connection.execute('''UPDATE am_pending_judgments SET state='held',resolved_at=NULL,
+                    reason='Observed session health refresh requires explicit review',health_revision=health_revision+1,
+                    health_payload=health_payload || jsonb_build_object('refresh_error_code',$3::text)
+                    WHERE binding_id=$1 AND kind='health' AND health_key=$2
+                    AND (state<>'held' OR health_payload->>'refresh_error_code' IS DISTINCT FROM $3)''',
+                    binding_id, key, error.code)
+
+    async def _health_work_manifest(self, connection, binding_id: str, pending_id: str) -> tuple[dict, dict]:
+        pending = await connection.fetchrow("""SELECT * FROM am_pending_judgments WHERE id=$1 AND binding_id=$2
+            AND kind='health' AND state IN ('pending','held')""", pending_id, binding_id)
+        if pending is None:
+            raise DomainError('ADMISSION_STALE', 'This health work is no longer pending')
+        policy = await self._health_policy(connection, binding_id)
+        payload = _decode(pending['health_payload'])
+        gaps = set(payload.get('gaps', []))
+        if payload.get('refresh_error_code'):
+            gaps.add('SESSION_REFRESH_INCOMPLETE')
+        if len(pending['source_ids']) > policy['max_audit_sources']:
+            raise DomainError('HEALTH_BUNDLE_TOO_LARGE', 'The complete source manifest exceeds current explicit policy')
+        from .lexical import tokens as tokenize
+        source_rows, source_refs, tokens = [], [], set()
+        for identifier in pending['source_ids']:
+            source = await self._source_row(connection, binding_id, identifier, pending['snapshot'], True)
+            raw = source['body'].encode('utf-8')
+            source_rows.append((source, raw))
+            source_refs.append({'id': identifier, 'revision': source['revision']})
+            tokens.update(tokenize(raw[:4096].decode('utf-8', errors='ignore')))
+        claim_ids = list(pending['claim_ids'])
+        if not claim_ids and source_refs:
+            rows = await connection.fetch("""SELECT c.id FROM am_claims c WHERE c.binding_id=$1 AND c.state='active'
+                AND c.draft IS NOT NULL AND c.superseded_by IS NULL AND c.capability='agent_judged'
+                AND c.lexical_tokens && $2::text[] AND (c.snapshot IS NULL OR c.snapshot IS NOT DISTINCT FROM $3)
+                AND (c.valid_from IS NULL OR c.valid_from<=clock_timestamp())
+                AND (c.valid_until IS NULL OR c.valid_until>clock_timestamp())
+                AND (c.selection_id IS NULL OR EXISTS(SELECT 1 FROM am_source_selections q
+                    WHERE q.id=c.selection_id AND q.state='active'))
+                AND EXISTS(SELECT 1 FROM am_claim_sources d WHERE d.claim_id=c.id)
+                AND NOT EXISTS(SELECT 1 FROM am_claim_sources d JOIN am_sources s ON s.id=d.source_id
+                    WHERE d.claim_id=c.id AND (s.state<>'active' OR s.body IS NULL OR s.revision<>d.source_revision
+                        OR s.binding_id<>$1 OR s.realm<>$5 OR (s.snapshot IS NOT NULL AND s.snapshot IS DISTINCT FROM $3)))
+                ORDER BY cardinality(ARRAY(SELECT unnest(c.lexical_tokens) INTERSECT SELECT unnest($2::text[]))) DESC,c.id
+                LIMIT $4""", binding_id, sorted(tokens)[:2048], pending['snapshot'], policy['max_audit_claims'] + 1,
+                self.settings.realm)
+            if len(rows) > policy['max_audit_claims']:
+                gaps.add('AUDIT_TARGET_CANDIDATES_PARTIAL')
+            claim_ids = [row['id'] for row in rows[:policy['max_audit_claims']]]
+        if len(claim_ids) > policy['max_audit_claims']:
+            raise DomainError('HEALTH_BUNDLE_TOO_LARGE', 'The complete target manifest exceeds current explicit policy')
+        claims, manifests = [], []
+        for identifier in claim_ids:
+            claim = await self._claim_row(connection, binding_id, identifier, pending['snapshot'])
+            manifests.append(await self._claim_health_manifest(connection, claim))
+            claims.append({'id': claim['id'], 'revision': claim['revision'], 'statement': _decode(claim['draft'])['statement']})
+        remaining = policy['max_audit_bytes'] - sum(len(claim['statement'].encode('utf-8')) for claim in claims)
+        if remaining < 4 * len(source_rows):
+            raise DomainError('HEALTH_BUNDLE_TOO_LARGE', 'The exact claim statements and nonempty source windows exceed current policy')
+        sources = []
+        for index, (source, raw) in enumerate(source_rows):
+            available = min(4096, remaining - 4 * (len(source_rows) - index - 1))
+            body = raw[:available].decode('utf-8', errors='ignore')
+            length = len(body.encode('utf-8'))
+            remaining -= length
+            capture = _decode(source['capture_coverage'])
+            complete = length == len(raw)
+            if not complete:
+                gaps.add('AUDIT_SOURCE_WINDOW_PARTIAL')
+            if capture.get('status') != 'observed_window' or capture.get('gaps'):
+                gaps.add('AUDIT_CAPTURE_PARTIAL')
+            sources.append({'source_ref': {'id': source['id'], 'revision': source['revision']},
+                'body': body, 'byte_start': 0, 'byte_end': length, 'total_bytes': len(raw),
+                'speaker': source['speaker'], 'capture_coverage': capture,
+                'coverage': 'complete_captured_window' if complete else 'partial_captured_window',
+                'scope': 'captured_source_not_session', 'human_presence': 'unattested'})
+        if not claims:
+            gaps.add('AUDIT_NO_TARGET_EVIDENCE')
+        if not source_refs:
+            gaps.add('AUDIT_NO_SOURCE_EVIDENCE')
+        manifest = {'purpose': 'health_work', 'pending_id': pending_id, 'pending_revision': pending['health_revision'],
+            'payload_digest': canonical_digest(payload), 'policy': policy, 'claims': manifests,
+            'input_sources': source_refs, 'snapshot': pending['snapshot'],
+            'evidence_windows': [{'ref': source['source_ref'], 'byte_start': source['byte_start'], 'byte_end': source['byte_end'],
+                'digest': hashlib.sha256(source['body'].encode('utf-8')).hexdigest()} for source in sources],
+            'coverage': {'scope': 'bounded_authorized_inputs', 'complete': not gaps, 'partial': bool(gaps), 'gaps': sorted(gaps)}}
+        return manifest, {'sources': sources, 'claims': claims}
+
+    async def _record_health_assessment(self, connection, clock, actor, command, operation_id: str) -> str:
+        _, manifest = await self._health_admission(connection, clock, actor, command.binding_id,
+            command.admission_id, 'health_work')
+        if not manifest['policy']['enabled']:
+            raise DomainError('HEALTH_DISABLED', 'Health processing requires current explicit authorization')
+        if (command.pending_id != manifest['pending_id'] or canonical_digest(manifest) != command.health_manifest_digest
+            or [item.model_dump() for item in command.input_sources] != manifest['input_sources']
+            or [item.model_dump() for item in command.input_claims] != [item['claim'] for item in manifest['claims']]):
+            raise DomainError('HEALTH_STALE', 'Health results must cover the complete exact inspected manifest')
+        windows = {item['ref']['id']: item for item in manifest['evidence_windows']}
+        source_revisions = {item.id: item.revision for item in command.input_sources}
+        for assessment in command.assessments:
+            for evidence in assessment.evidence:
+                window = windows.get(evidence.source_ref.id)
+                if (window is None or source_revisions.get(evidence.source_ref.id) != evidence.source_ref.revision
+                    or evidence.byte_start < window['byte_start'] or evidence.byte_end > window['byte_end']):
+                    raise DomainError('EVIDENCE_INVALID', 'Assessment evidence must belong to its exact admitted source window')
+                source = await self._source_row(connection, command.binding_id, evidence.source_ref.id,
+                    manifest['snapshot'], True)
+                if source['speaker'] in {'memory', 'agent_note'}:
+                    raise DomainError('EVIDENCE_INVALID', 'Reasons and injected memory are not independent health grounding')
+                raw = source['body'].encode('utf-8')
+                if raw[evidence.byte_start:evidence.byte_end] != evidence.quote.encode('utf-8'):
+                    raise DomainError('EVIDENCE_INVALID', 'Health evidence must match the exact original UTF-8 bytes')
+        event = await self._health_event(connection, actor, command, operation_id,
+            target=command.pending_id, source_ids=[item.id for item in command.input_sources],
+            claim_ids=[item.id for item in command.input_claims],
+            payload={'health_manifest_digest': command.health_manifest_digest,
+                'input_sources': [item.model_dump() for item in command.input_sources],
+                'input_claims': [item.model_dump() for item in command.input_claims],
+                'coverage': manifest['coverage'], 'evaluation_receipt_digest': command.evaluation_receipt_digest})
+        for assessment in command.assessments:
+            claim = await self._claim_row(connection, command.binding_id, assessment.claim_ref.id, manifest['snapshot'])
+            await self._ensure_health_state(connection, claim)
+            assessment_event = await self._health_event(connection, actor, command, operation_id, target=claim['id'],
+                source_ids=[item.id for item in command.input_sources], claim_ids=[claim['id']],
+                payload={'assessment': assessment.model_dump(mode='json', exclude={'reason'}),
+                    'assessment_event_id': event, 'health_manifest_digest': command.health_manifest_digest,
+                    'input_sources': [item.model_dump() for item in command.input_sources]},
+                reason=assessment.reason)
+            if assessment.support == 'contradicted' or assessment.freshness == 'stale':
+                await connection.execute('''UPDATE am_claim_health SET version=version+1,support=$2,
+                    freshness=CASE WHEN $3='stale' THEN 'stale' ELSE freshness END,
+                    needs_review=true,assessment_event_id=$4 WHERE claim_id=$1''',
+                    claim['id'], assessment.support, assessment.freshness, assessment_event)
+            else:
+                # A machine can add evidence, never reverse Reject, stale code or restore quarantine.
+                await connection.execute('''UPDATE am_claim_health SET version=version+1,support=$2,
+                    freshness=CASE WHEN freshness='stale' THEN freshness ELSE $3 END,
+                    assessment_event_id=$4 WHERE claim_id=$1''',
+                    claim['id'], assessment.support if manifest['coverage']['complete'] else 'unknown',
+                    assessment.freshness if manifest['coverage']['complete'] else 'unknown', assessment_event)
+        unresolved = False
+        for ref in command.input_claims:
+            claim = await self._claim_row(connection, command.binding_id, ref.id, manifest['snapshot'])
+            state = await self._health_state(connection, claim)
+            unresolved = unresolved or state['restore_unknown'] or state['needs_review'] or state['freshness'] == 'stale'
+        disposition = 'resolved' if manifest['coverage']['complete'] and command.assessments and not unresolved else 'held'
+        await connection.execute('''UPDATE am_pending_judgments SET state=$2,
+            reason=CASE WHEN $2='held' THEN 'Bounded health evidence incomplete; operator or next-agent review required' ELSE reason END,
+            resolved_at=CASE WHEN $2='resolved' THEN clock_timestamp() ELSE NULL END WHERE id=$1''',
+            command.pending_id, disposition)
+        await connection.execute('DELETE FROM am_admissions WHERE id=$1', command.admission_id)
+        return event
+
+    async def _feedback_health_manifest(self, connection, binding_id, feedback_ref) -> tuple[dict, dict]:
+        feedback = await connection.fetchrow("SELECT * FROM am_feedback WHERE id=$1 AND binding_id=$2 AND kind IN ('correct','retract_request')",
+            feedback_ref, binding_id)
+        if feedback is None:
+            raise _missing()
+        reason = None
+        if feedback['source_id']:
+            row = await connection.fetchrow("""SELECT revision,state,body FROM am_sources WHERE id=$1 AND binding_id=$2
+                AND realm=$3""", feedback['source_id'], binding_id, self.settings.realm)
+            if row and row['state'] == 'active':
+                reason = row['body']
+        manifest = {'purpose': 'health_feedback', 'feedback_ref': feedback_ref,
+            'version': feedback['health_version'], 'resolution_event_id': feedback['resolution_event_id'],
+            'target_ref': feedback['target_ref'], 'kind': feedback['kind'], 'state': feedback['state'],
+            'reason_digest': canonical_digest({'reason': reason})}
+        return manifest, {'id': feedback_ref, 'kind': feedback['kind'], 'target_ref': feedback['target_ref'],
+            'version': feedback['health_version'], 'resolution_event_id': feedback['resolution_event_id'],
+            'body': reason, 'body_unavailable': reason is None, 'candidate': True}
+
+    async def _resolve_health_feedback(self, connection, clock, actor, command, operation_id: str) -> str:
+        _, manifest = await self._health_admission(connection, clock, actor, command.binding_id,
+            command.admission_id, 'health_feedback')
+        if command.feedback_ref != manifest['feedback_ref'] or command.expected_feedback_version != manifest['version']:
+            raise DomainError('HEALTH_STALE', 'The inspected feedback version changed')
+        if command.decision == 'accept':
+            successor = await self._operation_row(connection, command.binding_id, command.successor_operation_id)
+            principal = await self._credential(connection, successor['credential_id'])
+            if (command.binding_id not in principal.bindings or principal.role not in {Role.OPERATOR, Role.PRODUCER}
+                    or successor['actor_generation'] != principal.generation):
+                raise _denied()
+            if manifest['kind'] == 'correct':
+                matched = await connection.fetchval("""SELECT EXISTS(SELECT 1 FROM am_receipts i JOIN am_receipts r
+                    ON r.principal_id=i.principal_id AND r.binding_id=i.binding_id AND r.request_key=i.request_key
+                    AND r.digest=i.digest AND r.kind='correct'
+                    WHERE i.binding_id=$1 AND i.kind='correct_intent' AND i.target_id=$2
+                    AND i.result->>'state'='completed' AND r.target_id=$3)""",
+                    command.binding_id, manifest['target_ref'], successor['id'])
+                if successor['kind'] != 'correct' or successor['state'] not in {'captured', 'candidate_ready', 'selection_recorded'} or not matched:
+                    raise DomainError('FEEDBACK_SUCCESSOR_INVALID', 'Accept requires the matching committed authorized correction')
+                await self._source_row(connection, command.binding_id, successor['source_id'])
+            else:
+                matched = await connection.fetchval("""SELECT EXISTS(SELECT 1 FROM am_receipts WHERE binding_id=$1
+                    AND kind='retract' AND target_id=$2 AND result->>'operation_id'=$3
+                    AND result->>'logical_retraction'='committed')""",
+                    command.binding_id, manifest['target_ref'], successor['id'])
+                if successor['kind'] != 'retract' or successor['artifact_id'] != manifest['target_ref'] or not matched:
+                    raise DomainError('FEEDBACK_SUCCESSOR_INVALID', 'Accept requires the matching committed authorized retraction')
+        event = await self._health_event(connection, actor, command, operation_id, target=command.feedback_ref,
+            payload={'decision': command.decision, 'prior_version': manifest['version'],
+                'prior_resolution_event_id': manifest['resolution_event_id'],
+                'successor_operation_id': command.successor_operation_id,
+                'provenance': 'human_presence_unattested'}, reason=command.reason)
+        await connection.execute('''UPDATE am_feedback SET health_version=health_version+1,resolution_event_id=$2
+            WHERE id=$1''', command.feedback_ref, event)
+        await connection.execute("""UPDATE am_pending_judgments SET state='resolved',resolved_at=clock_timestamp()
+            WHERE binding_id=$1 AND kind='health' AND health_key=$2""",
+            command.binding_id, 'feedback:' + command.feedback_ref)
+        await connection.execute('DELETE FROM am_admissions WHERE id=$1', command.admission_id)
+        return event
+
+    async def health_observer(self, actor: Principal, binding_id: str) -> dict:
+        async with self._tx(lock=False) as (connection, _):
+            current = await self._actor(connection, actor, binding_id, (Role.PRODUCER, Role.OPERATOR))
+            return await self._health_observer(connection, current, binding_id)
+
+    async def _health_observer(self, connection, current, binding_id: str) -> dict:
+        policy = await self._health_policy(connection, binding_id)
+        revision = await connection.fetchval('SELECT revision FROM am_bindings WHERE id=$1', binding_id)
+        rows = await connection.fetch("""SELECT * FROM am_code_workspaces WHERE binding_id=$1 AND state='active'
+            AND ($2='operator' OR (producer_credential_id=$3 AND producer_generation=$4))
+            ORDER BY id""", binding_id, current.role.value, current.credential_id, current.generation)
+        workspaces = []
+        for row in rows:
+            producer = await self._credential(connection, row['producer_credential_id'])
+            if producer.role != Role.PRODUCER or producer.generation != row['producer_generation'] or binding_id not in producer.bindings:
+                continue
+            linked = await connection.fetch("""SELECT DISTINCT o.relative_path,o.symbol_name FROM am_code_links d
+                JOIN am_code_observations o ON o.id=d.observation_id JOIN am_claims c ON c.id=d.claim_id
+                WHERE o.workspace_id=$1 AND c.binding_id=$2 AND c.state='active' AND d.claim_revision=c.revision
+                ORDER BY o.relative_path,o.symbol_name""", row['id'], binding_id)
+            paths = {}
+            for item in linked:
+                paths.setdefault(item['relative_path'], [])
+                if item['symbol_name']:
+                    paths[item['relative_path']].append(item['symbol_name'])
+            observations = await connection.fetch("""SELECT id,relative_path,symbol_name,metadata FROM am_code_observations
+                WHERE workspace_id=$1 AND state='active'
+                AND (symbol_name='' OR id IN (SELECT observation_id FROM am_code_links))
+                ORDER BY relative_path,symbol_name""", row['id'])
+            workspaces.append({'workspace_id': row['id'], 'revision': row['revision'],
+                'binding_revision': row['binding_revision'], 'root_fingerprint': row['root_fingerprint'],
+                'producer_credential_id': row['producer_credential_id'], 'last_sequence': row['last_sequence'],
+                'linked_paths': [{'relative_path': path, 'symbol_names': names} for path, names in paths.items()],
+                'current_observations': [{'ref': item['id'], 'relative_path': item['relative_path'],
+                    'symbol_name': item['symbol_name'], **_decode(item['metadata'])} for item in observations],
+                'coverage': {'complete': True, 'scope': 'registered_explicit_observations_not_filesystem_catalog'}})
+        result = {'kind': 'health_observer', 'binding_id': binding_id, 'binding_revision': revision,
+            'policy': policy, 'workspaces': workspaces, 'coverage': {'complete': True, 'scope': 'authorized_registered_workspaces'}}
+        from .representation import serialized_json_bytes
+        if serialized_json_bytes(result) > self.settings.max_inspection_json_bytes:
+            raise DomainError('HEALTH_OBSERVER_TOO_LARGE', 'The complete producer-safe registry exceeds its response bound', status=413)
+        return result
+
+    async def _claim_review_manifest(self, connection, binding_id, claim_id, snapshot, nominated=None) -> tuple[dict, dict]:
+        claim = await self._claim_row(connection, binding_id, claim_id, snapshot)
+        state = await self._claim_health_manifest(connection, claim)
+        classification_eligible = (claim['capability'] == 'agent_judged' and not claim['awaiting_revalidation']
+                                   and claim['superseded_by'] is None and claim['selection_id'] is not None)
+        if classification_eligible:
+            selection = await connection.fetchrow('SELECT * FROM am_source_selections WHERE id=$1',
+                                                  claim['selection_id'])
+            classification_eligible = selection is not None and await self._selection_disclosure(
+                connection, binding_id, selection, snapshot)
+        current = []
+        identities = {(item['workspace_id'], item['relative_path'], item['symbol_name']) for item in state['code']}
+        for workspace_id, path, symbol in sorted(identities):
+            row = await connection.fetchrow("""SELECT * FROM am_code_observations WHERE workspace_id=$1 AND relative_path=$2
+                AND symbol_name=$3 AND state='active' AND binding_id=$4""", workspace_id, path, symbol, binding_id)
+            if row is not None:
+                current.append(row)
+        if nominated is not None:
+            row = await connection.fetchrow('SELECT * FROM am_code_observations WHERE id=$1 AND binding_id=$2',
+                nominated, binding_id)
+            if row is None or row['state'] != 'active':
+                raise DomainError('CODE_ANCHOR_INVALID', 'The nominated observation is unavailable')
+            if all(item['id'] != row['id'] for item in current):
+                current.append(row)
+        if len(current) > 32:
+            raise DomainError('MANIFEST_TOO_LARGE', 'Inspect and link at most32 dependencies per exact revision')
+        observations = [{'ref': row['id'], 'workspace_id': row['workspace_id'],
+            'workspace_revision': row['workspace_revision'], 'relative_path': row['relative_path'],
+            'symbol_name': row['symbol_name'], 'fingerprint': row['fingerprint'],
+            'metadata': _decode(row['metadata'])} for row in current]
+        manifest = {'purpose': 'health_claim', 'snapshot': snapshot, 'claims': [state],
+            'classification_eligible': classification_eligible,
+            'available_observation_refs': [row['id'] for row in current],
+            'available_observations': observations, 'nominated': nominated,
+            'policy': await self._health_policy(connection, binding_id)}
+        reusable = classification_eligible
+        try:
+            await self._reuse_claim(connection, claim)
+        except DomainError as error:
+            if error.code != 'CLAIM_INELIGIBLE':
+                raise
+            reusable = False
+        return manifest, {'claim': (await self._claim(connection, claim)).model_dump(mode='json'),
+            'health': {**state['health'], 'reusable': reusable}, 'code_observations': observations,
+            'dependency_digest': canonical_digest(manifest),
+            'reuse_scope': 'current_source_request_snapshot_and_health_dependencies_not_every_context_selector'}
+
+    async def _inspect_health(self, connection, clock, actor, binding_id, ref, snapshot, *,
+        byte_start, max_bytes, representation_bytes, measure_json) -> dict:
+        from .representation import stored_record_window
+        if ref == 'health':
+            rows = await connection.fetch("""SELECT id,sequence,state,health_key FROM am_pending_judgments
+                WHERE binding_id=$1 AND kind='health' AND state IN ('pending','held') AND sequence>$2
+                AND (snapshot IS NULL OR snapshot IS NOT DISTINCT FROM $3) ORDER BY sequence LIMIT 33""",
+                binding_id, byte_start, snapshot)
+            result = {'kind': 'health_pending', 'binding_id': binding_id, 'items': [], 'next_byte': None,
+                'coverage': {'scope': 'live_health_work_pages', 'complete': False}}
+            for row in rows:
+                item = {'ref': 'health:item:' + row['id'], 'pending_id': row['id'], 'state': row['state']}
+                candidate = {**result, 'items': result['items'] + [item]}
+                if len(result['items']) == 32 or measure_json(candidate) > min(max_bytes, representation_bytes):
+                    if not result['items']:
+                        raise DomainError('HEALTH_BUNDLE_TOO_LARGE', 'The health page header exceeds the requested byte bound', status=413)
+                    result['next_byte'] = result.pop('_last_sequence')
+                    return result
+                result['items'].append(item)
+                result['_last_sequence'] = row['sequence']
+            result.pop('_last_sequence', None)
+            result['coverage']['complete'] = True
+            return result
+        prefix, separator, identifier = ref.removeprefix('health:').partition(':')
+        if not separator:
+            raise _missing()
+        if prefix == 'workspace':
+            workspace = await connection.fetchrow('SELECT * FROM am_code_workspaces WHERE id=$1 AND binding_id=$2',
+                identifier, binding_id)
+            if workspace is None:
+                raise _missing()
+            observations = await connection.fetch("""SELECT id,relative_path,symbol_name,workspace_revision,metadata
+                FROM am_code_observations WHERE workspace_id=$1 AND state='active' ORDER BY relative_path,symbol_name""", identifier)
+            result = {'id': identifier, 'kind': 'health_workspace', 'state': workspace['state'], 'epoch': clock['epoch'],
+                'workspace_id': identifier, 'revision': workspace['revision'], 'root_fingerprint': workspace['root_fingerprint'],
+                'binding_revision': workspace['binding_revision'],
+                'observations': [{'ref': item['id'], 'relative_path': item['relative_path'], 'symbol_name': item['symbol_name'],
+                    'workspace_revision': item['workspace_revision'], 'metadata': _decode(item['metadata'])} for item in observations],
+                'coverage': {'complete': True, 'scope': 'registered_observations_not_filesystem_catalog'}}
+            if byte_start or max_bytes != 4096 or measure_json(result) > representation_bytes:
+                return stored_record_window(result, byte_start, max_bytes, representation_bytes, measure_json=measure_json)
+            return result
+        if prefix == 'event':
+            event = await connection.fetchrow('SELECT * FROM am_health_events WHERE id=$1 AND binding_id=$2', identifier, binding_id)
+            if event is None:
+                raise _missing()
+            visible = await self._health_event_visible(connection, binding_id, event, snapshot)
+            result = {'id': identifier, 'kind': 'health_event', 'state': event['state'], 'epoch': clock['epoch'],
+                'event_kind': event['kind'], 'created_at': event['created_at'].isoformat(), 'payload': None, 'reason_source_ref': None}
+            if visible:
+                result.update(payload=_decode(event['payload']), reason_source_ref=event['reason_source_id'],
+                    authority={'credential_id': event['credential_id'], 'generation': event['credential_generation'],
+                        'role': event['role'], 'realm': event['realm'], 'human_presence': 'unattested'})
+            if byte_start or max_bytes != 4096 or measure_json(result) > representation_bytes:
+                return stored_record_window(result, byte_start, max_bytes, representation_bytes, measure_json=measure_json)
+            return result
+        if prefix == 'history':
+            await self._claim_row(connection, binding_id, identifier, snapshot, False)
+            rows = await connection.fetch("""SELECT id,kind,created_at FROM am_health_events WHERE binding_id=$1
+                AND target_ref=$2 ORDER BY created_at DESC,id DESC OFFSET $3 LIMIT 9""", binding_id, identifier, byte_start)
+            result = {'kind': 'health_history', 'claim_id': identifier, 'items': [],
+                'next_byte': None, 'coverage': {'scope': 'live_history_pages_not_frozen_catalog', 'complete': False}}
+            for row in rows[:8]:
+                item = {'ref': 'health:event:' + row['id'], 'kind': row['kind'], 'created_at': row['created_at'].isoformat()}
+                if measure_json({**result, 'items': result['items'] + [item]}) > min(max_bytes, representation_bytes):
+                    break
+                result['items'].append(item)
+            more = len(rows) > len(result['items'])
+            if more and not result['items']:
+                raise DomainError('HEALTH_BUNDLE_TOO_LARGE', 'A history item exceeds the requested response bound', status=413)
+            result['next_byte'] = byte_start + len(result['items']) if more else None
+            result['coverage']['complete'] = not more
+            return result
+        if byte_start != 0 or max_bytes != 4096:
+            raise DomainError('HEALTH_WINDOW_INVALID', 'Health work and admissions require one complete bounded response')
+        if prefix == 'item':
+            pending = await connection.fetchrow('''SELECT health_payload FROM am_pending_judgments
+                WHERE id=$1 AND binding_id=$2 AND kind='health' AND state IN ('pending','held')''', identifier, binding_id)
+            if pending is None:
+                raise DomainError('ADMISSION_STALE', 'This health work is no longer pending')
+            pending_payload = _decode(pending['health_payload'])
+            if pending_payload.get('cause') == 'feedback_candidate':
+                return await self._inspect_health(connection, clock, actor, binding_id,
+                    'health:feedback:' + pending_payload['feedback_ref'], snapshot, byte_start=byte_start,
+                    max_bytes=max_bytes, representation_bytes=representation_bytes, measure_json=measure_json)
+            manifest, bundle = await self._health_work_manifest(connection, binding_id, identifier)
+            sources = tuple(RevisionRef.model_validate(item) for item in manifest['input_sources'])
+            claims = tuple(RevisionRef.model_validate(item['claim']) for item in manifest['claims'])
+            admission = await self._new_caller_admission(connection, clock, actor, binding_id, 'health_work',
+                canonical_digest(manifest), manifest['snapshot'], sources=sources, claims=claims, health_manifest=manifest)
+            result = {'kind': 'health_work', 'pending_id': identifier, 'binding_id': binding_id,
+                'binding_revision': admission.binding_revision, 'health_manifest_digest': canonical_digest(manifest),
+                'admission': admission.model_dump(mode='json'), 'input_sources': manifest['input_sources'],
+                'input_claims': [item['claim'] for item in manifest['claims']], **bundle,
+                'policy': manifest['policy'], 'coverage': manifest['coverage']}
+        elif prefix == 'claim':
+            claim_id, _, nominated = identifier.partition(':observation:')
+            manifest, bundle = await self._claim_review_manifest(connection, binding_id, claim_id, snapshot, nominated or None)
+            source_refs = await connection.fetch('SELECT source_id,source_revision FROM am_claim_sources WHERE claim_id=$1 ORDER BY source_id',
+                claim_id)
+            admission = await self._new_caller_admission(connection, clock, actor, binding_id, 'health_claim',
+                canonical_digest(manifest), snapshot,
+                claims=(RevisionRef.model_validate(manifest['claims'][0]['claim']),),
+                sources=tuple(RevisionRef(id=item['source_id'], revision=item['source_revision']) for item in source_refs),
+                health_manifest=manifest)
+            history = await connection.fetch("""SELECT id,kind,created_at FROM am_health_events WHERE binding_id=$1
+                AND target_ref=$2 ORDER BY created_at DESC,id DESC LIMIT 9""", binding_id, claim_id)
+            result = {'kind': 'memory_health', **bundle, 'admission': admission.model_dump(mode='json'),
+                'history': [{'ref': 'health:event:' + row['id'], 'kind': row['kind'],
+                    'created_at': row['created_at'].isoformat()} for row in history[:8]],
+                'history_partial': len(history) > 8,
+                'history_continuation': {'ref': 'health:history:' + claim_id, 'byte_start': 8} if len(history) > 8 else None,
+                'coverage': {'complete': True, 'scope': 'exact_claim_and_current_dependency_candidates'}}
+        elif prefix == 'feedback':
+            manifest, bundle = await self._feedback_health_manifest(connection, binding_id, identifier)
+            admission = await self._new_caller_admission(connection, clock, actor, binding_id, 'health_feedback',
+                canonical_digest(manifest), snapshot, health_manifest=manifest)
+            result = {'kind': 'health_feedback', 'candidate': bundle, 'admission': admission.model_dump(mode='json'),
+                'coverage': {'complete': True, 'scope': 'exact_feedback_candidate_not_grounding'}}
+        else:
+            raise _missing()
+        if measure_json(result) > representation_bytes:
+            raise DomainError('HEALTH_BUNDLE_TOO_LARGE', 'The complete health admission bundle exceeds the representation bound', status=413)
+        return result
+
+    async def _health_event_visible(self, connection, binding_id, event, snapshot) -> bool:
+        if event['state'] != 'active' or event['payload'] is None or event['realm'] != self.settings.realm:
+            return False
+        for identifier in event['claim_ids']:
+            try:
+                await self._claim_row(connection, binding_id, identifier, snapshot, False)
+            except DomainError as error:
+                if error.code not in _DISCLOSURE_ERRORS:
+                    raise
+                return False
+        for identifier in event['source_ids']:
+            row = await connection.fetchrow('''SELECT state,body IS NOT NULL AS available,snapshot FROM am_sources
+                WHERE id=$1 AND binding_id=$2 AND realm=$3''', identifier, binding_id, self.settings.realm)
+            if row is None or row['state'] != 'active' or not row['available'] or (row['snapshot'] is not None and row['snapshot'] != snapshot):
+                return False
+        if event['reason_source_id'] and event['kind'] != 'feedback_resolution':
+            row = await connection.fetchrow('SELECT state,body IS NOT NULL AS available FROM am_sources WHERE id=$1',
+                event['reason_source_id'])
+            if row is None or row['state'] != 'active' or not row['available']:
+                return False
+        payload = _decode(event['payload'])
+        claim_refs = list(payload.get('input_claims', []))
+        if payload.get('claim_ref'):
+            claim_refs.append(payload['claim_ref'])
+        if payload.get('assessment', {}).get('claim_ref'):
+            claim_refs.append(payload['assessment']['claim_ref'])
+        for ref in claim_refs:
+            row = await connection.fetchrow('SELECT revision FROM am_claims WHERE id=$1 AND binding_id=$2',
+                ref['id'], binding_id)
+            if row is None or row['revision'] != ref['revision']:
+                return False
+        for ref in payload.get('input_sources', []):
+            row = await connection.fetchrow('SELECT revision FROM am_sources WHERE id=$1 AND binding_id=$2',
+                ref['id'], binding_id)
+            if row is None or row['revision'] != ref['revision']:
+                return False
+        return True
+
+    async def _current_health_stats(self, connection, binding_id: str, snapshot: str | None) -> dict:
+        counts = {'ordinary_claims': 0, 'reusable': 0, 'rejected': 0, 'needs_review': 0, 'unknown_after_restore': 0}
+        rows = connection.cursor("""SELECT id FROM am_claims WHERE binding_id=$1 AND state='active'
+            AND draft IS NOT NULL AND superseded_by IS NULL AND capability='agent_judged'
+            AND (snapshot IS NULL OR snapshot IS NOT DISTINCT FROM $2) ORDER BY id""",
+            binding_id, snapshot, prefetch=32)
+        async for row in rows:
+            try:
+                claim = await self._claim_row(connection, binding_id, row['id'], snapshot)
+            except DomainError as error:
+                if error.code != 'CLAIM_INELIGIBLE':
+                    raise
+                continue
+            if claim['selection_id'] is not None:
+                selection = await connection.fetchrow('SELECT * FROM am_source_selections WHERE id=$1', claim['selection_id'])
+                if selection is None or not await self._selection_disclosure(connection, binding_id, selection, snapshot):
+                    continue
+            state = await self._health_state(connection, claim)
+            counts['ordinary_claims'] += 1
+            counts['rejected'] += state['operator_review'] == 'reject'
+            counts['needs_review'] += state['needs_review']
+            counts['unknown_after_restore'] += state['restore_unknown']
+            try:
+                await self._reuse_claim(connection, claim)
+            except DomainError as error:
+                if error.code != 'CLAIM_INELIGIBLE':
+                    raise
+            else:
+                counts['reusable'] += 1
+        return {**counts, 'scope': 'current_structurally_eligible_ordinary_claims',
+            'accuracy_is_not_relevance': True, 'snapshot': snapshot}
+
+
+    async def _apply_health_deletions(self, connection, *, scrub: bool) -> None:
+        await connection.execute("""UPDATE am_code_observations o SET state='retracted'
+            FROM am_code_workspaces w WHERE o.workspace_id=w.id AND w.state<>'active' AND o.state='active'""")
+        await connection.execute("""UPDATE am_session_observations o SET state='retracted' WHERE o.state='active' AND (
+            EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(o.payload->'source_refs','[]')) d
+                LEFT JOIN am_sources s ON s.id=d->>'id' WHERE s.id IS NULL OR s.state<>'active'
+                    OR s.body IS NULL OR s.revision<>(d->>'revision')::bigint)
+            OR EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(o.payload->'claim_refs','[]')) d
+                LEFT JOIN am_claims c ON c.id=d->>'id' WHERE c.id IS NULL OR c.state<>'active' OR c.draft IS NULL OR c.revision<>(d->>'revision')::bigint)
+            OR EXISTS(SELECT 1 FROM am_sources s JOIN am_operations p ON p.id=s.operation_id
+                WHERE s.binding_id=o.binding_id AND p.credential_id=o.credential_id
+                AND s.producer_generation=o.credential_generation AND o.payload->'origin_keys' ? s.origin_key
+                AND (s.state<>'active' OR s.body IS NULL)))""")
+        await connection.execute("""UPDATE am_pending_judgments p SET state='retracted' WHERE p.kind='health'
+            AND p.state<>'retracted' AND (
+                EXISTS(SELECT 1 FROM unnest(p.source_ids) d(id) LEFT JOIN am_sources s ON s.id=d.id
+                    WHERE s.id IS NULL OR s.state<>'active' OR s.body IS NULL)
+                OR EXISTS(SELECT 1 FROM unnest(p.claim_ids) d(id) LEFT JOIN am_claims c ON c.id=d.id
+                    WHERE c.id IS NULL OR c.state<>'active' OR c.draft IS NULL)
+                OR
+                EXISTS(SELECT 1 FROM am_feedback f WHERE p.health_payload->>'feedback_ref'=f.id
+                    AND f.state='retracted' AND f.source_id IN (SELECT id FROM am_sources WHERE state='purged'))
+                OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(
+                    COALESCE(p.health_payload->'session_observation_ids','[]')) d
+                    JOIN am_session_observations o ON o.id=d.value WHERE o.state='retracted'))""")
+        await connection.execute("""UPDATE am_health_events e SET state='retracted' WHERE e.state='active' AND (
+            EXISTS(SELECT 1 FROM am_sources s WHERE s.id=ANY(e.source_ids) AND (s.state<>'active' OR s.body IS NULL))
+            OR EXISTS(SELECT 1 FROM am_claims c WHERE c.id=ANY(e.claim_ids) AND (c.state<>'active' OR c.draft IS NULL))
+            OR (e.kind<>'feedback_resolution' AND EXISTS(SELECT 1 FROM am_sources s
+                WHERE s.id=e.reason_source_id AND (s.state<>'active' OR s.body IS NULL)))
+            OR (e.kind<>'feedback_resolution' AND EXISTS(SELECT 1 FROM am_feedback f WHERE f.id=e.target_ref AND f.state='retracted'))
+            OR EXISTS(SELECT 1 FROM am_pending_judgments p WHERE p.id=e.target_ref AND p.state='retracted'))""")
+        await connection.execute("""UPDATE am_health_events e SET state='retracted'
+            FROM am_health_events parent WHERE e.state='active' AND e.kind='health_assessment'
+            AND e.payload->>'assessment_event_id'=parent.id AND parent.state<>'active'""")
+        await connection.execute("""UPDATE am_claim_health h SET version=version+1,needs_review=true,
+            support='unknown',freshness=CASE WHEN h.freshness='stale' THEN 'stale' ELSE 'unknown' END,
+            operator_review=CASE WHEN r.invalid AND h.operator_review='accept' THEN NULL ELSE h.operator_review END,
+            review_event_id=CASE WHEN r.invalid THEN NULL ELSE h.review_event_id END,
+            assessment_event_id=CASE WHEN a.invalid THEN NULL ELSE h.assessment_event_id END
+            FROM (SELECT claim_id,review_event_id IS NOT NULL AND NOT EXISTS(
+                SELECT 1 FROM am_health_events e WHERE e.id=p.review_event_id AND e.state='active') AS invalid
+                FROM am_claim_health p) r,
+                (SELECT claim_id,assessment_event_id IS NOT NULL AND NOT EXISTS(
+                SELECT 1 FROM am_health_events e WHERE e.id=p.assessment_event_id AND e.state='active') AS invalid
+                FROM am_claim_health p) a
+            WHERE r.claim_id=h.claim_id AND a.claim_id=h.claim_id AND (r.invalid OR a.invalid)""")
+        await connection.execute("""UPDATE am_operations o SET state='retracted',error_code='SOURCE_RETRACTED'
+            WHERE o.state<>'retracted' AND (
+                EXISTS(SELECT 1 FROM am_health_events e WHERE e.id=o.artifact_id AND e.state='retracted')
+                OR EXISTS(SELECT 1 FROM am_session_observations s WHERE s.id=o.artifact_id AND s.state='retracted')
+                OR EXISTS(SELECT 1 FROM am_code_observations c WHERE c.id=o.artifact_id AND c.state='retracted')
+                OR EXISTS(SELECT 1 FROM am_code_workspaces w WHERE w.id=o.artifact_id AND w.state='retracted'))""")
+        if not scrub:
+            return
+        await connection.execute("UPDATE am_health_events SET payload=NULL WHERE state='retracted' AND payload IS NOT NULL")
+        await connection.execute("UPDATE am_session_observations SET payload=NULL WHERE state='retracted' AND payload IS NOT NULL")
+        await connection.execute("UPDATE am_code_observations SET metadata=NULL WHERE state='retracted' AND metadata IS NOT NULL")
+        await connection.execute("""UPDATE am_pending_judgments SET health_payload='{}',reason=NULL
+            WHERE kind='health' AND state='retracted'""")
+        await connection.execute("""DELETE FROM am_code_links l USING am_claims c WHERE c.id=l.claim_id
+            AND c.state='retracted' AND c.draft IS NULL""")
+

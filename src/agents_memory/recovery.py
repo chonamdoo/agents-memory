@@ -18,6 +18,7 @@ from . import hosts
 from .client import LocalClient
 from .connection import RemoteClientSettings, remote_connection_cycle
 from .domain import DomainError, EffectState
+from .health_producer import load_health_workspace, observe_health_workspace
 from .private_io import private_read
 from .readiness import ensure_remote_ready
 from .spool import ProducerSpool, require_supported_sqlite
@@ -100,6 +101,11 @@ class SpoolRecovery:
             finally:
                 self._task = None
                 self._report(state="stopped")
+
+    async def wait_closed(self) -> None:
+        task = self._task
+        if task is not None:
+            await asyncio.shield(task)
 
     async def _run(self) -> None:
         try:
@@ -190,7 +196,7 @@ class SpoolRecovery:
                     continue
                 receipt = _receipt(self.settings, path)
                 outbox = Path(receipt["runtime_dir"]) / "capture.sqlite3"
-                if not outbox.exists():
+                if not outbox.exists() and load_health_workspace(receipt) is None:
                     continue
                 # Share the install/uninstall lock, but never wait behind a host operation.
                 lock = hosts._install_lock(self.settings, Path(receipt["project_root"]))
@@ -200,8 +206,6 @@ class SpoolRecovery:
                 if current != receipt:
                     continue
                 spool = ProducerSpool(outbox, receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
-                if not spool.status()["pending"]:
-                    continue
                 if remote and not remote_ready:
                     try:
                         ensure_remote_ready(
@@ -235,6 +239,16 @@ class SpoolRecovery:
                                 raise DomainError("SERVICE_UNAVAILABLE", "The recovery cycle deadline expired", status=503, effect=EffectState.NOT_STARTED)
                             client.timeout = remaining
                         return client.request(route, payload)
+                if not self._stop.is_set():
+                    try:
+                        observation = observe_health_workspace(receipt, client=OwnedDelivery(), flush_limit=self.flush_limit)
+                        if observation.get("state") == "gap":
+                            self._failure(observation["code"])
+                    except (OSError, ValueError, UnicodeError, DomainError, sqlite3.Error) as error:
+                        self._failure(error)
+                if self._stop.is_set():
+                    return
+
 
                 result = spool.flush(OwnedDelivery(), limit=self.flush_limit)
                 self._report(committed=self._status["committed"] + result["committed"])

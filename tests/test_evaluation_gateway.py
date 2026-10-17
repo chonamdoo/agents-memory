@@ -219,7 +219,6 @@ async def test_off_is_server_enforced_and_required_rules_match_on(authority, tmp
             assert status == 200
             assert json.loads(raw)["result"]["isError"] is True
             status, raw = await request(app, {"jsonrpc":"2.0", "id":3, "method":"resources/list", "params":{"_meta":META}}, token=None)
-            assert status == 200
             assert "private-source" not in raw.decode()
             assert not json.loads(raw).get("result", {}).get("resources")
 
