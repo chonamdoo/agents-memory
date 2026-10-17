@@ -1124,3 +1124,27 @@ EPERM만으로 group을 소멸 처리하거나 leader exit만으로 다른 membe
 
 sole Popen supervisor와 group 내 자손이라는 범위는 유지한다. 외부 reaper·group/session 탈출·kernel PID wraparound·실제 native first-action/stop/recovery·Mac maintenance·운영 TLS/cutover/egress·독립 human gold/180 valid pairs·실제1–2주 trial·volume 정리·merge/release는 입증하지 않았다. 원래18개는 완료0개이며 assistant 소유의 평가 harness/workload/verifier 엔지니어링도 별도 미완료로 남긴다. 로컬 runtime 검증은0이다. 이 문서 변경 뒤 정확한 head의 Actions와 fresh normal 독립 Opus/Sol review·QA/handoff는 [PR9 기록](https://github.com/chonamdoo/agents-memory/pull/9)을 따른다.
 
+### 테스트 finalizer의 소유권과 반복 FIFO EOF 관측 — 6b082a5
+
+`b4051bf`의 정상 독립 리뷰는 실제12완료/9approve/3request-changes/timeout0이었다. 제품의 Darwin 수정과 별개로, 세 reviewer가 `test_native_status`와 CI timeout 회귀의 finalizer에서 이미 reap한 leader의 숫자 PGID에 다시 KILL을 보내는 위험을 찾았다. 전체 판정은 request-changes로 유지했다. 정상 경로의 fix-loop 최대3회 차단도 보존했으며, 사용자가 정상 abort와 동일 worktree의 새 계속 작업을 명시적으로 선택한 뒤 재개했다. 이전 판정·counter·guard·trust·settings·pins·timeout은 바꾸지 않았다.
+
+아래는 setup/call/teardown을 합친 **유일 node ID별 terminal 집계**다. 세 모집단은 서로 별도이며 더하지 않는다. 모든 행의 skip/xfail/xpass는0이다.
+
+| checkpoint | 실제 Actions | Linux source 통과 | source 실패 | 별도 설치 통과 | 설치 실패 | Mac 통과 | Mac 실패 | 최종 집계 |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| `b5044fa5248f229dd0817db4fb3b602df0beef99` | [39000160260](https://github.com/chonamdoo/agents-memory/actions/runs/39000160260) |2431|20|74|18|16|19|실패|
+| `1f70e8e1dae9796e513f31b919b18d5ed7d4f876` | [39000975351](https://github.com/chonamdoo/agents-memory/actions/runs/39000975351) |2452|0|92|0|17|19|실패|
+| `6b082a587b474b7a0e633757add969d459d42a5a` | [39001624481](https://github.com/chonamdoo/agents-memory/actions/runs/39001624481) |2452|0|92|0|36|0|성공, complete:true|
+
+유효 before의 native18+CI1은 setup/call이 모두 통과한 뒤 teardown에서만 실패했다. 이미 reap된 tracked root에 보내려던 group signal을 별도로 소유한 실제 responsive process에만 돌렸고, ready handshake 뒤 ping에서 BrokenPipe/EOF를 관측했다. 설치 wheel은 native18을 실제 소비하며 CI-helper는 source-only다. 실제 kernel PID 재사용이나 무관한 사용자 process 피해를 일으킨 시험은 아니다. source의 나머지1개 call 실패는 집계기가 매개변수 없는 CI case를 인정하지 못한 `Missing compatibility boundary`이며 finalizer 실패에 합산하지 않는다. exact ID 또는 parameter ID를 함께 인정하도록 고쳤다.
+
+두 finalizer는 공통 test-only `owned_descendants` fixture로 교체했다. 자손은 private FIFO의 release byte/EOF로 해제하고, 단독으로 보유한 원본 Popen은 개별 kill·저장한 real wait로 회수한다. ExitStack이 root 정리·lifetime EOF 관측·descriptor 종료를 맡는다. 숫자 group을 reap 뒤에 신호하지 않는다. 기존 테스트는 fixture 해제 **전에** 제품의 자손 종료·pipe close·오류 효과를 계속 검사한다. 추가한 실제 fallback은 root를 이미 reap했지만 자손의 lifetime writer가 살아 있음을 먼저 확인하고, fixture teardown의 IPC 해제·EOF와 별도 witness 생존을 검증한다. source와 실제 Mac 모두 setup/call/teardown이 통과했다. fixture는 stdlib/pytest만 import하며 sys.path나 제품 import 경로를 바꾸지 않는다.
+
+첫 수정의 Linux full·설치 소비는 성공했지만 Mac의19개 teardown은 이미 읽은 FIFO EOF에 다시 readiness를 기다려 실패했다. [released XNU의 fifo_read](https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/bsd/miscfs/fifofs/fifo_vnops.c#L319-L375)는 첫 EOF 뒤 소켓 EOF 표시를 지우지만 writer가 없고 buffer가 비면 read0을 계속 반환한다. 이전11215.81.4 source도 대조했다. nonblocking read를 먼저 하고 BlockingIOError일 때만 select를 기다리도록 고쳤으며2초 한도를 늘리거나 Mac을 특례 통과시키지 않았다. 첫 수정의 CI lint 미사용 import 오류도 실제 실패로 보존하고 import를 삭제했다. 두 실패 run의 public distribution 미게시와 실패 aggregate도 지우지 않았다.
+
+최종 run에서 before와 같은19개 source/Mac node와18개 installed node가 모든 phase를 통과했다. 새 fallback을 포함한 Mac36은 CPython3.12.13 source compatibility이며 Mac 설치 wheel이나 전체 Mac suite가 아니다. Linux 설치92의 Python45-file identity와 실제 소비·공개 wheel 일치도 통과했다. source/resource digest는 `c522186bb58461c0f241e72a10f9fb58f9c18f646e21ebc7b314c0f6044aa056`, wheel SHA256은 `70ddcf9984c75480c7ee531c84b5606f4248066ec44da83ab65226ce71333cc5`다.
+
+Linux 다섯 job은 UTC04:11:27, Mac은04:11:33에 시작해 겹쳐 실행됐고 다섯 Linux owned prerequisite cleanup이 성공했다. lint0.064초/build1.217초/installed consumer46.220초는 모두 exit0·timeout=false다. 전체 원본 API/jobs/phase/JUnit/watch/distribution과 같은 node의 전후 비교를 checkpoint별 context에 보존했다. 실제 CI aggregate 프로그램도 `complete:true`를 기록했다.
+
+이 수정은 검증 코드의 단일 Popen 소유권과 controlled IPC에 한정된다. 외부·동시 reaper, 임의 코드 격리, group/session 탈출, 실제 native 보호·운영 배포·PMPA/semantic matrix·독립 human gold/180 valid pairs·실제 pilot 경과·volume 정리·merge/release의 증명이 아니다. 원래18개는 완료0개이고 평가 harness/workload/verifier 구현은 여전히 assistant 소유의 다음 작업이다. 로컬 검증 명령은 실행하지 않았다. 편집 도구의 비요청 LSP 경고는 별도 보존하고 검증 결과로 쓰지 않았으며 공유 LSP/settings를 바꾸거나 중단하지 않았다. 이 문서 head의 정확한 Actions와 새 독립 리뷰·CI-only QA/handoff는 [PR9 기록](https://github.com/chonamdoo/agents-memory/pull/9)을 따른다.
+
