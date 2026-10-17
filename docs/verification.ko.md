@@ -1075,7 +1075,29 @@ Linux에서는 exited/unreaped leader가 zombie로 group에 남아 `killpg(pgid,
 
 성공 run의 다섯 upstream job은 UTC23:43:54–55에 병렬 시작했고 모든 owned prerequisite cleanup이 성공했다. failed/skip/xfail/xpass0, lint exit0/0.064초, build exit0/1.166초, installed consumer38.894초였다. source/resource digest는 `335a23298716a073771a26178a314bb6cb9172eebdd9eefe25eef27b8d05ff4e`, 실제 소비·공개 wheel SHA256은 `abf2210df64e8d806bd36d302d535436c10dbe41457403435cb01ee0a6293280`이다. 설치 Python45-file bytes와 public distribution을 대조했다. 실패 run은 checks 실패로 public distribution 업로드가 생략됐다는 사실도 보존하며 다른 run의 artifact로 채우지 않는다.
 
-현재 supervisor의 단독 wait 소유권을 보존한 것이지 임의 외부 reaper·탈출한 setsid 자손·실제 native startup/activation·운영 배포·live model/human gold/trial의 증명은 아니다. MCP 증거 문구도 직접 Store capture+두 MCP inspect/record와 별도 HTTP producer 권한 거절로 바로잡았다. 로컬 검증은0이고 shared pane/server/VM/daemon/LSP를 중지하지 않았다. 원래18개 acceptance는 사용자 요청으로 실제 새 우측 패인의 읽기 전용 준비 lane과 병렬 조정하며 완료로 치환하지 않는다. 이 수정 source의 fresh normal Opus/Sol→QA/handoff와 final-publication/merge/release 조건은 별도다.
+현재 supervisor의 단독 wait 소유권을 보존한 것이지 임의 외부 reaper·탈출한 setsid 자손·실제 native startup/activation·운영 배포·live model/human gold/trial의 증명은 아니다. MCP 증거 문구도 직접 Store capture+두 MCP inspect/record와 별도 HTTP producer 권한 거절로 바로잡았다. 로컬 검증은0이고 shared pane/server/VM/daemon/LSP를 중지하지 않았다. 원래18개 acceptance의 별도 읽기 전용 패인에서 최종 조사를 수신했고, 그 패인 종료와 integration owner 생존을 실제 관측했다. 완료한 것은 조사·인계이며 원래18개는 완료0개다. 이 수정 source의 fresh normal Opus/Sol→QA/handoff와 final-publication/merge/release 조건은 별도다.
 
 
+
+### macOS Python 3.12 소유권 회귀 — 92cc360
+
+문서 head592b648의 다음 정상 독립 리뷰는12시도 중11완료(10approve/1request-changes), Opus types1timeout/null이었다. timeout의 부분 원문을 판정으로 쓰지 않았다. 실제 완료한 Opus generalist는 CPython3.12 macOS에 `os.waitid`가 없어 POSIX로 허용한8개 회귀가 setup에서 실패한다는 high 지적과 위 Linux full-grace 지연 문구의 medium 지적을 냈다. aggregate request-changes와 정상 다음 fix-loop 진입을 보존했다. 과거 source의 승인을 새 source에 재사용하지 않는다.
+
+기존 Ubuntu3.13의4개 full-suite shard·lint/build/installed consumer와 병렬로 `macos-15`/CPython3.12.13의 별도 compatibility job을 추가했다. `.github/ci/ownership-compat.py`는 Actions·정확한 tested SHA·실제 platform/implementation/version을 요구한다. 전체 Linux collection에서 두 ownership function의 parameter 경계로 예상하는8개 node ID와 Mac의 실제 수집/선택/실행 집합이 정확히 같아야 한다. aggregate는 compatibility artifact 누락·잘못된 runtime·누락된 case·실패/skip/xfail·phase 누락·source drift를 거절하며 해당 부정 회귀3건도 full suite에서 실행했다.
+
+| 정확한 checkpoint | 실제 Actions | Mac 통과 | Mac 실패 | Mac skip | 실패 phase·최종 집계 |
+|---|---|---:|---:|---:|---|
+| `75997e58147794d3aef9798f01fe784bf1d43461` | [38986103929](https://github.com/chonamdoo/agents-memory/actions/runs/38986103929) |0|8|0|setup의 `os.waitid` AttributeError, aggregate 실패|
+| `99090cb431d995cc3251c495aadbfddabe1235b6` | [38986502290](https://github.com/chonamdoo/agents-memory/actions/runs/38986502290) |6|2|0|after-probe call의 PermissionError, aggregate 실패|
+| `92cc360a06be152dac2cd9d6499c680a02383695` | [38987056695](https://github.com/chonamdoo/agents-memory/actions/runs/38987056695) |8|0|0|setup/call/teardown 모두 통과, complete:true|
+
+각 run의 Linux full suite는2443수집/고유선택/통과, 별도 설치 wheel은87통과였고 failed/skip/xfail/xpass0이었다. lint/build와 다섯 Linux owned prerequisite cleanup도 성공했다. Mac8·full source2443·installed87은 서로 다른 모집단이며 더하지 않는다. 첫 실패를 취소/skip하거나 Linux fixture로 바꾸지 않고 실제 최소 지원 Mac/Python에서 관측했다.
+
+수정한 fixture는 child를 stdin에 대기시킨 뒤 `waitid`가 없는 곳에서 kqueue `KQ_FILTER_PROC/NOTE_EXIT`를 먼저 등록하고 child를 해제한다. exit 관측은 reap하지 않으며 마지막 wait와 실제 별도 소유 child의 exit0/`survived:ping` 검증은 유지한다. `waitid`가 있는 Linux 경로도 그대로다. Mac을 skip하지 않는다.
+
+첫 수정의8개 setup/teardown은 모두 통과했지만 가상 group의 성공 probe 뒤 실제 죽은 owned group으로 최종 KILL을 전달한 두 call은 Darwin에서 EPERM을 받았다. 이 실패도 원본 log/phase/receipt와 함께 보존했다. owned target은 기존 TERM/probe와 일관되게 가상 처리하고, leader를 reap해 소유권이 풀린 경우에는 여전히 실제 survivor로 신호를 돌리는 fault model로 바로잡았다. 제품의 PermissionError를 삼키거나 두 production cleanup helper·grace 상수·deadline을 바꾸지 않았다. 실제 kernel PID 재사용이나 Mac native 보호의 증명이 아니다.
+
+성공 run의 Linux 다섯 job은 UTC00:35:18–19, Mac job은00:35:25에 시작해 겹쳐 실행됐다. lint0.064초/build1.166초/installed consumer39.902초 모두 exit0·timeout=false였다. source/resource digest는 `923803a294d486432bd46383b71a30796768b702b48680a386657d9645602586`이며 Mac/Linux/checks의 before/after가 일치했다. 실제 소비·공개 wheel SHA256은 `abf2210df64e8d806bd36d302d535436c10dbe41457403435cb01ee0a6293280`이고 설치45-file identity와 모든 installed phase가 통과했다. 정확한 run/job API·전체 watch·phase/JUnit·distribution·실패/성공 aggregate를 각 checkpoint별 context에 보존했다.
+
+이는 두 helper의 source-level fault injection과 실제 별도 child 생존에 한정된 Mac 최소 runtime 회귀다. Mac 전체 suite·실제 native first-action/stop/recovery·login/reboot/sleep-wake·운영 배포·human gold/180 valid pairs·trial·출시 승인을 주장하지 않는다. 로컬 runtime 검증은0이다. 이 문서 수정 뒤의 정확한 head CI·fresh normal 독립 리뷰·QA/handoff는 [PR9 기록](https://github.com/chonamdoo/agents-memory/pull/9)을 따르며 원래18개 acceptance는 별도로 유지한다.
 
