@@ -14,8 +14,8 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from test_evaluation_gateway import actual_upstream
-from test_store_authority import ready_claim, relation_judgment
 from test_store_authority import authority as authority
+from test_store_authority import ready_claim, relation_judgment
 
 from agents_memory import context as context_module
 from agents_memory import (

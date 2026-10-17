@@ -12,6 +12,7 @@ import secrets
 import socket
 import stat
 import sys
+import threading
 import traceback
 import zipfile
 from contextlib import redirect_stderr, redirect_stdout
@@ -467,7 +468,7 @@ def source_identity(wheel: Path, expected_digest: str, consumption: str) -> tupl
     return identity, identities
 
 
-def channel(settings: Settings, binding: str, files: dict, phase: str) -> dict:
+def channel(settings: Settings, binding: str, files: dict, phase: str, *, rules_file: str) -> dict:
     endpoint = asdict(RelayEndpoint(settings.base_url, state_dir=settings.state_dir, deployment_id=settings.deployment_id))
     endpoint["state_dir"] = str(endpoint["state_dir"])
     return {"route_ref": "engineering-" + phase + "-route", "binding_id": binding,
@@ -476,7 +477,7 @@ def channel(settings: Settings, binding: str, files: dict, phase: str) -> dict:
             "approved_upstream_urls": [settings.base_url], "approved_refs": [], "protocol_version": "2025-11-25",
             "max_calls": 200, "max_trace_bytes": 16 * 1024 * 1024,
             "required_request": {"binding_id": binding, "query": "CacheKey offline", "max_bytes": 6144, "limit": 3},
-            "lifetime_seconds": 90.0, "rules_file": "preflight_rules" if phase == "preflight" else "rules"}
+            "lifetime_seconds": 90.0, "rules_file": rules_file}
 
 
 def fixture_gateway(config: dict, trace) -> EvaluationGateway:
@@ -862,6 +863,113 @@ def reconcile_verifiers(run: Path, frozen: evaluation.EvaluationManifest) -> boo
     return complete
 
 
+async def exercise_optional_pair_drift(args, root, measured, preflight, corpus, gold, rules, pre_rules, runtime_raw, store, actor):
+    private_directory(root)
+    _, run, frozen = freeze_manifest(root, measured, preflight, corpus, gold, rules, pre_rules, args, runtime_raw)
+    first_done = asyncio.Event()
+    release = threading.Event()
+    stop = threading.Event()
+    loop = asyncio.get_running_loop()
+    first = {}
+    errors = []
+    approved = task = None
+    outcome = {}
+    original = evaluation._run_one
+
+    def actual_arm(manifest, run_dir, invocation, *, enabled, stop_event=None, pair_controls=None):
+        result = original(manifest, run_dir, invocation, enabled=enabled, stop_event=stop_event, pair_controls=pair_controls)
+        if invocation["phase"] == "coding" and not first:
+            first.update(invocation=invocation, result=result, inventory=ledger_snapshot(run_dir))
+            loop.call_soon_threadsafe(first_done.set)
+            require(release.wait(30), "PAIR_DRIFT_OWNED_BOUNDARY_UNRELEASED")
+        return result
+
+    evaluation._run_one = actual_arm
+    boundary = asyncio.create_task(first_done.wait())
+    try:
+        task = asyncio.create_task(asyncio.to_thread(evaluation.run_evaluation, frozen, run, stop_event=stop))
+        await asyncio.wait({boundary, task}, return_when=asyncio.FIRST_COMPLETED)
+        if not first_done.is_set():
+            await asyncio.shield(task)
+            raise SmokeFailure("PAIR_DRIFT_REAL_FIRST_ARM_UNREACHED")
+        require(first["result"]["status"] == "completed" and first["result"]["comparable"] is True
+                and first["result"]["functional_success"] is True
+                and first["result"]["cleanup_complete"] is True, "PAIR_DRIFT_FIRST_ARM_NOT_REAL_SUCCESS")
+        proposal = await store.propose_rule(actor, RuleProposal(
+            binding_id=measured["binding_id"], idempotency_key="engineering-between-arm-optional",
+            body="An independently approved optional condition changed between arms.", required=False))
+        approved = await store.approve_rule(actor, RuleApproval(
+            proposal_id=proposal["proposal_id"], expected_digest=proposal["digest"],
+            scope=RuleScope.LOCAL_PROJECT, target_bindings=(measured["binding_id"],),
+            target_set_revision=proposal["target_set_revision"], idempotency_key="engineering-between-arm-approve"))
+        release.set()
+        report = await asyncio.shield(task)
+        before_report = ledger_snapshot(run)
+        reported = evaluation.report_evaluation(run)
+        require(report == reported and ledger_snapshot(run) == before_report, "PAIR_DRIFT_REPORT_NOT_READONLY")
+        require(all(before_report.get(name) == digest for name, digest in first["inventory"].items()),
+                "PAIR_DRIFT_EXISTING_ATTEMPT_CHANGED")
+        _, arms, retrieval = evaluation.load_report_inputs(run)
+        invocations = frozen.workload["invocations"]
+        terminals = [evaluation._read_terminal(frozen, run, invocation) for invocation in invocations]
+        require(len(arms) == 2 and len(retrieval) == 2 and len(terminals) == 5
+                and all(isinstance(item, dict) for item in terminals), "PAIR_DRIFT_ALL_ATTEMPTS_NOT_RETAINED")
+        first_arm = next(arm for arm in arms if arm.invocation_id == first["invocation"]["invocation_id"])
+        second_arm = next(arm for arm in arms if arm.invocation_id != first_arm.invocation_id)
+        second = next(item for item in invocations if item["invocation_id"] == second_arm.invocation_id)
+        require(first_arm.status == "completed" and first_arm.comparable and first_arm.functional_success is True
+                and second_arm.status == "blocked" and not second_arm.comparable
+                and "APPLICABLE_RULE_SET_OR_CONTENT_DRIFT" in second_arm.comparability_reasons
+                and not Path(second["native"]["cwd"]).exists(), "PAIR_DRIFT_SECOND_ARM_WAS_ADMITTED")
+        require(report["coding"]["pair_attempts"] == 1 and report["coding"]["valid_pair_attempts"] == 0
+                and report["coding"]["retry_pair_attempts"] == 0 and report["coding"]["missing_arms"] == 0,
+                "PAIR_DRIFT_INCOMPARABLE_PAIR_HIDDEN")
+        require(report["controller"]["preflight"]["status"] == "completed"
+                and report["controller"]["preflight"]["comparable"] is True
+                and sum(item["status"] == "completed" for item in terminals) == 4
+                and sum(item["status"] == "blocked" for item in terminals) == 1
+                and report["original18_completed"] == 0, "PAIR_DRIFT_REAL_PREFLIGHT_OR_DENOMINATOR_MISSING")
+        outcome = {
+            "complete": True, "all_attempts": 5, "completed_attempts": 4, "blocked_attempts": 1,
+            "coding_arms": 2, "pair_attempts": 1, "valid_pairs": 0, "retry_pairs": 0,
+            "first_terminal_preserved": True, "second_native_spawned": False, "report_readonly": True,
+            "actual_optional_approval_between_completed_arms": True,
+            "synthetic_native_protocol_peer": True, "native_acceptance": False, "original18_completed": 0,
+        }
+    except BaseException as error:
+        errors.append(error)
+    finally:
+        stop.set()
+        release.set()
+        boundary.cancel()
+        await asyncio.gather(boundary, return_exceptions=True)
+        if task is not None:
+            try:
+                await asyncio.shield(task)
+            except BaseException as error:
+                if all(error is not existing for existing in errors):
+                    errors.append(error)
+        evaluation._run_one = original
+        if approved is not None:
+            try:
+                withdrawn = await store.withdraw_rule(actor, measured["binding_id"], approved.id, "engineering-between-arm-withdraw")
+                require(withdrawn["state"] == "withdrawn", "PAIR_DRIFT_OWNED_RULE_NOT_WITHDRAWN")
+                outcome["owned_rule_withdrawn_after_recording"] = True
+            except BaseException as error:
+                errors.append(error)
+        try:
+            absent = await asyncio.to_thread(reconcile_verifiers, run, frozen)
+            require(absent, "PAIR_DRIFT_OWNED_VERIFIER_CLEANUP_INCOMPLETE")
+            outcome["owned_verifiers_exact_absent"] = True
+        except BaseException as error:
+            errors.append(error)
+    outcome["complete"] = not errors and outcome.get("complete") is True
+    save(root / "pair-drift-result.json", outcome)
+    if errors:
+        raise BaseExceptionGroup("Real engineering pair drift or owned cleanup failed", errors)
+    return outcome
+
+
 async def smoke(args, root: Path, summary: dict) -> None:
     import asyncpg
     import uvicorn
@@ -914,7 +1022,10 @@ async def smoke(args, root: Path, summary: dict) -> None:
         save(root / "operator.token", operator_token.encode())
         bindings = {}
         channels = {}
-        for phase in ("measured", "preflight"):
+        for phase, rules_file in (
+            ("measured", "rules"), ("preflight", "preflight_rules"),
+            ("drift_measured", "rules"), ("drift_preflight", "preflight_rules"),
+        ):
             binding = await store.register_binding(actor, "Engineering " + phase, None, "engineering-" + phase)
             actor = await store.authenticate(operator_token)
             bindings[phase] = binding.id
@@ -924,7 +1035,7 @@ async def smoke(args, root: Path, summary: dict) -> None:
                 await store.issue_token(actor, role, (binding.id,), token)
                 files[role.value] = root / (phase + "-" + role.value + ".token")
                 save(files[role.value], token.encode())
-            channels[phase] = channel(settings, binding.id, files, phase)
+            channels[phase] = channel(settings, binding.id, files, phase, rules_file=rules_file)
             proposal = await store.propose_rule(actor, RuleProposal(binding_id=binding.id,
                 idempotency_key="engineering-" + phase + "-proposal", body="Keep synthetic credentials offline.", required=True))
             await store.approve_rule(actor, RuleApproval(proposal_id=proposal["proposal_id"], expected_digest=proposal["digest"],
@@ -957,16 +1068,16 @@ async def smoke(args, root: Path, summary: dict) -> None:
         evidence = root / "preparation-evidence"
         private_directory(evidence)
         corpus, gold, rules = await asyncio.to_thread(prepare_corpus, channels["measured"], evidence)
-        def preflight_rules():
-            gateway = fixture_gateway(channels["preflight"], lambda value: save(evidence / ("preflight-" + secrets.token_hex(8) + ".json"),
+        def preflight_rules(selected):
+            gateway = fixture_gateway(selected, lambda value: save(evidence / ("preflight-" + secrets.token_hex(8) + ".json"),
                 canonical_bytes(evaluation._private_value(value))))
             try:
-                response = gateway.call_tool("memory_required_context", channels["preflight"]["required_request"])
+                response = gateway.call_tool("memory_required_context", selected["required_request"])
                 require(not response.get("isError"), "PREFLIGHT_REQUIRED_CONTEXT_FAILED")
                 return sorted(decode_json(response["content"][0]["text"].encode())["stamp"]["rules"])
             finally:
                 gateway.close()
-        pre_rules = await asyncio.to_thread(preflight_rules)
+        pre_rules = await asyncio.to_thread(preflight_rules, channels["preflight"])
         require(rules["rules"] and pre_rules, "REAL_REQUIRED_RULES_REQUIRED")
         manifest, run, frozen = freeze_manifest(root, channels["measured"], channels["preflight"], corpus, gold,
                                                rules, pre_rules, args, runtime_raw)
@@ -1022,6 +1133,13 @@ async def smoke(args, root: Path, summary: dict) -> None:
         summary["outcomes"] = outcomes
         outcomes.update(await exercise_health_link(root, run, expected, store, actor, bindings["measured"]))
         require(ledger_snapshot(run) == immutable, "HEALTH_LINK_MUTATED_RETAINED_EVALUATION")
+        drift_evidence = root / "pair-drift-preparation"
+        private_directory(drift_evidence)
+        drift_corpus, drift_gold, drift_rules = await asyncio.to_thread(prepare_corpus, channels["drift_measured"], drift_evidence)
+        drift_pre_rules = await asyncio.to_thread(preflight_rules, channels["drift_preflight"])
+        summary["pair_drift"] = await exercise_optional_pair_drift(
+            args, root / "optional-pair-drift", channels["drift_measured"], channels["drift_preflight"],
+            drift_corpus, drift_gold, drift_rules, drift_pre_rules, runtime_raw, store, actor)
         _, after = source_identity(args.wheel, args.expected_wheel_sha256, args.consumption)
         require(before == after, "CONSUMED_SOURCE_CHANGED")
         outcomes["source_unchanged"] = True

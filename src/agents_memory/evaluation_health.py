@@ -506,10 +506,10 @@ def load_evaluation_health_evidence(
         generation = native["identity"].get("thread_id") or native["identity"].get("session_id")
         _require(isinstance(generation, str), "EVALUATION_HEALTH_GENERATION_UNKNOWN")
         take("ledger/generation-" + digest_bytes(generation.encode()) + ".json")
+        take_trace(invocation["invocation_id"], "gateway")
         if invocation["phase"] == "preflight":
             take(prefix + ".capture.json")
             take_trace(invocation["invocation_id"], "producer")
-            take_trace(invocation["invocation_id"], "gateway")
             continue
         for channel in ("fence_before", "fence_after"):
             take_trace(invocation["invocation_id"], channel)

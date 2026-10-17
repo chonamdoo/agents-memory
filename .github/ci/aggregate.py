@@ -91,6 +91,14 @@ EVALUATION_OUTCOMES = {
     "explicit_evaluation_health_link": True, "no_automatic_health_or_human_approval": True,
     "forged_evidence_refused": 5,
 }
+PAIR_DRIFT_OUTCOMES = {
+    "complete": True, "all_attempts": 5, "completed_attempts": 4, "blocked_attempts": 1,
+    "coding_arms": 2, "pair_attempts": 1, "valid_pairs": 0, "retry_pairs": 0,
+    "first_terminal_preserved": True, "second_native_spawned": False, "report_readonly": True,
+    "actual_optional_approval_between_completed_arms": True,
+    "synthetic_native_protocol_peer": True, "native_acceptance": False, "original18_completed": 0,
+    "owned_rule_withdrawn_after_recording": True, "owned_verifiers_exact_absent": True,
+}
 SCENARIO_NODEIDS = sorted("tests/evaluation_docker_scenarios.py::" + name for name in (
     "test_actual_controls_outer_oracle_and_exact_retention",
     "test_actual_timeout_and_output_overflow_are_not_zero_exit_success",
@@ -334,6 +342,10 @@ def evaluation_evidence(artifacts: Path, tested_sha: str, source: str,
     require(isinstance(outcomes, dict) and outcomes == EVALUATION_OUTCOMES
             and all(type(outcomes[key]) is type(expected) for key, expected in EVALUATION_OUTCOMES.items()),
             "Full smoke semantic accounting incomplete")
+    drift = smoke.get("pair_drift")
+    require(isinstance(drift, dict) and drift == PAIR_DRIFT_OUTCOMES
+            and all(type(drift[key]) is type(expected) for key, expected in PAIR_DRIFT_OUTCOMES.items()),
+            "Real between-arm optional-rule drift or complete failed-pair accounting missing")
     consumed = smoke.get("identity")
     require(isinstance(consumed, dict) and consumed.get("consumption") == "installed"
             and consumed.get("wheel_sha256") == value["wheel_sha256"]

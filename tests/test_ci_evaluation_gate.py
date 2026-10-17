@@ -134,6 +134,7 @@ def complete_evidence(root: Path) -> SimpleNamespace:
     write_json(smoke, {"schema": 1, "code": "COMPLETED", "complete": True, "tested_sha": sha, "scope": "engineering", "native_acceptance": False,
                        "synthetic_native_protocol_peer": True, "original18_completed": 0,
                        "outcomes": module["EVALUATION_OUTCOMES"],
+                       "pair_drift": module["PAIR_DRIFT_OUTCOMES"],
                        "identity": {**measured, "consumption": "installed", "wheel_sha256": evaluation_wheel,
                                     "distribution_version": "0.1.0", "modules_digest": observed_modules_digest,
                                     "module_digests": observed_modules},

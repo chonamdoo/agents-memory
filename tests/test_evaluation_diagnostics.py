@@ -807,7 +807,7 @@ def test_rehashed_packing_cannot_replace_frozen_claim_meaning_or_provenance(fiel
 def test_rehashed_packing_cannot_drop_approved_secondary_evidence():
     inputs = make_inputs(include_secondary_evidence=True)
     manifest, spec = inputs.freeze()
-    assert load_diagnostic_gold(manifest, spec).gold[0].feasibility.maximum_relevant == 3
+    assert load_diagnostic_gold(manifest, spec).gold[0].feasibility.complete
     inputs.documents["packing"]["claims"][0]["evidence"].pop()
     inputs.rehash_packing()
     changed_manifest, changed_spec = inputs.freeze()
@@ -829,7 +829,7 @@ def test_rehashed_optional_rule_cannot_replace_approved_semantics(field, value):
         "body": "조건과 근거를 함께 보존한다.", "exceptions": ["인간의 명시적 거절은 제외한다."],
     }])
     manifest, spec = inputs.freeze()
-    assert load_diagnostic_gold(manifest, spec).gold[0].feasibility.maximum_relevant == 3
+    assert load_diagnostic_gold(manifest, spec).gold[0].feasibility.complete
     if field == "omit":
         inputs.documents["packing"]["rules"].clear()
     else:
@@ -846,7 +846,7 @@ def test_rehashed_relationship_cannot_change_frozen_closure(change):
         "ref": "relation12", "left": "claim1", "right": "claim2", "kind": "supports",
     }])
     manifest, spec = inputs.freeze()
-    assert load_diagnostic_gold(manifest, spec).gold[0].feasibility.maximum_relevant == 3
+    assert load_diagnostic_gold(manifest, spec).gold[0].feasibility.complete
     if change == "omit":
         inputs.documents["packing"]["relations"].clear()
     elif change == "endpoint":
