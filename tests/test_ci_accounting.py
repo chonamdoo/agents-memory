@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -53,11 +54,16 @@ def evidence(tmp_path):
         "tests/test_ci_accounting.py::test_cleanup_after_esrch_cannot_kill_a_reused_group[term-native]",
         "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[after-probe-native]",
         "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[already-reaped-native]",
+        "tests/test_ci_accounting.py::test_real_exited_group_cleanup_keeps_other_owned_process[native]",
+        "tests/test_ci_accounting.py::test_live_group_permission_error_is_not_terminal[native]",
+        "tests/test_native_status.py::test_native_inventory_survives_real_normal_shutdown[eof]",
+        "tests/test_native_status.py::test_native_inventory_survives_real_normal_shutdown[term]",
     ])
     compat_ids = sorted([item for item in wheel_ids
                          if any(item.startswith(selector + "[")
                                 for selector in module["COMPAT_SELECTORS"])])
-    compat_ids = sorted([*compat_ids, *(item.replace("-native]", "-ci]") for item in compat_ids)])
+    compat_ids = sorted([*compat_ids, *(item.removesuffix("native]") + "ci]" for item in compat_ids
+                                      if item.endswith("native]"))])
     all_ids = sorted([*(f"tests/cases.py::test_case_{index}" for index in range(64)),
                       *wheel_ids, *(item for item in compat_ids if item not in wheel_ids)])
     paths = []
@@ -486,3 +492,47 @@ def test_cleanup_retains_identity_through_the_final_group_signal(monkeypatch, un
         assert expired.returncode == 0
     output, error = unrelated.communicate(b"ping\n", timeout=5)
     assert (unrelated.returncode, output, error) == (0, b"survived:ping\n", b"")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Process-group supervision requires POSIX")
+@pytest.mark.parametrize("target", ["native", "ci"])
+def test_real_exited_group_cleanup_keeps_other_owned_process(unreaped_leader, owned_survivor, target):
+    cleanup = (native_status._stop_process_group if target == "native"
+               else runpy.run_path(str(CI / "run-checks.py"))["_stop_process_group"])
+    cleanup(unreaped_leader)
+    assert unreaped_leader.returncode == 0
+    output, error = owned_survivor.communicate(b"ping\n", timeout=5)
+    assert (owned_survivor.returncode, output, error) == (0, b"survived:ping\n", b"")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Process-group supervision requires POSIX")
+@pytest.mark.parametrize("target", ["native", "ci"])
+def test_live_group_permission_error_is_not_terminal(monkeypatch, target):
+    process = subprocess.Popen(
+        [sys.executable, "-I", "-S", "-c",
+         "import time; print('ready', flush=True); time.sleep(30)"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    cleanup = (native_status._stop_process_group if target == "native"
+               else runpy.run_path(str(CI / "run-checks.py"))["_stop_process_group"])
+    real_killpg = os.killpg
+
+    def deny_term(pid, sig):
+        if pid == process.pid and sig == signal.SIGTERM:
+            raise PermissionError(errno.EPERM, "test-only signal permission denial")
+        return real_killpg(pid, sig)
+
+    try:
+        assert select.select([process.stdout], [], [], 5)[0] == [process.stdout]
+        assert process.stdout.readline() == b"ready\n"
+        monkeypatch.setattr(os, "killpg", deny_term)
+        with pytest.raises(PermissionError):
+            cleanup(process)
+        assert process.returncode == -signal.SIGKILL
+    finally:
+        if process.returncode is None:
+            process.kill()
+        process.wait(timeout=5)
+        for stream in (process.stdout, process.stderr):
+            stream.close()

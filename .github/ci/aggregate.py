@@ -24,6 +24,7 @@ WHEEL_SELECTORS = (
     "tests/test_judge_settings.py::test_waiting_judge_mutations_recheck_live_operator_authority",
     "tests/test_judge_settings.py::test_judge_file_failures_keep_publication_identity_and_explicit_recovery",
     "tests/test_native_status.py::test_native_inventory_ends_descendants_and_closes_pipes_on_failure",
+    "tests/test_native_status.py::test_native_inventory_survives_real_normal_shutdown",
     "tests/test_recovery.py::test_remote_bad_first_outbox_cannot_starve_retained_healthy_batch",
     "tests/test_remote_cancellation.py::test_readonly_ready_stop_cancels_real_tls_response_before_business_dispatch",
     "tests/test_remote_cancellation.py::test_already_dispatched_business_request_drains_response_without_retry",
@@ -31,10 +32,15 @@ WHEEL_SELECTORS = (
     "tests/test_ci_accounting.py::test_cleanup_after_esrch_cannot_kill_a_reused_group[term-native]",
     "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[after-probe-native]",
     "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal[already-reaped-native]",
+    "tests/test_ci_accounting.py::test_real_exited_group_cleanup_keeps_other_owned_process[native]",
+    "tests/test_ci_accounting.py::test_live_group_permission_error_is_not_terminal[native]",
 )
 COMPAT_SELECTORS = (
     "tests/test_ci_accounting.py::test_cleanup_after_esrch_cannot_kill_a_reused_group",
     "tests/test_ci_accounting.py::test_cleanup_retains_identity_through_the_final_group_signal",
+    "tests/test_ci_accounting.py::test_real_exited_group_cleanup_keeps_other_owned_process",
+    "tests/test_ci_accounting.py::test_live_group_permission_error_is_not_terminal",
+    "tests/test_native_status.py::test_native_inventory_survives_real_normal_shutdown",
 )
 COMPAT_RUNTIME = {"platform": "darwin", "implementation": "cpython", "python": [3, 12, 13]}
 

@@ -180,3 +180,62 @@ def test_native_inventory_ends_descendants_and_closes_pipes_on_failure(
             for stream in (process.stdin, process.stdout, process.stderr):
                 stream.close()
         os.close(observer)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Native inventory process supervision requires POSIX")
+@pytest.mark.parametrize("shutdown", ["eof", "term"])
+def test_native_inventory_survives_real_normal_shutdown(tmp_path, monkeypatch, shutdown):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
+    config, hooks = response(tmp_path)
+    hooks["data"][0].update(warnings=[], errors=[])
+    executable = tmp_path / "native-probe"
+    executable.write_text("#!" + sys.executable + "\n" + textwrap.dedent(f"""
+        import json
+        import signal
+        import sys
+
+        shutdown = {shutdown!r}
+        if shutdown == "eof":
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        results = {{1: {{}}, 2: {config!r}, 3: {hooks!r}}}
+        for line in sys.stdin:
+            request = json.loads(line)
+            identity = request.get("id")
+            if identity is None:
+                continue
+            print(json.dumps({{"id": identity, "result": results[identity]}}), flush=True)
+            if identity == 3 and shutdown == "term":
+                while True:
+                    signal.pause()
+    """))
+    executable.chmod(0o700)
+    real_popen = subprocess.Popen
+    processes = []
+
+    def start(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(native_status.subprocess, "Popen", start)
+    try:
+        result = native_status.native_status(tmp_path, "codex", codex_executable=executable)
+        inventory = result["native_inventory"]
+        assert inventory["state"] == "observed"
+        assert inventory["project_layers"][0]["state"] == "disabled"
+        assert (inventory["hook_counts"]["project"], inventory["hook_counts"]["user"]) == (0, 1)
+        assert (result["callback"], result["protected_action"]) == ("not_observed", "not_verified")
+        assert "never-display" not in json.dumps(result)
+        expected = 0 if shutdown == "eof" else -signal.SIGTERM
+        for process in processes:
+            assert process.returncode == expected
+            assert all(stream.closed for stream in (process.stdin, process.stdout, process.stderr))
+    finally:
+        for process in processes:
+            if process.returncode is None:
+                process.kill()
+            process.wait(timeout=5)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
