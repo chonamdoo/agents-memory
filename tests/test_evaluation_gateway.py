@@ -1,0 +1,359 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import socket
+import threading
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import pytest
+import uvicorn
+from test_edge_boundaries import META, request
+from test_store_authority import authority as authority
+
+from agents_memory.domain import DomainError, Role, RuleApproval, RuleProposal, RuleScope
+from agents_memory.edge import create_app
+from agents_memory.evaluation_gateway import (
+    EvaluationGateway,
+    GatewayScope,
+    GatewayUpstream,
+    _ObservedRelay,
+)
+from agents_memory.stdio import RelayEndpoint
+
+AGENT = "engineering-gateway-agent-" + "a" * 32
+PRODUCER = "engineering-gateway-producer-" + "p" * 32
+
+
+@asynccontextmanager
+async def actual_upstream(authority, tmp_path):
+    await authority.store.issue_token(authority.actor, Role.AGENT, (authority.binding_id,), AGENT)
+    await authority.store.issue_token(authority.actor, Role.PRODUCER, (authority.binding_id,), PRODUCER)
+    agent_file, producer_file = tmp_path / "agent-token", tmp_path / "producer-token"
+    for path, token in ((agent_file, AGENT), (producer_file, PRODUCER)):
+        path.write_text(token)
+        path.chmod(0o600)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    settings = authority.store.settings.model_copy(update={"port": listener.getsockname()[1]})
+    server = uvicorn.Server(uvicorn.Config(create_app(settings), access_log=False, log_level="critical"))
+    serving = asyncio.create_task(server.serve(sockets=[listener]))
+    try:
+        async with asyncio.timeout(10):
+            while not server.started:
+                if serving.done():
+                    await serving
+                    raise AssertionError("Actual upstream failed before startup")
+                await asyncio.sleep(0.01)
+        endpoint = RelayEndpoint(settings.base_url, state_dir=settings.state_dir, deployment_id=settings.deployment_id)
+        yield (
+            GatewayUpstream(endpoint, agent_file, "agent", authority.binding_id, "engineering-approved-agent-route"),
+            GatewayUpstream(endpoint, producer_file, "producer", authority.binding_id, "engineering-approved-producer-route"),
+        )
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(serving, 10)
+        listener.close()
+
+
+def scope_for(upstream, *, mode="memory_on", phase="preflight", approved_refs=()):
+    return GatewayScope(
+        invocation_id="engineering-invocation", route_ref="engineering-approved-route", mode=mode,
+        phase=phase, binding_id=upstream.binding_id,
+        approved_upstream_urls=(upstream.endpoint.base_url,), approved_refs=approved_refs,
+        protocol_version="2025-11-25", max_calls=100, max_trace_bytes=4 * 1024 * 1024,
+        required_request={"binding_id": upstream.binding_id, "query": "CacheKey offline", "max_bytes": 6144, "limit": 3},
+    )
+
+
+def payload(result):
+    assert not result.get("isError", False), result
+    return json.loads(result["content"][0]["text"])
+
+
+async def call(gateway, name, arguments):
+    return payload(await asyncio.to_thread(gateway.call_tool, name, arguments))
+
+
+async def add_required_rule(authority):
+    proposal = await authority.store.propose_rule(authority.actor, RuleProposal(
+        binding_id=authority.binding_id, idempotency_key="engineering-required-proposal",
+        body="Keep synthetic credentials offline.", required=True,
+    ))
+    return await authority.store.approve_rule(authority.actor, RuleApproval(
+        proposal_id=proposal["proposal_id"], expected_digest=proposal["digest"], scope=RuleScope.LOCAL_PROJECT,
+        target_bindings=(authority.binding_id,), target_set_revision=proposal["target_set_revision"],
+        idempotency_key="engineering-required-approval",
+    ))
+
+
+async def full_inspect(gateway, ref):
+    start = 0
+    collected = bytearray()
+    digest = None
+    while True:
+        value = await call(gateway, "memory_inspect", {"ref": ref, "byte_start": start, "max_bytes": 4096})
+        window = value.get("draft_window")
+        if window is None:
+            return value
+        assert window["byte_start"] == len(collected)
+        digest = digest or window["digest"]
+        assert window["digest"] == digest
+        collected.extend(window["body"].encode())
+        start = window["next_byte"]
+        if start is None:
+            assert hashlib.sha256(collected).hexdigest() == digest
+            return json.loads(collected)
+
+
+async def prepare_through_actual_wire(gateway):
+    captured = await asyncio.to_thread(gateway.capture, {
+        "binding_id": gateway.scope.binding_id, "idempotency_key": "engineering-wire-capture",
+        "origin_key": "engineering-frozen-source-one", "body": "CacheKey is retained only offline.", "speaker": "document",
+    })
+    source = captured["source_pointer"]["source_id"]
+    window = await call(gateway, "memory_inspect", {"ref": source})
+    span = window["span_inventory"][0]
+    # A controlled engineering peer authors this judgment; this is not live-native semantic proof.
+    selection = await call(gateway, "memory_record", {
+        "kind": "source_selection", "idempotency_key": "engineering-wire-selection",
+        "admission_id": window["admission_id"], "source_id": source,
+        "source_revision": window["source_revision"], "binding_revision": window["binding_revision"],
+        "byte_start": window["byte_start"], "byte_end": window["byte_end"], "window_digest": window["window_digest"],
+        "policy_revision": window["policy_revision"], "policy_epoch": window["policy_epoch"],
+        "label": "remember", "coverage": "complete_window", "reason": "Engineering peer checked exact original spans.",
+        "extraction": {"claims": [{
+            "assertion_id": "a0000", "assertion_span_id": span["span_id"], "statement": span["quote"],
+            "kind": "fact", "subject": "CacheKey", "predicate": "retained", "object": "offline",
+            "polarity": "positive", "modality": "asserted", "entities": ["CacheKey"],
+        }], "individual_qualifications": [{"assertion_id": "a0000", "kind": "condition", "phrase": "only offline", "evidence_span_id": span["span_id"]}],
+            "shared_qualifications": [], "validities": [], "unused_span_ids": [item["span_id"] for item in window["span_inventory"][1:]]},
+    })
+    inspected = await full_inspect(gateway, selection["artifact_id"])
+    for claim in inspected["claim_ids"]:
+        await full_inspect(gateway, claim)
+    return captured, inspected["claim_ids"]
+
+
+async def test_actual_producer_http_mcp_judgment_and_final_read_remain_distinct_from_native_proof(authority, tmp_path):
+    await add_required_rule(authority)
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        traces = []
+        gateway = EvaluationGateway(scope_for(agent), agent=agent, producer=producer, trace_sink=traces.append)
+        required = await call(gateway, "memory_required_context", gateway.required_request)
+        assert "Keep synthetic credentials offline." in required["context"]
+        captured, claims = await prepare_through_actual_wire(gateway)
+        recall = {"query": "CacheKey offline", "max_bytes": 6144, "limit": 3}
+        candidates = await call(gateway, "memory_context", recall)
+        assert {item["claim_id"] for item in candidates["candidate_manifest"]} == set(claims)
+        for item in candidates["candidate_manifest"]:
+            await full_inspect(gateway, item["inspection_ref"])
+        final = await call(gateway, "memory_context", {
+            **recall, "admission_id": candidates["admission_id"],
+            "relevance": [{"claim_id": item["claim_id"], "relevant": True, "reason": "Controlled peer selected the complete qualified evidence."}
+                          for item in candidates["candidate_manifest"]],
+        })
+        assert final["judgment_required"] is False
+        assert "only offline" in final["context"]
+        observation = gateway.flow_observation()
+        assert observation["pipeline_observed"]
+        assert observation["semantic_correctness"] is None
+        assert observation["provider_consumption"] is None
+        exchanges = [row["exchange"] for row in traces if row["stage"] == "gateway_wire"]
+        captures = [item for item in exchanges if item.path == "/api/capture" and item.stage == "response"]
+        assert len(captures) == 1 and captures[0].http_status == 202
+        assert captured["source_id"] == json.loads(captures[0].response_body)["source_id"]
+        assert any(item.path == "/mcp" and item.http_status == 200 for item in exchanges)
+        assert all(item.observed_ns >= item.started_ns for item in exchanges)
+        gateway.close()
+
+
+@pytest.mark.parametrize("mode", ["off", "required_only"])
+async def test_off_is_server_enforced_and_required_rules_match_on(authority, tmp_path, mode):
+    await add_required_rule(authority)
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        off_traces, on_traces = [], []
+        off = EvaluationGateway(scope_for(agent, mode=mode), agent=agent, producer=producer, trace_sink=off_traces.append)
+        on = EvaluationGateway(scope_for(agent), agent=agent, producer=producer, trace_sink=on_traces.append)
+        off_rules = await call(off, "memory_required_context", off.required_request)
+        on_rules = await call(on, "memory_required_context", on.required_request)
+        assert off_rules["stamp"]["rules"] == on_rules["stamp"]["rules"]
+        assert off_rules["context"] == on_rules["context"]
+        for name in ("memory_inspect", "memory_context", "memory_record", "memory_feedback", "memory_catalog", "memory_history", "memory_preview"):
+            with pytest.raises(DomainError, match="does not authorize") as caught:
+                await asyncio.to_thread(off.call_tool, name, {"ref": "anything"})
+            assert caught.value.code == "OPTIONAL_TOOL_DENIED"
+        with pytest.raises(DomainError) as caught:
+            await asyncio.to_thread(off.capture, {})
+        assert caught.value.code == "OPTIONAL_CAPTURE_DENIED"
+        assert {row["exchange"].path for row in off_traces if row["stage"] == "gateway_wire"} == {"/api/required-context"}
+        assert not off.flow_observation()["pipeline_observed"]
+        # Exercise the official MCP SDK dispatcher, not just the Python tool method.
+        app = off.server.streamable_http_app(json_response=True, stateless_http=True, max_request_body_size=65536)
+        async with app.router.lifespan_context(app):
+            status, raw = await request(app, {"jsonrpc":"2.0", "id":1, "method":"tools/list", "params":{"_meta":META}}, token=None)
+            assert status == 200
+            assert [tool["name"] for tool in json.loads(raw)["result"]["tools"]] == ["memory_required_context"]
+            status, raw = await request(app, {"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{
+                "name":"memory_inspect", "arguments":{"ref":"private-source"}, "_meta":META}}, token=None)
+            assert status == 200
+            assert json.loads(raw)["result"]["isError"] is True
+            status, raw = await request(app, {"jsonrpc":"2.0", "id":3, "method":"resources/list", "params":{"_meta":META}}, token=None)
+            assert status == 200
+            assert "private-source" not in raw.decode()
+            assert not json.loads(raw).get("result", {}).get("resources")
+
+
+async def test_frozen_coding_cannot_capture_record_or_inspect_catalog(authority, tmp_path):
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        traces = []
+        gateway = EvaluationGateway(scope_for(agent, phase="coding"), agent=agent, producer=producer, trace_sink=traces.append)
+        await call(gateway, "memory_required_context", gateway.required_request)
+        with pytest.raises(DomainError) as caught:
+            await asyncio.to_thread(gateway.capture, {})
+        assert caught.value.code == "OPTIONAL_CAPTURE_DENIED"
+        for ref in ("catalog", "history", "health", "judge", "pending"):
+            with pytest.raises(DomainError) as caught:
+                await asyncio.to_thread(gateway.call_tool, "memory_inspect", {"ref":ref})
+            assert caught.value.code == "INSPECTION_SCOPE_DENIED"
+        with pytest.raises(DomainError) as caught:
+            await asyncio.to_thread(gateway.call_tool, "memory_record", {
+                "kind":"note", "body":"Do not mutate a paired task corpus", "idempotency_key":"coding-mutation",
+            })
+        assert caught.value.code == "FROZEN_CORPUS_MUTATION_DENIED"
+        assert {row["exchange"].path for row in traces if row["stage"] == "gateway_wire"} == {"/api/required-context"}
+
+
+def test_unapproved_endpoint_role_and_credential_alias_are_rejected(tmp_path):
+    endpoint = RelayEndpoint("http://127.0.0.1:8768")
+    agent = GatewayUpstream(endpoint, tmp_path / "agent", "agent", "binding", "approved")
+    scope = scope_for(agent)
+    for bad in (replace(agent, role="operator"), replace(agent, approval_ref=""), replace(agent, binding_id="other")):
+        with pytest.raises(ValueError, match="not approved"):
+            EvaluationGateway(scope, agent=bad, producer=None, trace_sink=lambda _: None)
+    with pytest.raises(ValueError, match="not approved"):
+        EvaluationGateway(replace(scope, approved_upstream_urls=()), agent=agent, producer=None, trace_sink=lambda _: None)
+    producer = replace(agent, role="producer")
+    with pytest.raises(ValueError, match="distinct"):
+        EvaluationGateway(scope, agent=agent, producer=producer, trace_sink=lambda _: None)
+
+
+def test_stored_inspection_continuation_does_not_prematurely_claim_full_read(tmp_path):
+    agent = GatewayUpstream(RelayEndpoint("http://127.0.0.1:8768"), tmp_path / "agent", "agent", "binding", "approved")
+    gateway = EvaluationGateway(scope_for(agent, approved_refs=("claim-one",)), agent=agent, producer=None, trace_sink=lambda _: None)
+    raw = json.dumps({"id":"claim-one", "claim_ids":["claim-two"]}).encode()
+    digest = hashlib.sha256(raw).hexdigest()
+    cut = len(raw) // 2
+    for start, end in ((0, cut), (cut, len(raw))):
+        gateway._observe_flow("memory_inspect", {"ref":"claim-one"}, {"draft_window": {
+            "body":raw[start:end].decode(), "byte_start":start, "byte_end":end, "total_bytes":len(raw),
+            "digest":digest, "next_byte":end if end < len(raw) else None,
+        }})
+        assert ("claim-one" in gateway._inspected_claims) == (end == len(raw))
+    assert "claim-two" in gateway._allowed_refs
+
+
+@pytest.fixture
+def fault_upstream(tmp_path, monkeypatch):
+    state = {"mode": "session_loss", "tools": 0, "initializations": 0}
+    class Handler(BaseHTTPRequestHandler):
+        def answer(self, status, raw, *, session=False):
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            if session:
+                self.send_header("Mcp-Session-Id", f"session-{state['initializations']}")
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_GET(self):
+            self.answer(200, json.dumps({"ready": True, "db_ready": True, "deployment_id": "engineering-peer"}).encode())
+
+        def do_POST(self):
+            message = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if message["method"] == "initialize":
+                state["initializations"] += 1
+                self.answer(200, json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {
+                    "protocolVersion": "2025-11-25", "capabilities": {}, "serverInfo": {"name": "engineering-peer", "version": "1"},
+                }}).encode(), session=True)
+            elif message["method"] == "notifications/initialized":
+                self.answer(202, b"")
+            else:
+                state["tools"] += 1
+                if state["mode"] == "session_loss" and state["tools"] == 1:
+                    self.answer(404, json.dumps({"error": {
+                        "code": "SESSION_NOT_FOUND", "message": "Engineering definite-no-start session loss", "effect": "not_started",
+                    }}).encode())
+                elif state["mode"] == "unknown_commit":
+                    self.close_connection = True
+                elif state["mode"] == "malformed":
+                    self.answer(200, b"{malformed")
+                else:
+                    self.answer(200, json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {
+                        "content": [{"type": "text", "text": "{\"effect\":\"committed\"}"}],
+                    }}).encode())
+
+        def log_message(self, *args):
+            pass
+
+    monkeypatch.setattr("agents_memory.service.ensure_started", lambda *args, **kwargs: None)
+    token = tmp_path / "fault-peer-token"
+    token.write_text("engineering-only-peer-token")
+    token.chmod(0o600)
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            yield GatewayUpstream(RelayEndpoint(f"http://127.0.0.1:{server.server_port}"), token, "agent", "binding", "engineering-peer"), state
+        finally:
+            server.shutdown()
+            worker.join(timeout=5)
+            assert not worker.is_alive()
+
+
+def initialized_relay(upstream, observations):
+    relay = _ObservedRelay(upstream, observations.append)
+    initialized = relay.forward({"jsonrpc": "2.0", "id": "init", "method": "initialize", "params": {
+        "protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "engineering-peer", "version": "1"},
+    }})
+    assert "result" in initialized
+    relay.forward({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    return relay
+
+
+def test_actual_http_replays_only_proven_not_started_session_loss(fault_upstream):
+    upstream, state = fault_upstream
+    observations = []
+    relay = initialized_relay(upstream, observations)
+    result = relay.forward({"jsonrpc": "2.0", "id": "business-call", "method": "tools/call", "params": {
+        "name": "memory_record", "arguments": {"kind": "source_selection"},
+    }})
+    assert "result" in result
+    assert state["tools"] == 2 and state["initializations"] == 2
+    replies = [item for item in observations if item.stage == "response"]
+    assert any(item.http_status == 404 and b"not_started" in item.response_body for item in replies)
+    requests = [json.loads(item.request_body) for item in observations if item.stage == "prepared"]
+    business = [item for item in requests if item.get("id") == "business-call"]
+    assert business[0] == business[1]
+    assert any(item.get("id") == "agents-memory-relay-reinitialize" for item in requests)
+
+
+@pytest.mark.parametrize("mode", ["unknown_commit", "malformed"])
+def test_actual_http_unknown_or_malformed_write_is_never_retried(fault_upstream, mode):
+    upstream, state = fault_upstream
+    state["mode"] = mode
+    observations = []
+    relay = initialized_relay(upstream, observations)
+    result = relay.forward({"jsonrpc": "2.0", "id": "business-call", "method": "tools/call", "params": {
+        "name": "memory_record", "arguments": {"kind": "source_selection"},
+    }})
+    assert result["error"]["data"]["effect"] == "unknown"
+    assert state["tools"] == 1 and state["initializations"] == 1
+    if mode == "malformed":
+        assert any(item.response_body == b"{malformed" for item in observations)
+    else:
+        assert any(item.stage == "failure" for item in observations)

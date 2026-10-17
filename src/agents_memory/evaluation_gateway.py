@@ -1,0 +1,636 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import math
+import os
+import sys
+import threading
+import time
+import urllib.error
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from http.client import HTTPException
+from pathlib import Path
+from uuid import uuid4
+
+import anyio
+from mcp.server.lowlevel import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
+
+from .client import HttpExchange, LocalClient
+from .connection import read_http_body
+from .domain import CaptureCommand, ContextCommand, DomainError, EffectState, Operation
+from .edge import DESCRIPTIONS, SCHEMAS, input_schema, record_schema
+from .stdio import RelayEndpoint, StdioRelay
+from .wire import decode_json, validate_wire
+
+
+class _BoundedStdio:
+    def __init__(self, max_record: int, max_total: int, observer: Callable[[str, bytes], None]) -> None:
+        self.max_record, self.max_total, self.observer = max_record, max_total, observer
+        self.pending = bytearray()
+        self.read_bytes = 0
+        self.retained_read_bytes = 0
+        self.written_bytes = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> str:
+        while b"\n" not in self.pending:
+            await anyio.wait_readable(sys.stdin.fileno())
+            try:
+                chunk = os.read(sys.stdin.fileno(), min(65536, self.max_record + 1))
+            except BlockingIOError:
+                continue
+            if not chunk:
+                if self.pending:
+                    self.observer("gateway_stdio_partial", bytes(self.pending))
+                    raise ValueError("Partial gateway protocol record")
+                raise StopAsyncIteration
+            self.read_bytes += len(chunk)
+            if self.read_bytes > self.max_total:
+                remaining = max(0, self.max_total - self.retained_read_bytes)
+                self.observer("gateway_stdio_input_limit", bytes(self.pending + chunk)[:remaining])
+                raise ValueError("Gateway input total exceeded")
+            self.pending.extend(chunk)
+            if len(self.pending) > self.max_record and b"\n" not in self.pending:
+                self.observer("gateway_stdio_input_limit", bytes(self.pending[:self.max_record]))
+                raise ValueError("Gateway input record exceeded")
+        line, _, rest = self.pending.partition(b"\n")
+        self.pending[:] = rest
+        if len(line) > self.max_record:
+            self.observer("gateway_stdio_input_limit", bytes(line[:self.max_record]))
+            raise ValueError("Gateway input record exceeded")
+        self.observer("gateway_stdio_received", bytes(line) + b"\n")
+        self.retained_read_bytes += len(line) + 1
+        decode_json(bytes(line))
+        return line.decode("utf-8") + "\n"
+
+    async def write(self, text: str) -> None:
+        raw = text.encode("utf-8")
+        remaining = max(0, self.max_total - self.written_bytes)
+        if len(raw) > remaining:
+            self.observer("gateway_stdio_output_limit", raw[:remaining])
+            self.written_bytes = self.max_total
+            raise ValueError("Gateway output total exceeded")
+        self.written_bytes += len(raw)
+        self.observer("gateway_stdio_prepared", raw)
+        view = memoryview(raw)
+        while view:
+            await anyio.wait_writable(sys.stdout.fileno())
+            try:
+                count = os.write(sys.stdout.fileno(), view)
+            except BlockingIOError:
+                continue
+            if count <= 0:
+                raise OSError("Gateway output made no progress")
+            view = view[count:]
+        self.observer("gateway_stdio_written", b"")
+
+    async def flush(self) -> None:
+        # os.write above is unbuffered; there is no Python stream buffer to flush.
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class GatewayUpstream:
+    endpoint: RelayEndpoint
+    token_file: Path
+    role: str
+    binding_id: str
+    approval_ref: str
+
+
+@dataclass(frozen=True, slots=True)
+class GatewayScope:
+    invocation_id: str
+    route_ref: str
+    mode: str
+    phase: str
+    binding_id: str
+    approved_upstream_urls: tuple[str, ...]
+    approved_refs: tuple[str, ...]
+    protocol_version: str
+    max_calls: int
+    max_trace_bytes: int
+    required_request: dict
+    exclusive_route_observation_ref: str | None = None
+    residual_memory_observation_ref: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"off", "required_only", "memory_on"}:
+            raise ValueError("Choose required_only/off or memory_on")
+        if self.phase not in {"preflight", "coding"}:
+            raise ValueError("Choose preflight or coding")
+        if not all((self.invocation_id, self.route_ref, self.binding_id, self.protocol_version)):
+            raise ValueError("A gateway needs an explicit invocation and approved route")
+        if type(self.max_calls) is not int or self.max_calls <= 0:
+            raise ValueError("Calls require an explicit positive bound")
+        if type(self.max_trace_bytes) is not int or self.max_trace_bytes <= 0:
+            raise ValueError("Wire observations require an explicit positive bound")
+
+
+class _ObservedOpener:
+    def __init__(self, delegate, relay: _ObservedRelay) -> None:
+        self.delegate, self.relay = delegate, relay
+
+    def open(self, request, *, timeout):
+        self.relay.exchange_id = uuid4().hex
+        self.relay.started_ns = time.monotonic_ns()
+        self.relay.request_body = request.data
+        self.relay.method = request.get_method()
+        self.relay.observe("prepared")
+        try:
+            return self.delegate.open(request, timeout=timeout)
+        except urllib.error.HTTPError:
+            # StdioRelay reads and validates the actual error body before deciding on replay.
+            raise
+        except Exception:
+            self.relay.observe("failure", error_code="TRANSPORT_FAILED", effect=EffectState.UNKNOWN)
+            raise
+
+
+class _ObservedRelay(StdioRelay):
+    def __init__(self, upstream: GatewayUpstream, observer: Callable[[HttpExchange], None]) -> None:
+        self.observer = observer
+        self.exchange_id = ""
+        self.started_ns = 0
+        self.request_body: bytes | None = None
+        self.method = "POST"
+        super().__init__(upstream.endpoint, upstream.token_file)
+
+    @property
+    def opener(self):
+        return self._observed_opener
+
+    @opener.setter
+    def opener(self, value) -> None:
+        self._observed_opener = _ObservedOpener(value, self)
+
+    def observe(
+        self, stage, *, body=None, status=None, complete=False, error_code=None, effect=None,
+    ) -> None:
+        try:
+            self.observer(HttpExchange(
+                self.exchange_id, stage, self.method, "/mcp", self.started_ns,
+                time.monotonic_ns(), self.request_body, body, status, complete, error_code, effect,
+            ))
+        except Exception:
+            raise DomainError("OBSERVATION_FAILED", "Private wire observation failed", status=503,
+                              effect=EffectState.NOT_STARTED if stage == "prepared" else EffectState.UNKNOWN) from None
+
+    def read_response(self, response, *, deadline=None):
+        status = getattr(response, "status", None)
+        status = status if type(status) is int else getattr(response, "code", None)
+        try:
+            raw = read_http_body(
+                response, maximum=self.settings.max_mcp_response_bytes,
+                deadline=deadline if deadline is not None else time.monotonic() + 120,
+            )
+        except (OSError, ValueError, DomainError, HTTPException):
+            self.observe("failure", status=status, error_code="RESPONSE_READ_FAILED", effect=EffectState.UNKNOWN)
+            raise
+        complete = len(raw) <= self.settings.max_mcp_response_bytes
+        length = response.headers.get("Content-Length")
+        if length is not None:
+            complete = complete and length.isascii() and length.isdecimal() and int(length) == len(raw)
+        self.observe("response" if complete else "failure", body=raw, status=status,
+                     complete=complete, error_code=None if complete else "RPC_RESPONSE_INVALID",
+                     effect=None if complete else EffectState.UNKNOWN)
+        if not complete:
+            raise DomainError("RPC_RESPONSE_INVALID", "The upstream result is incomplete", effect=EffectState.UNKNOWN)
+        try:
+            return decode_json(raw) if raw else None
+        except (ValueError, UnicodeError):
+            raise DomainError("RPC_RESPONSE_INVALID", "The upstream result is invalid", effect=EffectState.UNKNOWN) from None
+
+
+class EvaluationGateway:
+    def __init__(
+        self, scope: GatewayScope, *, agent: GatewayUpstream,
+        producer: GatewayUpstream | None, trace_sink: Callable[[dict], None],
+    ) -> None:
+        self.scope, self.trace_sink = scope, trace_sink
+        for upstream, role in ((agent, "agent"), (producer, "producer")):
+            if upstream is None:
+                continue
+            if (upstream.role != role or upstream.binding_id != scope.binding_id
+                    or not upstream.approval_ref
+                    or upstream.endpoint.base_url not in scope.approved_upstream_urls):
+                raise ValueError("The gateway upstream is not approved for this invocation and role")
+        if producer is not None and producer.token_file == agent.token_file:
+            raise ValueError("Producer and agent credentials must remain distinct")
+        if producer is not None and producer.endpoint.base_url != agent.endpoint.base_url:
+            raise ValueError("Producer and agent must use one approved memory authority")
+        required = validate_wire(ContextCommand, scope.required_request)
+        if required.binding_id != scope.binding_id or required.admission_id is not None:
+            raise ValueError("Required context needs the frozen binding/selectors without relevance")
+        self.required_request = required.model_dump(mode="json", exclude_none=True)
+        self._lock = threading.Lock()
+        self._wire_lock = threading.Lock()
+        self._trace_bytes = 0
+        self._calls = 0
+        self._active = False
+        self._closed = False
+        self._allowed_refs = set(scope.approved_refs)
+        self._sequence = 0
+        self._current_call: str | None = None
+        self._source_windows: dict[str, list[tuple[int, int]]] = {}
+        self._source_revisions: dict[str, set[tuple[int, int]]] = {}
+        self._selections: set[str] = set()
+        self._selection_sources: dict[str, str] = {}
+        self._selection_claims: dict[str, set[str]] = {}
+        self._inspected_selections: set[str] = set()
+        self._inspected_claims: set[str] = set()
+        self._admissions: dict[str, tuple[dict, set[str]]] = {}
+        self._captures: list[dict] = []
+        self._capture_http_status: int | None = None
+        self._final_reads: list[dict] = []
+        self._required_stamps: list[dict] = []
+        self._record_windows: dict[str, tuple[str, int, bytearray]] = {}
+        self._relay = _ObservedRelay(agent, self._wire)
+        self._agent = self._client(agent)
+        self._producer = self._client(producer) if producer is not None else None
+        self._schemas = {"memory_required_context": input_schema(ContextCommand)}
+        if scope.mode == "memory_on":
+            self._schemas.update({name: record_schema() if name == "memory_record" else input_schema(model)
+                                  for name, model in SCHEMAS.items()})
+        self.server = Server(
+            "agents-memory-evaluation", version="1", instructions="",
+            on_list_tools=self._list_tools, on_call_tool=self._call_tool,
+            get_tool_input_schema=self._schemas.get,
+        )
+
+    def _client(self, upstream: GatewayUpstream) -> LocalClient:
+        endpoint = upstream.endpoint
+        return LocalClient(
+            endpoint.base_url, upstream.token_file, state_dir=endpoint.state_dir,
+            deployment_id=endpoint.deployment_id, remote_settings=endpoint.remote_settings,
+            wire_observer=self._wire,
+        )
+
+    def _trace(self, stage: str, **fields) -> None:
+        self.trace_sink({"stage": stage, "invocation_id": self.scope.invocation_id,
+                         "route_ref": self.scope.route_ref, "observed_ns": time.monotonic_ns(), **fields})
+
+    def _wire(self, exchange: HttpExchange) -> None:
+        size = len(exchange.request_body or b"") + len(exchange.response_body or b"")
+        with self._wire_lock:
+            if exchange.path == "/api/capture" and exchange.stage == "response":
+                self._capture_http_status = exchange.http_status
+            remaining = max(0, self.scope.max_trace_bytes - self._trace_bytes)
+            if size > remaining:
+                request = (exchange.request_body or b"")[:remaining]
+                remaining -= len(request)
+                response = (exchange.response_body or b"")[:remaining]
+                bounded = replace(exchange, request_body=request, response_body=response,
+                                  response_complete=False)
+                self._trace_bytes = self.scope.max_trace_bytes
+                self._closed = True
+                self._trace("gateway_wire", call_id=self._current_call, exchange=bounded,
+                            truncated=True, original_request_bytes=len(exchange.request_body or b""),
+                            original_response_bytes=len(exchange.response_body or b""))
+                raise ValueError("Wire observation bound exceeded")
+            self._trace_bytes += size
+            self._trace("gateway_wire", call_id=self._current_call, exchange=exchange, truncated=False)
+
+    def _enter(self, name: str, downstream_request_id: str | int | None = None) -> str:
+        refusal = None
+        with self._lock:
+            self._sequence += 1
+            call_id = f"{self.scope.invocation_id}:{self._sequence}"
+            if self._closed:
+                refusal = "GATEWAY_CLOSED"
+            elif self._active:
+                refusal = "GATEWAY_BUSY"
+            elif self._calls >= self.scope.max_calls:
+                refusal = "GATEWAY_CALL_LIMIT"
+                self._closed = True
+            else:
+                self._calls += 1
+                self._active = True
+                self._current_call = call_id
+        if refusal is not None:
+            self._trace("gateway_denial", call_id=call_id, name=name, code=refusal,
+                        downstream_request_id=downstream_request_id, effect="not_started")
+            raise DomainError(refusal, "This invocation cannot admit this call", status=503)
+        try:
+            self._trace("gateway_intent", call_id=self._current_call, name=name,
+                        downstream_request_id=downstream_request_id)
+        except Exception:
+            self._leave()
+            raise
+        return self._current_call
+
+    def _leave(self) -> None:
+        with self._lock:
+            self._active = False
+            self._current_call = None
+
+    def close(self) -> None:
+        with self._lock:
+            if self._active:
+                raise DomainError("GATEWAY_BUSY", "An upstream operation still needs reconciliation")
+            self._closed = True
+        self._trace("gateway_closed")
+
+    def _deny(self, code: str) -> None:
+        self._trace("gateway_denial", call_id=self._current_call, code=code, effect="not_started")
+        raise DomainError(code, "The invocation route does not authorize this request", status=403)
+
+    async def _list_tools(self, context, params):
+        return ListToolsResult(tools=[
+            Tool(name=name, description=("Read the identical frozen required rules, without optional memory."
+                 if name == "memory_required_context" else DESCRIPTIONS[name]), inputSchema=schema)
+            for name, schema in self._schemas.items()
+        ])
+
+    async def _call_tool(self, context, params):
+        try:
+            result = await asyncio.to_thread(
+                self.call_tool, params.name, params.arguments or {}, downstream_request_id=context.request_id,
+            )
+            return CallToolResult.model_validate(result)
+        except DomainError as error:
+            return CallToolResult(isError=True, content=[TextContent(type="text", text=json.dumps({
+                "error": {"code": error.code, "effect": error.effect.value},
+            }))])
+        except Exception:
+            return CallToolResult(isError=True, content=[TextContent(type="text", text=json.dumps({
+                "error": {"code": "GATEWAY_FAILURE_RECONCILE", "effect": "unknown"},
+            }))])
+
+    def capture(self, command: CaptureCommand | dict) -> dict:
+        self._enter("producer_capture")
+        try:
+            if self.scope.mode != "memory_on" or self.scope.phase != "preflight" or self._producer is None:
+                self._deny("OPTIONAL_CAPTURE_DENIED")
+            payload = command.model_dump(mode="json") if isinstance(command, CaptureCommand) else command
+            parsed = validate_wire(CaptureCommand, payload)
+            if parsed.binding_id != self.scope.binding_id or parsed.injected:
+                self._deny("CAPTURE_SCOPE_DENIED")
+            self._capture_http_status = None
+            response = self._producer.request("/api/capture", payload)
+            validate_wire(Operation, response)
+            pointer = response.get("source_pointer")
+            if (self._capture_http_status != 202 or response.get("effect") != "committed"
+                    or response.get("capture_disposition") != "captured"
+                    or not isinstance(pointer, dict) or pointer.get("binding_id") != self.scope.binding_id
+                    or not isinstance(pointer.get("source_id"), str)
+                    or pointer.get("source_id") != response.get("source_id")):
+                raise DomainError("CAPTURE_ACK_INVALID", "A matching committed source pointer is required", effect=EffectState.UNKNOWN)
+            self._allowed_refs.add(pointer["source_id"])
+            self._captures.append(response)
+            self._trace("capture_ack", operation_id=response.get("id"), source_pointer=pointer)
+            return response
+        finally:
+            self._leave()
+
+    def _initialize_relay(self) -> None:
+        if self._relay.protocol_version is not None:
+            return
+        result = self._relay.forward({"jsonrpc": "2.0", "id": "gateway-initialize", "method": "initialize",
+                                      "params": {"protocolVersion": self.scope.protocol_version,
+                                                 "capabilities": {}, "clientInfo": {
+                                                     "name": "agents_memory_evaluation", "version": "1"}}})
+        if not isinstance(result, dict) or "error" in result:
+            raise DomainError("MCP_INITIALIZE_FAILED", "The approved upstream MCP route is unavailable")
+        if self._relay.protocol_version != self.scope.protocol_version:
+            raise DomainError("MCP_VERSION_CHANGED", "The upstream protocol does not match the frozen version")
+        self._relay.forward({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def call_tool(self, name: str, arguments: dict, *, downstream_request_id: str | int | None = None) -> dict:
+        if not isinstance(arguments, dict):
+            raise DomainError("INPUT_INVALID", "Tool arguments must be an object")
+        self._enter(name, downstream_request_id)
+        try:
+            if name not in self._schemas:
+                self._deny("OPTIONAL_TOOL_DENIED" if self.scope.mode != "memory_on" else "TOOL_SCOPE_DENIED")
+            if name == "memory_required_context":
+                parsed = validate_wire(ContextCommand, arguments)
+                normalized = parsed.model_dump(mode="json", exclude_none=True)
+                if normalized != self.required_request:
+                    self._deny("REQUIRED_SELECTORS_CHANGED")
+                result = self._agent.request("/api/required-context", self.required_request)
+                stamp = result.get("stamp")
+                if not isinstance(stamp, dict):
+                    raise DomainError("REQUIRED_STAMP_MISSING", "Required rule identity is unavailable", effect=EffectState.UNKNOWN)
+                self._required_stamps.append(stamp)
+                return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
+            if not self._required_stamps:
+                self._deny("REQUIRED_CONTEXT_READ_REQUIRED")
+            if arguments.get("binding_id", self.scope.binding_id) != self.scope.binding_id:
+                self._deny("BINDING_SCOPE_DENIED")
+            arguments = {**arguments, "binding_id": self.scope.binding_id}
+            model = SCHEMAS[name]
+            validate_wire(model, arguments)
+            if name == "memory_context":
+                for key in ("paths", "purpose", "host", "snapshot"):
+                    if arguments.get(key) != self.required_request.get(key):
+                        self._deny("REQUIRED_SELECTORS_CHANGED")
+            if name == "memory_inspect":
+                ref = arguments.get("ref")
+                if ref not in self._allowed_refs and not (
+                    ref == "judgment" and self.scope.phase == "preflight"
+                    and set(arguments.get("claim_ids") or ()) <= self._allowed_refs
+                    and arguments.get("claim_ids")
+                ):
+                    self._deny("INSPECTION_SCOPE_DENIED")
+            if self.scope.phase == "coding" and name in {"memory_record", "memory_feedback"}:
+                self._deny("FROZEN_CORPUS_MUTATION_DENIED")
+            if name == "memory_record":
+                if arguments.get("kind") not in {"source_selection", "claim_judgment"}:
+                    self._deny("RECORD_KIND_DENIED")
+                if arguments.get("kind") == "source_selection" and arguments.get("source_id") not in self._source_windows:
+                    self._deny("SOURCE_INSPECTION_REQUIRED")
+            self._initialize_relay()
+            rpc = {"jsonrpc": "2.0", "id": self._current_call, "method": "tools/call",
+                   "params": {"name": name, "arguments": arguments}}
+            response = self._relay.forward(rpc)
+            if not isinstance(response, dict) or "result" not in response:
+                error = response.get("error", {}) if isinstance(response, dict) else {}
+                data = error.get("data", {}) if isinstance(error, dict) else {}
+                verified = self._relay._verified(error.get("message"), data.get("effect")) if isinstance(data, dict) else None
+                effect = verified[1] if verified is not None else EffectState.UNKNOWN
+                self._trace("gateway_rpc_error", response=response, effect=effect.value)
+                raise DomainError("UPSTREAM_RPC_FAILED", "Reconcile the upstream request", effect=effect)
+            result = response["result"]
+            if not isinstance(result, dict):
+                raise DomainError("UPSTREAM_RESULT_INVALID", "The MCP result is invalid", effect=EffectState.UNKNOWN)
+            if not result.get("isError", False):
+                content = result.get("content")
+                if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0].get("text"), str):
+                    raise DomainError("UPSTREAM_RESULT_INVALID", "The MCP result has no bounded data plane", effect=EffectState.UNKNOWN)
+                payload = decode_json(content[0]["text"].encode())
+                self._observe_flow(name, arguments, payload)
+            self._trace("gateway_delivery", name=name, call_id=self._current_call,
+                        is_error=result.get("isError", False), host_observed_delivery=True,
+                        provider_consumption=None)
+            return result
+        finally:
+            self._leave()
+
+    def _observe_flow(self, name: str, arguments: dict, payload: dict) -> None:
+        if name == "memory_inspect" and isinstance(payload.get("draft_window"), dict):
+            window = payload["draft_window"]
+            ref = arguments["ref"]
+            body = window.get("body")
+            start, end, total = (window.get(key) for key in ("byte_start", "byte_end", "total_bytes"))
+            digest = window.get("digest")
+            if (not isinstance(body, str) or not isinstance(digest, str)
+                    or any(type(value) is not int for value in (start, end, total))
+                    or not 0 <= start < end <= total <= self.scope.max_trace_bytes
+                    or len(body.encode()) != end - start):
+                raise DomainError("INSPECTION_WINDOW_INVALID", "Invalid stored-record window", effect=EffectState.UNKNOWN)
+            prior_digest, prior_total, collected = self._record_windows.get(ref, (digest, total, bytearray()))
+            if start == 0:
+                collected = bytearray()
+            if digest != prior_digest or total != prior_total or start != len(collected):
+                raise DomainError("INSPECTION_WINDOW_CHANGED", "Reassemble the same contiguous stored record", effect=EffectState.UNKNOWN)
+            collected.extend(body.encode())
+            self._record_windows[ref] = (digest, total, collected)
+            if window.get("next_byte") is not None:
+                if window["next_byte"] != end:
+                    raise DomainError("INSPECTION_CURSOR_INVALID", "Invalid inspection continuation", effect=EffectState.UNKNOWN)
+                return
+            if end != total or hashlib.sha256(collected).hexdigest() != digest:
+                raise DomainError("INSPECTION_DIGEST_INVALID", "Stored-record identity mismatch", effect=EffectState.UNKNOWN)
+            payload = decode_json(bytes(collected))
+            del self._record_windows[ref]
+        refs = payload.get("refs", [])
+        for ref in refs if isinstance(refs, list) else ():
+            if isinstance(ref, str):
+                self._allowed_refs.add(ref)
+        for key in ("artifact_id", "source_id", "claim_id", "ref"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                self._allowed_refs.add(value)
+        for key in ("claim_ids", "judgment_context_refs"):
+            for ref in payload.get(key, []) if isinstance(payload.get(key), list) else ():
+                if isinstance(ref, str):
+                    self._allowed_refs.add(ref)
+                elif isinstance(ref, dict) and isinstance(ref.get("ref"), str):
+                    self._allowed_refs.add(ref["ref"])
+        if name == "memory_inspect":
+            ref = arguments["ref"]
+            if payload.get("source_id") == ref and "window_digest" in payload:
+                self._source_windows.setdefault(ref, []).append((payload["byte_start"], payload["byte_end"]))
+                self._source_revisions.setdefault(ref, set()).add((
+                    payload["source_revision"], payload["binding_revision"],
+                ))
+            if ref in self._selections:
+                self._inspected_selections.add(ref)
+                self._selection_claims[ref] = set(payload.get("claim_ids", []))
+            self._inspected_claims.add(ref)
+        elif name == "memory_record" and arguments.get("kind") == "source_selection":
+            if arguments.get("label") == "remember" and isinstance(arguments.get("extraction"), dict):
+                extraction = arguments["extraction"]
+                if all(isinstance(extraction.get(key), list) for key in (
+                    "claims", "individual_qualifications", "shared_qualifications", "validities", "unused_span_ids",
+                )) and isinstance(payload.get("artifact_id"), str) and payload.get("state") == "candidate_ready":
+                    self._selections.add(payload["artifact_id"])
+                    self._selection_sources[payload["artifact_id"]] = arguments["source_id"]
+        elif name == "memory_context":
+            admission = payload.get("admission_id") or arguments.get("admission_id")
+            if not arguments.get("admission_id"):
+                manifest = payload.get("candidate_manifest")
+                if isinstance(admission, str) and isinstance(manifest, list):
+                    ids = {item["claim_id"] for item in manifest if isinstance(item, dict) and isinstance(item.get("claim_id"), str)}
+                    self._allowed_refs.update(ids)
+                    identity = {key: value for key, value in arguments.items() if key not in {"admission_id", "relevance"}}
+                    self._admissions[admission] = (identity, ids)
+                    for item in manifest:
+                        if isinstance(item, dict) and isinstance(item.get("inspection_ref"), str):
+                            self._allowed_refs.add(item["inspection_ref"])
+            elif admission in self._admissions and payload.get("judgment_required") is False:
+                original, ids = self._admissions[admission]
+                identity = {key: value for key, value in arguments.items() if key not in {"admission_id", "relevance"}}
+                decisions = arguments.get("relevance", [])
+                selected_ids = [item.get("claim_id") for item in decisions]
+                if (identity == original and len(selected_ids) == len(ids) and set(selected_ids) == ids
+                        and ids <= self._inspected_claims):
+                    self._final_reads.append({"admission_id": admission, "refs": payload.get("refs"),
+                                              "observed_ns": time.monotonic_ns(), "context": payload.get("context")})
+        self._trace("gateway_flow", name=name, operation_id=payload.get("id"),
+                    source_id=payload.get("source_id"), admission_id=payload.get("admission_id"),
+                    artifact_id=payload.get("artifact_id"), refs=payload.get("refs"))
+
+    def flow_observation(self) -> dict:
+        linked_sources = []
+        delivered = {ref for read in self._final_reads for ref in (read.get("refs") or []) if isinstance(ref, str)}
+        for capture in self._captures:
+            pointer = capture["source_pointer"]
+            source = pointer["source_id"]
+            if self._source_revisions.get(source) != {(pointer["source_revision"], pointer["binding_revision"])}:
+                continue
+            covered = 0
+            for start, end in sorted(self._source_windows.get(source, [])):
+                if start > covered:
+                    break
+                covered = max(covered, end)
+            if covered != pointer["byte_length"]:
+                continue
+            for selection in self._inspected_selections:
+                if (self._selection_sources.get(selection) == source
+                        and self._selection_claims.get(selection, set()) & delivered):
+                    linked_sources.append(source)
+                    break
+        return {
+            "invocation_id": self.scope.invocation_id, "mode": self.scope.mode,
+            "captures": tuple(self._captures), "source_windows": dict(self._source_windows),
+            "remembered_selections": tuple(sorted(self._selections)),
+            "inspected_selections": tuple(sorted(self._inspected_selections)),
+            "final_reads": tuple(self._final_reads), "required_stamps": tuple(self._required_stamps),
+            "pipeline_observed": bool(linked_sources),
+            "linked_capture_source_ids": tuple(linked_sources),
+            "final_read_observed": bool(self._final_reads),
+            "semantic_correctness": None, "provider_consumption": None,
+            "comparable_route_evidence_present": bool(self.scope.exclusive_route_observation_ref
+                                                       and self.scope.residual_memory_observation_ref),
+        }
+
+    async def run_stdio(self, *, timeout_seconds: float) -> None:
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("The gateway lifetime must be explicitly bounded")
+        if os.name != "posix":
+            raise ValueError("Bounded gateway stdio requires the approved POSIX native context")
+        transport = _BoundedStdio(
+            self._relay.settings.max_http_body_bytes, self.scope.max_trace_bytes,
+            lambda stage, body: self._trace(stage, body=body),
+        )
+        descriptors = (sys.stdin.fileno(), sys.stdout.fileno())
+        blocking = tuple(os.get_blocking(fd) for fd in descriptors)
+        try:
+            for fd in descriptors:
+                os.set_blocking(fd, False)
+            async with asyncio.timeout(timeout_seconds):
+                async with stdio_server(stdin=transport, stdout=transport) as (read_stream, write_stream):
+                    await self.server.run(read_stream, write_stream, self.server.create_initialization_options())
+        finally:
+            with self._lock:
+                self._closed = True
+            for fd, was_blocking in zip(descriptors, blocking, strict=True):
+                os.set_blocking(fd, was_blocking)
+
+    def preflight_prompt(self, source_pointer: dict, recall_request: dict) -> str:
+        if self.scope.mode != "memory_on" or self.scope.phase != "preflight":
+            raise ValueError("Preflight is separate from frozen paired coding")
+        if source_pointer.get("source_id") not in self._allowed_refs:
+            raise ValueError("Preflight needs an actual captured approved source pointer")
+        return (
+            "Use this invocation's already approved agents-memory-evaluation MCP route. "
+            "Read memory_required_context with the frozen request first. Inspect the source and all "
+            "continuations; make your own grounded source_selection judgment. To remember, submit "
+            "extraction atomically with all five arrays using the exact returned spans, admission, "
+            "revisions, policy and digest. Inspect the returned selection and all claims and required "
+            "judgment context; judge relationships where required. Call memory_context with the recall "
+            "request, inspect every candidate completely, then submit your own relevance for every "
+            "manifest claim with the identical request/admission. Read the actual final context. "
+            "Do not claim completion based on a capture ACK or your final narrative.\n"
+            + json.dumps({"source_pointer": source_pointer, "recall_request": recall_request,
+                          "required_request": self.required_request}, ensure_ascii=False)
+        )
