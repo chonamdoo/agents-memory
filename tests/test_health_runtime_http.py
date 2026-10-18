@@ -116,7 +116,7 @@ async def test_operator_health_observer_retains_healthy_workspaces_after_produce
         assert status == 200, body
         assert [row["workspace_id"] for row in json.loads(body)["workspaces"]] == list(workspace_ids.values())
 
-        credential = authority.store._credential
+        credential = edge.application.store._credential
         revoked = False
 
         async def revoke_when_checked(connection, credential_id):
@@ -130,7 +130,7 @@ async def test_operator_health_observer_retains_healthy_workspaces_after_produce
             await authority.store.revoke_token(authority.actor, producers["stale"].credential_id)
         with monkeypatch.context() as patcher:
             if revocation_timing == "during_credential_check":
-                patcher.setattr(authority.store, "_credential", revoke_when_checked)
+                patcher.setattr(edge.application.store, "_credential", revoke_when_checked)
             status, body = await request(edge, {"binding_id": authority.binding_id}, TOKEN, path="/api/health/observer")
         assert status == 200, body
         assert [row["workspace_id"] for row in json.loads(body)["workspaces"]] == [workspace_ids["healthy"]]
@@ -151,7 +151,7 @@ async def test_operator_health_observer_retains_healthy_workspaces_after_produce
             return await credential(connection, credential_id)
 
         with monkeypatch.context() as patcher:
-            patcher.setattr(authority.store, "_credential", producer_authority_unavailable)
+            patcher.setattr(edge.application.store, "_credential", producer_authority_unavailable)
             status, body = await request(edge, {"binding_id": authority.binding_id}, TOKEN, path="/api/health/observer")
         assert status == 503
         assert json.loads(body)["error"]["code"] == "DATABASE_BUSY"

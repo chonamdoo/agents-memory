@@ -336,6 +336,8 @@ class Smoke:
         self.passed("real_authority_ready")
 
     async def observer_and_workspace(self):
+        from agents_memory.domain import Role
+
         self.begin("producer_observer_body_free")
         initial = await self.cli("health", "observer", "--binding", self.binding, role="producer")
         self.check(initial["kind"] == "health_observer" and initial["policy"]["enabled"] is False,
