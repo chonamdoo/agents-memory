@@ -828,12 +828,18 @@ class Smoke:
         self.passed("feedback_resolution_reason_disclosure")
 
     async def changed_consumers(self):
+        from agents_memory.hosts import _install_lock, _lock, load_receipt
+
+        receipt = load_receipt(self.receipt)
+        # Keep the fixture's manual queue transitions separate from its recovery owner.
+        with _lock(_install_lock(self.settings, Path(receipt["project_root"]))):
+            await self._changed_consumers_owned(receipt)
+
+    async def _changed_consumers_owned(self, receipt):
         from agents_memory.health_producer import observe_host_session
-        from agents_memory.hosts import load_receipt
 
         self.begin("retracted_session_does_not_block_queued_capture")
         captured = await self.capture("session-retracted-source", "This observed session source will be withdrawn.")
-        receipt = load_receipt(self.receipt)
         identity = {"key": "1" * 64, "root": "engineering:session", "path": "2" * 64, "limited": False}
         await asyncio.to_thread(observe_host_session, receipt, identity, "session_start")
         await asyncio.to_thread(observe_host_session, receipt, identity, "capture_replay",
@@ -851,6 +857,11 @@ class Smoke:
         await self.cli("spool", "enqueue", "--file", spool, "--binding", self.binding,
             "--envelope-file", envelope, role="producer")
         flushed = await self.cli("spool", "flush", "--file", spool, "--binding", self.binding, role="producer")
+        self.result["changed_capture_boundary"] = {
+            name: flushed.get(name)
+            for name in ("pending", "quarantined", "committed", "newly_quarantined", "flush_owner")
+        }
+        self.check(flushed.get("flush_owner") != "busy", "OWNED_CAPTURE_FLUSH_BUSY")
         self.check(flushed["pending"] == 0 and flushed["quarantined"] >= 1, "HEALTH_REJECTION_BLOCKED_CAPTURE")
         replay = await self.cli("spool", "enqueue", "--file", spool, "--binding", self.binding,
             "--envelope-file", envelope, role="producer")
