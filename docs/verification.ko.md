@@ -1657,3 +1657,5 @@ P028의 정확한 임시 screenshot은 현재 없고 당시에도 EPERM이었으
 - R37은 model class와 `TypeAdapter`의 실제 소비 형태에 맞춘 annotation 교정이다. scorer와 strict API/JSON 소비 회귀를 실행했으며 decoding·공개 schema를 느슨하게 하지 않았다. 기존 in-flight health 회귀의 고정 요청 수 대신 동일 입력의 추가 지출 없음·독립 source 진행·새 입력 뒤 실제 복구라는 소비자 invariant를 유지했다.
 
 원본은 현재 run의 `actions-7643719-jev-feedback-before`, `actions-0cc2473-guarded-jev-initial`, `actions-8f9b293-real-worker-http-green`에 보존했다. 최신 사용자 범위대로 직접 영향 경로만 병렬 Actions로 실행했으며 관련 없는 전체 source/installed·Mac·Docker와 전 협업자의 로컬 runtime 검증은 하지 않았다. 이 delta 성공은 fresh whole-source normal review·CI-only QA·main 병합·정확한 main commit의 개발 설치나 원래18개 외부 acceptance 완료가 아니다.
+
+후속 documented checkpoint `e542e0957daaef3eb6e84f49f875b77533781518`의 [Actions39166325019](https://github.com/chonamdoo/agents-memory/actions/runs/39166325019)는 양쪽274pass·1call fail이었다. 새1024-byte budget 회귀가 실제 worker 실행 뒤 기존 `FakeJev.calls`의 `(state, questions)` tuple을 dict로 잘못 읽어 `TypeError`가 났다. 이는 제품의 budget 실패 red나275개 성공이 아니다. 실제 기존 tuple 계약에 맞게 회귀의 관측만 고쳤고 input 상한·전송 없음·독립 source 게시의 assertion이나 제품 코드는 완화하지 않았다. 최종 정확 checkpoint의 결과는 PR9와 그 원본 receipt를 따르며 이 중간 실패도 보존한다.

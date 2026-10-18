@@ -679,7 +679,7 @@ async def test_authorized_health_advice_cannot_expand_source_past_operator_input
     await world.worker.cycle()
 
     assert not any("PrivateBudgetBoundary" in span["text"]
-                   for call in world.jev.calls for span in call["state"].get("spans", []))
+                   for state, _ in world.jev.calls for span in state.get("spans", []))
     assert await world.rows("SELECT id FROM am_source_selections WHERE source_id=$1", oversized.source_id) == []
     assert await world.rows(
         "SELECT label FROM am_source_selections WHERE source_id=$1", independent.source_id,
