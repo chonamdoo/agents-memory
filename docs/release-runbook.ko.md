@@ -267,10 +267,14 @@ gateway observation은 invocation별 단일 `gateway.json`과 terminal의 digest
 
 refresh 실패가 machine-assessed 작업에 남긴 event 없는 `deferred_unknown`은 operator가 명시 종결한 기록이 아니다. 실제 새 근거의 등록은 원래 capacity·revision 검사를 받아 다시 pending이 될 수 있다. capacity 거절을 무시하거나 queue 상한을 높이지 않으며, 운영자가 event와 함께 `close_unknown`한 작업은 최신 exact `reopen` 없이는 계속 닫힌다.
 
-`health:quarantine`은 현재 binding·snapshot에서 보류된 기억의 bounded opaque ref/revision/version 목록이며 context의 `code_workspace_id`로 필터링하지 않는다. `context.health.withheld`는 해당 context workspace 범위의 수이므로 inventory와 수를 맞추거나 일대일 대응으로 간주하지 않는다. `context.partial`과 `context.health`의 `withheld`·`unknown_assessments`·`closed_unknown_work`를 empty corpus나 healthy 완료로 해석하지 않는다. current source policy/dependency 자격을 잃은 분류는 건강 분모에서 제외하며 인간의 exact review 기록이 그 분류를 현재 것으로 바꾸지 않는다. body가 필요한 판단은 원래 inspect/admission·권한 경로를 사용한다.
+`health:quarantine`은 현재 binding·snapshot에서 보류된 기억의 bounded opaque ref/revision/version 목록이며 context의 `code_workspace_id`로 필터링하지 않는다. `context.partial`과 `context.health`의 `withheld`·`unknown_assessments`·`closed_unknown_work`를 empty corpus나 healthy 완료로 해석하지 않는다. current source policy/dependency 자격을 잃은 분류는 건강 분모에서 제외하며 인간의 exact review 기록이 그 분류를 현재 것으로 바꾸지 않는다. body가 필요한 판단은 원래 inspect/admission·권한 경로를 사용한다.
+
+context의 `withheld`·`unknown_assessments`는 요청 workspace 범위지만 `closed_unknown_work`는 현재 binding·snapshot 전체이며 workspace로 좁히지 않는다. 다른 workspace의 종결 unknown 때문에 context가 partial일 수 있다. 이 수와 snapshot-wide quarantine을 맞추거나 일대일 대응으로 간주하지 않으며, 보수적 신호를 없애려고 종결 이력이나 필터를 임의 변경하지 않는다.
 
 feedback의 accept/decline 판정 이력·opaque event/reason 참조는 원문 접근 허가가 아니다. 사유 source를 `inspect --snapshot SNAPSHOT`으로 읽을 때 현재 실제 target/source 공개 자격을 다시 검사한다. scoped target을 다른 snapshot에서 보지 못하면 그 판정 사유 원문도 읽을 수 없다. 전역 target은 판정을 받은 request snapshot과 다르다는 이유만으로 숨기지 않는다. 후보 또는 사유의 private 원문 삭제 뒤에도 본문 없는 기존 판정 이력과 version을 보존하며 삭제된 본문을 복원하지 않는다.
 
 그 사유 source를 다시 가리키는 feedback도 최초 실제 target의 현재 공개 경계를 따른다. 중첩 feedback inspect·admission 재검사는 기존 bounded 재귀 manifest로 health 소유권과 dependency를 확인하며, scoped 사유를 nullable source snapshot만 보고 전역으로 공개하지 않는다. 정상 전역 target의 중첩 피드백은 다른 request snapshot에서도 공개할 수 있다.
+
+정상 operator의 health observer에는 현재 권한이 유효한 producer의 등록만 남는다. 다른 producer의 revoke된 active 등록 때문에 전체 registry가 `AUTH_DENIED`로 중단되지는 않는다. revoke된 호출자 자신의401, agent의403, 예상 밖 DB/권한 서비스 실패는 여전히 실패이며 빈 registry 성공으로 처리하지 않는다.
 
 

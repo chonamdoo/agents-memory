@@ -1516,3 +1516,25 @@ Source digest 전후는 `223da49b15bf2a380f5af316a7d6b66c0fac27328609f929375dee2
 
 `context/actions-acb131c-model-reasons-framing-green/observed-success-summary.json`에 원본 source/설치 phase·실제 소비·artifact/checksum·cleanup을 연결했다. API pagination의 전체127파일과58runtime/CI/config 파일의 Git blob·현재 bytes를 대조했으며 이는 reviewer 읽기 증거가 아니다. 현재 frozen manifest는 다른 helper model 허용을 표현하지 않아 해당 native 관측은 비교 불가이며, 실제180 valid pairs를 얻었다고 주장하지 않는다. 문서 포함 다음 head의 CI·fresh whole-source native review·CI-only QA·publication, 원래18개 완료0과 실제 native/OS/운영/egress/human gold·elapsed trial·merge/release 미승인은 별도로 유지한다. 협업자 포함 로컬 runtime 검증은 실행하지 않았다.
 
+### 정상 review R22–R23: revoked producer registry와 read-only 계약
+
+문서 포함 `f877decbe2ee33fc43e7e98261700164cf8a6984` / [Actions39107619589](https://github.com/chonamdoo/agents-memory/actions/runs/39107619589)는 실제2026-10-18T07:31:37Z에3138source·752설치·14Docker·36Mac·양쪽25health·전체 소비·cleanup·canonical checks/aggregate 성공으로 완료했다. 이어 정상 native measurement `d4e9782ac61346bc8b35bb0c499e573c`가12배정/11전달/10approve/1request-changes/1Claude-types timeout-null을 기록했다. Timeout은602.291초·stdout/stderr0이며 승인이나401 진단이 아니다. 정상 aggregate를 통해 fix-loop에 들어갔고600초·profile·guard·trust·pins·판정·counter는 바꾸지 않았다.
+
+**R22**는 한 producer의 revoke 뒤 남은 active workspace가 정상 operator의 전체 health observer를 `AUTH_DENIED`로 중단시키는 문제다. 기존 `_credential` 호출 중 해당 등록의 예상 `AUTH_DENIED`401만 제외하며 호출자 검사는 catch 밖에 있다. role·generation·binding 검사를 유지하고 다른 DB/도메인 실패는 그대로 전파한다. SQL의 최초 active filter만 추가해 registry 조회 뒤 revoke를 놓치는 방식은 사용하지 않았다.
+
+**R23**은 actual read-only `MappingProxyType`인 scorer `evidence_refs`의 공개 annotation/validator 결과를 `Mapping`으로 맞췄다.64개 bound·key/digest 검증·JSON serializer·기존 불변성 회귀를 유지했다. 문서는 workspace별 `withheld`/`unknown_assessments`와 binding/snapshot 전체 `closed_unknown_work`, R20 relay의 service-unavailable 코드와 private truncated-prefix 비보존을 명시한다. 범위를 바꾸는 health 필터나 새로운 prefix 수집 기능을 추가한 것이 아니다.
+
+| source / Actions | source pass / fail | 별도 설치 pass / fail | 실제 실패·판정 |
+|---|---:|---:|---|
+| `ccc3354` / [39109671221](https://github.com/chonamdoo/agents-memory/actions/runs/39109671221) |3138 /2|752 /2|before_registry만 유효 제품401 red. during-check는 fixture Store를 잘못 patch해 실제 revoke가 없었음. 실제 CLI smoke는 `Role` NameError·같은 RuffF821로 observer 전에 중단 |
+| `09e1b58` / [39110234215](https://github.com/chonamdoo/agents-memory/actions/runs/39110234215) |3138 /2|752 /2|두 current-authority401 call red 모두 유효. 실제 서비스 operator CLI observer도 `AUTH_DENIED`로 실패. lint/comments/build는 성공 |
+| `31f9f7c` / [39110710800](https://github.com/chonamdoo/agents-memory/actions/runs/39110710800) |3140 /0|754 /0|같은 두 source/설치 node의 setup·call·teardown 모두 pass, 실제 source/설치 operator CLI registry도 통과 |
+
+모든 행의 테스트 skip·xfail·xpass·collection issue는0이며 setup/teardown은 통과했다. 최초 두 failure를 모두 제품 red로 적었던 초기 분류는 명시적으로1제품+1fixture로 정정했고 원본·정정·원래 phase·retry를 보존했다. 잘못된 patch를 `running(authority)`가 만든 실제 `edge.application.store`로 바꾼 뒤 두 timing 모두 실제 API401을 관측했다. 같은 source/설치 test는 healthy producer의 자기 registry, revoked producer/caller401·agent403, 예상 밖 `DATABASE_BUSY`503도 보존한다. 실제 service smoke의 추가 등록·revoke는 별도 owned producer provisioning이고 소비는 진짜 operator CLI→HTTP observer다. 새로운 revocation HTTP API 전체 실행이나 actual native 보호 증거로 합치지 않는다.
+
+정확 after `31f9f7c85b72a367a7a6efacd54dd86eaa83221a`의 Actions는2026-10-18T08:21:04Z에 전체 success로 완료했다. 위 전체 source/설치 외 실제 Docker14·실제 Mac36, 양쪽 실제 health HTTP/CLI25outcome, 전체 producer/MCP/native protocol-peer/controller/격리 verifier/scorer/health compiler·CLI/API, prerequisite/runtime/schema/process owned cleanup과 lint/build/canonical comments/strict aggregate를 통과했다. 기존 registration outcome의 내부 경로를 확장한 것으로26개 outcome이 아니다. Before에서 설치 CLI 단계가 unit consumer 실패로 실행되지 않은 사실도 유지한다.
+
+현재 source digest 전후는 `9ba1636b7f806e52055dd6fdcebb56c03e0826d9aa40eca75f0e17304a6b0352`이다. 실제385616bytes wheel SHA256 `41d811abe82ea2fe0b055a07e00b934f8ccd0a2f029d667070037474c68cdda4`은 다운로드·설치·전체 평가 소비에 일치하며3509359bytes sdist는 `5c3a5ef4d2737fd906cb2c4b17fea7373d7c5de35c1fdedc6166687e1555611f`이다. 같은 immutable canonical checker가127변경/98eligible full old-new files/4634738inputbytes·complete coverage·finding0·CHECKED/exit0을 기록했다. 원본 증거와 same-node phase는 `context/actions-31f9f7c-observer-mapping-green/observed-success-summary.json`, 유효 before는 `context/actions-09e1b58-observer-valid-before/observed-valid-before-summary.json`에 연결했다.
+
+새 독립 보고서가 일부 전체 assigned 모듈을 직접 읽었어도 Store 앞부분 scheduling/deletion·일부 ops preflight·큰 CI smoke/aggregate·unchanged host internals의 fresh 전체 coverage는 아직 없다. Timeout, source별 prior approval과 identity manifest로 그 공백을 메우지 않는다. 문서 포함 다음 head의 실제 CI·정상 whole-source native review·CI-only QA·scoped publication은 별도이며 원래18개 완료0·실제 native/OS/운영/egress/human gold·elapsed1–2주 trial·merge/release 미승인을 유지한다. 로컬 runtime/test/collection/lint/build/syntax/format/reproduction/추가 smoke는 실행하지 않았다.
+
