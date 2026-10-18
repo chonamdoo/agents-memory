@@ -34,6 +34,7 @@ CASES = (
     "late_delivery_fenced", "operator_review_role_denial", "operator_reject_accept",
     "current_code_rebind", "required_rules_survive_ordinary_rejection",
     "observed_session_work", "late_session_input_fence", "bounded_session_assessment",
+    "terminal_work_late_capture_ownership", "feedback_resolution_reason_disclosure",
 )
 
 
@@ -704,6 +705,79 @@ class Smoke:
         self.check(reopened["admission"] is not None and "SESSION_ORIGIN_PENDING" in reopened["coverage"]["gaps"],
                    "EXACT_UNKNOWN_WORK_REOPEN_FAILED")
         self.passed("bounded_session_assessment")
+        self.begin("terminal_work_late_capture_ownership")
+        reopened_page = await self.inspect("health")
+        reopened_item = next(item for item in reopened_page["items"]
+                             if item["pending_id"] == unknown_item["pending_id"])
+        await self.apply({**close_unknown, "idempotency_key": "reclose-unassessable-work",
+            "expected_pending_revision": reopened_item["health_revision"]})
+        reclosed = await self.inspect(unknown_item["ref"])
+        observed = await self.capture("unavailable-origin", "CacheKey newly observed evidence remains bounded.",
+            root_run_id=common["root_run_id"], agent_path=common["agent_path"])
+        retained = await self.inspect(unknown_item["ref"])
+        self.check(retained["state"] == "resolved" and retained["disposition"] == "close_unknown"
+                   and retained["assessment_complete"] is False and retained["admission"] is None,
+                   "LATE_CAPTURE_REOPENED_OPERATOR_DISPOSITION")
+        await self.apply({**close_unknown, "idempotency_key": "stale-reopen-after-late-capture",
+            "decision": "reopen", "expected_pending_revision": reclosed["health_revision"]}, denied=("HEALTH_STALE",))
+        await self.apply({**close_unknown, "idempotency_key": "exact-reopen-after-late-capture",
+            "decision": "reopen", "expected_pending_revision": retained["health_revision"]})
+        resumed = await self.inspect(unknown_item["ref"])
+        self.check(observed["source_id"] in {item["id"] for item in resumed["input_sources"]}
+                   and resumed["admission"] is not None and not resumed["coverage"]["complete"],
+                   "EXPLICIT_REOPEN_DID_NOT_EXPOSE_BOUNDED_LATE_EVIDENCE")
+        self.passed("terminal_work_late_capture_ownership")
+
+    async def feedback_reasons(self):
+        self.begin("feedback_resolution_reason_disclosure")
+        source = await self.capture("scoped-feedback-source", "CacheKey scoped evidence remains bounded.",
+                                    snapshot="snapshot_alpha")
+        window = await self.cli("inspect", "--binding", self.binding, "--ref", source["source_id"],
+                                "--snapshot", "snapshot_alpha")
+        span = window["span_inventory"][0]
+        selected = await self.record({
+            "kind": "source_selection", "binding_id": self.binding, "idempotency_key": "publish-scoped-feedback-claim",
+            "admission_id": window["admission_id"], "reason": "Engineering caller inspected this exact scoped original window.",
+            "source_id": source["source_id"], "source_revision": window["source_revision"],
+            "binding_revision": window["binding_revision"], "snapshot": "snapshot_alpha",
+            "byte_start": window["byte_start"], "byte_end": window["byte_end"], "window_digest": window["window_digest"],
+            "policy_revision": window["policy_revision"], "policy_epoch": window["policy_epoch"],
+            "label": "remember", "coverage": "complete_window", "rejection_comparisons": [],
+            "extraction": {"claims": [{"assertion_id": "a0001", "assertion_span_id": span["span_id"],
+                "statement": window["body"], "kind": "fact", "subject": "CacheKey", "predicate": "remains",
+                "object": "bounded", "polarity": "positive", "modality": "asserted", "entities": ["CacheKey"]}],
+                "individual_qualifications": [], "shared_qualifications": [], "validities": [],
+                "unused_span_ids": [item["span_id"] for item in window["span_inventory"][1:]]}})
+        selection = await self.cli("inspect", "--binding", self.binding, "--ref", selected["artifact_id"],
+                                   "--snapshot", "snapshot_alpha", "--complete")
+        self.check(selected["state"] == "candidate_ready" and len(selection["claim_ids"]) == 1,
+                   "SCOPED_FEEDBACK_CLAIM_NOT_GROUNDED")
+        body = private_file(self.root / "feedback-candidate.txt", b"Synthetic correction requires independent review.")
+        for scope, target in (("global", self.claim), ("scoped", selection["claim_ids"][0])):
+            feedback = await self.cli("feedback", "--binding", self.binding, "--kind", "correct",
+                "--ref", target, "--body-file", body, "--key", "consumer-feedback-" + scope, role="agent")
+            candidate = await self.cli("inspect", "--binding", self.binding,
+                "--ref", "health:feedback:" + feedback["artifact_id"], "--snapshot", "snapshot_alpha")
+            reason = "Engineering operator declines an unsupported correction; human presence remains unattested."
+            resolved = await self.apply(self.mutation("feedback_resolution", "consumer-resolution-" + scope,
+                admission_id=candidate["admission"]["id"], feedback_ref=feedback["artifact_id"],
+                expected_feedback_version=candidate["candidate"]["version"], decision="decline", reason=reason))
+            event = await self.cli("inspect", "--binding", self.binding,
+                "--ref", "health:event:" + resolved["artifact_id"], "--snapshot", "snapshot_beta")
+            self.check(event["payload"]["decision"] == "decline" and reason not in json.dumps(event),
+                       "BODY_FREE_FEEDBACK_HISTORY_NOT_PRESERVED")
+            reason_ref = event["reason_source_ref"]
+            allowed = await self.cli("inspect", "--binding", self.binding, "--ref", reason_ref,
+                                     "--snapshot", "snapshot_alpha")
+            self.check(allowed["body"] == reason, "AUTHORIZED_FEEDBACK_REASON_UNAVAILABLE")
+            if scope == "scoped":
+                await self.cli("inspect", "--binding", self.binding, "--ref", reason_ref,
+                    "--snapshot", "snapshot_beta", denied=("INPUT_INELIGIBLE", "SOURCE_INELIGIBLE", "SNAPSHOT_INELIGIBLE"))
+            else:
+                global_reason = await self.cli("inspect", "--binding", self.binding, "--ref", reason_ref,
+                                                "--snapshot", "snapshot_beta")
+                self.check(global_reason["body"] == reason, "GLOBAL_FEEDBACK_REASON_OVERRESTRICTED")
+        self.passed("feedback_resolution_reason_disclosure")
 
     async def cleanup(self):
         cleanup = self.result["owned_cleanup"]
@@ -786,6 +860,7 @@ class Smoke:
                 await self.proposals()
                 await self.health_boundaries()
                 await self.sessions()
+                await self.feedback_reasons()
         except BaseException as error:
             self.result["outcomes"][self.active] = "failed"
             self.evidence("failure", {"case": self.active, "trace": traceback.format_exc()})

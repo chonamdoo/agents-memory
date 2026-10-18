@@ -99,6 +99,31 @@ class NativeArmResult:
     incomparability_reasons: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class NativeModelReroute:
+    event_index: int
+    thread_id: str | None = field(repr=False)
+    turn_id: str | None = field(repr=False)
+    from_model: str | None = field(repr=False)
+    to_model: str | None = field(repr=False)
+    reason: str | None = field(repr=False)
+    correlation: Literal["correlated", "uncorrelated", "malformed"]
+
+
+@dataclass(frozen=True, slots=True)
+class NativeModelObservation:
+    initial_model: str | None = field(repr=False)
+    main_models: tuple[str, ...] = field(repr=False)
+    helper_models: tuple[str, ...] = field(repr=False)
+    pipeline_models: tuple[str, ...] = field(repr=False)
+    reroutes: tuple[NativeModelReroute, ...] = field(repr=False)
+    incomparability_reasons: tuple[str, ...]
+
+    @property
+    def matched_model(self) -> str | None:
+        return self.initial_model if not self.incomparability_reasons else None
+
+
 class _ProtocolError(Exception):
     pass
 
@@ -184,34 +209,94 @@ def observe_native_tool_calls(record: dict, *, backend: str, server: str, tools:
     return [call for call in completed.values() if not call["failed"]]
 
 
-def observed_model_identity(record: dict, *, backend: Literal["claude", "codex"]) -> str | None:
-    """Return a single unchanged observed model, otherwise leave its identity unknown."""
+def observed_model_identity(record: dict, *, backend: Literal["claude", "codex"]) -> NativeModelObservation:
+    """Distinguish bounded main-loop, helper and pipeline observations without changing native policy."""
     identity = record.get("identity")
-    if not isinstance(identity, dict):
-        return None
-    resolved = identity if backend == "claude" else identity.get("resolved")
-    if not isinstance(resolved, dict):
-        return None
-    model = resolved.get("model")
+    resolved = None
+    if isinstance(identity, dict):
+        resolved = identity if backend == "claude" else identity.get("resolved")
+    model = resolved.get("model") if isinstance(resolved, dict) else None
+    reasons = set()
+    if not isinstance(model, str) or not model:
+        model = None
+        reasons.add("MODEL_OBSERVATION_UNKNOWN")
     events = record.get("protocol_events")
-    if not isinstance(model, str) or not model or not isinstance(events, (list, tuple)):
-        return None
-    for observed in events:
+    if not isinstance(events, (list, tuple)):
+        events = ()
+        reasons.add("MODEL_OBSERVATION_UNKNOWN")
+    main_models = [model] if backend == "codex" and model is not None else []
+    helpers, pipeline, reroutes = set(), set(), []
+    current_model = model
+    for index, observed in enumerate(events):
         if not isinstance(observed, dict) or not isinstance(observed.get("message"), dict):
-            return None
+            reasons.add("MODEL_OBSERVATION_UNKNOWN")
+            continue
         message = observed["message"]
         if backend == "codex":
-            if message.get("method") == "model/rerouted":
-                return None
+            if message.get("method") != "model/rerouted":
+                continue
+            params = message.get("params")
+            params = params if isinstance(params, dict) else {}
+            fields = [params.get(name) for name in ("fromModel", "toModel", "reason")]
+            thread, turn = params.get("threadId"), params.get("turnId")
+            if not all(isinstance(value, str) and value for value in fields):
+                correlation = "malformed"
+                reasons.add("MODEL_REROUTE_MALFORMED")
+            elif (not isinstance(thread, str) or not thread or not isinstance(turn, str) or not turn
+                  or not isinstance(identity, dict) or thread != identity.get("thread_id")
+                  or turn != identity.get("turn_id") or fields[0] != current_model):
+                correlation = "uncorrelated"
+                reasons.add("MODEL_REROUTE_UNCORRELATED")
+            else:
+                correlation = "correlated"
+                reasons.add("MODEL_REROUTE_CORRELATED")
+                current_model = fields[1]
+                main_models.append(current_model)
+            reroutes.append(NativeModelReroute(
+                event_index=index, thread_id=thread if isinstance(thread, str) else None,
+                turn_id=turn if isinstance(turn, str) else None,
+                from_model=fields[0] if isinstance(fields[0], str) else None,
+                to_model=fields[1] if isinstance(fields[1], str) else None,
+                reason=fields[2] if isinstance(fields[2], str) else None, correlation=correlation,
+            ))
         elif message.get("type") == "assistant":
             assistant = message.get("message")
-            if not isinstance(assistant, dict) or ("model" in assistant and assistant["model"] != model):
-                return None
+            if not isinstance(assistant, dict):
+                reasons.add("MODEL_OBSERVATION_UNKNOWN")
+                continue
+            if "model" not in assistant:
+                continue
+            observed_model = assistant["model"]
+            parent = message.get("parent_tool_use_id")
+            if (not isinstance(observed_model, str) or not observed_model
+                or (parent is not None and (not isinstance(parent, str) or not parent))):
+                reasons.add("MODEL_OBSERVATION_UNKNOWN")
+            elif parent is not None:
+                helpers.add(observed_model)
+                if observed_model != model:
+                    reasons.add("MODEL_HELPER_USAGE_UNFROZEN")
+            else:
+                main_models.append(observed_model)
+                if observed_model != model:
+                    reasons.add("MODEL_MAIN_LOOP_CHANGED")
         elif message.get("type") == "result":
             usage = message.get("modelUsage")
-            if usage is not None and (not isinstance(usage, dict) or any(name != model for name in usage)):
-                return None
-    return model
+            if usage is not None:
+                if not isinstance(usage, dict):
+                    reasons.add("MODEL_OBSERVATION_UNKNOWN")
+                    continue
+                for name in usage:
+                    if isinstance(name, str) and name:
+                        pipeline.add(name)
+                    else:
+                        reasons.add("MODEL_OBSERVATION_UNKNOWN")
+    # Pipeline totals include helpers; only attributed main observations prove a main-loop change.
+    if pipeline.difference({model}, main_models, helpers):
+        reasons.add("MODEL_PIPELINE_MIXTURE_UNATTRIBUTED")
+    return NativeModelObservation(
+        model, tuple(main_models), tuple(sorted(helpers)), tuple(sorted(pipeline)),
+        tuple(reroutes), tuple(sorted(reasons)),
+    )
 
 
 def _counts(value: object) -> dict[str, int]:
@@ -836,11 +921,10 @@ def run_native_arm(
     if spec.backend == "codex":
         observed_model = protocol.identity.get("resolved", {}).get("model")
         observed_version = protocol.identity.get("initialize", {}).get("userAgent")
-    if (isinstance(observed_model, str) and observed_model
-            and observed_model_identity(
-                {"identity": protocol.identity, "protocol_events": protocol.events}, backend=spec.backend,
-            ) is None):
-        reasons.append("MODEL_IDENTITY_CHANGED_OR_UNKNOWN")
+    if isinstance(observed_model, str) and observed_model:
+        reasons.extend(observed_model_identity(
+            {"identity": protocol.identity, "protocol_events": protocol.events}, backend=spec.backend,
+        ).incomparability_reasons)
     if not isinstance(observed_model, str) or not observed_model:
         reasons.append("MODEL_IDENTITY_UNOBSERVED")
     if not isinstance(observed_version, str) or not observed_version:

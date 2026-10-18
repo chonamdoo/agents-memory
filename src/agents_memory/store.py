@@ -1233,7 +1233,7 @@ class Store:
         if len(owners) > 16:
             raise DomainError("INPUT_INELIGIBLE", "The complete health reason ownership exceeds its bound")
         for owner in owners:
-            if not await self._health_event_visible(connection, binding_id, owner, snapshot):
+            if not await self._health_event_visible(connection, binding_id, owner, snapshot, reason_body=True):
                 raise DomainError("INPUT_INELIGIBLE", "The health reason or its exact target lineage is unavailable")
         return row
 
@@ -4326,14 +4326,23 @@ class Store:
         if len(source_ids) > 128 or len(claim_ids) > 20:
             raise DomainError('MANIFEST_TOO_LARGE', 'Split the explicit health work into bounded manifests')
         if existing is not None:
+            previous = _decode(existing['health_payload'])
+            disposition = previous.pop('disposition', None)
+            terminal_unknown = (existing['state'] == 'resolved' and disposition is not None
+                and disposition.get('decision') in {'close_unknown', 'deferred_unknown'})
             changed = (source_ids != list(existing['source_ids']) or claim_ids != list(existing['claim_ids'])
-                or data != _decode(existing['health_payload']) or snapshot != existing['snapshot'])
+                or data != previous or snapshot != existing['snapshot'])
             if changed:
-                if existing['state'] not in {'pending', 'held'}:
+                # New evidence does not transfer authority to reopen terminal unknown work.
+                if terminal_unknown:
+                    data = {**data, 'disposition': disposition}
+                elif existing['state'] not in {'pending', 'held'}:
                     await self._require_health_capacity(connection, binding_id)
                 await connection.execute('''UPDATE am_pending_judgments SET source_ids=$2,claim_ids=$3,
-                    health_payload=$4::jsonb,health_revision=health_revision+1,state='pending',resolved_at=NULL,snapshot=$5 WHERE id=$1''',
-                    existing['id'], source_ids, claim_ids, _json(data), snapshot)
+                    health_payload=$4::jsonb,health_revision=health_revision+1,
+                    state=CASE WHEN $6 THEN 'resolved' ELSE 'pending' END,
+                    resolved_at=CASE WHEN $6 THEN resolved_at ELSE NULL END,snapshot=$5 WHERE id=$1''',
+                    existing['id'], source_ids, claim_ids, _json(data), snapshot, terminal_unknown)
             return existing['id']
         await self._require_health_capacity(connection, binding_id)
         identifier = _id('pending')
@@ -4729,7 +4738,8 @@ class Store:
                 'scope': 'authorized_observed_segment_not_full_session', 'human_presence': 'unattested'})
         if not closed or not sources:
             await connection.execute('''UPDATE am_pending_judgments SET state='held',
-                reason='Awaiting observed segment close and independent captured-source watermark' WHERE id=$1''', pending_id)
+                reason='Awaiting observed segment close and independent captured-source watermark'
+                WHERE id=$1 AND state IN ('pending','held')''', pending_id)
 
     async def _refresh_late_session_capture(self, connection, binding_id, origin_key: str) -> None:
         rows = connection.cursor('''SELECT DISTINCT o.credential_id,o.credential_generation,o.stream_id,o.segment_id
@@ -4753,10 +4763,12 @@ class Store:
                     resolved_at=CASE WHEN state='resolved' THEN resolved_at ELSE NULL END,
                     reason='Observed session health refresh requires explicit review',health_revision=health_revision+1,
                     health_payload=health_payload || jsonb_build_object('refresh_error_code',$3::text)
-                        || CASE WHEN state='resolved' THEN jsonb_build_object('disposition',jsonb_build_object(
-                            'decision','deferred_unknown','assessment_complete',false)) ELSE '{}'::jsonb END
+                        || CASE WHEN state='resolved' AND NOT (health_payload ? 'disposition')
+                            THEN jsonb_build_object('disposition',jsonb_build_object(
+                                'decision','deferred_unknown','assessment_complete',false)) ELSE '{}'::jsonb END
                     WHERE binding_id=$1 AND kind='health' AND health_key=$2
-                    AND (state<>'held' OR health_payload->>'refresh_error_code' IS DISTINCT FROM $3)''',
+                    AND state<>'retracted'
+                    AND (state NOT IN ('held','resolved') OR health_payload->>'refresh_error_code' IS DISTINCT FROM $3)''',
                     binding_id, key, error.code)
 
     async def _health_work_manifest(self, connection, binding_id: str, pending_id: str, snapshot: str | None) -> tuple[dict, dict]:
@@ -5273,9 +5285,14 @@ class Store:
             raise DomainError('HEALTH_BUNDLE_TOO_LARGE', 'The complete health admission bundle exceeds the representation bound', status=413)
         return result
 
-    async def _health_event_visible(self, connection, binding_id, event, snapshot) -> bool:
+    async def _health_event_visible(self, connection, binding_id, event, snapshot, *, reason_body: bool = False) -> bool:
         if event['state'] != 'active' or event['payload'] is None or event['realm'] != self.settings.realm:
             return False
+        if reason_body and event['kind'] == 'feedback_resolution':
+            target = await connection.fetchrow('SELECT target_ref FROM am_feedback WHERE id=$1 AND binding_id=$2',
+                event['target_ref'], binding_id)
+            if target is None or await self._disclosure_manifest(connection, binding_id, target['target_ref'], snapshot) is None:
+                return False
         for identifier in event['claim_ids']:
             try:
                 await self._claim_row(connection, binding_id, identifier, snapshot, False)

@@ -1064,7 +1064,7 @@ def _fence(manifest: EvaluationManifest, run_dir: Path, invocation: dict, stage:
 
 def _native_identity(manifest: EvaluationManifest, native: dict, mode: str) -> bool:
     identity = manifest.document("native_identity")
-    if native_module.observed_model_identity(native, backend=identity["backend"]) is None:
+    if native_module.observed_model_identity(native, backend=identity["backend"]).matched_model is None:
         return False
     observed = native["identity"]
     fields = {**identity["fields"], **identity.get("mode_fields", {}).get(mode, {})}

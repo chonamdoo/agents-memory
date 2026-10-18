@@ -80,6 +80,7 @@ HEALTH_CASES = {
     "late_delivery_fenced", "operator_review_role_denial", "operator_reject_accept",
     "current_code_rebind", "required_rules_survive_ordinary_rejection",
     "observed_session_work", "late_session_input_fence", "bounded_session_assessment",
+    "terminal_work_late_capture_ownership", "feedback_resolution_reason_disclosure",
 }
 EVALUATION_OUTCOMES = {
     "producer_http_native_mcp_preflight": True, "separate_preflight_binding": True,
