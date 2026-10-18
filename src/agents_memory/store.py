@@ -1861,7 +1861,7 @@ class Store:
             try:
                 await self._claim_row(connection, binding_id, row["id"], snapshot)
                 if await self._disclosure_manifest(
-                    connection, binding_id, "health:event:" + row["review_event_id"], snapshot,
+                    connection, binding_id, row["reason_source_id"], snapshot,
                 ) is None:
                     continue
                 reason = await self._source_row(connection, binding_id, row["reason_source_id"], snapshot, True)
@@ -1955,12 +1955,22 @@ class Store:
                     "disclosure": disclosure,
                 }
                 if item.get("review_event_id"):
-                    event_disclosure = await self._disclosure_manifest(
-                        connection, binding_id, "health:event:" + item["review_event_id"], snapshot,
+                    event = await connection.fetchrow(
+                        "SELECT * FROM am_health_events WHERE id=$1 AND binding_id=$2",
+                        item["review_event_id"], binding_id,
                     )
-                    if event_disclosure is None:
+                    if event is None or not await self._health_event_visible(connection, binding_id, event, snapshot):
                         raise DomainError("ADMISSION_STALE", "An actual source judgment review input changed")
-                    manifest["review_disclosure"] = event_disclosure
+                    reason_disclosure = await self._disclosure_manifest(
+                        connection, binding_id, event["reason_source_id"], snapshot,
+                    )
+                    if reason_disclosure is None:
+                        raise DomainError("ADMISSION_STALE", "An actual source judgment review reason changed")
+                    manifest["review_disclosure"] = {
+                        "id": event["id"], "kind": event["kind"], "target_ref": event["target_ref"],
+                        "payload_digest": canonical_digest(_decode(event["payload"])),
+                        "reason": reason_disclosure,
+                    }
             except DomainError as error:
                 if error.code not in _DISCLOSURE_ERRORS:
                     raise

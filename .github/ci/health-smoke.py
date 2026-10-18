@@ -854,12 +854,7 @@ class Smoke:
         self.check(replay["state"] == "committed" and replay["replay"], "INDEPENDENT_CAPTURE_NOT_COMMITTED")
         self.passed("retracted_session_does_not_block_queued_capture")
         self.begin("exact_health_review_reaches_next_judgment")
-        current = await self.inspect("health:claim:" + self.claim)
-        rejected = await self.apply(self.mutation("memory_review", "reject-for-next-judgment",
-            admission_id=current["admission"]["id"], claim_ref=self.claim_ref,
-            expected_health_version=current["health"]["version"],
-            expected_review_event_id=current["health"]["review_event_id"],
-            decision="reject", reason="Operator rejected this exact prior claim; do not treat the review note as new evidence."))
+        rejected = await self.apply(await self.review_command("reject", "reject-for-next-judgment"))
         source = await self.capture("next-independent-source", "CacheKey has a new independent human observation.")
         inspected = await self.inspect(source["source_id"])
         context = inspected["judgment_context"]
