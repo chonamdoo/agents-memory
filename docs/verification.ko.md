@@ -1582,3 +1582,39 @@ after 공개 wheel387794bytes의 SHA256은 `3c482c7e8464bc05b26e54b1827f75babc67
 
 file-effect task가 background descendant를 남기면 이제 runtime unknown이다. 이 호환성 제한과 daemon inventory/freeze 의존을 명시하며 scope를 줄인 weak observer나 권한·UID·image·timeout 변경으로 대체하지 않았다. no-effect task·기존 stop/cleanup 의미는 유지한다. 현재 설치된 native hook·trust·guard·settings·공유 service는 변경하지 않았으며 fresh whole-source 공식 review·CI-only QA와 원래18개 외부 acceptance를 이 runtime 성공으로 완료하지 않는다.
 
+### 전체 성공 보존과 R29–R32 수정 경로 전용 Actions
+
+`0292205daf82230b9e7752a50c05c75c9ca316ea`의 [Actions39137508658](https://github.com/chonamdoo/agents-memory/actions/runs/39137508658)는 전체 source3191·별도 noneditable 설치805·실제 Docker15·Mac3.12 ownership36을 통과했다. setup/call/teardown·skip/xfail/xpass·collection error와 owned cleanup의 strict 집계는 원본 `actions-0292205-development-approval-green/observed-success-summary.json`에 보존했다. 이 성공을 이후 변경 source의 재실행이나 native 운영 acceptance로 전용하지 않는다.
+
+그 source의 정상 독립 리뷰는12assigned 중9completed/7approve/2request-changes/3Claude timeout이었다. timeout은 native600초를 유지한 실제 결과이며 무응답·request-changes를 승인으로 세지 않았다. 원본12개 결과·metrics·source/patch identity를 `review-0292205-first-normal-b939bab47f524ffab032717cab815545`에 보존하고 정상 fix-loop로 이동했다.
+
+사용자는 이후 **수정과 직접 영향받는 경로만 Actions에서 검증**하도록 지시했다. `verification_scope=changes`는 명시한 bounded selector를 실제 source 및 exact installed wheel에서 수집·실행하며, lint도 지정한 변경 Python 파일로 제한한다. 빈/잘못된/중복/겹침/경로 이탈/symlink selector는 full fallback 없이 거절한다. source/installed phase·scope·wheel identity·필수 consumer·upstream job·owned cleanup을 계속 집계한다. default full gate를 느슨하게 바꾸지 않았으며 scoped 결과는 `full_suite:false`다. 관련 없는 전체3191·전체 installed805·Mac·Docker는 재실행하지 않았다.
+
+| source / Actions | 수정 경로 source pass / fail | 별도 설치 pass / fail | 실제 HTTP/CLI 경로 | 판정 |
+|---|---:|---:|---|---|
+| `6e1b4c884f0ec88f42a6998f82409e75f60d74de` / [39147188927](https://github.com/chonamdoo/agents-memory/actions/runs/39147188927) |197 /34|197 /34|retracted session 뒤 독립 capture가 막힘|제품 변경 전 유효 red. 같은34 node의 setup·teardown은 pass, call만 fail |
+| `54ea0904eee6670315c46009bd825e0128e54c00` / [39148012369](https://github.com/chonamdoo/agents-memory/actions/runs/39148012369) |459 /2|459 /2|source/installed capture 진행은 pass, 새 review smoke의 credential 혼용은 fail|기존34 중32개가 같은 node·전 phase green. 직접 영향받는 spool/rejection/disclosure/admission 대조군과 worker 후속 진행 회귀를 추가한 집합. 전체 CI는 실패로 보존 |
+| `57818c8e817d574df437fbbdcf6cd45f07a2309c` / [39148687207](https://github.com/chonamdoo/agents-memory/actions/runs/39148687207) |108 /0|108 /0|양쪽 실제 health 소비9개 outcome·owned cleanup 모두 pass|남은 R31과 직접 영향받는 source-generation 경로만 더 좁혀 검증. lint·canonical comments·build·changed-path aggregate 성공 |
+
+행마다 선택 집합이 다르고 겹치므로 pass 숫자를 합산하지 않는다. `57818c8`은 source108의324 phase와 별도 설치108의324 phase가 모두 pass이며 skip/xfail/xpass·collection error0이다. 이 source의 digest는 `16b387f42b5d42de9c31c2c2ae3b6f84da861d3c387d3d5a88eb6fc78119f416`, 실제 소비 wheel의 SHA256은 `e789c59b6f178c0644239bc7d4d42b2eabe6c6257209d81daafcbf119d4ad837`이다. 양쪽 실제 HTTP/CLI 소비는 필요한7개 setup과 retracted-session/capture·exact-review/next-judgment의2개 변경 시나리오다. 기존25개 전체 health smoke를 다시 수행했다고 표시하지 않는다.
+
+- **R29:** 실제 `ValidationError`를 registration의 `HEALTH_RECEIPT_INVALID/unknown`으로 변환한다. malformed ACK 뒤 prepared file·기존 활성 config가 그대로다. 중첩 claim meaning/ref/span의 잘못된 health 입력은 `HEALTH_EVIDENCE_INCOMPLETE`로 항목별 거절하고 private validation 세부를 노출하지 않는다. 실제 worker는 작업을 남기고 paid health 호출 없이 다음 원문 판단을 처리했다.
+- **R30:** health 영구 오류도 proven `not_started/not_committed`에서만 quarantine하고 unknown/committed/malformed ACK의 원본은 유지한다. 일반 capture FIFO·unknown 앞 중단을 유지하면서 두 종류 backlog에 bounded 기회를 제공한다. 현재 observer/root/file을 다시 읽은 동일 committed fingerprint만 receipt를 재사용한다. 확정 미commit quarantine 뒤 새 observation과 authorization/code의 bounded 예약 용량을 검증했다. 서버의 current-code/reuse fence·기존 TTL·timeout·판정·trust는 바꾸지 않았다.
+- **R31:** next source-selection의 accepted 목록은 bound 전에 ordinary health reuse 자격을 적용한다. 현재 exact Reject·읽을 수 있는 reason을 별도 partial `health_dispositions`로 전달하고 실제 표시한 claim/health/code/review/reason을 admission에 freeze/fence한다. 다른 snapshot과 무관한 유효 기억은 보존한다. reason은 agent_note이며 독립 grounding·문자열 전체 금지·필수 rejection comparison·자동 successor 승인이 아니다.
+- **첫 수정의 잔여 실패:** generic `_ref_metadata`가 처리하지 않는 `health:event:`를 disclosure ref로 사용해 실제 Reject 입력이 비었다. 기존 health event visibility와 reason source의 bounded recursive disclosure를 사용하도록 바로잡았다. 새 실제 smoke는 agent admission을 operator mutation에 잘못 섞었으므로 기존 operator review helper를 재사용했다. credential binding을 완화하지 않았으며 이 fixture 실패를 제품의 유효 보안 red로 세지 않는다.
+- **R32:** strict record union의 code-link/health-assessment 변형과 normalized `code_workspace_id` request digest를 구현계획·README·아키텍처에 맞췄다. 원지시에서 이름을 지정한 skill5개와 Instructor의 고정 source/license·영향·채택/보류는 [OSS 후속 조사](research/2026-10-16-oss-followup.ko.md#최종-원지시-대조-지정한-skill-다섯-개와-instructor)에 추가했다. 새 catalog/helper 계층·provider/retry/egress는 도입하지 않았다.
+
+원본 receipts와 same-node 비교는 현재 run의 `actions-6e1b4c8-health-changed-red/observed-red-summary.json`, `actions-54ea090-health-changed-first-fix/observed-first-fix-summary.json`, `actions-57818c8-health-changed-green`에 보존했다. 전 협업자를 포함해 로컬 runtime/test/collection/lint/build/syntax/format/reproduction/smoke는 실행하지 않았다. fresh 정상 독립 리뷰·CI-only QA·main 병합·정확 main 설치는 별도 후속 단계이며 이 scoped 성공을 그 완료로 바꾸지 않는다.
+
+### 원지시·원본 이미지 최종 교차 대조의 범위
+
+원래314개 prompt의 전체 텍스트와 U/I75개 행을 source·실제 증거에 대조했다. grouped requirement도 개별 행으로 펼쳐75개 모두 trace를 남겼으며, 목록 index만 읽은 것을 전수조사로 세지 않았다. `final-crosscheck-all-75-requirements-evidence.json`과 core/host audit에 원문 ID·hash·구현·증거·미완료 조건을 보존했다. MC-1의 옛 source finding은 위 R31의 before이며 수정 후에도 미구현인 것처럼 복사하지 않는다.
+
+추가로14개 prompt의 원본 이미지를 추적했고 그중11개 prompt의 blob16개를 실제 열어 내용을 대조했다. P193의 두 케이스는 정책 축 분리·자동 시작/복구·DB readiness·bounded capture·명시 stop 보존 요구이며 기존 engineering과 실제 macOS 운영 acceptance를 구분한다. P080은 Claude 로그인 화면의 **missing `client_id` OAuth 오류**였고 memory retrieval 결함이나 후속401/token 만료와 같은 오류로 치환하지 않았다. 해당 로그인 자체가 해결됐다는 증거는 없다.
+
+P028의 정확한 임시 screenshot은 현재 없고 당시에도 EPERM이었으며, P141의 원래 `/btw` 이미지 참조는 보존되지 않았다. P209의 별도 원본 attachment도 미복구이지만 같은 요청을 반복한 P210의 실제 Finder 이미지는 읽었다. 이 한계를 숨겨 “모든 원본 픽셀과 모든 지시 완료”라고 주장하지 않는다. 사용자에게 key 내용을 열어달라고 요구하거나 남은 인증을 임의 실행하지 않았다.
+
+반복 경고 screenshot의 원래 Glob은 `2026-10-18T09:24:58.998Z`에 정확한 Downloads prefix를 사용했다. report `.md`는 직후 읽기에서도 없었고,21초 뒤 companion evidence directory는18개 파일로 읽혔다. 이 원본 이력은 **잘못된 오래된 경로를 수정했다는 증거가 아니다**. directory-only glob 동작/동시 생성 가능성은 tool issue로 전달했으며 제품 권한·scope를 넓히거나 같은 local runtime을 재현하지 않았다. source의 warning 수정과 아직 갱신하지 않은 loaded adapter·실제 pane 경고 소멸은 별개다.
+
+이 대조는 실제 trial만 남았다는 선언이 아니다. Codex enforceable native 보호의 실제 capability gap, 실제 native/TLS·OS·stable/cloud/corpus/egress·전체 target/offline/license·인간 gold/oracle와 실제1–2주 경과·귀속 미확인5volume·일반 출시/운영 배포는 원래 조건 그대로다. 개발용 merge/install 승인과 구분하며 과거 valid-patch 실패·모든 retry/timeout/실패 분모를 지우지 않는다. package-only 설치로 원래 Agent Flow 프로젝트의 MCP 등록·실제 사용 요구를 완료 처리하지 않는다.
+
