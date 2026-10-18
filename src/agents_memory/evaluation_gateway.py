@@ -225,9 +225,6 @@ class _ObservedRelay(StdioRelay):
             self.observe("failure", status=status, error_code="RESPONSE_READ_FAILED", effect=EffectState.UNKNOWN)
             raise
         complete = len(raw) <= self.settings.max_mcp_response_bytes
-        length = response.headers.get("Content-Length")
-        if length is not None:
-            complete = complete and length.isascii() and length.isdecimal() and int(length) == len(raw)
         self.observe("response" if complete else "failure", body=raw, status=status,
                      complete=complete, error_code=None if complete else "RPC_RESPONSE_INVALID",
                      effect=None if complete else EffectState.UNKNOWN)

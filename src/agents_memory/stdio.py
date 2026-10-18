@@ -252,9 +252,6 @@ class StdioRelay:
         )
         if len(raw) > self.settings.max_mcp_response_bytes:
             raise DomainError("RESULT_TOO_LARGE", "The relay response exceeds its wire limit", effect=EffectState.UNKNOWN)
-        length = response.headers.get("Content-Length")
-        if length is not None and (not length.isascii() or not length.isdecimal() or int(length) != len(raw)):
-            raise DomainError("RPC_RESPONSE_INVALID", "The relay response is incomplete", effect=EffectState.UNKNOWN)
         try:
             return decode_json(raw) if raw else None
         except (ValueError, UnicodeError):

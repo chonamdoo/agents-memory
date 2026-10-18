@@ -704,4 +704,10 @@ def read_http_body(response, *, maximum: int, deadline: float) -> bytes:
     _remaining(deadline)
     raw = response.read(maximum + 1)
     _remaining(deadline)
+    # Bounded HTTPResponse.read can reach premature EOF without raising IncompleteRead.
+    headers = getattr(response, "headers", None)
+    length = headers.get("Content-Length") if headers is not None else None
+    if (len(raw) <= maximum and length is not None and not getattr(response, "chunked", False)
+        and (not length.isascii() or not length.isdecimal() or int(length) != len(raw))):
+        raise http.client.HTTPException("The HTTP response is incomplete")
     return raw

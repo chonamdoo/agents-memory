@@ -264,9 +264,7 @@ def observed_model_identity(record: dict, *, backend: Literal["claude", "codex"]
             if not isinstance(assistant, dict):
                 reasons.add("MODEL_OBSERVATION_UNKNOWN")
                 continue
-            if "model" not in assistant:
-                continue
-            observed_model = assistant["model"]
+            observed_model = assistant.get("model")
             parent = message.get("parent_tool_use_id")
             if (not isinstance(observed_model, str) or not observed_model
                 or (parent is not None and (not isinstance(parent, str) or not parent))):

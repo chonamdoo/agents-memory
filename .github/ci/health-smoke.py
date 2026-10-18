@@ -788,6 +788,24 @@ class Smoke:
                 global_reason = await self.cli("inspect", "--binding", self.binding, "--ref", reason_ref,
                                                 "--snapshot", "snapshot_beta")
                 self.check(global_reason["body"] == reason, "GLOBAL_FEEDBACK_REASON_OVERRESTRICTED")
+            nested = await self.cli("feedback", "--binding", self.binding, "--kind", "correct",
+                "--ref", reason_ref, "--body-file", body, "--key", "consumer-nested-feedback-" + scope, role="agent")
+            nested_ref = "health:feedback:" + nested["artifact_id"]
+            nested_allowed = await self.cli("inspect", "--binding", self.binding,
+                "--ref", nested_ref, "--snapshot", "snapshot_alpha")
+            self.check(nested_allowed["candidate"]["body"] == body.read_text(),
+                       "AUTHORIZED_NESTED_FEEDBACK_UNAVAILABLE")
+            nested_other = await self.cli("inspect", "--binding", self.binding,
+                "--ref", nested_ref, "--snapshot", "snapshot_beta")
+            if scope == "scoped":
+                self.check(nested_other["candidate"]["body_unavailable"]
+                           and nested_other["candidate"]["body"] is None
+                           and "target_ref" not in nested_other["candidate"],
+                           "NESTED_FEEDBACK_ESCAPED_ORIGINAL_TARGET_SCOPE")
+            else:
+                self.check(nested_other["candidate"]["body"] == body.read_text()
+                           and nested_other["candidate"]["target_ref"] == reason_ref,
+                           "GLOBAL_NESTED_FEEDBACK_OVERRESTRICTED")
         self.passed("feedback_resolution_reason_disclosure")
 
     async def cleanup(self):

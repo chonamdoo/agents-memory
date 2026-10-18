@@ -1215,26 +1215,17 @@ class Store:
             raise DomainError(
                 "SNAPSHOT_INELIGIBLE", "The source belongs to a different snapshot",
             )
-        has_feedback_owner = await connection.fetchval(
-            """SELECT EXISTS(
-                   SELECT 1 FROM am_feedback WHERE binding_id=$1 AND source_id=$2
-               )""",
+        has_reason_owner = await connection.fetchval(
+            """SELECT EXISTS(SELECT 1 FROM am_feedback WHERE binding_id=$1 AND source_id=$2)
+                OR EXISTS(SELECT 1 FROM am_health_events WHERE binding_id=$1 AND reason_source_id=$2)""",
             binding_id, source_id,
         )
-        if has_feedback_owner and await self._disclosure_manifest(
+        if has_reason_owner and await self._disclosure_manifest(
             connection, binding_id, source_id, snapshot,
         ) is None:
             raise DomainError(
-                "INPUT_INELIGIBLE",
-                "The feedback reason source or its target lineage is not currently eligible",
+                "INPUT_INELIGIBLE", "The reason source or its exact target lineage is not currently eligible",
             )
-        owners = await connection.fetch("""SELECT * FROM am_health_events WHERE binding_id=$1
-            AND reason_source_id=$2 ORDER BY id LIMIT 17""", binding_id, source_id)
-        if len(owners) > 16:
-            raise DomainError("INPUT_INELIGIBLE", "The complete health reason ownership exceeds its bound")
-        for owner in owners:
-            if not await self._health_event_visible(connection, binding_id, owner, snapshot, reason_body=True):
-                raise DomainError("INPUT_INELIGIBLE", "The health reason or its exact target lineage is unavailable")
         return row
 
     async def source(self, actor: Principal, binding_id: str, source_id: str) -> Source:
@@ -4017,6 +4008,35 @@ class Store:
                         continue
                     if await add(owner["id"], _omit_reason_source=ref) is None:
                         return None
+                health_owners = await connection.fetch(
+                    """SELECT * FROM am_health_events
+                       WHERE binding_id=$1 AND reason_source_id=$2 ORDER BY id LIMIT 17""",
+                    binding_id, ref,
+                )
+                if len(health_owners) > 16:
+                    return None
+                for owner in health_owners:
+                    if budget[0] <= 0 or not await self._health_event_visible(connection, binding_id, owner, snapshot):
+                        return None
+                    budget[0] -= 1
+                    dependencies = set(owner["source_ids"]) | set(owner["claim_ids"])
+                    if owner["kind"] == "feedback_resolution":
+                        target = await connection.fetchrow(
+                            "SELECT target_ref FROM am_feedback WHERE id=$1 AND binding_id=$2",
+                            owner["target_ref"], binding_id,
+                        )
+                        if target is None:
+                            return None
+                        # Follow the live target, not erasable candidate text or its historical request scope.
+                        dependencies.add(target["target_ref"])
+                    for dependency in sorted(dependencies):
+                        if await add(dependency) is None:
+                            return None
+                    children.append({"record": {
+                        "kind": "health_reason_owner", "id": owner["id"], "event_kind": owner["kind"],
+                        "target_ref": owner["target_ref"], "source_ids": list(owner["source_ids"]),
+                        "claim_ids": list(owner["claim_ids"]), "payload_digest": canonical_digest(_decode(owner["payload"])),
+                    }, "children": []})
 
             elif kind == "operation":
                 target = row["artifact_id"] or row["source_id"]
@@ -4329,7 +4349,7 @@ class Store:
             previous = _decode(existing['health_payload'])
             disposition = previous.pop('disposition', None)
             terminal_unknown = (existing['state'] == 'resolved' and disposition is not None
-                and disposition.get('decision') in {'close_unknown', 'deferred_unknown'})
+                and disposition.get('decision') == 'close_unknown' and disposition.get('event_ref') is not None)
             changed = (source_ids != list(existing['source_ids']) or claim_ids != list(existing['claim_ids'])
                 or data != previous or snapshot != existing['snapshot'])
             if changed:
@@ -5285,15 +5305,9 @@ class Store:
             raise DomainError('HEALTH_BUNDLE_TOO_LARGE', 'The complete health admission bundle exceeds the representation bound', status=413)
         return result
 
-    async def _health_event_visible(self, connection, binding_id, event, snapshot, *, reason_body: bool = False) -> bool:
+    async def _health_event_visible(self, connection, binding_id, event, snapshot) -> bool:
         if event['state'] != 'active' or event['payload'] is None or event['realm'] != self.settings.realm:
             return False
-        # Decision metadata outlives erased candidate text; its rationale still needs live target disclosure.
-        if reason_body and event['kind'] == 'feedback_resolution':
-            target = await connection.fetchrow('SELECT target_ref FROM am_feedback WHERE id=$1 AND binding_id=$2',
-                event['target_ref'], binding_id)
-            if target is None or await self._disclosure_manifest(connection, binding_id, target['target_ref'], snapshot) is None:
-                return False
         for identifier in event['claim_ids']:
             try:
                 await self._claim_row(connection, binding_id, identifier, snapshot, False)
