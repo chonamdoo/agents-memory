@@ -167,7 +167,12 @@ async def test_healthy_code_link_commits_despite_revoked_foreign_producer(
 ):
     from test_store_authority import ready_claim
 
-    from agents_memory.health import CodeLinkCommand, CodeObservationCommand, HealthPolicyCommand, HealthWorkspaceCommand
+    from agents_memory.health import (
+        CodeLinkCommand,
+        CodeObservationCommand,
+        HealthPolicyCommand,
+        HealthWorkspaceCommand,
+    )
 
     store, actor, binding = authority.store, authority.actor, authority.binding_id
     mutation = {"binding_id": binding, "expected_binding_revision": 1}

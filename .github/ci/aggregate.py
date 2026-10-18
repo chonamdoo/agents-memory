@@ -22,6 +22,8 @@ CHECK_COMMANDS = {
 }
 WHEEL_SELECTORS = (
     "tests/test_host_import_isolation.py",
+    "tests/test_omp_footprint_runtime.py",
+    "tests/test_host_capture_status.py",
     "tests/test_cli_bind.py::test_occupied_listen_address_refuses_before_database_or_journal_work",
     "tests/test_service.py::test_managed_readiness_preserves_the_owned_config_upgrade_refusal",
     "tests/test_inspection_stability.py::test_minimum_mcp_cap_can_inspect_a_plain_captured_source",

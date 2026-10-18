@@ -7,13 +7,11 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from test_jev_client import http_error
 from test_judge_worker import KEY
 from test_judge_worker import world as world
-from test_store_authority import TOKEN
+from test_store_authority import TOKEN, ready_claim, source_selection
 from test_store_authority import authority as authority
-from test_store_authority import ready_claim, source_selection
 
 from agents_memory import judge_worker as worker_module
 from agents_memory.domain import CaptureCommand, CaptureCoverage, RevisionRef
