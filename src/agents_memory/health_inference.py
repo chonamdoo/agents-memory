@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import ValidationError
+
 from .domain import ClaimMeaning, DomainError, RevisionRef
 from .health import HealthAssessmentCommand, HealthClaimAssessment, HealthEvidenceSpan
 from .wire import validate_wire
@@ -18,6 +20,15 @@ class HealthInputs:
 
     @classmethod
     def from_bundle(cls, bundle: dict[str, Any]) -> HealthInputs:
+        try:
+            return cls._from_bundle(bundle)
+        except (ValidationError, KeyError, TypeError, AttributeError):
+            raise DomainError(
+                "HEALTH_EVIDENCE_INCOMPLETE", "Health work requires complete bounded admitted evidence",
+            ) from None
+
+    @classmethod
+    def _from_bundle(cls, bundle: dict[str, Any]) -> HealthInputs:
         def refuse() -> None:
             raise DomainError("HEALTH_EVIDENCE_INCOMPLETE", "Health work requires complete bounded admitted evidence")
 
@@ -53,12 +64,9 @@ class HealthInputs:
         for claim in claims:
             if not isinstance(claim, dict) or set(claim) != {"id", "revision", *ClaimMeaning.model_fields}:
                 refuse()
-            try:
-                meanings.append(validate_wire(ClaimMeaning, {
-                    key: value for key, value in claim.items() if key not in {"id", "revision"}
-                }))
-            except DomainError:
-                refuse()
+            meanings.append(validate_wire(ClaimMeaning, {
+                key: value for key, value in claim.items() if key not in {"id", "revision"}
+            }))
         if len({value.id for value in source_refs}) != len(source_refs):
             refuse()
         payload_bytes = sum(len(source.quote.encode("utf-8")) for source in sources)

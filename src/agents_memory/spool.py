@@ -40,6 +40,7 @@ PERMANENT_CODES = {
     "HEALTH_SEQUENCE_CONFLICT",
     "HEALTH_DISABLED", "HEALTH_STALE", "HEALTH_WORKSPACE_RETRACTED",
     "OBSERVATION_OUT_OF_ORDER", "MANIFEST_TOO_LARGE", "CODE_ANCHOR_AMBIGUOUS",
+    "SESSION_SOURCE_INVALID", "SESSION_SNAPSHOT_CONFLICT", "SESSION_OBSERVATION_CONFLICT",
 }
 LOCAL_QUARANTINE_CODES = {"SOURCE_SECRET_REJECTED", "SPOOL_PAYLOAD_INVALID"}
 
@@ -362,6 +363,17 @@ class ProducerSpool:
         count, total = self.db.execute("SELECT count(*),COALESCE(sum(length(CAST(payload AS BLOB))),0) FROM health_state").fetchone()
         if (existing is None and count >= 16) or total - (existing[0] if existing else 0) + size > 32768:
             raise DomainError("HEALTH_STATE_FULL", "The bounded health metadata is full")
+        if key in {"authorization", "code"}:
+            if size > 1024:
+                raise DomainError("HEALTH_STATE_FULL", "The bounded health metadata is full")
+        else:
+            other_count, other_bytes = self.db.execute(
+                "SELECT count(*),COALESCE(sum(length(CAST(payload AS BLOB))),0) "
+                "FROM health_state WHERE key NOT IN ('authorization','code')",
+            ).fetchone()
+            if ((existing is None and other_count >= 14)
+                    or other_bytes - (existing[0] if existing else 0) + size > 30720):
+                raise DomainError("HEALTH_STATE_FULL", "The bounded health metadata is full")
         self.db.execute(
             "INSERT INTO health_state VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
             (key, payload, time.time()),
@@ -585,10 +597,23 @@ class ProducerSpool:
         self._housekeep()
         accepted, quarantined = 0, 0
         failures = []
-        keys = self.db.execute(
-            "SELECT key FROM outbox WHERE expires_at>? ORDER BY rowid LIMIT ?",
+        health_kind_sql = (
+            "CASE WHEN json_valid(payload) THEN CASE "
+            "WHEN json_extract(payload,'$.kind') IN ('code_observation','session_observation') THEN 1 "
+            "ELSE 0 END ELSE 0 END"
+        )
+        captures = self.db.execute(
+            f"SELECT key FROM outbox WHERE expires_at>? AND ({health_kind_sql})=0 ORDER BY rowid LIMIT ?",
             (time.time(), limit),
         ).fetchall()
+        health = self.db.execute(
+            f"SELECT key FROM outbox WHERE expires_at>? AND ({health_kind_sql})=1 ORDER BY rowid LIMIT ?",
+            (time.time(), limit),
+        ).fetchall()
+        capture_quota = max(1, limit // 2) if health else limit
+        keys = captures[:capture_quota]
+        keys.extend(health[:limit - len(keys)])
+        keys.extend(captures[capture_quota:capture_quota + limit - len(keys)])
         for (key,) in keys:
             row = self.db.execute(
                 "SELECT digest,payload FROM outbox WHERE key=? AND expires_at>?",
@@ -628,7 +653,9 @@ class ProducerSpool:
                     and error.effect in {EffectState.NOT_STARTED, EffectState.NOT_COMMITTED}
                 )
                 if not permanent:
-                    break
+                    if isinstance(command, CaptureCommand):
+                        break
+                    continue
                 with self._transaction():
                     inserted = self.db.execute(
                         "INSERT OR IGNORE INTO quarantine(key,digest,payload,bytes,failure,created_at,expires_at) "
@@ -652,7 +679,9 @@ class ProducerSpool:
                     health_kind = command.kind
             except (ValidationError, ValueError, TypeError, UnicodeError):
                 failures.append("CAPTURE_RECEIPT_INVALID" if isinstance(command, CaptureCommand) else "HEALTH_RECEIPT_INVALID")
-                break
+                if isinstance(command, CaptureCommand):
+                    break
+                continue
             with self._transaction():
                 replacement = self.db.execute(
                     "SELECT 1 FROM (SELECT digest,payload FROM outbox WHERE key=? "

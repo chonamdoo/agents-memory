@@ -405,6 +405,41 @@ async def test_unchanged_failed_health_is_not_repaid_and_does_not_starve_source(
     ) == []
 
 
+@pytest.mark.parametrize("malformed", ["claim", "source"])
+async def test_malformed_nested_health_input_preserves_work_and_reaches_next_source(
+    world, authority, monkeypatch, malformed,
+):
+    claim = await health_work(world, authority)
+    peer = health_protocol_worker(world, None)
+    original = world.application.inspect
+    marker = "private-invalid-health-input"
+
+    async def malformed_inspection(actor, ref, binding_id=None, snapshot=None, **kwargs):
+        bundle = await original(actor, ref, binding_id, snapshot, **kwargs)
+        if ref.startswith("health:item:"):
+            bundle = json.loads(json.dumps(bundle))
+            if malformed == "claim":
+                bundle["claims"][0]["polarity"] = marker
+            else:
+                bundle["input_sources"][0]["revision"] = 0
+        return bundle
+
+    monkeypatch.setattr(world.application, "inspect", malformed_inspection)
+    captured = await world.capture("after-malformed-health-" + malformed, "ok thanks!")
+    more = await world.worker.cycle()
+    [selection] = await world.rows(
+        "SELECT label,state FROM am_source_selections WHERE source_id=$1", captured.source_id,
+    )
+    assert selection == {"label": "discard", "state": "active"}
+    assert more is False and await world.pending("health") == ["pending"]
+    assert peer.health_calls == [] and len(peer.calls) == 1
+    assert marker not in (world.worker.last_error or "")
+    assert (await world.inspect("health:claim:" + claim.id))["health"]["support"] == "unknown"
+    assert await world.rows(
+        "SELECT id FROM am_health_events WHERE binding_id=$1 AND kind='health_assessment'", world.binding_id,
+    ) == []
+
+
 @pytest.mark.parametrize("changed", ["health_revision", "policy_revision", "both"])
 async def test_failed_health_becomes_eligible_for_changed_work_or_policy(world, authority, changed):
     claim = await health_work(world, authority)

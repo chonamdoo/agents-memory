@@ -14,7 +14,7 @@ from pathlib import Path
 from pydantic import Field, ValidationError
 
 from .client import LocalClient
-from .domain import DomainError, Handle, RevisionRef, SourcePointer, TypedModel
+from .domain import DomainError, Handle, RevisionRef, SourcePointer, TypedModel, canonical_digest
 from .health import (
     CodeObservationCommand,
     HealthObserverRequest,
@@ -141,7 +141,7 @@ def register_health_workspace(receipt: dict, preparation: HealthWorkspacePrepara
         result = client.request("/api/health", command.model_dump(mode="json"))
         try:
             operation = validate_wire(Operation, result)
-        except DomainError:
+        except ValidationError:
             raise DomainError("HEALTH_RECEIPT_INVALID", "Workspace registration completion is unconfirmed",
                               effect=EffectState.UNKNOWN) from None
         if (operation.binding_id != config.binding_id or operation.kind != command.kind
@@ -281,16 +281,22 @@ def observe_health_workspace(
                 return {"state": "disabled", "configured": True, "workspace_id": config.workspace_id, "freshness": "unknown"}
             # Reconcile the previous immutable observation before reserving a new sequence.
             prior = spool.read_health_state("code")
+            prior_receipt = {}
             if prior.get("key"):
                 if not defer_flush:
                     spool.flush(client, limit=flush_limit)
                 try:
-                    prior_disposition = spool.disposition(prior["key"])["state"]
+                    prior_receipt = spool.disposition(prior["key"])
+                    prior_disposition = prior_receipt["state"]
                 except DomainError as error:
                     if error.code != "SPOOL_REPLAY_EXPIRED_OR_UNKNOWN":
                         raise
                     prior_disposition = "expired_or_unknown"
-                if prior_disposition not in {"committed", "expired", "discarded", "expired_or_unknown"}:
+                if prior_disposition == "quarantined" and prior_receipt.get("effect") != "unknown":
+                    prior_disposition = "proven_uncommitted"
+                if (prior_disposition not in {"committed", "expired", "discarded", "expired_or_unknown", "proven_uncommitted"}
+                        or (prior_disposition in {"expired", "expired_or_unknown"}
+                            and workspace["last_sequence"] < prior.get("sequence", 0))):
                     return _incomplete(require_committed, "HEALTH_OBSERVATION_UNCOMMITTED")
             paths = workspace.get("linked_paths") if explicit_paths is None else [
                 {"relative_path": path, "symbol_names": list(names)} for path, names in explicit_paths
@@ -326,17 +332,34 @@ def observe_health_workspace(
                 return {"state": "observed", "configured": True, "workspace_id": config.workspace_id, "coverage": "linked_paths", "files": 0}
             if not files:
                 return _incomplete(require_committed, "HEALTH_OBSERVATION_OVERFLOW")
+            coverage = "explicit_paths" if explicit_paths is not None else "linked_paths" if complete else "partial_linked_paths"
+            fingerprint = canonical_digest({
+                "binding_revision": response["binding_revision"], "workspace_revision": workspace["revision"],
+                "root_fingerprint": config.pin.fingerprint, "producer_credential_id": config.producer_credential_id,
+                "policy": response["policy"], "coverage": coverage,
+                "files": [entry.model_dump(mode="json") for entry in files],
+            })
+            if (complete and prior_receipt.get("state") == "committed"
+                    and workspace["last_sequence"] == prior.get("sequence") and prior.get("fingerprint") == fingerprint):
+                return {
+                    "state": "observed", "configured": True, "workspace_id": config.workspace_id,
+                    "coverage": coverage, "files": len(files), "operation_id": prior_receipt["operation_id"],
+                    "health_reference": prior_receipt.get("health_reference"),
+                    "provenance": "producer_reported", "freshness": "observed_bytes_not_continuous_truth",
+                }
             sequence = max(workspace["last_sequence"], prior.get("sequence", 0)) + 1
             command = CodeObservationCommand(
                 binding_id=config.binding_id, expected_binding_revision=response["binding_revision"],
                 idempotency_key="code:" + uuid.uuid4().hex, workspace_id=config.workspace_id,
                 expected_workspace_revision=workspace["revision"], root_fingerprint=config.pin.fingerprint,
                 sequence=sequence, observed_at=datetime.now(UTC), files=files,
-                coverage="explicit_paths" if explicit_paths is not None else "linked_paths" if complete else "partial_linked_paths",
+                coverage=coverage,
             )
             if len(command.model_dump_json().encode()) > budget:
                 return _incomplete(require_committed, "HEALTH_OBSERVATION_OVERFLOW")
-            spool.enqueue(command, health_state=("code", {"key": command.idempotency_key, "sequence": sequence}))
+            spool.enqueue(command, health_state=("code", {
+                "key": command.idempotency_key, "sequence": sequence, "fingerprint": fingerprint,
+            }))
             if defer_flush:
                 return {"state": "queued", "configured": True, "workspace_id": config.workspace_id,
                         "coverage": command.coverage, "files": len(files),

@@ -1818,13 +1818,14 @@ class Store:
         source_id: str | None = None,
     ) -> dict:
         accepted_rows = await connection.fetch(
-            """SELECT c.id,c.revision,c.draft->>'statement' AS statement
+            f"""SELECT c.id,c.revision,c.draft->>'statement' AS statement
                FROM am_claims c
                WHERE c.binding_id=$1 AND c.state='active'
                  AND c.capability='agent_judged' AND c.draft IS NOT NULL
                  AND (c.snapshot IS NULL OR c.snapshot=$2)
                  AND (c.valid_from IS NULL OR c.valid_from<=clock_timestamp())
                  AND (c.valid_until IS NULL OR c.valid_until>clock_timestamp())
+                 AND ({_HEALTH_REUSE_SQL})
                ORDER BY c.created_at DESC,c.id LIMIT 9""",
             binding_id, snapshot,
         )
@@ -1841,6 +1842,47 @@ class Store:
                     raise
                 continue
             accepted.append(dict(row))
+
+        review_rows = await connection.fetch(
+            """SELECT c.id,c.revision,h.version,h.review_event_id,e.reason_source_id
+               FROM am_claims c JOIN am_claim_health h
+                 ON h.claim_id=c.id AND h.claim_revision=c.revision
+               JOIN am_health_events e ON e.id=h.review_event_id AND e.binding_id=c.binding_id
+                 AND e.kind='memory_review' AND e.target_ref=c.id
+               WHERE c.binding_id=$1 AND c.state='active' AND c.capability='agent_judged'
+                 AND h.operator_review='reject' AND (c.snapshot IS NULL OR c.snapshot=$2)
+                 AND (c.valid_from IS NULL OR c.valid_from<=clock_timestamp())
+                 AND (c.valid_until IS NULL OR c.valid_until>clock_timestamp())
+               ORDER BY c.created_at DESC,c.id LIMIT 9""",
+            binding_id, snapshot,
+        )
+        health_dispositions = []
+        for row in review_rows:
+            try:
+                await self._claim_row(connection, binding_id, row["id"], snapshot)
+                if await self._disclosure_manifest(
+                    connection, binding_id, "health:event:" + row["review_event_id"], snapshot,
+                ) is None:
+                    continue
+                reason = await self._source_row(connection, binding_id, row["reason_source_id"], snapshot, True)
+            except DomainError as error:
+                if error.code not in _DISCLOSURE_ERRORS:
+                    raise
+                continue
+            item = {
+                "claim_ref": {"id": row["id"], "revision": row["revision"]},
+                "health_version": row["version"], "review_event_id": row["review_event_id"],
+                "decision": "reject", "reason_source_ref": reason["id"],
+                "reason_source_revision": reason["revision"],
+                "grounding": "operator_disposition_not_independent_source",
+            }
+            if len(reason["body"].encode("utf-8")) <= 128:
+                item["reason"] = reason["body"]
+            else:
+                item["reason_requires_inspection"] = True
+            health_dispositions.append(item)
+            if len(health_dispositions) == 8:
+                break
     
         required = []
         index_metadata = None
@@ -1882,6 +1924,8 @@ class Store:
         return {
             "accepted_memories": bounded(accepted, "statement"),
             "rejections": bounded(displayed, "reason"),
+            "health_dispositions": health_dispositions,
+            "health_dispositions_partial": True,
             "required_rejection_ids": [item["id"] for item in required],
             "required_candidate_index": index_metadata,
             "rejection_page_kind": "optional_history" if history else "required_candidates",
@@ -1895,6 +1939,34 @@ class Store:
             },
             "context_partial": True,
         }
+
+    async def _source_judgment_health_manifest(self, connection, binding_id, snapshot, inputs) -> list[dict]:
+        if len(inputs) > 16:
+            raise DomainError("MANIFEST_TOO_LARGE", "The bounded source judgment health inputs exceed their limit")
+        result = []
+        for item in inputs:
+            try:
+                claim = await self._claim_row(connection, binding_id, item["id"], snapshot)
+                disclosure = await self._disclosure_manifest(connection, binding_id, item["id"], snapshot)
+                if claim["revision"] != item["revision"] or disclosure is None:
+                    raise DomainError("ADMISSION_STALE", "An actual source judgment input changed")
+                manifest = {
+                    "input": item, "health": await self._claim_health_manifest(connection, claim),
+                    "disclosure": disclosure,
+                }
+                if item.get("review_event_id"):
+                    event_disclosure = await self._disclosure_manifest(
+                        connection, binding_id, "health:event:" + item["review_event_id"], snapshot,
+                    )
+                    if event_disclosure is None:
+                        raise DomainError("ADMISSION_STALE", "An actual source judgment review input changed")
+                    manifest["review_disclosure"] = event_disclosure
+            except DomainError as error:
+                if error.code not in _DISCLOSURE_ERRORS:
+                    raise
+                raise DomainError("ADMISSION_STALE", "An actual source judgment input is no longer disclosed") from None
+            result.append(manifest)
+        return result
 
     async def inspect(
         self, actor: Principal, binding_id: str, ref: str, snapshot: str | None = None, *,
@@ -2013,6 +2085,7 @@ class Store:
                 else:
                     result["judgment_context"] = {
                         "accepted_memories": [], "rejections": [], "required_rejection_ids": [],
+                        "health_dispositions": [], "health_dispositions_partial": False,
                         "rejection_page_kind": "non_independent_note",
                         "rejections_next_cursor": None, "rejections_partial": False, "context_partial": False,
                     }
@@ -2020,9 +2093,21 @@ class Store:
                     policy["revision"], policy["epoch"], request_snapshot=snapshot,
                     representation_bytes=representation_bytes - 256, measure_json=measure_json, metadata=result))
                 if independent_work:
+                    context = result["judgment_context"]
+                    inputs = [{"id": item["id"], "revision": item["revision"]}
+                              for item in context["accepted_memories"]]
+                    inputs.extend({
+                        "id": item["claim_ref"]["id"], "revision": item["claim_ref"]["revision"],
+                        "review_event_id": item["review_event_id"],
+                    } for item in context["health_dispositions"])
+                    health_manifest = await self._admitted_health_manifest(connection, binding_id, ())
+                    health_manifest["source_judgment"] = await self._source_judgment_health_manifest(
+                        connection, binding_id, snapshot, inputs,
+                    )
                     admission = await self._new_caller_admission(connection, clock, current, binding_id, "source_selection",
                         result["window_digest"], snapshot, sources=(RevisionRef(id=source.id, revision=source.revision),),
-                        rejection_ids=tuple(item["id"] for item in result["judgment_context"]["rejections"]))
+                        rejection_ids=tuple(item["id"] for item in context["rejections"]),
+                        health_manifest=health_manifest)
                     await self._bind_rejection_inputs(connection, admission.id, binding_id, snapshot)
                     result["admission_id"] = admission.id
                     result["admission_deadline"] = admission.deadline.isoformat()
@@ -2447,6 +2532,11 @@ class Store:
             live_health = await self._admitted_health_manifest(connection, admission.binding_id,
                 admission.claim_ids, admission.relation_ids,
                 code_workspace_id=saved_health['workspace']['id'], workspace_scoped=saved_health['workspace']['scoped'])
+            if row["purpose"] == "source_selection":
+                live_health["source_judgment"] = await self._source_judgment_health_manifest(
+                    connection, admission.binding_id, admission.snapshot,
+                    [item["input"] for item in saved_health.get("source_judgment", ())],
+                )
         if live_health != saved_health:
             raise DomainError('ADMISSION_STALE', 'An actual health, code, review, policy or work dependency changed')
         if admission.pending_id is not None:

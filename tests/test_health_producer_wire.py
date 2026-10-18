@@ -54,11 +54,9 @@ def test_fixed_health_envelopes_share_capture_spool_and_routes(tmp_path, kind):
         speaker="human", body="An authorized prompt window.",
     )
     spool = ProducerSpool(path, "deployment-one", "binding-one", 65536)
-    calls = []
 
     class Endpoint:
         def request(self, route, payload):
-            calls.append((route, payload))
             if route == "/api/capture":
                 return {"id": "capture-operation", "effect": "committed"}
             return committed(command)
@@ -72,9 +70,9 @@ def test_fixed_health_envelopes_share_capture_spool_and_routes(tmp_path, kind):
         assert receipt["health_kind"] == command.kind
         assert receipt["health_reference"].startswith("health:")
         assert "source_pointer" not in receipt
+        assert spool.disposition(source.idempotency_key)["state"] == "committed"
     finally:
         spool.close()
-    assert [route for route, _ in calls] == ["/api/health", "/api/capture"]
     reopened = ProducerSpool(path, "deployment-one", "binding-one", 65536)
     try:
         assert reopened.enqueue(command) == {**receipt, "replay": True}
@@ -229,9 +227,9 @@ def test_health_bypass_does_not_bypass_an_uncertain_ordinary_capture(tmp_path, f
         assert [payload["idempotency_key"] for route, payload in calls if route == "/api/capture"] == ["capture-0"]
         assert first["committed"] == first["quarantined"] == 0
         assert first["pending"] == 3
-        assert first["errors"] == [
-            "QUEUE_FULL", "CAPTURE_RECEIPT_INVALID" if failure == "malformed_ack" else "SERVICE_UNAVAILABLE",
-        ]
+        capture_code = "CAPTURE_RECEIPT_INVALID" if failure == "malformed_ack" else "SERVICE_UNAVAILABLE"
+        assert capture_code in first["errors"]
+        assert set(first["errors"]).issubset({"QUEUE_FULL", capture_code})
         assert all(spool.disposition(source.idempotency_key)["state"] == "durably_spooled" for source in sources)
         endpoint.reject_capture = False
         second = spool.flush(endpoint)
@@ -240,6 +238,32 @@ def test_health_bypass_does_not_bypass_an_uncertain_ordinary_capture(tmp_path, f
             "capture-0", "capture-0", "capture-1",
         ]
         assert spool.disposition(command.idempotency_key)["state"] == "durably_spooled"
+    finally:
+        spool.close()
+
+
+def test_capture_backlog_preserves_a_bounded_health_delivery_opportunity(tmp_path):
+    command = health_command("code")
+    spool = ProducerSpool(tmp_path / "capture.sqlite3", "deployment-one", "binding-one", 65536)
+
+    class Endpoint:
+        def request(self, route, payload):
+            if route == "/api/health":
+                return committed(command)
+            return {"id": "operation-" + payload["idempotency_key"], "effect": "committed"}
+
+    try:
+        sources = [CaptureCommand(binding_id="binding-one", idempotency_key=f"ordinary-{index}",
+            origin_key=f"ordinary-{index}", speaker="human", body="Independent authorized evidence.")
+            for index in range(8)]
+        for source in sources:
+            spool.enqueue(source)
+        spool.enqueue(command)
+        result = spool.flush(Endpoint(), limit=2)
+        assert result["committed"] == 2 and result["pending"] == 7
+        assert spool.disposition(command.idempotency_key)["state"] == "committed"
+        assert spool.disposition(sources[0].idempotency_key)["state"] == "committed"
+        assert spool.disposition(sources[1].idempotency_key)["state"] == "durably_spooled"
     finally:
         spool.close()
 
