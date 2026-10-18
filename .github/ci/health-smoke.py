@@ -146,6 +146,16 @@ class Smoke:
             response = json.loads(errors)
             self.check(response.get("error", {}).get("code") in denied, "CLI_REFUSAL_CODE")
             return response
+        if returncode != 0:
+            try:
+                diagnostic = json.loads(errors)
+            except (ValueError, UnicodeError):
+                diagnostic = {}
+            error = diagnostic.get("error") if isinstance(diagnostic, dict) else None
+            code = error.get("code") if isinstance(error, dict) else None
+            self.result["failure_cli_error_code"] = (
+                code if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", code) else "UNAVAILABLE"
+            )
         self.check(returncode == 0, "CLI_FAILED")
         value = json.loads(raw)
         self.check(isinstance(value, dict), "CLI_RESPONSE_SHAPE")
