@@ -245,6 +245,9 @@ owned host/service만 정상 uninstall한다. 사용자·Agent Flow 설정, 명�
 
 현재 controller는 measured corpus/rules의 이전 schema를 호환 입력으로 재해석하지 않는다. 과거 run의 원본 manifest·source·실패 receipt는 그대로 보관하고 새 schema와 새 run identity로 다시 고정한다. 같은 run의 입력·digest·기존 terminal을 덮어쓰지 않는다. arm 사이 optional rule이나 관계가 바뀌면 비교 불가인 원래 pair와 모든 시도를 남기며 유효 쌍으로 세지 않는다.
 
+파일 효과를 선언한 task는 종료 뒤 background descendant를 남기지 않아야 한다. verifier는 Docker daemon의 freeze→bounded process inventory→unfreeze 경계를 통과한 뒤에만 file observer를 시작한다. 살아 있는 subject·불명 inventory·freeze/unfreeze 실패이면 파일이 존재해도 `runtime_unknown`으로 남기며 기존 owner가 frozen container까지 정확히 제거한다. PID/UID·권한·image pin·timeout을 수작업으로 바꾸거나 임의 process를 종료해 통과시키지 않는다. 이 제약은 실제 native host 전체 격리를 제공하지 않는다.
+
+
 native mapping은 해당 host의 실제 server/tool 이름과 관측 가능한 protocol에 대한 고정 입력이지 자동 설치·trust·hook·MCP permission 승인이 아니다. Codex lineage 필드는 [고정 version의 call metadata](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/core/src/mcp_tool_call.rs)와 [native item schema](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/app-server-protocol/schema/typescript/v2/ThreadItem.ts)를 따른다. 필요한 metadata/start/result가 없는 host를 추정으로 지원 처리하지 않는다. `native_tool_mapping` 없는 과거 manifest도 같은 run에서 보충·재해석하지 않으며 원본 source/receipt를 보관하고 새 manifest/run identity로 고정한다.
 
 controller의 read-only rule fence는 native arm budget을 재설정하는 경로가 아니다. 원래 frozen `rules.probe`를 별도 controller scope의 required/context request에 그대로 사용하고 health replay도 그 값을 대조한다. corpus 준비의 재열기·rule probe는 서로 다른 관측 invocation ID를 사용한다. native gateway의 budget/workspace 강제를 예외 처리하거나 controller-only judgment 권한을 native에 추가하지 않는다.

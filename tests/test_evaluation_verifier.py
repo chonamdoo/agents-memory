@@ -493,7 +493,19 @@ def test_identical_payloads_have_distinct_invocations_but_changed_payload_cannot
     assert (tmp_path / on.terminal_artifact).read_bytes() == completed
 
 
-def test_completed_nonzero_exit_still_observes_declared_effects(owned_runtime, monkeypatch):
+@pytest.mark.parametrize(("inventory", "failed_stage", "accepted"), [
+    (b"UID PID STAT\n0 123 S\n", None, True),
+    (b"UID PID STAT\n0 123 S\n65532 124 Z\n", None, True),
+    (b"UID PID STAT\n0 123 S\n65532 124 S\n", None, False),
+    (b"UID PID STAT\n0 123 S\n0 125 S\n", None, False),
+    (b"UID PID STAT\n0 123 S\n65532 123 Z\n", None, False),
+    (b"UID PID STAT\n", None, False),
+    (b"USER PID STAT\nroot 123 S\n", None, False),
+    (b"UID PID STAT\n0 123 S\n", "effect-pause", False),
+    (b"UID PID STAT\n0 123 S\n", "effect-processes", False),
+    (b"UID PID STAT\n0 123 S\n", "effect-unpause", False),
+])
+def test_completed_nonzero_exit_still_observes_declared_effects(owned_runtime, monkeypatch, inventory, failed_stage, accepted):
     instance, _ = owned_runtime
     instance.spec = replace(instance.spec, limits=replace(instance.spec.limits, watchdog_seconds=30))
     intent = instance.intent(case_id="nonzero-effect", snapshot="c" * 64, snapshot_path=instance.intent_dir / "snapshot", watchdog_path=instance.intent_dir / "watchdog", observer_path=instance.intent_dir / "observer")
@@ -502,6 +514,8 @@ def test_completed_nonzero_exit_still_observes_declared_effects(owned_runtime, m
     def command(label, args, **kwargs):
         nonlocal removed
         calls.append(label)
+        if label == failed_stage:
+            return CommandObservation("timeout", None, b"", b"", 1, False, False, True)
         if label == "remove":
             removed = True
         raw = (("b" * 64) + "\n").encode()
@@ -510,7 +524,7 @@ def test_completed_nonzero_exit_still_observes_declared_effects(owned_runtime, m
         elif label == "effect":
             raw = canonical_bytes({"content": base64.b64encode(b"error report").decode(), "size": 12})
         elif label == "effect-processes":
-            raw = b"UID PID STAT\n0 123 S\n"
+            raw = inventory
         return CommandObservation("completed", 0, raw, b"", 1, True, True, True)
     instance.spec = replace(instance.spec, tool_identity=digest_bytes(canonical_bytes({"engineering": True})))
     intent = instance.intent(case_id=intent.case_id, snapshot=intent.snapshot, snapshot_path=Path(intent.snapshot_path), watchdog_path=Path(intent.watchdog_path), observer_path=Path(intent.observer_path))
@@ -525,10 +539,14 @@ def test_completed_nonzero_exit_still_observes_declared_effects(owned_runtime, m
     monkeypatch.setattr(runtime, "CommandLease", CompletedSubject)
     result = instance.run(intent, ("/candidate",), b"", (("report", 32),))
     case = OracleCase("nonzero-effect", ("/candidate",), b"", b"", b"", 2, (FileExpectation("report", 32, b"error report"),))
-    assert result.effects == (("report", b"error report"),)
-    assert calls.count("effect") == 1 and result.execution.exit_code == 2
-    assert compare_case(case, result).passed
-    assert not compare_case(replace(case, expected_exit=0), result).passed
+    assert result.cleanup.exact_absence and result.execution.exit_code == 2
+    assert compare_case(case, result).passed is accepted
+    if accepted:
+        assert result.effects == (("report", b"error report"),)
+        assert not compare_case(replace(case, expected_exit=0), result).passed
+    else:
+        assert result.state == "runtime_unknown" and result.effects == ()
+        assert "effect" not in calls
 
 
 @pytest.mark.parametrize("record_kind", ["owner", "created"])

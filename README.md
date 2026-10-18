@@ -284,6 +284,17 @@ generic MCP는 자동 호출/자연어 준수를 강제하지 않는다. opt-in 
 
 **최신 native 검증 경계:** Codex0.162.1은 strict 정의 설치와 구독 MCP 성공만으로 파일 변경이 차단되지 않았다. 유효한 단일 patch가 실제 합성 파일을 변경했으므로 Codex strict 첫 행동·중지·복구 보호는 미완료다. native hook 활성·신뢰·callback 실행을 별도로 확인해야 한다. Claude의 실제 Read는 healthy/stop/recovery에서 callback·거절·무부작용을 확인했지만, provider input 소비 보장을 뜻하지 않는다. [공식 리뷰 후 실제 실행/남은 gate](docs/verification.ko.md#공식-리뷰-후-fix-loop--development20261015-131245)를 따른다.
 
+### 반복되는 host 경고 구분
+
+이 코드들은 `agents-memory` 자동 hook의 진단이며 Agent Flow lifecycle의 성공·실패 판정과 별개다. 경고를 숨기거나 trust·guard·project root를 바꿔 해결하지 않는다.
+
+- `HOST_FOOTPRINT_UNKNOWN`: 도구의 전체 대상 경로를 안전하게 해석하지 못했다. 생성 OMP adapter는 hashline `edit`의 파일 header와 모든 `MV` 목적지를 최대64개 경로까지 해석하며 patch 본문은 hook에 보내지 않는다. 잘못된 문법·지원하지 않는 resource selector·초과 입력은 일부 경로만 채택하지 않고 unknown으로 남긴다.
+- `HOST_SCOPE_UNRESOLVED`: 자동 hook이 등록 project 범위를 확인하지 못했거나 대상이 범위 밖이다. 다른 project에서 `Downloads` 파일을 읽는 경우 등을 현재 receipt와 대조한다. 명시 MCP의 credential/binding 권한과 자동 hook의 경로 검사는 별개다.
+- `HOST_CAPTURE_DEGRADED`: 현재 전송·대기·격리·gap 상태를 확인한다. 성공한 새 capture에 딸려 반환된 누적 spool 이력만으로 새 전송 실패를 선언하지 않지만, 그 이력과 실제 pending·quarantine·현재 실패는 삭제하거나 성공으로 바꾸지 않는다.
+
+소스 수정만으로 이미 설치되거나 로드된 확장이 바뀌지는 않는다. 승인된 전환 대상에서 기존 owned uninstall/reinstall·서비스 전환 절차와 host 재로딩을 따라야 한다. receipt/hash 수작업 수정이나 실행 중인 공유 세션 강제 종료는 전환 절차가 아니다.
+
+
 ### Native 상태와 메모리 공존 진단
 
 ```sh

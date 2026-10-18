@@ -1538,3 +1538,47 @@ Source digest 전후는 `223da49b15bf2a380f5af316a7d6b66c0fac27328609f929375dee2
 
 새 독립 보고서가 일부 전체 assigned 모듈을 직접 읽었어도 Store 앞부분 scheduling/deletion·일부 ops preflight·큰 CI smoke/aggregate·unchanged host internals의 fresh 전체 coverage는 아직 없다. Timeout, source별 prior approval과 identity manifest로 그 공백을 메우지 않는다. 문서 포함 다음 head의 실제 CI·정상 whole-source native review·CI-only QA·scoped publication은 별도이며 원래18개 완료0·실제 native/OS/운영/egress/human gold·elapsed1–2주 trial·merge/release 미승인을 유지한다. 로컬 runtime/test/collection/lint/build/syntax/format/reproduction/추가 smoke는 실행하지 않았다.
 
+### 정상 review R24–R27과 반복 host 경고 수정
+
+문서 포함 `7d264356e6f01c94a7d086b413b7f384bcffb336` / [Actions39111283863](https://github.com/chonamdoo/agents-memory/actions/runs/39111283863)의 성공은 보존한다. 그 source의 정상 native measurement `453a503783c04fc18e40fd091b89b7e0`는12배정·11전달·7approve·4request-changes·오류1·timeout0이었다. Claude I/O의 실제 OAuth401 오류를 timeout이나 승인으로 바꾸지 않았다. 정상 fix-loop 한도 뒤 사용자가 기록 보존 재개를 승인하여 같은 전체 worktree·branch로 `development/20261018-085856`을 시작했다. 예전 판정·host identity·guard·pins·timeout은 수정하지 않았다.
+
+| source / Actions | source pass / fail | 별도 설치 pass / fail | 실제 범위 |
+|---|---:|---:|---|
+| `116f7ca` / [39114990543](https://github.com/chonamdoo/agents-memory/actions/runs/39114990543) |3144 /25|758 /25|유효 제품/CLI 경계 실패24와 잘못된 workspace 상태 입력1을 분리 |
+| `591fa3d` / [39117838439](https://github.com/chonamdoo/agents-memory/actions/runs/39117838439) |3146 /31|760 /31|경고 회귀6개의 유효 call red 추가. 현재 실패 보존 대조군2개는 통과 |
+| `ef774d4` / [39120141040](https://github.com/chonamdoo/agents-memory/actions/runs/39120141040) |3174 /5|788 /5|경고10개 양쪽 전 phase pass. 남은 diagnostic import 경고의 실제 CLI 실패4·잘못된 입력1 때문에 전체 실패 |
+| `a33615c` / [39120772813](https://github.com/chonamdoo/agents-memory/actions/runs/39120772813) |3178 /0|792 /0|전체 source/설치·실제 Docker14·Mac36·양쪽 health HTTP/CLI25 outcome·전체 평가 소비·owned cleanup·lint/build/comments·strict aggregate 성공 |
+
+모든 표의 skip/xfail/xpass·collection error는0이다. 앞선 전체 실패를 성공으로 바꾸지 않는다. `withdrawn` 변형은 원래 `HealthWorkspaceCommand`에 없는 `state`를 전달하여 Pydantic에서 거절됐으므로 제품 red가 아니다. 허구 API나 직접 DB 상태 변경을 추가하지 않고 변형을 제거했다. 유효 `active` 변형은 같은 본문의 단일 test로 남았으며 node ID에서 `[active]`만 빠진 대응을 명시했다. 나머지 유효 before24개는 source의 setup·call·teardown을 실제 after와 대조했다. 최초 두 run의 blanket 제품 실패 분류도 이 구분으로 정정하며 원본 로그는 유지한다.
+
+- **R24:** code link observer 재계산·workspace admission·observation·anchor·feedback successor에서 타 credential의 예상 `AUTH_DENIED`401만 기존 scope/refusal로 처리한다. 자기 caller401·agent403·예상 밖 `DATABASE_BUSY`503을 보존하며 건강한 producer의 relink가 완료된다.
+- **R25:** 기존 retracted health pending identity를 payload·snapshot·revision refresh 전에 반환한다. journal이 적용한 terminal 상태와 admission 거절을 보존하며 새 삭제 ledger나 floor namespace는 만들지 않는다.
+- **R26:** 명시 health 허용과 완전한 입력을 paid window charge 전에 검사한다. `(binding, snapshot, pending ID)`마다 최신 health·policy·provider·egress revision의 실패 하나를 기억해 같은 실패의 재과금·즉시 반복과 정상 source/cleanup·후속 binding 고갈을 막는다. 실제 상태·권한·transient/stop 오류와 기존 window·cadence·deadline은 유지한다.
+- **R27:** 실제 CLI가 frozen digest mismatch·publication uncertainty·run identity drift의 bounded `EvaluationError` code를 출력하며 일반 private OS 오류는 `LOCAL_INPUT_INVALID/unknown`으로 남긴다. 두 public error annotation은 실제 nested cleanup 값에 맞췄다. scoring5개와 diagnostic5개 모델의 내부 필드를 `schema_version`으로 바꾸고 외부 `schema` alias·strict integer·기존 frozen wire 형태를 유지해 정상 import의 필드 충돌 경고를 제거했다. warning suppression은 없다.
+- **OMP footprint:** 실제 native `edit`의 `input` 문자열을 해석해 전체 파일 header·모든 `MV` 목적지를 context selector와 대조한다. 원문 body와 body 속 가짜 header는 전송하지 않으며 잘못된 입력의 misleading `path`로 대체하지 않는다. 전체 경로 중 하나라도 범위 밖이면 scoped 거절이고,64개 초과·불확정 selector는 전체 unknown이다.64/65 경계2개는 after-only guard이며 before red로 세지 않았다.
+- **capture 경고:** 성공 응답의 `gaps_scope=cumulative_spool_history`만 과거 이력으로 구분한다. 현재 pending·quarantine·gap/expired/discarded 상태·실제 전송 실패와 scope 없는 gaps는 기존 degraded 경계를 유지한다. 실제 Store capture·receipt cache 만료·durable spool과 두 실패 대조군을 별도 source/설치에서 검증했다. 큐·history·receipt를 초기화하지 않았다.
+
+현재 source와 설치의 각 setup·call·teardown이 모두 pass였으며 canonical aggregate의 정확 SHA/source·별도 wheel·runtime·cleanup 검사를 통과했다. 공개 wheel387300bytes의 SHA256은 `9b24604058072a42c365c77a33f577bcfd8ec991f8056ef8656d850d8aac4d3e`, sdist3522291bytes는 `7fd113254da12335806b35d27cb983e0225f2c132095d6ceecffa8601867cac0`이다.
+
+경고는 `agents-memory` 자동 hook의 진단이지 Agent Flow 전체 lifecycle 장애 증거가 아니다. 자동 hook의 project 범위와 명시 MCP의 credential/binding은 별개다. 정적 설치 receipt·기존 body-free spool metadata로 프로젝트와 누적 이력을 대조했지만 과거 스크린샷 각 호출의 인과를 관측했다고 쓰지 않는다. 이미 설치/로드된 hook·native trust·guard·settings·공유 session은 변경하지 않았으므로 이 CI를 현재 live pane 경고가 사라진 증거로 확대하지 않는다.
+
+증거는 현재 run의 `context/actions-a33615c-warning-health-green/observed-success-summary.json`, `r24-r27-qualified-before-after-phases.json`, `r24-r27-before-evidence-qualification-correction.json`, `user-warning-launcher-static-investigation.json`에 보존했다. 실제 검증은 GitHub Actions 병렬만 사용했다. 후속 file-effect observer 조사와 방어는 다음 R28 절을 따른다. fresh whole-source canonical12review·CI-only QA·정상 scoped publication은 아직 완료가 아니다. provider fixture·Linux engineering runtime을 native 보호·운영 배포·인간 gold·실제1–2주 trial·merge/release로 바꾸지 않으며 원래18개 완료0을 유지한다.
+
+
+### R28: 파일 효과 전 daemon-observed quiescence
+
+첫 owned engineering 조사 `b4dbee2` / [Actions39121377811](https://github.com/chonamdoo/agents-memory/actions/runs/39121377811)는 남은 subject의 observer 중단을 비성공으로 보존했다. 이 결과만으로 출력 무결성까지 증명하지 않았다. 후속 `6263558f1eb6f53946da4302146fdf6213e40a60` / [Actions39122520460](https://github.com/chonamdoo/agents-memory/actions/runs/39122520460)는 실제 별도 설치 wheel의 파일 효과가 잘못된 내용인데도 oracle pass가 되는 결함을 관측했다. 해당 runtime case의 setup·teardown은 pass이고 call은 fail이었다. 이는 소유 Linux fixture의 verifier integrity 결함이며 native/운영 침해 증거가 아니다.
+
+공격 실험을 확장하거나 provider의 거절을 다른 model/설정으로 우회하지 않았다. 완료한 실험의 원본 증거는 유지하고 현재 회귀는 간섭을 하지 않는 benign surviving child로 바꿨다. 제품은 파일 읽기 전에 daemon으로 exact owned container를 freeze하고 bounded numeric UID/PID/state inventory를 확인한다. live nonroot subject, duplicate identity·불완전/불명 inventory, watchdog 부재·중복과 freeze/unfreeze 실패는 file observer 전에 거절한다. zombie만 남은 경우와 정상 private `0600` file·expected nonzero exit는 허용한다. PID 목록을 subject와 같은 권한의 in-container probe로 읽는 방식을 신뢰 경계로 삼지 않는다.
+
+| source / Actions | source pass / fail | 별도 설치 pass / fail | 실제 Docker pass / fail | 판정 |
+|---|---:|---:|---:|---|
+| `6263558` / [39122520460](https://github.com/chonamdoo/agents-memory/actions/runs/39122520460) |3182 /0|796 /0|14 /1|실제 잘못된 file-effect oracle pass. 전체 CI 실패, owned cleanup 성공 |
+| `65bb127` / [39136163814](https://github.com/chonamdoo/agents-memory/actions/runs/39136163814) |3182 /0|796 /0|15 /0|benign residual subject를 frozen daemon inventory로 발견, observer 시작0·file-effect 거절·oracle false·exact cleanup 성공 |
+
+두 실행 모두 skip/xfail/xpass·collection error0이다. after는 원래14개 Docker scenario와 정상 private-file/nonzero-exit 경로를 유지했고 Mac compatibility36·양쪽 실제 health·전체 평가 소비·owned prerequisite/runtime/schema/process cleanup·lint/build/canonical comments·strict aggregate도 성공했다. before의 완료된 공격 case를 수정 후 다시 실행했다고 주장하지 않으며, 같은 node 이름만으로 두 test body가 같다고 표시하지 않는다. 추가 inventory failure boundary 회귀는 다음 문서 포함 checkpoint에서 별도로 검증한다.
+
+after 공개 wheel387794bytes의 SHA256은 `3c482c7e8464bc05b26e54b1827f75babc6757309cae21dffafcc1ee0c20e373`, sdist3523645bytes는 `106ed3f5ac241f18da5bd3810befcedbde556ba83290ab973f62d0abf44ec485`다. 실제 source/별도 설치의 각 setup·call·teardown은 전부 pass였다. `context/actions-6263558-observer-before/observed-failure-summary.json`과 `actions-65bb127-defensive-quiescence-green/observed-success-summary.json`에 원본 phase·scope·cleanup을 연결했다.
+
+file-effect task가 background descendant를 남기면 이제 runtime unknown이다. 이 호환성 제한과 daemon inventory/freeze 의존을 명시하며 scope를 줄인 weak observer나 권한·UID·image·timeout 변경으로 대체하지 않았다. no-effect task·기존 stop/cleanup 의미는 유지한다. 현재 설치된 native hook·trust·guard·settings·공유 service는 변경하지 않았으며 fresh whole-source 공식 review·CI-only QA와 원래18개 외부 acceptance를 이 runtime 성공으로 완료하지 않는다.
+
