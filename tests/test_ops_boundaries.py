@@ -2149,8 +2149,11 @@ async def test_real_published_backup_retains_committed_effect_and_is_restorable_
 
     with monkeypatch.context() as patcher:
         patcher.setattr(Store, "close", failed_close)
-        with pytest.raises(DomainError) as failed:
-            await backup(settings, root / "operator", archive, recipients, runtime)
+        try:
+            raise RuntimeError("Synthetic prior caller failure is not this backup's primary error")
+        except RuntimeError:
+            with pytest.raises(DomainError) as failed:
+                await backup(settings, root / "operator", archive, recipients, runtime)
     assert failed.value.code == "OPERATIONS_CLOSE_FAILED" and failed.value.effect == EffectState.COMMITTED
     assert failed.value.public()["cleanup"]["complete"] is False
     assert marker not in json.dumps(failed.value.public())
@@ -2163,6 +2166,7 @@ async def test_real_published_backup_retains_committed_effect_and_is_restorable_
     assert restored["effect"] == "committed" and restored["tokens_rotated"] is True
     consumer = Store(settings, DeletionJournal(settings.journal_dir, settings.deployment_id))
     await consumer.open()
+    await consumer.reconcile_journal()
     try:
         recovered_actor = await consumer.authenticate(recovered_token.read_text().strip())
         assert (await consumer.source(recovered_actor, binding.id, captured.source_id)).body == (
@@ -2211,10 +2215,7 @@ async def test_real_restore_primary_failure_and_fence_survive_multiple_private_c
     assert marker not in json.dumps(public)
     assert failed_stores and all(selected.pool is None for selected in failed_stores)
     assert (settings.state_dir / "restore-barrier.json").exists()
-    await store.open()
-    try:
-        with pytest.raises(DomainError) as fenced:
-            await store.authenticate(TOKEN)
-        assert fenced.value.code == "RESTORE_RECOVERY_REQUIRED"
-    finally:
-        await store.close()
+    with pytest.raises(DomainError) as fenced:
+        with ops.authority_lock(settings):
+            pytest.fail("An incomplete restore must not permit normal shared authority entry")
+    assert fenced.value.code == "RESTORE_RECOVERY_REQUIRED"

@@ -706,6 +706,7 @@ async def test_two_stage_context_keeps_global_fact_when_touching_relation_is_out
     assert delivered['refs'] == [global_claim.id]
     assert global_claim.draft.statement in delivered['context']
     assert linked.draft.statement not in delivered['context']
+    assert delivered['health']['ordinary_claims'] == delivered['health']['reusable'] == 1
     matched = await judged_context(company, company.actor, command.model_copy(update={'code_workspace_id': 'workspace_test'}))
     assert set(matched['refs']) == {global_claim.id, linked.id}
     pending = await company.application.context(company.actor, command.model_copy(update={'code_workspace_id': 'workspace_test'}))
@@ -718,6 +719,11 @@ async def test_two_stage_context_keeps_global_fact_when_touching_relation_is_out
                 'reason': 'The old relation input cannot bypass its code revision fence.'}
                 for item in pending['candidate_manifest']],
         ))
+    unrelated = await judged_context(company, company.actor, command)
+    assert unrelated['refs'] == [global_claim.id] and unrelated['health']['withheld'] == 0
+    quarantined = await judged_context(company, company.actor, command.model_copy(update={'code_workspace_id': 'workspace_test'}))
+    assert quarantined['refs'] == [global_claim.id] and quarantined['partial'] is True
+    assert quarantined['health']['withheld'] == 1
 
 
 async def test_quarantined_current_claims_are_partial_and_discoverable_without_exposing_other_snapshots(company):
