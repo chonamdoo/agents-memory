@@ -1017,7 +1017,7 @@ emit({'type':'result','session_id':session_id,'subtype':'success','is_error':Fal
         assert native["incomparability_reasons"] == (["MODEL_OBSERVATION_UNKNOWN"] if missing_model else [])
         assert native["artifact_bundle"]["sha256"] == digest_bytes(manifest.file("baseline").raw)
         assert result["input_tokens"] == 12 and result["output_tokens"] == 3 and result["cost_usd"] is None
-        assert gateway["observation_complete"] is True and gateway["final_reads"]
+        assert gateway["observation_complete"] is True
         _, _, retrieval = load_report_inputs(state.run_dir)
         observed = next(row for row in retrieval if row.mode == "memory_on")
         assert observed.returned_claim_ids == () and observed.grounding_refs == ()

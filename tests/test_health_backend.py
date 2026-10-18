@@ -1177,9 +1177,9 @@ async def test_nested_feedback_on_resolution_reason_rechecks_the_original_live_t
     assert historical['payload'] == event['payload'] and nested_body not in json.dumps(historical)
 
 
-async def test_machine_refresh_capacity_failure_does_not_acquire_operator_close_ownership(company):
+async def test_machine_refresh_failure_does_not_acquire_operator_close_ownership(company, monkeypatch):
     producer, claim, _, ref, first = await terminal_session(company,
-        ['machine-deferred-one', 'machine-deferred-two'], with_source=True)
+        ['terminal-existing-source'], with_source=True)
     source = first['sources'][0]
     await company.store.record(company.actor, HealthAssessmentCommand(
         **mutation(company, 'machine-partial-assessment'), admission_id=first['admission']['id'],
@@ -1187,7 +1187,7 @@ async def test_machine_refresh_capacity_failure_does_not_acquire_operator_close_
         input_sources=first['input_sources'], input_claims=first['input_claims'],
         assessments=[{'claim_ref': {'id': claim.id, 'revision': claim.revision},
             'support': 'supported', 'freshness': 'observed_current', 'relevance': 'related',
-            'reason': 'This captured window supports the claim; missing session origins remain partial.',
+            'reason': 'This complete bounded captured window supports the claim without operator approval.',
             'evidence': [{'source_ref': source['source_ref'], 'byte_start': source['byte_start'],
                 'byte_end': source['byte_end'], 'quote': source['body']}]}]))
     assessed = await terminal_work_row(company, first['pending_id'])
@@ -1199,26 +1199,44 @@ async def test_machine_refresh_capacity_failure_does_not_acquire_operator_close_
         segment_id='segment_deferred_capacity', event_id='deferred_capacity_end', sequence=1, event='end',
         root_run_id='run_deferred_capacity', agent_path='agent_deferred_capacity',
         claim_refs=[{'id': claim.id, 'revision': claim.revision}], coverage='partial'))
-    captured = []
-    for index, origin in enumerate(('machine-deferred-one', 'machine-deferred-two'), 1):
-        operation = await company.store.capture(producer, CaptureCommand(
-            binding_id=company.binding_id, idempotency_key='capture-' + origin, origin_key=origin,
-            snapshot='snapshot_alpha', body='CacheKey has additional bounded evidence.', speaker='human',
-            root_run_id='run_terminal', agent_path='agent_terminal'))
-        captured.append(operation.source_id)
-        if index == 1:
-            deferred = await terminal_work_row(company, first['pending_id'])
-            assert deferred['state'] == 'resolved'
-            assert deferred['payload']['refresh_error_code'] == 'QUEUE_FULL'
-            assert deferred['payload']['disposition'] == {
-                'decision': 'deferred_unknown', 'assessment_complete': False}
-            page = await company.store.inspect(company.actor, company.binding_id, 'health', 'snapshot_alpha')
-            blocker = next(item for item in page['items'] if item['pending_id'] != first['pending_id'])
-            await dispose_work(company, 'machine-deferred-release-capacity', blocker['pending_id'],
-                blocker['health_revision'], 'close_unknown')
+    async def unavailable_refresh(*args):
+        raise DomainError('QUEUE_FULL', 'The bounded refresh cannot acquire capacity')
+
+    # Inject only the refresh failure; public capture, durable disposition and subsequent admission remain real.
+    with monkeypatch.context() as failure:
+        failure.setattr(company.store, '_refresh_session_work', unavailable_refresh)
+        foreign = await company.store.capture(company.actor, CaptureCommand(
+            binding_id=company.binding_id, idempotency_key='machine-refresh-fault',
+            origin_key='terminal-existing-source', body='Independent capture survives a bounded health refresh failure.',
+            speaker='human'))
+    assert (await company.store.source(company.actor, company.binding_id, foreign.source_id)).body == (
+        'Independent capture survives a bounded health refresh failure.')
+    deferred = await terminal_work_row(company, first['pending_id'])
+    assert deferred['state'] == 'resolved'
+    assert deferred['payload']['refresh_error_code'] == 'QUEUE_FULL'
+    assert deferred['payload']['disposition'] == {'decision': 'deferred_unknown', 'assessment_complete': False}
+    extra = await company.store.capture(producer, CaptureCommand(
+        binding_id=company.binding_id, idempotency_key='machine-deferred-extra',
+        origin_key='machine-deferred-extra', snapshot='snapshot_alpha',
+        body='CacheKey has additional bounded evidence.', speaker='human',
+        root_run_id='run_terminal', agent_path='agent_terminal'))
+    checkpoint = SessionObservationCommand(
+        **mutation(company, 'machine-deferred-checkpoint'), stream_id='stream_terminal', segment_id='segment_terminal',
+        event_id='machine_deferred_checkpoint', sequence=3, event='checkpoint', root_run_id='run_terminal',
+        agent_path='agent_terminal', source_refs=[{'id': extra.source_id, 'revision': 1}],
+        claim_refs=[{'id': claim.id, 'revision': claim.revision}], coverage='observed_segment')
+    with pytest.raises(DomainError) as full:
+        await company.store.health(producer, checkpoint)
+    assert full.value.code == 'QUEUE_FULL'
+    assert await terminal_work_row(company, first['pending_id']) == deferred
+    page = await company.store.inspect(company.actor, company.binding_id, 'health', 'snapshot_alpha')
+    blocker = next(item for item in page['items'] if item['pending_id'] != first['pending_id'])
+    await dispose_work(company, 'machine-deferred-release-capacity', blocker['pending_id'],
+        blocker['health_revision'], 'close_unknown')
+    await company.store.health(producer, checkpoint)
     current = await company.store.inspect(company.actor, company.binding_id, ref, 'snapshot_alpha')
     row = await terminal_work_row(company, first['pending_id'])
     assert row['state'] == 'pending' and row['health_revision'] == deferred['health_revision'] + 1
     assert 'disposition' not in row['payload'] and current['admission'] is not None
-    assert set(captured).issubset(item['id'] for item in current['input_sources'])
+    assert extra.source_id in {item['id'] for item in current['input_sources']}
     assert (await health_view(company, claim))['health'] == health_before
