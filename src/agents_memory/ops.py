@@ -304,7 +304,7 @@ class _OperationFinalizationError(DomainError):
         super().__init__(primary.code, primary.message, status=primary.status, effect=primary.effect)
         self.failures = tuple(failures)
 
-    def public(self) -> dict:
+    def public(self) -> dict[str, object]:
         result = super().public()
         result["cleanup"] = {"complete": False, "failures": [
             {"stage": stage, "code": "BACKUP_CLEANUP_FAILED" if stage == "encrypted_staging"

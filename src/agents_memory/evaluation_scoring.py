@@ -44,14 +44,14 @@ CostBasis = Literal["unknown", "native_client_estimate", "frozen_price_estimate"
 
 
 class _Projection(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True, validate_default=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True, validate_default=True, serialize_by_alias=True)
 
     @field_validator("*", mode="before")
     @classmethod
     def _sequences(cls, value: Any) -> Any:
         return tuple(value) if isinstance(value, list) else value
 
-    @field_validator("schema", "resamples", mode="before", check_fields=False)
+    @field_validator("schema_version", "resamples", mode="before", check_fields=False)
     @classmethod
     def _integer_literals(cls, value: Any) -> Any:
         if type(value) is not int:
@@ -109,7 +109,7 @@ class RetrievalCase(_Projection):
 
 
 class ScoringProtocol(_Projection):
-    schema: Literal[1]
+    schema_version: Literal[1] = Field(alias="schema")
     scope: Literal["engineering", "evaluation"]
     manifest_digest: Digest
     source_commit: Annotated[str, Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$", max_length=64)]
@@ -154,7 +154,7 @@ class _Usage(_Projection):
 
 
 class ArmObservation(_Usage):
-    schema: Literal[1]
+    schema_version: Literal[1] = Field(alias="schema")
     manifest_digest: Digest
     pair_id: Identity
     pair_attempt: Annotated[int, Field(ge=0, le=10000)]
@@ -200,7 +200,7 @@ class ArmObservation(_Usage):
 
 
 class RetrievalObservation(_Usage):
-    schema: Literal[1]
+    schema_version: Literal[1] = Field(alias="schema")
     manifest_digest: Digest
     case_id: Identity
     cluster_id: Identity
@@ -639,7 +639,7 @@ class DeliveredClaimJudgment(_Projection):
 
 
 class RetrievalDiagnosticGold(_Projection):
-    schema: Literal[1]
+    schema_version: Literal[1] = Field(alias="schema")
     case_id: Identity
     cluster_id: Identity
     scope: RetrievalDiagnosticScope
@@ -662,7 +662,7 @@ class DeliveredClaimObservation(_Projection):
 
 
 class RetrievalDiagnosticObservation(_Projection):
-    schema: Literal[1]
+    schema_version: Literal[1] = Field(alias="schema")
     scope: RetrievalDiagnosticScope
     retrieval: RetrievalObservation
     candidate_status: Status | None = None

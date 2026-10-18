@@ -1468,13 +1468,15 @@ class Store:
     async def _pending_page(self, connection, clock, binding_id, snapshot, cursor, max_bytes) -> dict:
         if type(cursor) is not int or cursor < 0 or type(max_bytes) is not int or not 256 <= max_bytes <= 4096:
             raise DomainError("PENDING_PAGE_INVALID", "Pending inspection requires a bounded cursor and byte budget")
-        rows = await connection.fetch("""SELECT p.id,p.sequence,p.kind,p.state,p.source_ids,p.claim_ids,p.original_job_id,p.snapshot
+        rows = await connection.fetch("""SELECT p.id,p.sequence,p.kind,p.state,p.source_ids,p.claim_ids,p.original_job_id,p.snapshot,p.health_revision
             FROM am_pending_judgments p WHERE p.binding_id=$1 AND p.state IN ('pending','held')
             AND (p.snapshot IS NULL OR p.snapshot=$2) AND p.sequence>$3
             ORDER BY p.sequence LIMIT 33""", binding_id, snapshot, cursor)
         result = {"kind": "pending", "epoch": clock["epoch"], "items": [], "next_cursor": None, "partial": False}
         for row in rows[:32]:
             item = dict(row)
+            if item["kind"] != "health":
+                item.pop("health_revision")
             item["source_count"], item["claim_count"] = len(item["source_ids"]), len(item["claim_ids"])
             item["source_ids"], item["claim_ids"] = item["source_ids"][:4], item["claim_ids"][:4]
             proposed = {**result, "items": [*result["items"], item], "next_cursor": row["sequence"], "partial": True}
@@ -4279,7 +4281,12 @@ class Store:
                 AND w.state='active' AND w.binding_revision=b.revision""", code_workspace_id, binding_id)
             if registered is None:
                 raise DomainError("HEALTH_WORKSPACE_SCOPE", "The explicit code workspace is no longer registered")
-            producer = await self._credential(connection, registered["producer_credential_id"])
+            try:
+                producer = await self._credential(connection, registered["producer_credential_id"])
+            except DomainError as error:
+                if error.code != "AUTH_DENIED" or error.status != 401:
+                    raise
+                raise DomainError("HEALTH_WORKSPACE_SCOPE", "The registered observation authority changed") from None
             if (producer.role != Role.PRODUCER or producer.generation != registered["producer_generation"]
                     or binding_id not in producer.bindings):
                 raise DomainError("HEALTH_WORKSPACE_SCOPE", "The registered observation authority changed")
@@ -4340,6 +4347,8 @@ class Store:
     async def _enqueue_health(self, connection, binding_id: str, key: str, *, sources=(), claims=(), payload=None) -> str:
         existing = await connection.fetchrow('''SELECT * FROM am_pending_judgments
             WHERE binding_id=$1 AND kind='health' AND health_key=$2''', binding_id, key)
+        if existing is not None and existing['state'] == 'retracted':
+            return existing['id']
         data = payload or {}
         source_ids, claim_ids = sorted(set(sources)), sorted(set(claims))
         snapshot = await self._health_input_snapshot(connection, binding_id, source_ids, claim_ids)
@@ -4475,7 +4484,12 @@ class Store:
                 producer_ids = await connection.fetch('''SELECT producer_credential_id AS id FROM am_code_workspaces
                     WHERE id=$1 AND binding_id=$2''', command.workspace_id, command.binding_id)
             for producer_row in producer_ids:
-                producer = await self._credential(connection, producer_row['id'])
+                try:
+                    producer = await self._credential(connection, producer_row['id'])
+                except DomainError as error:
+                    if error.code != 'AUTH_DENIED' or error.status != 401 or producer_row['id'] == current.credential_id:
+                        raise
+                    continue
                 await self._health_observer(connection, producer, command.binding_id)
         await connection.execute('UPDATE am_operations SET artifact_id=$2 WHERE id=$1', operation['id'], artifact)
         await self._save_receipt(connection, current, command.binding_id, receipt_kind,
@@ -4503,7 +4517,12 @@ class Store:
             command.workspace_id, command.binding_id)
         if workspace is None or workspace['state'] != 'active':
             raise _denied()
-        producer = await self._credential(connection, workspace['producer_credential_id'])
+        try:
+            producer = await self._credential(connection, workspace['producer_credential_id'])
+        except DomainError as error:
+            if error.code != 'AUTH_DENIED' or error.status != 401 or workspace['producer_credential_id'] == actor.credential_id:
+                raise
+            raise _denied() from None
         if (producer.role != Role.PRODUCER or producer.generation != workspace['producer_generation']
             or command.binding_id not in producer.bindings
             or (actor.role == Role.PRODUCER and actor.credential_id != producer.credential_id)):
@@ -4568,7 +4587,12 @@ class Store:
                 JOIN am_code_workspaces w ON w.id=o.workspace_id WHERE o.id=$1 AND o.binding_id=$2''', identifier, binding_id)
             if row is None or row['state'] != 'active' or row['workspace_state'] != 'active' or row['metadata'] is None:
                 raise DomainError('CODE_ANCHOR_INVALID', 'Every required code anchor must remain available')
-            producer = await self._credential(connection, row['producer_credential_id'])
+            try:
+                producer = await self._credential(connection, row['producer_credential_id'])
+            except DomainError as error:
+                if error.code != 'AUTH_DENIED' or error.status != 401:
+                    raise
+                raise DomainError('CODE_ANCHOR_INVALID', 'The registered code authority changed') from None
             revision = await connection.fetchval('SELECT revision FROM am_bindings WHERE id=$1', binding_id)
             if (producer.role != Role.PRODUCER or producer.generation != row['producer_generation']
                 or binding_id not in producer.bindings or row['workspace_revision'] != row['current_workspace_revision']
@@ -5009,7 +5033,12 @@ class Store:
             raise DomainError('HEALTH_STALE', 'The inspected feedback version changed')
         if command.decision == 'accept':
             successor = await self._operation_row(connection, command.binding_id, command.successor_operation_id)
-            principal = await self._credential(connection, successor['credential_id'])
+            try:
+                principal = await self._credential(connection, successor['credential_id'])
+            except DomainError as error:
+                if error.code != 'AUTH_DENIED' or error.status != 401 or successor['credential_id'] == actor.credential_id:
+                    raise
+                raise _denied() from None
             if (command.binding_id not in principal.bindings or principal.role not in {Role.OPERATOR, Role.PRODUCER}
                     or successor['actor_generation'] != principal.generation):
                 raise _denied()

@@ -1,8 +1,8 @@
 """Background Jev judge for explicitly authorized deployments.
 
-The worker judges pending captured sources and cleanup manifests through the same
+The worker judges captured sources, cleanup and explicitly opted-in health manifests through the same
 ``inspect`` → ``record`` validation a coding agent uses over MCP, under its own agent credential.
-It never falls back to another provider: uncertain or failed work stays pending for the agent.
+Failures never trigger a provider fallback or an inferred successful judgment.
 """
 from __future__ import annotations
 
@@ -211,6 +211,7 @@ class JudgeWorker:
         self._paused_revision: int | None = None
         self._policy_revision: int | None = None
         self._skipped: set[tuple] = set()
+        self._health_skipped: dict[tuple, tuple] = {}
         self.counts = WorkerCounts()
         self.phase = "idle"
         self.provider = "agent"
@@ -225,7 +226,7 @@ class JudgeWorker:
             "provider": self.provider, "revision": self.revision, "phase": self.phase,
             "last_error": self.last_error,
             "last_cycle_at": self.last_cycle_at.isoformat() if self.last_cycle_at else None,
-            "escalated_this_process": len(self._skipped),
+            "escalated_this_process": len(self._skipped) + len(self._health_skipped),
             "counts": dict(self.counts.__dict__),
         }
 
@@ -419,28 +420,47 @@ class JudgeWorker:
         return answers
 
     async def _health_item(self, actor, binding_id, snapshot, item, client, state, budget) -> None:
-        budget.windows -= 1
         policy = await self.store.health_policy(actor, binding_id)
         if policy.get("enabled") is not True or policy.get("allow_jev_health") is not True:
             return
         revision = policy["revision"]
-        await self._health_current(actor, binding_id, state, revision)
-        bundle = await self.application.inspect(actor, f"health:item:{item['id']}", binding_id, snapshot)
-        if bundle.get("policy", {}).get("revision") != revision:
+        key = (binding_id, snapshot, item["id"])
+        version = (item["health_revision"], revision, state.revision, self._policy_revision)
+        if self._health_skipped.get(key) == version:
             return
-        inputs = HealthInputs.from_bundle(bundle)
-        payload, questions = inputs.evidence_questions()
-        selections = await self._ask_health(actor, binding_id, client, state, revision, payload, questions)
-        payload, questions = inputs.support_questions(selections)
-        supports = await self._ask_health(actor, binding_id, client, state, revision, payload, questions)
-        command = inputs.command(selections, supports)
-        async with judge_guard(self.settings):
+        try:
             await self._health_current(actor, binding_id, state, revision)
-            await self.application.record(actor, command)
-        self.counts.health_assessments_recorded += 1
+            bundle = await self.application.inspect(actor, f"health:item:{item['id']}", binding_id, snapshot)
+            if bundle.get("policy", {}).get("revision") != revision:
+                return
+            inputs = HealthInputs.from_bundle(bundle)
+            budget.windows -= 1
+            payload, questions = inputs.evidence_questions()
+            selections = await self._ask_health(actor, binding_id, client, state, revision, payload, questions)
+            payload, questions = inputs.support_questions(selections)
+            supports = await self._ask_health(actor, binding_id, client, state, revision, payload, questions)
+            command = inputs.command(selections, supports)
+            async with judge_guard(self.settings):
+                await self._health_current(actor, binding_id, state, revision)
+                await self.application.record(actor, command)
+        except DomainError as error:
+            if error.code in CYCLE_ERRORS:
+                raise
+            self._escalate(key, "health_" + error.code.lower(), health_version=version)
+            self.last_error = "HEALTH_PENDING_REVIEW"
+        except JevFailure as failure:
+            if failure.kind not in {"request", "response", "redirect"}:
+                raise
+            self._escalate(key, "health_jev_" + failure.kind, health_version=version)
+            self.last_error = "HEALTH_PENDING_REVIEW"
+        else:
+            self.counts.health_assessments_recorded += 1
 
-    def _escalate(self, key: tuple, reason: str) -> str:
-        self._skipped.add(key)
+    def _escalate(self, key: tuple, reason: str, *, health_version: tuple | None = None) -> str:
+        if health_version is None:
+            self._skipped.add(key)
+        else:
+            self._health_skipped[key] = health_version
         self.counts.escalated += 1
         logger.info("Jev judge left work for the coding agent: reason=%s", reason)
         return "escalated"

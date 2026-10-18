@@ -1553,7 +1553,9 @@ def _footprint(receipt: dict, event: dict, cwd: Path) -> tuple[str, ...]:
         raise DomainError("HOST_FOOTPRINT_UNSUPPORTED", "Shell, hosted and unknown action footprints are not enforceable")
     paths = []
     field = "notebook_path" if name == "NotebookEdit" else "file_path" if host == "claude" else "path"
-    raw_paths = [inputs.get(field)]
+    raw_paths = inputs["paths"] if host == "omp" and name == "edit" and "paths" in inputs else [inputs.get(field)]
+    if not isinstance(raw_paths, list) or not 1 <= len(raw_paths) <= 64:
+        raise DomainError("HOST_FOOTPRINT_UNKNOWN", "The action does not expose a complete bounded local footprint")
     root = Path(receipt["project_root"])
     for raw in raw_paths:
         if not isinstance(raw, str) or not raw or "\x00" in raw or "://" in raw:
@@ -1758,6 +1760,7 @@ def _capture(receipt: dict, event: dict, identity: dict, event_name: str) -> dic
         return {
             **accepted, **result,
             **delivery,
+            "gaps_scope": "cumulative_spool_history",
             "candidate_ready": "not_claimed",
             "capture_key": command.idempotency_key,
             "identity": "native_event" if identity["native_turn"] else "hook_instance_only",
@@ -1893,7 +1896,7 @@ def _project_hook(event: object) -> dict:
     if "tool_input" in event:
         inputs = event["tool_input"]
         projected["tool_input"] = {
-            key: inputs[key] for key in ("file_path", "path", "notebook_path") if key in inputs
+            key: inputs[key] for key in ("file_path", "path", "notebook_path", "paths") if key in inputs
         } if isinstance(inputs, dict) else inputs
     try:
         raw = _json(projected).encode("utf-8")
@@ -2086,7 +2089,11 @@ def handle_hook(receipt_path: Path, event: dict) -> dict:
             else:
                 result = _native_result(host, event_name, code="HOST_EVENT_UNSUPPORTED", strict=strict)
             capture = result.get("capture")
-            if isinstance(capture, dict) and (capture.get("state") == "gap" or capture.get("pending") or capture.get("quarantined") or capture.get("errors") or capture.get("gaps")):
+            if isinstance(capture, dict) and (
+                capture.get("state") in {"gap", "expired", "discarded", "quarantined"}
+                or capture.get("pending") or capture.get("quarantined") or capture.get("errors")
+                or (capture.get("gaps") and capture.get("gaps_scope") != "cumulative_spool_history")
+            ):
                 code = capture.get("code") or "HOST_CAPTURE_DEGRADED"
                 state["gaps"][code] = state["gaps"].get(code, 0) + 1
                 if result["state"] == "ok":

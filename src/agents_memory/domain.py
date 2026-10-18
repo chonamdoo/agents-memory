@@ -67,7 +67,7 @@ class DomainError(Exception):
         self.status = status
         self.effect = effect
 
-    def public(self) -> dict[str, str]:
+    def public(self) -> dict[str, object]:
         return {"code": self.code, "message": self.message, "effect": self.effect.value}
 
 

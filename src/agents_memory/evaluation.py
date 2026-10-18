@@ -1949,8 +1949,7 @@ def _diagnostic_observations_from_records(
                 candidate_manifest_digest=digest_bytes(canonical_bytes(items)) if stage_complete else None,
                 candidates_complete=stage_complete,
             )
-        observations.append(RetrievalDiagnosticObservation(
-            schema=1, scope=scope, retrieval=row, final_claims=final_claims, **candidate))
+        observations.append(RetrievalDiagnosticObservation(schema=1, scope=scope, retrieval=row, final_claims=final_claims, **candidate))
     return observations
 
 

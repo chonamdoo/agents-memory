@@ -155,3 +155,21 @@ def test_generated_hashline_edit_never_delivers_partial_or_inferred_scope(
     assert "Retain the alpha invariant." not in visible
     assert "Retain the destination invariant." not in visible
     assert PRIVATE_BODY.encode() not in wire
+
+
+@pytest.mark.parametrize("path_count", (64, 65))
+def test_generated_hashline_edit_never_truncates_its_complete_path_boundary(
+    tmp_path, node_binary, installation, path_count,
+):
+    project, _, _, _, install = installation
+    receipt = install("omp")
+    paths = ["src/alpha.py", *(f"src/extra-{index}.py" for index in range(path_count - 1))]
+    patch = "*** Begin Patch\n" + "".join(f"[{path}#ABCD]\nREM\n" for path in paths) + "*** End Patch\n"
+    outcome, _ = run_scoped_edit(tmp_path, node_binary, receipt, project, {"input": patch})
+    visible = "\n".join(outcome["notifications"])
+    if path_count == 64:
+        assert "Retain the alpha invariant." in visible
+        assert "HOST_FOOTPRINT_UNKNOWN" not in visible
+    else:
+        assert visible == "HOST_FOOTPRINT_UNKNOWN"
+        assert "Retain the alpha invariant." not in visible

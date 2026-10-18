@@ -5,6 +5,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import secrets
 import socket
 import sys
@@ -1205,8 +1206,18 @@ def main() -> None:
     except DomainError as error:
         print(json.dumps({"error": error.public()}, ensure_ascii=False), file=sys.stderr)
         raise SystemExit(1) from None
-    except (ValidationError, OSError, ValueError):
-        print(json.dumps({"error": {"code": "LOCAL_INPUT_INVALID", "message": "The private input, artifact or output is invalid", "effect": "unknown"}}), file=sys.stderr)
+    except (ValidationError, OSError, ValueError) as error:
+        code = "LOCAL_INPUT_INVALID"
+        message = "The private input, artifact or output is invalid"
+        if args.command == "evaluation" or (args.command == "health" and args.health_action == "apply-evaluation"):
+            from .evaluation import EvaluationError
+
+            if isinstance(error, EvaluationError):
+                candidate = str(error)
+                if re.fullmatch(r"[A-Z0-9_]{1,128}", candidate):
+                    code = candidate
+                    message = "The evaluation operation failed; reconcile its durable state"
+        print(json.dumps({"error": {"code": code, "message": message, "effect": "unknown"}}), file=sys.stderr)
         raise SystemExit(1) from None
     except Exception:
         print(json.dumps({"error": {"code": "LOCAL_OPERATION_FAILED", "message": "The authority operation failed; reconcile its durable state", "effect": "unknown"}}), file=sys.stderr)

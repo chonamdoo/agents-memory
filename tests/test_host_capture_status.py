@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
-from test_host_boundaries import native
 from test_host_boundaries import installation as installation
+from test_host_boundaries import native
 from test_spool_boundaries import capture_authority as capture_authority
 
 from agents_memory import hosts
