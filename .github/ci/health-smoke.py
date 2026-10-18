@@ -42,6 +42,8 @@ CHANGED_CASES = CASES[:7] + (
     "grounded_claim_publication", "retracted_session_does_not_block_queued_capture",
     "exact_health_review_reaches_next_judgment",
     "expired_code_observation_recovers_with_history",
+    "authorized_exact_feedback_reaches_real_worker",
+    "withdrawn_source_stops_real_jev_retry",
 )
 
 
@@ -930,6 +932,127 @@ class Smoke:
         self.check(any(item.get("metadata") and item["metadata"]["file_digest"] == digest(self.code.read_bytes())
                        for item in workspace["observations"]), "CURRENT_BYTES_NOT_OBSERVED_AFTER_EXPIRY")
         self.passed("expired_code_observation_recovers_with_history")
+        await self.worker_consumers(rejected["artifact_id"])
+
+    async def worker_consumers(self, review_event_id):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+
+        from agents_memory.application import Application
+        from agents_memory.jev import JevClient
+        from agents_memory.judge import load_state, set_egress_policy, set_jev
+        from agents_memory.judge_worker import JudgeWorker
+
+        self.begin("authorized_exact_feedback_reaches_real_worker")
+        settings = self.settings.model_copy(update={"state_dir": self.root / "owned-worker-state"})
+        settings.state_dir.mkdir(mode=0o700)
+        original_provider = load_state(self.settings).provider
+        owner = self.principals["operator"]
+        await set_egress_policy(settings, self.store, owner, jev_allowed=True)
+        await set_jev(settings, self.store, owner, "sk-jev-TEST-qwrtyuiopZXCVNMLKJH",
+                      verify=lambda key, model: "jev-1.13.0")
+        policy = await self.store.health_policy(owner, self.binding)
+        await self.apply(self.mutation("health_policy", "owned-worker-health-consent",
+            expected_policy_revision=policy["revision"], enabled=True, allow_jev_health=True))
+        calls = []
+        retry_source = None
+        loop = asyncio.get_running_loop()
+        smoke = self
+
+        class Peer(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers["Content-Length"])
+                smoke.check(0 < length <= 262144, "WORKER_PROVIDER_INPUT_BOUND")
+                payload = json.loads(self.rfile.read(length))
+                calls.append(payload)
+                retry = any("RetryBoundary" in span["text"] for span in payload["state"].get("spans", []))
+                if retry:
+                    asyncio.run_coroutine_threadsafe(
+                        smoke.store.retract(owner, smoke.binding, retry_source, "owned-worker-retry-withdraw"),
+                        loop,
+                    ).result()
+                    self.send_response(503)
+                    self.send_header("Retry-After", "0")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                state = payload["state"]
+                spans = {span["id"]: span["text"] for span in state.get("spans", [])}
+                advised = any(item.get("review_event_id") == review_event_id
+                              and item.get("decision") == "reject" and item.get("reason")
+                              for item in state.get("health_dispositions", []))
+                answers = {}
+                for key, question in payload["questions"].items():
+                    if question["type"] == "noul":
+                        text = spans.get(key.removeprefix("remember_"), "")
+                        value = (0.5 if advised else 0.95) if "thirty days" in text else (
+                            0.95 if "AuditKey" in text else 0.04
+                        )
+                        answers[key] = {"type": "noul", "noul": value}
+                    else:
+                        chosen = {"kind": "fact", "polarity": "positive", "modality": "asserted"}.get(
+                            key.split("_", 1)[0], next(iter(question["criteria"])),
+                        )
+                        answers[key] = {"type": "choice", "choice": chosen,
+                            "probabilities": {name: float(name == chosen) for name in question["criteria"]}}
+                body = encoded({"model": "jev-1.13.0", "answers": answers})
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        peer = ThreadingHTTPServer(("127.0.0.1", 0), Peer)
+        thread = Thread(target=peer.serve_forever, name="owned-worker-provider")
+        thread.start()
+        self.result["owned_cleanup"]["worker_provider_listener"] = "running"
+        try:
+            application = Application(settings, self.store)
+            worker = JudgeWorker(settings, self.store, application, client_factory=lambda key, model: JevClient(
+                key, model, base_url=f"http://127.0.0.1:{peer.server_port}",
+            ))
+            application.judge = worker
+            disputed = await self.capture("real-worker-disputed", "CacheKey keeps offline responses for thirty days.")
+            independent = await self.capture("real-worker-independent", "AuditKey has a separate retention owner.")
+            await worker.cycle()
+            async with self.store.pool.acquire() as connection:
+                self.check(await connection.fetchval(
+                    "SELECT count(*) FROM am_source_selections WHERE source_id=$1", disputed["source_id"],
+                ) == 0, "WORKER_REPEATED_DISPUTED_MEMORY")
+                self.check(await connection.fetchval(
+                    "SELECT label FROM am_source_selections WHERE source_id=$1", independent["source_id"],
+                ) == "remember", "WORKER_BLACKLISTED_INDEPENDENT_SOURCE")
+            self.passed("authorized_exact_feedback_reaches_real_worker")
+            self.begin("withdrawn_source_stops_real_jev_retry")
+            withdrawn = await self.capture("real-worker-retry", "RetryBoundary is an owned synthetic source.")
+            retry_source = withdrawn["source_id"]
+            await worker.cycle()
+            retry_calls = [call for call in calls if any(
+                "RetryBoundary" in span["text"] for span in call["state"].get("spans", []))]
+            self.check(len(retry_calls) == 1, "WITHDRAWN_SOURCE_REDISCLOSED_TO_PROVIDER")
+            async with self.store.pool.acquire() as connection:
+                self.check(await connection.fetchval(
+                    "SELECT count(*) FROM am_source_selections WHERE source_id=$1", retry_source,
+                ) == 0, "WITHDRAWN_SOURCE_PUBLISHED")
+                self.check(await connection.fetchval(
+                    "SELECT state FROM am_sources WHERE id=$1", retry_source,
+                ) == "retracted", "OWNED_WITHDRAWAL_NOT_COMMITTED")
+            self.check(load_state(self.settings).provider == original_provider,
+                       "RUNNING_SERVICE_PROVIDER_CHANGED")
+            self.evidence("real-worker-provider-wire", {"requests": calls})
+            self.result["worker_transport"] = {
+                "provider": "owned_loopback_http_fixture", "real_provider_or_native_approval": False,
+                "requests": len(calls), "withdrawn_source_requests": len(retry_calls),
+                "running_service_provider_unchanged": True,
+            }
+            self.passed("withdrawn_source_stops_real_jev_retry")
+        finally:
+            await asyncio.to_thread(peer.shutdown)
+            peer.server_close()
+            await asyncio.to_thread(thread.join)
+            self.check(not thread.is_alive(), "OWNED_WORKER_PROVIDER_NOT_JOINED")
+            self.result["owned_cleanup"]["worker_provider_listener"] = "stopped"
+
 
     async def cleanup(self):
         cleanup = self.result["owned_cleanup"]

@@ -90,6 +90,8 @@ CHANGED_HEALTH_CASES = {
     "grounded_claim_publication", "retracted_session_does_not_block_queued_capture",
     "exact_health_review_reaches_next_judgment",
     "expired_code_observation_recovers_with_history",
+    "authorized_exact_feedback_reaches_real_worker",
+    "withdrawn_source_stops_real_jev_retry",
 }
 EVALUATION_OUTCOMES = {
     "producer_http_native_mcp_preflight": True, "separate_preflight_binding": True,
@@ -316,6 +318,15 @@ def health_evidence(value: dict, tested_sha: str, source: str, surface: str,
             and cleanup.get("service_exit_clean") is True
             and type(cleanup.get("service_exit_code")) is int and cleanup["service_exit_code"] == 0
             and cleanup.get("service_forced", False) is False, "Health exact owned cleanup incomplete")
+    if changes_only:
+        require(cleanup.get("worker_provider_listener") == "stopped",
+                "Changed worker's exact owned HTTP provider was not joined and closed")
+        worker = health.get("worker_transport")
+        require(isinstance(worker, dict) and worker.get("provider") == "owned_loopback_http_fixture"
+                and worker.get("real_provider_or_native_approval") is False
+                and worker.get("withdrawn_source_requests") == 1
+                and worker.get("running_service_provider_unchanged") is True,
+                "Actual changed worker consumer proof is missing or overclaims native/provider approval")
     return owner
 
 
