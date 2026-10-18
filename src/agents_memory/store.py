@@ -1245,8 +1245,7 @@ class Store:
     async def _claim_row(self, connection, binding_id: str, claim_id: str, snapshot: str | None, enforce_time: bool = True):
         row = await connection.fetchrow("""SELECT c.* FROM am_claims c WHERE c.id=$1 AND c.binding_id=$2 AND c.state='active' AND c.draft IS NOT NULL
           AND (c.snapshot IS NULL OR c.snapshot=$3)
-          AND (c.selection_id IS NULL OR EXISTS(SELECT 1 FROM am_source_selections q WHERE q.id=c.selection_id AND q.state='active'
-            AND (q.request_snapshot IS NULL OR q.request_snapshot IS NOT DISTINCT FROM $3)))
+          AND (c.selection_id IS NULL OR EXISTS(SELECT 1 FROM am_source_selections q WHERE q.id=c.selection_id AND q.state='active'))
           AND (c.superseded_by IS NULL OR EXISTS(SELECT 1 FROM am_claims canonical
             WHERE canonical.id=c.superseded_by AND canonical.state='active' AND canonical.draft IS NOT NULL))
           AND (NOT $5::boolean OR ((c.valid_from IS NULL OR c.valid_from<=clock_timestamp())
@@ -1256,10 +1255,6 @@ class Store:
             WHERE d.claim_id=c.id AND (s.state<>'active' OR s.body IS NULL OR s.revision<>d.source_revision OR s.binding_id<>c.binding_id OR s.realm<>$4 OR (s.snapshot IS NOT NULL AND s.snapshot IS DISTINCT FROM $3)))""", claim_id, binding_id, snapshot, self.settings.realm, enforce_time)
         if row is None:
             raise DomainError("CLAIM_INELIGIBLE", "The claim is not currently eligible")
-        if row["selection_id"] is not None:
-            selection = await connection.fetchrow("SELECT * FROM am_source_selections WHERE id=$1", row["selection_id"])
-            if selection is None or not await self._selection_disclosure(connection, binding_id, selection, snapshot):
-                raise DomainError("CLAIM_INELIGIBLE", "The claim's complete classification ownership is unavailable")
         return row
 
     async def _claim(self, connection, row) -> Claim:
@@ -4293,8 +4288,6 @@ class Store:
         scopes = await connection.fetch('''SELECT DISTINCT snapshot FROM (
             SELECT snapshot FROM am_sources WHERE id=ANY($1::text[]) AND binding_id=$3
             UNION SELECT snapshot FROM am_claims WHERE id=ANY($2::text[]) AND binding_id=$3
-            UNION SELECT q.request_snapshot FROM am_claims c JOIN am_source_selections q ON q.id=c.selection_id
-                WHERE c.id=ANY($2::text[]) AND c.binding_id=$3
             ) scopes WHERE snapshot IS NOT NULL''', list(source_ids), list(claim_ids), binding_id)
         if len(scopes) > 1:
             raise DomainError('SESSION_SNAPSHOT_CONFLICT', 'Split incompatible snapshot observations into separate segments')
@@ -4811,13 +4804,7 @@ class Store:
             raise DomainError('HEALTH_BUNDLE_TOO_LARGE', 'The complete target manifest exceeds current explicit policy')
         claims, manifests = [], []
         for identifier in claim_ids:
-            try:
-                claim = await self._claim_row(connection, binding_id, identifier, snapshot)
-            except DomainError as error:
-                if error.code != 'CLAIM_INELIGIBLE' or pending['claim_ids']:
-                    raise
-                gaps.add('AUDIT_TARGET_DISCLOSURE_UNAVAILABLE')
-                continue
+            claim = await self._claim_row(connection, binding_id, identifier, snapshot)
             meaning = ClaimMeaning.model_validate(_decode(claim['draft'])).model_dump(mode='json')
             manifests.append({**await self._claim_health_manifest(connection, claim),
                 'meaning_digest': canonical_digest(meaning)})

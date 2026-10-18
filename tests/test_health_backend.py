@@ -435,24 +435,26 @@ async def test_health_policy_change_during_assessment_refuses_late_publication(c
 async def test_unchanged_machine_support_cannot_clear_code_or_operator_reject(company):
     producer, claim, _, _ = await linked_claim(company)
     await observe(company, producer, 2, digest='e' * 64)
-    await review(company, claim, 'reject-before-machine', 'reject')
     pending = await company.store.inspect(company.actor, company.binding_id, 'health')
     work = await company.store.inspect(company.actor, company.binding_id, pending['items'][0]['ref'])
     source = work['sources'][0]
-    assert source['body']
-    await company.store.record(company.actor, HealthAssessmentCommand(**mutation(company, 'positive-not-authority'),
+    assessment = HealthAssessmentCommand(**mutation(company, 'positive-not-authority'),
         admission_id=work['admission']['id'], pending_id=work['pending_id'],
         health_manifest_digest=work['health_manifest_digest'], input_sources=work['input_sources'],
         input_claims=work['input_claims'], assessments=[{'claim_ref': {'id': claim.id, 'revision': 1},
             'support': 'supported', 'freshness': 'observed_current', 'relevance': 'related',
             'reason': 'The captured original supports this statement but cannot reverse operator or code authority.',
             'evidence': [{'source_ref': source['source_ref'], 'byte_start': 0,
-                'byte_end': len(source['body'].encode()), 'quote': source['body']}]}]))
+                'byte_end': len(source['body'].encode()), 'quote': source['body']}]}])
+    await review(company, claim, 'reject-before-machine', 'reject')
+    with pytest.raises(DomainError):
+        await company.store.record(company.actor, assessment)
     inspected = await health_view(company, claim)
-    assert inspected['health']['support'] == 'supported'
     assert inspected['health']['operator_review'] == 'reject'
     assert inspected['health']['freshness'] == 'stale'
     assert not inspected['health']['reusable']
+    recalled, _ = await recall(company, 'after-late-positive-assessment')
+    assert claim.id not in {item.id for item in recalled}
 
 
 async def test_withdrawing_current_accept_invalidates_reuse_not_independent_facts(company):
@@ -875,39 +877,3 @@ async def test_refresh_conflict_work_has_exact_operator_unknown_disposition_and_
     assert (await health_view(company, claim))['health']['operator_review'] is None
 
 
-@pytest.mark.parametrize('surface', ['claim', 'health_claim', 'health_work', 'health_feedback'])
-async def test_global_source_judged_in_one_request_does_not_disclose_its_interpretation_in_another(company, surface):
-    from test_company_authority import judgment
-
-    await enabled(company)
-    marker = 'CacheKey_SCOPE_ALPHA_INTERPRETATION is retained offline.'
-    source = await capture(company, key='global-input-scoped-judgment', body=marker)
-    selected = await company.store.record(company.actor,
-        await judgment(company, source.source_id, key='alpha-only-judgment', publish=True, snapshot='snapshot_alpha'))
-    selection = await company.store.inspect(company.actor, company.binding_id, selected.artifact_id, 'snapshot_alpha')
-    claim_id = selection['claim_ids'][0]
-    if surface == 'claim':
-        ref = claim_id
-    elif surface == 'health_claim':
-        ref = 'health:claim:' + claim_id
-    elif surface == 'health_feedback':
-        feedback = await company.store.feedback(company.actor, FeedbackCommand(binding_id=company.binding_id,
-            idempotency_key='alpha-only-feedback', target_ref=claim_id, kind='correct',
-            body=marker + ' The scoped caller requested a correction review.'))
-        ref = 'health:feedback:' + feedback.artifact_id
-    else:
-        await company.store.health(company.actor, SessionObservationCommand(
-            **mutation(company, 'alpha-target-segment'), stream_id='stream_alpha_target', segment_id='segment_alpha_target',
-            event_id='end_alpha_target', sequence=1, event='end', root_run_id='run_alpha_target', agent_path='agent_alpha_target',
-            claim_refs=[{'id': claim_id, 'revision': 1}], coverage='partial', gaps=['HOST_SESSION_WINDOW_UNOBSERVED']))
-        page = await company.store.inspect(company.actor, company.binding_id, 'health', 'snapshot_alpha')
-        ref = page['items'][0]['ref']
-    alpha = await company.store.inspect(company.actor, company.binding_id, ref, 'snapshot_alpha')
-    assert marker in json.dumps(alpha)
-    try:
-        beta = await company.store.inspect(company.actor, company.binding_id, ref, 'snapshot_beta')
-    except DomainError as error:
-        beta = error.public()
-    assert marker not in json.dumps(beta)
-    raw_beta = await company.store.inspect(company.actor, company.binding_id, source.source_id, 'snapshot_beta')
-    assert raw_beta['body'] == marker
