@@ -495,6 +495,12 @@ selected_invocation = next(item for item in manifest.workload['invocations'] if 
 channel = manifest.config['preflight_gateway' if selected_invocation['phase'] == 'preflight' else 'gateway']
 mapping = next(item for item in manifest.document('native_tool_mapping')['routes'] if item['route_ref'] == channel['route_ref'])
 event_mode = {event_mode!r}
+if event_mode in ('model-reroute', 'model-roundtrip'):
+    emit({{'method': 'model/rerouted', 'params': {{'threadId': 'engineering-thread', 'turnId': 'engineering-turn',
+          'fromModel': 'engineering-peer-model', 'toModel': 'other-model', 'reason': 'highRiskCyberActivity'}}}})
+    if event_mode == 'model-roundtrip':
+        emit({{'method': 'model/rerouted', 'params': {{'threadId': 'engineering-thread', 'turnId': 'engineering-turn',
+              'fromModel': 'other-model', 'toModel': 'engineering-peer-model', 'reason': 'highRiskCyberActivity'}}}})
 action_count = 0
 async def exercise():
     params = StdioServerParameters(command=sys.executable, args=[
@@ -638,6 +644,31 @@ async def test_actual_controller_producer_native_peer_mcp_preflight_is_not_funct
         else:
             assert not result["comparable"]
             assert "PRODUCER_NATIVE_MCP_PIPELINE_INCOMPLETE" in result["comparability_reasons"]
+
+
+@pytest.mark.parametrize("event_mode", ["model-reroute", "model-roundtrip"])
+async def test_actual_controller_does_not_stamp_frozen_identity_after_model_reroute(authority, tmp_path, event_mode):
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        path, run_dir = tmp_path / "manifest.json", tmp_path / "run"
+        peer = _controller_peer(path, run_dir, True, event_mode=event_mode)
+        path, _, _ = fixture_inputs(tmp_path, repeats=1, preflight_gateway=_actual_preflight_channel(agent, producer), peer=peer)
+        manifest = load_manifest(path)
+        state = prepare_run(manifest, run_dir)
+        invocation = manifest.workload["invocations"][0]
+        result = await asyncio.to_thread(evaluation._run_one, manifest, state.run_dir, invocation, enabled=True)
+        assert result["status"] == "completed"
+        assert result["comparable"] is False
+        assert result["native_identity_observed"] is False
+        assert result["native_identity_digest"] is None
+        prefix = state.run_dir / "ledger" / digest_bytes(invocation["invocation_id"].encode())
+        native = json.loads(prefix.with_suffix(".native.json").read_bytes())
+        gateway = json.loads(prefix.with_suffix(".gateway.json").read_bytes())
+        assert native["status"] == "completed" and native["comparable"] is False
+        assert native["identity"]["resolved"]["model"] == "engineering-peer-model"
+        assert native["artifact_bundle"]["sha256"] == digest_bytes(manifest.file("baseline").raw)
+        assert gateway["observation_complete"] is True and gateway["final_reads"]
+        assert result["input_tokens"] == 12 and result["output_tokens"] == 3
+        assert result["cost_usd"] is None
 
 
 @pytest.mark.parametrize("event_mode", ["missing", "arguments", "result", "server", "duplicate", "foreign-meta", "call-id-meta"])
