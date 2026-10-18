@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
-import httpx
 import pytest
 from test_edge_boundaries import AGENT_TOKEN, request, tool
 from test_evaluation_gateway import actual_upstream
@@ -174,16 +175,21 @@ async def test_actual_uvicorn_readiness_contains_unexpected_private_judge_state_
     def denied_state(settings):
         raise PermissionError(marker)
 
+    def fetch(url):
+        try:
+            with urlopen(Request(url, headers={"Authorization": "Bearer " + TOKEN}), timeout=5) as response:
+                return response.status, response.read()
+        except HTTPError as error:
+            return error.code, error.read()
+
     async with actual_upstream(authority, tmp_path) as (agent, _):
         monkeypatch.setattr(edge_module, "load_state", denied_state)
         with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
-            async with httpx.AsyncClient() as client:
-                response = await client.get(agent.endpoint.base_url + "/readyz",
-                    headers={"Authorization": "Bearer " + TOKEN})
-        assert response.status_code == 503
-        ready = response.json()
+            status, raw = await asyncio.to_thread(fetch, agent.endpoint.base_url + "/readyz")
+        assert status == 503
+        ready = json.loads(raw)
         assert ready["ready"] is False and ready["db_ready"] is True
         assert ready["judgment"] == "unavailable" and ready["server_inference"] == "unknown"
         assert ready["judge_error"] == "JUDGE_STATE_INVALID"
-    assert marker not in response.text and marker not in caplog.text
+    assert marker not in raw.decode() and marker not in caplog.text
     assert "Traceback" not in caplog.text

@@ -10,6 +10,7 @@ from test_readiness import endpoint as endpoint
 from test_remote_client import tls_endpoint as tls_endpoint
 
 from agents_memory import hosts
+from agents_memory import recovery as recovery_module
 from agents_memory.config import Settings
 from agents_memory.domain import CaptureCommand, DomainError
 from agents_memory.private_io import private_write
@@ -94,6 +95,116 @@ async def test_preserved_capture_flushes_after_db_recovers_without_host_event(in
         assert state["posts"] == [("/api/capture", command.model_dump(mode="json"))]
     finally:
         await worker.stop()
+
+
+@pytest.mark.parametrize("stage", ["readiness", "workspace"])
+async def test_owner_loop_recovers_after_unexpected_failure_without_new_host_event(installed, monkeypatch, stage):
+    settings, _, receipt, command, state = installed
+    state.update(ready=True, db_ready=True)
+    store = ProbeStore(settings, state)
+    worker = SpoolRecovery(settings, store, interval=0.01)
+    failed = threading.Event()
+    next_probe, release = asyncio.Event(), asyncio.Event()
+    readiness, observation = store.readiness, recovery_module.observe_health_workspace
+    marker = "SYNTHETIC_PRIVATE_RECOVERY_PATH_DSN"
+
+    async def controlled_readiness():
+        if failed.is_set():
+            next_probe.set()
+            await release.wait()
+        elif stage == "readiness":
+            failed.set()
+            raise RuntimeError(marker)
+        return await readiness()
+
+    def controlled_observation(*args, **kwargs):
+        if not failed.is_set():
+            failed.set()
+            raise RuntimeError(marker)
+        return observation(*args, **kwargs)
+
+    monkeypatch.setattr(store, "readiness", controlled_readiness)
+    if stage == "workspace":
+        monkeypatch.setattr(recovery_module, "observe_health_workspace", controlled_observation)
+    worker.start()
+    try:
+        await asyncio.wait_for(next_probe.wait(), 5)
+        degraded = worker.status
+        assert degraded["state"] == "delivery_blocked" and degraded["failures"] == 1
+        assert degraded["last_error"] == "HOST_RECOVERY_UNAVAILABLE" and marker not in str(degraded)
+        assert state["posts"] == [] and status(settings, receipt)["pending"] == 1
+        release.set()
+        await eventually(lambda: worker.status["committed"] == 1)
+        await worker.stop()
+        assert state["posts"] == [("/api/capture", command.model_dump(mode="json"))]
+        assert status(settings, receipt)["pending"] == 0
+    finally:
+        release.set()
+        await asyncio.gather(worker.stop(), return_exceptions=True)
+
+
+async def test_unexpected_failure_after_committed_cycle_does_not_resend_capture(installed, monkeypatch):
+    settings, _, receipt, command, state = installed
+    state.update(ready=True, db_ready=True)
+    store = ProbeStore(settings, state)
+    worker = SpoolRecovery(settings, store, interval=0.01)
+    cycle = worker.cycle
+    failed = threading.Event()
+
+    def committed_then_failed():
+        cycle()
+        if not failed.is_set():
+            failed.set()
+            raise RuntimeError("SYNTHETIC_PRIVATE_POST_COMMIT_RECOVERY_PATH")
+
+    monkeypatch.setattr(worker, "cycle", committed_then_failed)
+    worker.start()
+    try:
+        await eventually(lambda: store.probes >= 2 and worker.status["cycles"] >= 2)
+        await worker.stop()
+        assert worker.status["failures"] == 1
+        assert state["posts"] == [("/api/capture", command.model_dump(mode="json"))]
+        assert status(settings, receipt)["pending"] == 0
+    finally:
+        await asyncio.gather(worker.stop(), return_exceptions=True)
+
+
+async def test_cancelled_stop_waiter_retains_join_ownership_of_active_recovery_thread(installed, monkeypatch):
+    settings, _, receipt, _, state = installed
+    state.update(ready=True, db_ready=True)
+    worker = SpoolRecovery(settings, ProbeStore(settings, state), interval=0.01)
+    entered, release = threading.Event(), threading.Event()
+    observation = recovery_module.observe_health_workspace
+    stopping = joining = None
+
+    def held_observation(*args, **kwargs):
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("The regression must release its owned delivery thread")
+        return observation(*args, **kwargs)
+
+    monkeypatch.setattr(recovery_module, "observe_health_workspace", held_observation)
+    worker.start()
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        stopping = asyncio.create_task(worker.stop())
+        await asyncio.sleep(0)
+        stopping.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stopping
+        joining = asyncio.create_task(worker.wait_closed())
+        await asyncio.sleep(0)
+        assert not joining.done()
+        assert worker.status["state"] != "stopped"
+        release.set()
+        await asyncio.wait_for(joining, 5)
+        await worker.stop()
+        assert worker.status["state"] == "stopped"
+        assert state["posts"] == [] and status(settings, receipt)["pending"] == 1
+    finally:
+        release.set()
+        await asyncio.gather(*(task for task in (stopping, joining) if task is not None),
+            worker.stop(), return_exceptions=True)
 
 
 @pytest.mark.parametrize("installed", ["claude"], indirect=True)

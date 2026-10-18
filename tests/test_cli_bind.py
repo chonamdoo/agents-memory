@@ -9,6 +9,7 @@ import sys
 import urllib.error
 import urllib.request
 
+import pytest
 from test_store_authority import authority as authority
 
 from agents_memory.config import Settings
@@ -39,7 +40,8 @@ def test_occupied_listen_address_refuses_before_database_or_journal_work(tmp_pat
         assert occupied.getsockname()[1] == settings.port
 
 
-async def test_prebound_cli_serves_actual_database_readiness_and_releases_listener(authority, tmp_path):
+@pytest.mark.parametrize("shutdown_signal", [signal.SIGTERM, signal.SIGINT])
+async def test_prebound_cli_serves_actual_database_readiness_and_releases_listener(authority, tmp_path, shutdown_signal):
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
@@ -71,12 +73,17 @@ async def test_prebound_cli_serves_actual_database_readiness_and_releases_listen
         assert result["realm"] == settings.realm
     finally:
         if process.poll() is None:
-            process.send_signal(signal.SIGTERM)
+            process.send_signal(shutdown_signal)
         try:
-            await asyncio.to_thread(process.communicate, timeout=10)
+            _, stderr = await asyncio.to_thread(process.communicate, timeout=10)
         except subprocess.TimeoutExpired:
             process.kill()
-            await asyncio.to_thread(process.communicate, timeout=5)
+            _, stderr = await asyncio.to_thread(process.communicate, timeout=5)
     with socket.socket() as released:
         released.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         released.bind(("127.0.0.1", port))
+    if shutdown_signal == signal.SIGINT:
+        assert process.returncode == 130
+        assert b"Traceback" not in stderr
+        error = json.loads(stderr.decode().splitlines()[-1])["error"]
+        assert error["code"] == "COMMAND_INTERRUPTED" and error["effect"] == "unknown"
