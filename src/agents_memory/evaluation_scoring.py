@@ -182,11 +182,11 @@ class ArmObservation(_Usage):
     cpu_seconds: Measurement | None = None
     peak_rss_bytes: Count | None = None
     disk_bytes: Count | None = None
-    evidence_refs: dict[Identity, Digest] = Field(default_factory=dict, max_length=64)
+    evidence_refs: Mapping[Identity, Digest] = Field(default_factory=dict, max_length=64)
 
     @field_validator("evidence_refs")
     @classmethod
-    def _freeze_evidence(cls, value: dict[str, str]) -> Any:
+    def _freeze_evidence(cls, value: Mapping[str, str]) -> Mapping[str, str]:
         return MappingProxyType(value)
 
     @field_serializer("evidence_refs")

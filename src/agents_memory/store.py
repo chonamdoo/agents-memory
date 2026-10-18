@@ -5056,7 +5056,12 @@ class Store:
             ORDER BY id""", binding_id, current.role.value, current.credential_id, current.generation)
         workspaces = []
         for row in rows:
-            producer = await self._credential(connection, row['producer_credential_id'])
+            try:
+                producer = await self._credential(connection, row['producer_credential_id'])
+            except DomainError as error:
+                if error.code != 'AUTH_DENIED' or error.status != 401:
+                    raise
+                continue
             if producer.role != Role.PRODUCER or producer.generation != row['producer_generation'] or binding_id not in producer.bindings:
                 continue
             linked = await connection.fetch("""SELECT DISTINCT o.relative_path,o.symbol_name FROM am_code_links d
