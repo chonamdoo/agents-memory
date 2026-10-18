@@ -4355,8 +4355,8 @@ class Store:
             FeedbackResolutionCommand,
             HealthAssessmentCommand,
             HealthPolicyCommand,
-            HealthWorkspaceCommand,
             HealthWorkDispositionCommand,
+            HealthWorkspaceCommand,
             MemoryReviewCommand,
             SessionObservationCommand,
         )

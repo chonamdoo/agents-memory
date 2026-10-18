@@ -877,3 +877,24 @@ async def test_refresh_conflict_work_has_exact_operator_unknown_disposition_and_
     assert (await health_view(company, claim))['health']['operator_review'] is None
 
 
+@pytest.mark.parametrize('surface', ['denominator', 'operator_accept'])
+async def test_current_health_qualification_excludes_obsolete_policy_but_preserves_independent_claim(company, surface):
+    await enabled(company)
+    _, _, obsolete = await candidate(company, key='health-obsolete-policy')
+    _, _, current = await candidate(company, key='health-current-policy',
+        body='AuditKey has an independent expiry owner.')
+    async with company.store.pool.acquire() as connection:
+        await connection.execute('''UPDATE am_source_selections SET policy_revision=$2
+            WHERE id=(SELECT selection_id FROM am_claims WHERE id=$1)''', obsolete.id, '0' * 64)
+    stats = await company.store.stats(company.actor, company.binding_id)
+    assert stats['coverage']['unclassified_sources'] == 1
+    assert stats['coverage']['incomplete_sources'] == 1
+    if surface == 'denominator':
+        assert stats['health']['ordinary_claims'] == 1
+        assert stats['health']['reusable'] == 1
+    else:
+        with pytest.raises(DomainError):
+            await review(company, obsolete, 'deny-obsolete-policy-accept', 'accept')
+        assert (await health_view(company, obsolete))['health']['operator_review'] is None
+    await review(company, current, 'accept-independent-current-policy', 'accept')
+    assert (await health_view(company, current))['health']['operator_review'] == 'accept'
