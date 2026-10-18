@@ -210,7 +210,7 @@ def _validate_native(manifest, records, invocation, terminal):
              and native["invocation_id"] == invocation["invocation_id"] and native["status"] == "completed"
              and native["comparable"] is True and not native["incomparability_reasons"]
              and native["output_truncated"] is False
-             and controller._native_identity(manifest, native["identity"], invocation["mode"]),
+             and controller._native_identity(manifest, native, invocation["mode"]),
              "EVALUATION_HEALTH_NATIVE_SCOPE_OR_UNKNOWN")
     generation = native["identity"].get("thread_id") or native["identity"].get("session_id")
     _require(isinstance(generation, str) and bool(generation), "EVALUATION_HEALTH_GENERATION_UNKNOWN")

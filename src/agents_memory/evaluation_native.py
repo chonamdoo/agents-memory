@@ -184,6 +184,36 @@ def observe_native_tool_calls(record: dict, *, backend: str, server: str, tools:
     return [call for call in completed.values() if not call["failed"]]
 
 
+def observed_model_identity(record: dict, *, backend: Literal["claude", "codex"]) -> str | None:
+    """Return a single unchanged observed model, otherwise leave its identity unknown."""
+    identity = record.get("identity")
+    if not isinstance(identity, dict):
+        return None
+    resolved = identity if backend == "claude" else identity.get("resolved")
+    if not isinstance(resolved, dict):
+        return None
+    model = resolved.get("model")
+    events = record.get("protocol_events")
+    if not isinstance(model, str) or not model or not isinstance(events, (list, tuple)):
+        return None
+    for observed in events:
+        if not isinstance(observed, dict) or not isinstance(observed.get("message"), dict):
+            return None
+        message = observed["message"]
+        if backend == "codex":
+            if message.get("method") == "model/rerouted":
+                return None
+        elif message.get("type") == "assistant":
+            assistant = message.get("message")
+            if not isinstance(assistant, dict) or ("model" in assistant and assistant["model"] != model):
+                return None
+        elif message.get("type") == "result":
+            usage = message.get("modelUsage")
+            if usage is not None and (not isinstance(usage, dict) or any(name != model for name in usage)):
+                return None
+    return model
+
+
 def _counts(value: object) -> dict[str, int]:
     if not isinstance(value, dict):
         raise _ProtocolError("USAGE_INVALID")
@@ -806,6 +836,11 @@ def run_native_arm(
     if spec.backend == "codex":
         observed_model = protocol.identity.get("resolved", {}).get("model")
         observed_version = protocol.identity.get("initialize", {}).get("userAgent")
+    if (isinstance(observed_model, str) and observed_model
+            and observed_model_identity(
+                {"identity": protocol.identity, "protocol_events": protocol.events}, backend=spec.backend,
+            ) is None):
+        reasons.append("MODEL_IDENTITY_CHANGED_OR_UNKNOWN")
     if not isinstance(observed_model, str) or not observed_model:
         reasons.append("MODEL_IDENTITY_UNOBSERVED")
     if not isinstance(observed_version, str) or not observed_version:

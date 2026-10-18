@@ -1062,8 +1062,11 @@ def _fence(manifest: EvaluationManifest, run_dir: Path, invocation: dict, stage:
         gateway.close()
 
 
-def _native_identity(manifest: EvaluationManifest, observed: dict, mode: str) -> bool:
+def _native_identity(manifest: EvaluationManifest, native: dict, mode: str) -> bool:
     identity = manifest.document("native_identity")
+    if native_module.observed_model_identity(native, backend=identity["backend"]) is None:
+        return False
+    observed = native["identity"]
     fields = {**identity["fields"], **identity.get("mode_fields", {}).get(mode, {})}
     for path, expected in fields.items():
         value = observed
@@ -1493,7 +1496,7 @@ def _run_one(
         native_record = _private_value(native)
         result["evidence_refs"]["native"] = _publish(run_dir / "ledger", _key(invocation["invocation_id"]) + ".native.json", native_record, config["trace_bytes"])
         _usage(result, native)
-        identity_matches = _native_identity(manifest, native.identity, invocation["mode"])
+        identity_matches = _native_identity(manifest, native_record, invocation["mode"])
         result["native_identity_observed"] = identity_matches
         result["native_identity_digest"] = manifest.file("native_identity").sha256 if identity_matches else None
         reasons = list(native.incomparability_reasons)
