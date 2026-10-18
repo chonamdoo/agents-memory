@@ -249,7 +249,7 @@ Raw note·feedback reason·memory echo는 미판단 coverage에 포함하지 않
 | 새 맥락의 검증 | query relevance와 support/정확성·freshness를 분리한다. exact source span과 전체 health manifest로 판단하며 부분 관측은 unknown을 유지한다. 평가 evidence 연결은 명시 판단에 receipt digest를 붙일 뿐 task 성공을 기억의 사실성·최신성·인간 승인으로 승격하지 않는다. |
 | 명시적 Accept/Reject | operator가 exact claim revision·현재 health version/manifest·이유를 제출한다. 늦은 판정, 철회·삭제·권한 변경과 code 변경을 다시 검사한다. 기존 feedback reason/agent_note는 독립 근거가 아니며 자동 정정으로 바꾸지 않는다. |
 
-다음 원문 판단의 `judgment_context.accepted_memories`도 Reject·code stale·복원 quarantine을 재사용하지 않는다. `health_dispositions`는 현재 권한·snapshot에서 읽을 수 있는 exact Reject와 사유 ref를 최대8개 제공하며 긴 사유는 별도 inspect한다. 이 bounded 참고 입력은 독립 근거나 내용 전체의 금지 목록이 아니며 기존 필수 rejection comparison을 대체하지 않는다. 표시한 claim·health/code version·review/reason의 현재 disclosure를 source-selection admission에 묶는다.
+다음 원문 판단의 `judgment_context.accepted_memories`도 Reject·code stale·복원 quarantine을 재사용하지 않는다. `health_dispositions`는 현재 권한·snapshot에서 읽을 수 있는 exact Reject와 사유 ref를 최대8개 제공하며 긴 사유는 별도 inspect한다. 목록 발견과 admission·최종 재검사가 같은 claim·event·reason disclosure 검사를 공유한다. 확인된 부적격 review는 제외하지만 예상 밖 DB·서버 오류를 성공으로 바꾸지 않는다. 이 bounded 참고 입력은 독립 근거나 내용 전체의 금지 목록이 아니며 기존 필수 rejection comparison을 대체하지 않는다. 표시한 claim·health/code version·review/reason의 현재 disclosure를 source-selection admission에 묶는다.
 
 현재 source-selection policy·snapshot·근거 자격을 충족하는 기억만 건강 분모에 포함한다. exact operator Accept 기록도 구형 source 분류를 현재 분류로 승격하지 않는다. 격리·미확정 판정·명시 unknown 종결이 있으면 context의 `partial`과 bounded health metadata로 구분하며 `health:quarantine`에서 현재 binding·snapshot의 opaque ref/revision 목록을 찾을 수 있다. 이 inventory는 `code_workspace_id`로 필터링하지 않으므로 workspace-scoped `context.health.withheld`와 같은 모집단은 아니다. 전역 claim의 공개 scope를 request에 묶인 selection audit만으로 좁히지는 않는다.
 

@@ -1618,3 +1618,24 @@ P028의 정확한 임시 screenshot은 현재 없고 당시에도 EPERM이었으
 
 이 대조는 실제 trial만 남았다는 선언이 아니다. Codex enforceable native 보호의 실제 capability gap, 실제 native/TLS·OS·stable/cloud/corpus/egress·전체 target/offline/license·인간 gold/oracle와 실제1–2주 경과·귀속 미확인5volume·일반 출시/운영 배포는 원래 조건 그대로다. 개발용 merge/install 승인과 구분하며 과거 valid-patch 실패·모든 retry/timeout/실패 분모를 지우지 않는다. package-only 설치로 원래 Agent Flow 프로젝트의 MCP 등록·실제 사용 요구를 완료 처리하지 않는다.
 
+### R33–R34: code 만료 복구와 discovery/admission 자격 일치
+
+직전 검증 checkpoint `8b5d0a5eb909e0ac4c298600dafb132584b7f919`의 [Actions39149355062](https://github.com/chonamdoo/agents-memory/actions/runs/39149355062)도 위108 source·108 설치 소비와9개 실제 HTTP/CLI 경로를 통과했다. 그 뒤 정상 독립 리뷰 `aad413b0cabf42f8b56b5a4415f58d5e`는12assigned 중9completed·5approve·4request-changes·3Claude OAuth401/error-null이었다.401은 실제 token 만료이며 앞 라운드의600초 timeout이나 cyber refusal과 다르다. clean-contract의 coverage-incomplete·must-avoid fail도 그대로 보존했다. 기존 scoped 성공을 지우지 않지만 whole-source 승인으로 세지 않는다.
+
+| source / Actions | 수정 경로 source pass / fail | 별도 설치 pass / fail | 실제 HTTP/CLI 소비 |
+|---|---:|---:|---|
+| `6737d6756c80919a2aa2c2d89a79c4eb331679db` / [39151964943](https://github.com/chonamdoo/agents-memory/actions/runs/39151964943) |149 /4|149 /4|양쪽 기존9개 pass 뒤 만료 복구가 `HEALTH_OBSERVATION_UNCOMMITTED`로 실패 |
+| `a9d700833d8aadf4091b79ffb8d0781d82245adb` / [39152611321](https://github.com/chonamdoo/agents-memory/actions/runs/39152611321) |153 /0|153 /0|설치10개 pass. source는 기존 retracted-session/capture 경계에서 실패하여 후속 review·만료 경로는 not_run. 전체 run은 실패 |
+| `b6f7376dec544a7a6907392d740d4266092c81e8` / [39153203293](https://github.com/chonamdoo/agents-memory/actions/runs/39153203293) |153 /0|153 /0|양쪽10개 pass·owned cleanup 성공. 수정 범위 lint·canonical comments·build·changed-path aggregate 성공 |
+
+처음 실패한4개는 source/설치 양쪽의 같은 node ID로 setup·call·teardown을 대조했다. before는 setup·teardown pass/call fail이고 after는 전 phase pass다. after 전체459phase씩 모두 pass이며 skip/xfail/xpass·collection error0이다.153은 직접 영향받는 동일 선택 집합이지 전체 suite가 아니며 이전108·3191 결과와 더하지 않는다. 최종 행의 source digest는 `109fbac7c5973b1901817ca2649a2da2172250da18f8f1879bdec67e609674cb`, 실제 소비 wheel은 `ad113f5d0902f4a429a84353664dd2b55cbed1cd3145bc18ff65086f1a65562a`다.
+
+- **R33 실제 회귀:**24시간 code payload 만료·receipt pruning·등록 workspace 변경 뒤 server sequence가 cache보다 낮으면 새 관측을 영구 차단했다. 만료된 과거 효과를 미commit으로 단정하지 않고 원래 expiry/gap 이력을 보존하면서 현재 workspace/root/producer의 실제 새 관측을 더 높은 sequence·새 key로 보낸다. 전달 가능한 pending/unknown payload는 계속 막고 현재 committed ACK가 있어야 context로 진행한다. ACK를 잃었지만 server가 이미 commit한 사례는 before부터 통과한 대조군이다.
+- 양쪽 실제 HTTP/CLI는 원래 TTL 상수나 worker cadence를 바꾸지 않고 owned fixture의 한 pending row만 만료시켰다. fresh 관측의 실제 commit 뒤 미commit 구형 envelope를 producer HTTP로 제출해 `OBSERVATION_OUT_OF_ORDER`를 확인하고 현재 파일 digest가 유지됨을 검사했다. 실제 native 보호·운영 장애 복구 증거로 확대하지 않는다.
+- **R34 방어적 정렬:** review 발견도 admission·최종 재검사와 같은 claim/event/reason disclosure manifest를 사용한다. 확인된 부적격 review만 제외하고 무관한 유효 기억의 source 판단은 진행하며 예상 밖 실패는 보존한다. 해당 red는 canonical helper가 한 입력에 `ADMISSION_STALE`을 반환하도록 의도적으로 주입한 경계다. 실제 유효 write만으로 disclosure 우회가 성립했다는 재현으로 표시하지 않는다.
+- **중간 source 소비 실패:** `a9d7008`의 `HEALTH_REJECTION_BLOCKED_CAPTURE`에는 실제 flush counter가 보존되지 않아 직접 원인은 미확정이다. 당시 fixture는 manual queue 상태를 검사하면서 background recovery와 소유권을 직렬화하지 않았다. 후속 fixture는 그 합성 project의 기존 install/uninstall lock만 사용하고 pending0·quarantine·exact committed replay의 원래 검사를 그대로 유지했다. 양쪽 실제 최종 counter는 pending0·quarantined2·committed1·newly_quarantined1·busy 없음이다. 제품 lock/scheduler·설정·TTL·timeout을 바꾸거나 미관측 원인을 flaky라고 단정하지 않는다.
+
+현재 run의 `actions-6737d67-expired-observation-red`, `actions-a9d7008-expiry-first-fix`, `actions-b6f7376-health-expiry-changed-green`에 원본 receipts·same-node 비교·실패와 성공을 모두 보존했다. 관련 없는 전체 source/installed·Mac·Docker는 실행하지 않았으며 전 협업자의 로컬 검증 금지도 유지했다.
+
+남은 정상 whole-source 리뷰에는 전체 Store 및 상속 구현의 실제 읽기 coverage가 필요하다. 기존 quorum/profile·600초·판정은 바꾸지 않았고401을 우회·재로그인하거나 다른 provider로 대체하지 않았다. 새 source의 genuine review·CI-only QA·개발 main 병합·정확 main 설치·별도 trial-only 이슈는 이 수정 범위 성공과 별도다. 실제 Codex enforceable 보호·원래18개 외부 조건도 완료로 치환하지 않는다.
+
