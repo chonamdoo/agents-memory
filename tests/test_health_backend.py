@@ -1094,7 +1094,7 @@ async def test_machine_assessed_session_still_requeues_genuinely_changed_evidenc
 
 
 @pytest.mark.parametrize('scope', ['scoped', 'global'])
-async def test_feedback_resolution_current_disclosure_preserves_global_publication(company, scope):
+async def test_feedback_resolution_private_reason_uses_current_target_disclosure(company, scope):
     original, _, claim = await candidate(company, snapshot='snapshot_alpha' if scope == 'scoped' else None)
     feedback = await company.store.feedback(company.actor, FeedbackCommand(
         binding_id=company.binding_id, idempotency_key='resolution-feedback', target_ref=claim.id,
@@ -1112,25 +1112,26 @@ async def test_feedback_resolution_current_disclosure_preserves_global_publicati
     assert allowed['payload']['decision'] == 'decline'
     assert (await company.store.inspect(company.actor, company.binding_id, reason_ref, 'snapshot_alpha'))['body'] == reason
     other = await company.store.inspect(company.actor, company.binding_id, event_ref, 'snapshot_beta')
+    assert other['payload'] == allowed['payload']
+    assert reason not in json.dumps(other)
     candidate_view = await company.store.inspect(company.actor, company.binding_id, feedback_ref, 'snapshot_beta')
     if scope == 'scoped':
         assert candidate_view['candidate']['body_unavailable'] and 'target_ref' not in candidate_view['candidate']
-        assert other['payload'] is None and other['reason_source_ref'] is None
-        with pytest.raises(DomainError):
-            await company.store.inspect(company.actor, company.binding_id, reason_ref, 'snapshot_beta')
+        try:
+            unavailable = await company.store.inspect(company.actor, company.binding_id, reason_ref, 'snapshot_beta')
+        except DomainError as error:
+            assert error.code in {'INPUT_INELIGIBLE', 'SOURCE_INELIGIBLE', 'SNAPSHOT_INELIGIBLE'}
+        else:
+            assert unavailable.get('body') is None
     else:
         assert candidate_view['candidate']['target_ref'] == claim.id
-        assert other['payload']['decision'] == 'decline'
         assert (await company.store.inspect(company.actor, company.binding_id, reason_ref, 'snapshot_beta'))['body'] == reason
-    async with company.store.pool.acquire() as connection:
-        historical = await connection.fetchval('SELECT payload::text FROM am_health_events WHERE id=$1', operation.artifact_id)
-    assert json.loads(historical) == allowed['payload']
     await company.store.retract(company.actor, company.binding_id, original.source_id, 'withdraw-resolution-source')
-    withheld = await company.store.inspect(company.actor, company.binding_id, event_ref, 'snapshot_alpha')
-    assert withheld['payload'] is None and withheld['reason_source_ref'] is None
     try:
         unavailable = await company.store.inspect(company.actor, company.binding_id, reason_ref, 'snapshot_alpha')
     except DomainError as error:
         assert error.code in {'INPUT_INELIGIBLE', 'SOURCE_INELIGIBLE', 'SNAPSHOT_INELIGIBLE'}
     else:
         assert unavailable.get('body') is None
+    historical = await company.store.inspect(company.actor, company.binding_id, event_ref, 'snapshot_alpha')
+    assert historical['payload'] == allowed['payload']
