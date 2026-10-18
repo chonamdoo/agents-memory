@@ -356,7 +356,9 @@ Claude recovery intent는 canonical project의 소유한 `mcpServers.agents-memo
 
 logical retraction, local drain, provider completion unknown, local row purge와 WAL/media/backup erasure는 서로 다른 상태다. socket cancel이나 row 삭제를 모든 사본 삭제로 주장하지 않는다.
 
-public/synthetic corpus의 1–2주 paired memory-on/off 제한 trial은 [설계 10절](docs/architecture.ko.md#10-12주-trialcloud-전환)의 고정 범위·기록·중단·판정 조건을 따른다. trial은 미시작이며 elapsed 기간·측정 효익·일반 출시 완료를 주장하지 않는다. 클라우드 구현·격리 합성 검증은 최신 사용자 지시로 진행하지만 실제 계정 provisioning·실제 corpus 저장/이동·egress 승인은 별개다. 전체 #5 acceptance·공식 review/QA/handoff·별도 출시 승인은 merge·일반 배포·안정 운영 전환 gate로 유지한다. 2026-10-16 사용자의 “일단 지금까지 한 것으로 커밋·푸시·PR” 지시로 현재 작업의 **checkpoint commit/push·Draft PR 게시만** 별도 허용했다. 이는 기능 완료·리뷰 승인·merge·출시 승인이 아니다. main merge 뒤의 실제 Agent Flow 폴더 설치도 별도 확인한다. 구조도 원본은 `docs/images/*.svg`다.
+public/synthetic corpus의 1–2주 paired memory-on/off 제한 trial은 [설계 10절](docs/architecture.ko.md#10-12주-trialcloud-전환)의 고정 범위·기록·중단·판정 조건을 따른다. trial은 미시작이며 elapsed 기간·측정 효익·일반 출시 완료를 주장하지 않는다. 클라우드 구현·격리 합성 검증과 실제 계정 provisioning·실제 corpus 저장/이동·egress 승인은 별개다.
+
+2026-10-16의 checkpoint commit/push·Draft PR 허용은 당시 merge·출시 승인이 아니었다. 이후 사용자는 **남은 개발·누락 재대조 → GitHub Actions → 독립 리뷰·지적 해결 → CI-only QA → PR #9의 개발 버전 main 병합 → 병합된 정확한 커밋으로 개발용 설치**를 명시 승인했다. 개발 병합은 실제1–2주 trial·인간 gold·운영 배포·일반 출시 완료와 구분한다. 병합·설치 뒤 trial의 준비·진행·평가만 별도 이슈로 남기며 다른 외부 조건과 과거 실패 기록은 지우지 않는다. 로컬 검증·trust/guard 임의 변경 금지는 유지한다. 구조도 원본은 `docs/images/*.svg`다.
 
 ## 개발 검증 CI
 
