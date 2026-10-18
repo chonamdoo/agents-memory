@@ -2098,9 +2098,14 @@ async def test_restore_refuses_unsupported_versions_before_journal_reconcile_or_
 
 @pytest.mark.asyncio
 async def test_real_backup_dump_failure_preserves_primary_and_removes_staging_despite_close_failure(live_authority, binary_runtime, monkeypatch):
-    store, actor, _, settings, root = live_authority
+    store, actor, binding, settings, root = live_authority
     runtime, keygen = binary_runtime
     _, recipients = age_keys(root, keygen)
+    for source_index in range(8):
+        body = "\n".join("Synthetic dump row: " + hashlib.sha256(
+            f"{source_index}:{row}".encode()).hexdigest() for row in range(512))
+        await store.capture(actor, CaptureCommand(binding_id=binding.id,
+            idempotency_key=f"dump-bound-{source_index}", origin_key=f"dump-bound-{source_index}", body=body))
     directory = root / "failed-backup"
     directory.mkdir(mode=0o700)
     archive = directory / "backup.age"
@@ -2115,7 +2120,7 @@ async def test_real_backup_dump_failure_preserves_primary_and_removes_staging_de
         patcher.setattr(Store, "close", failed_close)
         with pytest.raises(DomainError) as failed:
             await backup(settings, root / "operator", archive, recipients,
-                replace(runtime, max_archive_bytes=8192))
+                replace(runtime, max_archive_bytes=65536))
     assert failed.value.code == "BACKUP_TOO_LARGE"
     assert failed.value.effect == EffectState.NOT_STARTED
     public = failed.value.public()

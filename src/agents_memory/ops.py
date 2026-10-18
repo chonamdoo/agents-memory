@@ -9,6 +9,7 @@ import re
 import secrets
 import stat
 import struct
+import sys
 import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import ExitStack, asynccontextmanager, contextmanager
@@ -299,10 +300,63 @@ async def _processes() -> AsyncIterator[_Processes]:
         await processes.close()
 
 
-async def _close_stores(*stores: Store | None, started: bool) -> None:
-    results = await asyncio.gather(*(store.close() for store in stores if store is not None), return_exceptions=True)
-    if any(isinstance(result, BaseException) for result in results):
-        raise _error("OPERATIONS_CLOSE_FAILED", "The local authority connection cleanup failed; reconcile the operation state", started=started)
+class _OperationFinalizationError(DomainError):
+    def __init__(self, primary: DomainError, failures: list[tuple[str, BaseException]]):
+        super().__init__(primary.code, primary.message, status=primary.status, effect=primary.effect)
+        self.failures = tuple(failures)
+
+    def public(self) -> dict:
+        result = super().public()
+        result["cleanup"] = {"complete": False, "failures": [
+            {"stage": stage, "code": "BACKUP_CLEANUP_FAILED" if stage == "encrypted_staging"
+                else error.code if stage == "operation_finalization" and isinstance(error, DomainError)
+                else "OPERATIONS_CLOSE_FAILED", "type": _cleanup_error_type(error)}
+            for stage, error in self.failures]}
+        return result
+
+
+def _cleanup_error_type(error: BaseException) -> str:
+    for kind in (DomainError, TimeoutError, OSError, RuntimeError, ValueError, ExceptionGroup, Exception):
+        if isinstance(error, kind):
+            return kind.__name__
+    return "BaseException"
+
+
+async def _finalize_operation(*stores: Store | None, started: bool, committed: bool,
+        primary: BaseException | None, temporary: Path | None = None) -> None:
+    failures = []
+    try:
+        results = await asyncio.gather(*(store.close() for store in stores if store is not None), return_exceptions=True)
+    except BaseException as error:
+        failures.append(("store_close", error))
+    else:
+        failures.extend(("store_close", result) for result in results if isinstance(result, BaseException))
+    if temporary is not None:
+        try:
+            temporary.unlink(missing_ok=True)
+        except BaseException as error:
+            failures.append(("encrypted_staging", error))
+    if committed and isinstance(primary, Exception):
+        failures.insert(0, ("operation_finalization", primary))
+    if not failures:
+        return
+    originals = ([primary] if primary is not None else []) + [error for _, error in failures if error is not primary]
+    interrupted = next((error for error in originals if not isinstance(error, Exception)), None)
+    if interrupted is not None:
+        remaining = [error for error in originals if error is not interrupted]
+        if remaining:
+            raise interrupted from BaseExceptionGroup("Authority operation and cleanup failures", remaining)
+        raise interrupted
+    if isinstance(primary, DomainError) and not committed:
+        exposed = primary
+    else:
+        exposed = DomainError(
+            "OPERATIONS_FINALIZATION_FAILED" if primary is not None else "OPERATIONS_CLOSE_FAILED",
+            "The authority operation committed; cleanup requires reconciliation" if committed
+            else "The local authority cleanup failed; reconcile the operation state",
+            effect=EffectState.COMMITTED if committed else EffectState.UNKNOWN if started else EffectState.NOT_STARTED)
+    raise _OperationFinalizationError(exposed, failures) from BaseExceptionGroup(
+        "Authority operation and cleanup failures", originals)
 
 
 async def _write(process: asyncio.subprocess.Process, raw: bytes) -> None:
@@ -713,6 +767,7 @@ async def backup(settings: Settings, operator_token_file: Path, destination: Pat
     store = Store(settings, DeletionJournal(settings.journal_dir, settings.deployment_id))
     temporary: Path | None = None
     publishing = False
+    committed = False
     try:
         with authority_lock(settings):
             async with asyncio.timeout(runtime.timeout_seconds), _processes() as processes:
@@ -761,6 +816,7 @@ async def backup(settings: Settings, operator_token_file: Path, destination: Pat
                     await store.authenticate(token, (Role.OPERATOR,))
                     publishing = True
                     _publish(temporary, destination)
+                    committed = True
                     return {"effect": "committed", "encrypted": "age", **_receipt(metadata,
                         {"dump_sha256": digest.hexdigest(), "dump_bytes": size}),
                         "journal_included": False, "plaintext_dump_persisted": False,
@@ -772,12 +828,7 @@ async def backup(settings: Settings, operator_token_file: Path, destination: Pat
     except Exception:
         raise _error("BACKUP_FAILED", "The local encrypted backup could not be completed", started=publishing) from None
     finally:
-        await _close_stores(store, started=publishing)
-        if temporary is not None:
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                raise _error("BACKUP_CLEANUP_FAILED", "The private encrypted staging output could not be removed", started=publishing) from None
+        await _finalize_operation(store, started=publishing, committed=committed, primary=sys.exception(), temporary=temporary)
 
 
 @contextmanager
@@ -1265,6 +1316,7 @@ async def restore(settings: Settings, operator_token_file: Path, archive: Path,
     operator credential through the application connection before lifting the fence.
     """
     started = False
+    committed = False
     store = Store(settings, DeletionJournal(settings.journal_dir, settings.deployment_id))
     recovery: Store | None = None
     try:
@@ -1355,6 +1407,7 @@ async def restore(settings: Settings, operator_token_file: Path, archive: Path,
                     os.fsync(descriptor)
                 finally:
                     os.close(descriptor)
+                committed = True
                 return {"effect": "committed", **_receipt(metadata, restored), **encrypted,
                     "authority_migration_versions": list(MIGRATIONS),
                     "credential_id": recovered.credential_id, "tokens_rotated": True,
@@ -1377,7 +1430,7 @@ async def restore(settings: Settings, operator_token_file: Path, archive: Path,
             "Restore crossed the authority fencing boundary; state is unknown and remains blocked pending private recovery" if started
             else "The encrypted archive or local restore prerequisites could not be verified; restore did not start", started=started) from None
     finally:
-        await _close_stores(store, recovery, started=started)
+        await _finalize_operation(store, recovery, started=started, committed=committed, primary=sys.exception())
 
 
 async def recover_interrupted_restore(settings: Settings, operator_token_file: Path,
@@ -1393,6 +1446,7 @@ async def recover_interrupted_restore(settings: Settings, operator_token_file: P
     store = Store(settings, DeletionJournal(settings.journal_dir, settings.deployment_id))
     recovery: Store | None = None
     started = False
+    committed = False
     try:
         if confirm_deployment != settings.deployment_id:
             raise _error("RESTORE_CONFIRMATION_REQUIRED", "Explicit confirmation of the selected deployment is required")
@@ -1460,6 +1514,7 @@ async def recover_interrupted_restore(settings: Settings, operator_token_file: P
                     os.fsync(descriptor)
                 finally:
                     os.close(descriptor)
+                committed = True
                 return {"effect": "committed", "deployment_id": settings.deployment_id, "realm": settings.realm,
                     "schema": schema, "archive_replacement": "unknown_not_attested",
                     "authority_migration_versions": list(MIGRATIONS),
@@ -1481,4 +1536,4 @@ async def recover_interrupted_restore(settings: Settings, operator_token_file: P
     except Exception:
         raise _error("RESTORE_RECOVERY_REQUIRED", "Private recovery could not be completed; authority remains fenced", started=started) from None
     finally:
-        await _close_stores(store, recovery, started=started)
+        await _finalize_operation(store, recovery, started=started, committed=committed, primary=sys.exception())

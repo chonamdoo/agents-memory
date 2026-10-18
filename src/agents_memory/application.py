@@ -140,6 +140,7 @@ class Application:
         candidates = [by_id[item.claim_id] for item in judgments if item.relevant]
         relationships = await self.store.relations(
             actor, binding, tuple(claim.id for claim in candidates), snapshot=command.snapshot,
+            code_workspace_id=command.code_workspace_id, workspace_scoped=True,
         )
         composed = compose(command, rules, candidates, relationships)
         delivered = await self.store.delivery(
@@ -163,6 +164,7 @@ class Application:
             or any(coverage.get(key, 0) for key in (
                 "unclassified_sources", "incomplete_sources", "previous_policy_claims",
             ))
+            or any(stats.get("health", {}).get(key, 0) for key in ("withheld", "unknown_assessments"))
         )
         return {
             "capability": self.settings.capability,

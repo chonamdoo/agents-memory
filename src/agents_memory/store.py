@@ -2256,7 +2256,8 @@ class Store:
                 await connection.execute("""UPDATE am_pending_judgments SET state='resolved',
                     resolved_at=clock_timestamp() WHERE id=$1""", item["id"])
 
-    async def _stats(self, connection, binding_id: str, epoch: int, snapshot: str | None = None) -> dict:
+    async def _stats(self, connection, binding_id: str, epoch: int, snapshot: str | None = None, *,
+        code_workspace_id: str | None = None, workspace_scoped: bool = False) -> dict:
         sources = await connection.fetchval("SELECT count(*) FROM am_sources WHERE binding_id=$1 AND state='active' AND body IS NOT NULL AND (snapshot IS NULL OR snapshot=$2)", binding_id, snapshot)
         lexical = True
         vector_revision = None
@@ -2313,7 +2314,8 @@ class Store:
                 classification_labels={row["label"]: row["count"] for row in labels})
         result["legacy_claims_awaiting_revalidation"] = await connection.fetchval("SELECT count(*) FROM am_claims WHERE binding_id=$1 AND state='active' AND awaiting_revalidation", binding_id)
         result["retired_jobs"] = await connection.fetchval("SELECT count(*) FROM am_jobs WHERE binding_id=$1 AND retired_at IS NOT NULL", binding_id)
-        result["health"] = await self._current_health_stats(connection, binding_id, snapshot)
+        result["health"] = await self._current_health_stats(connection, binding_id, snapshot,
+            code_workspace_id=code_workspace_id, workspace_scoped=workspace_scoped)
         return result
 
     async def stats(self, actor: Principal, binding_id: str, snapshot: str | None = None) -> dict:
@@ -2540,7 +2542,8 @@ class Store:
                 raise DomainError("RELATION_INELIGIBLE", "The exact caller judgment input revisions are no longer current")
         return row
 
-    async def relations(self, actor: Principal, binding_id: str, claim_ids: tuple[str, ...], snapshot: str | None = None) -> list[Relation]:
+    async def relations(self, actor: Principal, binding_id: str, claim_ids: tuple[str, ...], snapshot: str | None = None, *,
+        code_workspace_id: str | None = None, workspace_scoped: bool = False) -> list[Relation]:
         if len(claim_ids) > 100:
             raise DomainError("MANIFEST_TOO_LARGE", "The relation input set is too large")
         async with self._tx() as (connection, _):
@@ -2554,7 +2557,8 @@ class Store:
                 if key in seen:
                     continue
                 try:
-                    await self._relation_row(connection, binding_id, row["id"], snapshot)
+                    await self._relation_row(connection, binding_id, row["id"], snapshot,
+                        code_workspace_id=code_workspace_id, workspace_scoped=workspace_scoped)
                 except DomainError as error:
                     if error.code not in {"RELATION_INELIGIBLE", "INPUT_INELIGIBLE", "CLAIM_INELIGIBLE"}:
                         raise
@@ -3488,6 +3492,7 @@ class Store:
             raise DomainError("MANIFEST_TOO_LARGE", "The final delivery manifest is too large")
         async with self._tx() as (connection, clock):
             current = await self._actor(connection, actor, binding_id)
+            workspace_id = None
             if admissions or (nonmodel_admission is None and (selected_claim_ids or relation_ids)):
                 raise DomainError("CONTEXT_STALE", "Caller-judged delivery requires its actual nonmodel admission")
             if nonmodel_admission is not None:
@@ -3501,9 +3506,11 @@ class Store:
                     raise DomainError("CONTEXT_STALE", "The delivered actual inputs are no longer current") from None
                 if manifest["purpose"] != "caller_recall" or not set(relation_ids).issubset(manifest["relation_ids"]):
                     raise DomainError("CONTEXT_STALE", "Delivered relations must belong to the recall snapshot")
+                workspace_id = _decode(manifest["health_manifest"])["workspace"]["id"]
             for relation_id in relation_ids:
                 try:
-                    await self._relation_row(connection, binding_id, relation_id, snapshot)
+                    await self._relation_row(connection, binding_id, relation_id, snapshot,
+                        code_workspace_id=workspace_id, workspace_scoped=True)
                 except DomainError:
                     raise DomainError("CONTEXT_STALE", "A delivered relation or its complete input lineage is no longer current") from None
             rows = await connection.fetch("""SELECT r.* FROM am_rules r JOIN am_rule_targets t ON t.rule_id=r.id
@@ -3514,7 +3521,8 @@ class Store:
                 expected.append((rule.id, rule.revision, rule.digest))
             if tuple(sorted(expected)) != tuple(sorted(rule_versions)) or len({item[0] for item in rule_versions}) != len(rule_versions):
                 raise DomainError("CONTEXT_STALE", "The complete active rule snapshot changed before delivery")
-            return {"epoch": clock["epoch"], "stats": await self._stats(connection, binding_id, clock["epoch"], snapshot)}
+            return {"epoch": clock["epoch"], "stats": await self._stats(connection, binding_id, clock["epoch"], snapshot,
+                code_workspace_id=workspace_id, workspace_scoped=True)}
 
     async def recover_after_restore(self, owner_id: str, operator_token: str, expected_head: str) -> Principal:
         if self.settings.migrator_dsn is None or self.settings.database_dsn != self.settings.migrator_dsn:
@@ -4991,13 +4999,7 @@ class Store:
     async def _claim_review_manifest(self, connection, binding_id, claim_id, snapshot, nominated=None) -> tuple[dict, dict]:
         claim = await self._claim_row(connection, binding_id, claim_id, snapshot)
         state = await self._claim_health_manifest(connection, claim)
-        classification_eligible = (claim['capability'] == 'agent_judged' and not claim['awaiting_revalidation']
-                                   and claim['superseded_by'] is None and claim['selection_id'] is not None)
-        if classification_eligible:
-            selection = await connection.fetchrow('SELECT * FROM am_source_selections WHERE id=$1',
-                                                  claim['selection_id'])
-            classification_eligible = selection is not None and await self._selection_disclosure(
-                connection, binding_id, selection, snapshot)
+        classification_eligible = await self._health_classification_eligible(connection, binding_id, claim, snapshot)
         current = []
         identities = {(item['workspace_id'], item['relative_path'], item['symbol_name']) for item in state['code']}
         for workspace_id, path, symbol in sorted(identities):
@@ -5038,6 +5040,46 @@ class Store:
     async def _inspect_health(self, connection, clock, actor, binding_id, ref, snapshot, *,
         byte_start, max_bytes, representation_bytes, measure_json) -> dict:
         from .representation import stored_record_window
+        if ref == 'health:quarantine':
+            rows = await connection.fetch("""SELECT id,cleanup_sequence FROM am_claims WHERE binding_id=$1
+                AND state='active' AND draft IS NOT NULL AND superseded_by IS NULL AND capability='agent_judged'
+                AND cleanup_sequence>$2 AND (snapshot IS NULL OR snapshot IS NOT DISTINCT FROM $3)
+                ORDER BY cleanup_sequence LIMIT 129""", binding_id, byte_start, snapshot)
+            result = {'kind': 'health_quarantine', 'items': [], 'next_byte': None,
+                'coverage': {'scope': 'live_current_snapshot_quarantine_not_context_workspace', 'complete': False}}
+            last_sequence = byte_start
+            for row in rows[:128]:
+                try:
+                    claim = await self._claim_row(connection, binding_id, row['id'], snapshot)
+                except DomainError as error:
+                    if error.code != 'CLAIM_INELIGIBLE':
+                        raise
+                    last_sequence = row['cleanup_sequence']
+                    continue
+                eligible = await self._health_classification_eligible(connection, binding_id, claim, snapshot)
+                state = await self._health_state(connection, claim)
+                reusable = True
+                if eligible and state['operator_review'] != 'reject':
+                    try:
+                        await self._reuse_claim(connection, claim)
+                    except DomainError as error:
+                        if error.code != 'CLAIM_INELIGIBLE':
+                            raise
+                        reusable = False
+                if eligible and not reusable:
+                    item = {'ref': 'health:claim:' + claim['id'], 'claim_id': claim['id'],
+                        'revision': claim['revision'], 'health_version': state['version']}
+                    candidate = {**result, 'items': result['items'] + [item], 'next_byte': last_sequence}
+                    if len(result['items']) == 32 or measure_json(candidate) > min(max_bytes, representation_bytes):
+                        if not result['items']:
+                            raise DomainError('HEALTH_BUNDLE_TOO_LARGE', 'A quarantine item exceeds the requested byte bound', status=413)
+                        result['next_byte'] = last_sequence
+                        return result
+                    result['items'].append(item)
+                last_sequence = row['cleanup_sequence']
+            result['next_byte'] = last_sequence if len(rows) > 128 else None
+            result['coverage']['complete'] = result['next_byte'] is None
+            return result
         if ref == 'health':
             rows = await connection.fetch("""SELECT id,sequence,state,health_key FROM am_pending_judgments
                 WHERE binding_id=$1 AND kind='health' AND state IN ('pending','held') AND sequence>$2
@@ -5200,8 +5242,17 @@ class Store:
                 return False
         return True
 
-    async def _current_health_stats(self, connection, binding_id: str, snapshot: str | None) -> dict:
-        counts = {'ordinary_claims': 0, 'reusable': 0, 'rejected': 0, 'needs_review': 0, 'unknown_after_restore': 0}
+    async def _health_classification_eligible(self, connection, binding_id, claim, snapshot) -> bool:
+        if (claim['capability'] != 'agent_judged' or claim['awaiting_revalidation']
+                or claim['superseded_by'] is not None or claim['selection_id'] is None):
+            return False
+        selection = await connection.fetchrow('SELECT * FROM am_source_selections WHERE id=$1', claim['selection_id'])
+        return selection is not None and await self._selection_disclosure(connection, binding_id, selection, snapshot)
+
+    async def _current_health_stats(self, connection, binding_id: str, snapshot: str | None, *,
+        code_workspace_id: str | None = None, workspace_scoped: bool = False) -> dict:
+        counts = {'ordinary_claims': 0, 'reusable': 0, 'rejected': 0, 'needs_review': 0, 'unknown_after_restore': 0,
+            'withheld': 0, 'unknown_assessments': 0}
         rows = connection.cursor("""SELECT id FROM am_claims WHERE binding_id=$1 AND state='active'
             AND draft IS NOT NULL AND superseded_by IS NULL AND capability='agent_judged'
             AND (snapshot IS NULL OR snapshot IS NOT DISTINCT FROM $2) ORDER BY id""",
@@ -5213,20 +5264,28 @@ class Store:
                 if error.code != 'CLAIM_INELIGIBLE':
                     raise
                 continue
-            if claim['selection_id'] is not None:
-                selection = await connection.fetchrow('SELECT * FROM am_source_selections WHERE id=$1', claim['selection_id'])
-                if selection is None or not await self._selection_disclosure(connection, binding_id, selection, snapshot):
+            if not await self._health_classification_eligible(connection, binding_id, claim, snapshot):
+                continue
+            if workspace_scoped:
+                try:
+                    await self._require_workspace_claim(connection, claim, code_workspace_id)
+                except DomainError as error:
+                    if error.code != 'CLAIM_INELIGIBLE':
+                        raise
                     continue
             state = await self._health_state(connection, claim)
             counts['ordinary_claims'] += 1
             counts['rejected'] += state['operator_review'] == 'reject'
             counts['needs_review'] += state['needs_review']
             counts['unknown_after_restore'] += state['restore_unknown']
+            counts['unknown_assessments'] += bool(state['assessment_event_id'] is not None
+                and state['operator_review'] is None and (state['support'] == 'unknown' or state['freshness'] == 'unknown'))
             try:
                 await self._reuse_claim(connection, claim)
             except DomainError as error:
                 if error.code != 'CLAIM_INELIGIBLE':
                     raise
+                counts['withheld'] += state['operator_review'] != 'reject'
             else:
                 counts['reusable'] += 1
         return {**counts, 'scope': 'current_structurally_eligible_ordinary_claims',

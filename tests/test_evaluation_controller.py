@@ -674,7 +674,7 @@ async def test_actual_controller_does_not_stamp_frozen_identity_after_model_rero
         assert result["cost_usd"] is None
 
 
-async def test_actual_bounded_gateway_completion_preserves_terminal_and_later_attempts(authority, tmp_path, record_property):
+async def test_actual_bounded_gateway_completion_preserves_terminal_and_later_attempts(authority, tmp_path):
     async with actual_upstream(authority, tmp_path) as (agent, producer):
         path, run_dir = tmp_path / "manifest.json", tmp_path / "run"
         peer = _controller_peer(path, run_dir, True, event_mode="receipt-bound")
@@ -688,10 +688,11 @@ async def test_actual_bounded_gateway_completion_preserves_terminal_and_later_at
         invocation = manifest.workload["invocations"][0]
         terminal = evaluation._read_terminal(manifest, run_dir, invocation)
         prefix = run_dir / "ledger" / digest_bytes(invocation["invocation_id"].encode())
-        record_property("gateway_record_bytes", prefix.with_suffix(".gateway.json").stat().st_size)
-        record_property("terminal_record_bytes", prefix.with_suffix(".terminal.json").stat().st_size)
-        record_property("largest_trace_record_bytes", max(
-            item.stat().st_size for item in (run_dir / "traces").rglob("*.json")))
+        pytest.fail("DIAGNOSTIC_MEASUREMENT_NOT_PRODUCT_RED " + json.dumps({
+            "gateway_record_bytes": prefix.with_suffix(".gateway.json").stat().st_size,
+            "terminal_record_bytes": prefix.with_suffix(".terminal.json").stat().st_size,
+            "largest_trace_record_bytes": max(item.stat().st_size for item in (run_dir / "traces").rglob("*.json")),
+        }))
         assert terminal["status"] == "completed", {
             "code": terminal["code"], "reasons": terminal["comparability_reasons"],
             "gateway_bytes": next((item.stat().st_size for item in (run_dir / "ledger").glob("*.gateway.json")), None),
