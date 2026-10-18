@@ -440,8 +440,15 @@ def test_native_submission_parent_backtracking_is_not_an_approved_task_path(tmp_
     ("claude", "terminal-model"),
     ("claude", "mixed-pipeline"),
     ("claude", "roundtrip"),
+    ("claude", "helper-subagent"),
+    ("claude", "helper-and-main-change"),
+    ("claude", "unknown-assistant-model"),
+    ("codex", "same-model"),
     ("codex", "reroute"),
     ("codex", "roundtrip"),
+    ("codex", "missing-correlation"),
+    ("codex", "malformed-reason"),
+    ("codex", "unobserved-origin"),
 ])
 def test_observed_model_changes_are_not_matched_native_attempts(tmp_path, backend, variant):
     if backend == "claude":
@@ -454,16 +461,27 @@ events = [
      'claude_code_version':'engineering-peer','permissionMode':'default'},
 ]
 models = ['peer-model']
-if variant in ('assistant-model', 'roundtrip'):
+if variant in ('assistant-model', 'roundtrip', 'helper-and-main-change'):
     models.append('other-model')
 if variant == 'roundtrip':
     models.append('peer-model')
+if variant == 'unknown-assistant-model':
+    models.append(None)
 for index, model in enumerate(models):
-    events.append({'type':'assistant','session_id':'session-one','message':{
+    events.append({'type':'assistant','session_id':'session-one','parent_tool_use_id':None,'message':{
         'id':'message-' + str(index),'model':model,'content':[]}})
+if variant in ('helper-subagent', 'helper-and-main-change'):
+    events[1]['message']['content'] = [
+        {'type':'tool_use','id':'parent-task','name':'Task','input':{'prompt':'engineering-helper'}}]
+    events.append({'type':'assistant','session_id':'session-one','parent_tool_use_id':'parent-task',
+        'message':{'id':'helper-message','model':'helper-model','content':[]}})
+    events.append({'type':'user','session_id':'session-one','message':{
+        'content':[{'type':'tool_result','tool_use_id':'parent-task','content':'engineering-helper-result'}]}})
 usage_models = ['other-model'] if variant == 'terminal-model' else ['peer-model']
 if variant == 'mixed-pipeline':
     usage_models.append('other-model')
+if variant in ('helper-subagent', 'helper-and-main-change'):
+    usage_models.append('helper-model')
 events.append({'type':'result','session_id':'session-one','subtype':'success','is_error':False,
     'modelUsage':{model:{'inputTokens':13,'outputTokens':3} for model in usage_models},
     'structured_output':{'submission_path':str(path)}})
@@ -472,8 +490,17 @@ for event in events:
 '''
     else:
         peer = codex_peer("variant = " + repr(variant) + "\n" + '''
-emit({'method':'model/rerouted','params':{'threadId':'thread-one','turnId':'turn-one',
-    'fromModel':'peer-model','toModel':'other-model','reason':'highRiskCyberActivity'}})
+params = {'threadId':'thread-one','turnId':'turn-one',
+    'fromModel':'peer-model','toModel':'other-model','reason':'highRiskCyberActivity'}
+if variant == 'missing-correlation':
+    params.pop('threadId')
+    params.pop('turnId')
+if variant == 'malformed-reason':
+    params['reason'] = []
+if variant == 'unobserved-origin':
+    params['fromModel'] = 'unobserved-model'
+if variant != 'same-model':
+    emit({'method':'model/rerouted','params':params})
 if variant == 'roundtrip':
     emit({'method':'model/rerouted','params':{'threadId':'thread-one','turnId':'turn-one',
         'fromModel':'other-model','toModel':'peer-model','reason':'highRiskCyberActivity'}})
@@ -491,10 +518,33 @@ sys.stdin.read()
                             invocation_id="invocation", artifact_output=output, trace_sink=lambda _: None)
     assert result.status == "completed"
     assert result.comparable is (variant == "same-model")
-    assert bool(result.incomparability_reasons) is (variant != "same-model")
     assert result.artifact_bundle["sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
     assert result.cleanup["leader_reaped"] is True
     assert result.usage["cost_usd"] is None
     if backend == "claude":
-        multiplier = 2 if variant == "mixed-pipeline" else 1
+        multiplier = 2 if variant in {'mixed-pipeline', 'helper-subagent', 'helper-and-main-change'} else 1
         assert result.usage["counters"] == {"inputTokens": 13 * multiplier, "outputTokens": 3 * multiplier}
+        assert result.identity["model"] == "peer-model"
+        if variant in {"helper-subagent", "helper-and-main-change"}:
+            assert result.usage["model_counters"]["helper-model"] == {"inputTokens": 13, "outputTokens": 3}
+        expected_reasons = {
+            "same-model": (),
+            "assistant-model": ("MODEL_MAIN_LOOP_CHANGED",),
+            "terminal-model": ("MODEL_PIPELINE_MIXTURE_UNATTRIBUTED",),
+            "mixed-pipeline": ("MODEL_PIPELINE_MIXTURE_UNATTRIBUTED",),
+            "roundtrip": ("MODEL_MAIN_LOOP_CHANGED",),
+            "helper-subagent": ("MODEL_HELPER_USAGE_UNFROZEN",),
+            "helper-and-main-change": ("MODEL_MAIN_LOOP_CHANGED", "MODEL_HELPER_USAGE_UNFROZEN"),
+            "unknown-assistant-model": ("MODEL_OBSERVATION_UNKNOWN",),
+        }[variant]
+    else:
+        assert result.identity["resolved"]["model"] == "peer-model"
+        expected_reasons = {
+            "same-model": (),
+            "reroute": ("MODEL_REROUTE_CORRELATED",),
+            "roundtrip": ("MODEL_REROUTE_CORRELATED",),
+            "missing-correlation": ("MODEL_REROUTE_UNCORRELATED",),
+            "malformed-reason": ("MODEL_REROUTE_MALFORMED",),
+            "unobserved-origin": ("MODEL_REROUTE_UNCORRELATED",),
+        }[variant]
+    assert set(result.incomparability_reasons) == set(expected_reasons)

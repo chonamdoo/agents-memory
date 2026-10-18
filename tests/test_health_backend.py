@@ -26,6 +26,7 @@ from agents_memory.health import (
     FeedbackResolutionCommand,
     HealthAssessmentCommand,
     HealthPolicyCommand,
+    HealthWorkDispositionCommand,
     HealthWorkspaceCommand,
     MemoryReviewCommand,
     SessionObservationCommand,
@@ -898,3 +899,238 @@ async def test_current_health_qualification_excludes_obsolete_policy_but_preserv
     assert stats['health']['reusable'] == 1
     await review(company, current, 'accept-independent-current-policy', 'accept')
     assert (await health_view(company, current))['health']['operator_review'] == 'accept'
+
+
+async def terminal_session(company, origins, *, with_source=False):
+    await enabled(company)
+    producer = await workspace(company)
+    _, _, claim = await candidate(company, snapshot='snapshot_alpha')
+    source_refs = []
+    if with_source:
+        source = await company.store.capture(producer, CaptureCommand(
+            binding_id=company.binding_id, idempotency_key='terminal-existing-source',
+            origin_key='terminal-existing-source', snapshot='snapshot_alpha',
+            body=claim.draft.statement, speaker='human', root_run_id='run_terminal', agent_path='agent_terminal',
+            coverage=CaptureCoverage(status='observed_window', original_bytes=len(claim.draft.statement.encode()))))
+        source_refs = [{'id': source.source_id, 'revision': 1}]
+    boundaries = []
+    for sequence, event in enumerate(('start', 'end'), 1):
+        boundaries.append(await company.store.health(producer, SessionObservationCommand(
+            **mutation(company, 'terminal-' + event), stream_id='stream_terminal', segment_id='segment_terminal',
+            event_id='terminal_' + event, sequence=sequence, event=event,
+            root_run_id='run_terminal', agent_path='agent_terminal', source_refs=source_refs,
+            origin_keys=origins, claim_refs=[{'id': claim.id, 'revision': claim.revision}],
+            coverage='observed_segment')))
+    page = await company.store.inspect(company.actor, company.binding_id, 'health', 'snapshot_alpha')
+    ref = page['items'][0]['ref']
+    work = await company.store.inspect(company.actor, company.binding_id, ref, 'snapshot_alpha')
+    return producer, claim, boundaries, ref, work
+
+
+async def terminal_work_row(company, pending_id):
+    async with company.store.pool.acquire() as connection:
+        row = await connection.fetchrow('''SELECT state,health_revision,source_ids,claim_ids,resolved_at,
+            health_payload::text AS payload FROM am_pending_judgments WHERE id=$1''', pending_id)
+    return {**dict(row), 'payload': json.loads(row['payload'])}
+
+
+async def dispose_work(company, key, pending_id, revision, decision):
+    return await company.store.health(company.actor, HealthWorkDispositionCommand(
+        **mutation(company, key), pending_id=pending_id, expected_pending_revision=revision,
+        snapshot='snapshot_alpha', decision=decision,
+        reason='Retain bounded evidence as unknown; only an exact operator reopen may resume work.'))
+
+
+async def test_matching_late_capture_retains_operator_close_until_exact_capacity_checked_reopen(company):
+    producer, claim, boundaries, ref, first = await terminal_session(company, ['terminal-late'])
+    pending_id = first['pending_id']
+    before = await terminal_work_row(company, pending_id)
+    closed_operation = await dispose_work(company, 'terminal-close', pending_id, before['health_revision'], 'close_unknown')
+    closed = await terminal_work_row(company, pending_id)
+    health_before = (await health_view(company, claim))['health']
+    late = await company.store.capture(producer, CaptureCommand(
+        binding_id=company.binding_id, idempotency_key='terminal-late-capture', origin_key='terminal-late',
+        snapshot='snapshot_alpha', body=claim.draft.statement, speaker='human',
+        root_run_id='run_terminal', agent_path='agent_terminal',
+        coverage=CaptureCoverage(status='observed_window', original_bytes=len(claim.draft.statement.encode()))))
+    current = await company.store.inspect(company.actor, company.binding_id, ref, 'snapshot_alpha')
+    retained = await terminal_work_row(company, pending_id)
+    assert current.get('state') == 'resolved' and current['disposition'] == 'close_unknown'
+    assert current['admission'] is None and current['assessment_complete'] is False
+    assert retained['health_revision'] == closed['health_revision'] + 1
+    assert retained['resolved_at'] == closed['resolved_at']
+    assert retained['payload']['disposition'] == closed['payload']['disposition']
+    assert retained['payload']['disposition']['event_ref'] == closed_operation.artifact_id
+    assert retained['source_ids'] == [late.source_id]
+    assert retained['payload']['source_refs'] == [{'id': late.source_id, 'revision': 1}]
+    assert retained['payload']['unresolved_origin_keys'] == []
+    assert 'SESSION_ORIGIN_PENDING' not in retained['payload']['gaps']
+    assert retained['payload']['session_observation_ids'] == [item.artifact_id for item in boundaries]
+    assert (await health_view(company, claim))['health'] == health_before
+    with pytest.raises(DomainError) as stale:
+        await dispose_work(company, 'terminal-old-reopen', pending_id, closed['health_revision'], 'reopen')
+    assert stale.value.code == 'HEALTH_STALE'
+    with pytest.raises(DomainError):
+        await company.store.record(company.actor, HealthAssessmentCommand(
+            **mutation(company, 'terminal-old-result'), admission_id=first['admission']['id'],
+            pending_id=pending_id, health_manifest_digest=first['health_manifest_digest'],
+            input_sources=first['input_sources'], input_claims=first['input_claims'],
+            assessments=[{'claim_ref': {'id': claim.id, 'revision': claim.revision},
+                'support': 'unknown', 'freshness': 'unknown', 'relevance': 'related',
+                'reason': 'A result admitted before explicit close cannot publish after delayed capture.'}]))
+    company.store.settings = company.store.settings.model_copy(update={'queue_limit': 1})
+    await company.store.health(producer, SessionObservationCommand(
+        **mutation(company, 'terminal-capacity-blocker'), stream_id='stream_capacity', segment_id='segment_capacity',
+        event_id='capacity_end', sequence=1, event='end', root_run_id='run_capacity',
+        agent_path='agent_capacity', claim_refs=[{'id': claim.id, 'revision': claim.revision}], coverage='partial'))
+    with pytest.raises(DomainError) as full:
+        await dispose_work(company, 'terminal-full-reopen', pending_id, retained['health_revision'], 'reopen')
+    assert full.value.code == 'QUEUE_FULL'
+    assert await terminal_work_row(company, pending_id) == retained
+    page = await company.store.inspect(company.actor, company.binding_id, 'health', 'snapshot_alpha')
+    blocker = next(item for item in page['items'] if item['pending_id'] != pending_id)
+    await dispose_work(company, 'terminal-close-blocker', blocker['pending_id'], blocker['health_revision'], 'close_unknown')
+    await dispose_work(company, 'terminal-current-reopen', pending_id, retained['health_revision'], 'reopen')
+    reopened = await company.store.inspect(company.actor, company.binding_id, ref, 'snapshot_alpha')
+    assert reopened['admission'] is not None and reopened['input_sources'] == [{'id': late.source_id, 'revision': 1}]
+    assert reopened['sources'][0]['body'] == claim.draft.statement
+    assert reopened['coverage']['complete'] and reopened['observed_window_closed']
+    assert (await health_view(company, claim))['health'] == health_before
+    event = await company.store.inspect(company.actor, company.binding_id,
+        'health:event:' + closed_operation.artifact_id, 'snapshot_alpha')
+    assert event['payload']['decision'] == 'close_unknown' and event['payload']['assessment_complete'] is False
+    await company.store.retract(company.actor, company.binding_id, claim.id, 'terminal-withdraw-target')
+    deleted = await terminal_work_row(company, pending_id)
+    assert deleted['state'] == 'retracted'
+    with pytest.raises(DomainError):
+        await dispose_work(company, 'terminal-deleted-reopen', pending_id, deleted['health_revision'], 'reopen')
+    assert (await company.store.source(company.actor, company.binding_id, late.source_id)).body == claim.draft.statement
+
+
+async def test_other_credential_capture_keeps_unchanged_terminal_inputs_revision_and_event(company):
+    _, claim, _, ref, first = await terminal_session(company, ['terminal-foreign'], with_source=True)
+    before = await terminal_work_row(company, first['pending_id'])
+    operation = await dispose_work(company, 'foreign-close', first['pending_id'], before['health_revision'], 'close_unknown')
+    closed = await terminal_work_row(company, first['pending_id'])
+    foreign = await company.store.capture(company.actor, CaptureCommand(
+        binding_id=company.binding_id, idempotency_key='foreign-late-capture', origin_key='terminal-foreign',
+        snapshot='snapshot_alpha', body='CacheKey has unrelated credential evidence.', speaker='human',
+        root_run_id='run_terminal', agent_path='agent_terminal'))
+    current = await company.store.inspect(company.actor, company.binding_id, ref, 'snapshot_alpha')
+    retained = await terminal_work_row(company, first['pending_id'])
+    assert current.get('state') == 'resolved' and current['disposition'] == 'close_unknown'
+    assert current['admission'] is None and retained == closed
+    assert retained['payload']['disposition']['event_ref'] == operation.artifact_id
+    assert foreign.source_id not in retained['source_ids']
+    assert retained['payload']['unresolved_origin_keys'] == ['terminal-foreign']
+    await dispose_work(company, 'foreign-exact-reopen', first['pending_id'], closed['health_revision'], 'reopen')
+    reopened = await company.store.inspect(company.actor, company.binding_id, ref, 'snapshot_alpha')
+    assert reopened['input_sources'] == first['input_sources']
+    assert foreign.source_id not in {item['id'] for item in reopened['input_sources']}
+    assert not reopened['coverage']['complete'] and 'SESSION_ORIGIN_PENDING' in reopened['coverage']['gaps']
+    assert (await health_view(company, claim))['health']['operator_review'] is None
+
+
+async def test_repeated_refresh_failure_preserves_terminal_operator_event_and_exact_revision(company):
+    producer, _, _, ref, first = await terminal_session(company,
+        ['terminal-conflict', 'terminal-retry-one', 'terminal-retry-two'])
+    await company.store.capture(producer, CaptureCommand(
+        binding_id=company.binding_id, idempotency_key='terminal-conflict-capture', origin_key='terminal-conflict',
+        snapshot='snapshot_beta', body='CacheKey has incompatible snapshot evidence.', speaker='human',
+        root_run_id='run_terminal', agent_path='agent_terminal'))
+    failed = await terminal_work_row(company, first['pending_id'])
+    assert failed['state'] == 'held' and failed['payload']['refresh_error_code'] == 'SESSION_SNAPSHOT_CONFLICT'
+    operation = await dispose_work(company, 'failure-close', first['pending_id'], failed['health_revision'], 'close_unknown')
+    closed = await terminal_work_row(company, first['pending_id'])
+    for index, origin in enumerate(('terminal-retry-one', 'terminal-retry-two'), 1):
+        captured = await company.store.capture(company.actor, CaptureCommand(
+            binding_id=company.binding_id, idempotency_key='terminal-retry-' + str(index), origin_key=origin,
+            body='Independent capture survives repeated health refresh failure.', speaker='human'))
+        current = await company.store.inspect(company.actor, company.binding_id, ref, 'snapshot_alpha')
+        retained = await terminal_work_row(company, first['pending_id'])
+        assert current.get('state') == 'resolved' and current['disposition'] == 'close_unknown'
+        assert current['admission'] is None and retained == closed
+        assert retained['payload']['disposition']['event_ref'] == operation.artifact_id
+        assert (await company.store.source(company.actor, company.binding_id, captured.source_id)).body == (
+            'Independent capture survives repeated health refresh failure.')
+    await dispose_work(company, 'failure-exact-reopen', first['pending_id'], closed['health_revision'], 'reopen')
+    reopened = await company.store.inspect(company.actor, company.binding_id, ref, 'snapshot_alpha')
+    assert reopened['admission'] is not None and not reopened['coverage']['complete']
+    assert 'SESSION_REFRESH_INCOMPLETE' in reopened['coverage']['gaps']
+
+
+async def test_machine_assessed_session_still_requeues_genuinely_changed_evidence(company):
+    producer, claim, _, ref, first = await terminal_session(company, [], with_source=True)
+    assert first['coverage']['complete'] and first['observed_window_closed']
+    source = first['sources'][0]
+    await company.store.record(company.actor, HealthAssessmentCommand(
+        **mutation(company, 'machine-terminal-assessment'), admission_id=first['admission']['id'],
+        pending_id=first['pending_id'], health_manifest_digest=first['health_manifest_digest'],
+        input_sources=first['input_sources'], input_claims=first['input_claims'],
+        assessments=[{'claim_ref': {'id': claim.id, 'revision': claim.revision},
+            'support': 'supported', 'freshness': 'observed_current', 'relevance': 'related',
+            'reason': 'Complete bounded captured evidence supports this claim without operator approval.',
+            'evidence': [{'source_ref': source['source_ref'], 'byte_start': source['byte_start'],
+                'byte_end': source['byte_end'], 'quote': source['body']}]}]))
+    resolved = await terminal_work_row(company, first['pending_id'])
+    assert resolved['state'] == 'resolved' and 'disposition' not in resolved['payload']
+    health_before = (await health_view(company, claim))['health']
+    extra = await company.store.capture(producer, CaptureCommand(
+        binding_id=company.binding_id, idempotency_key='machine-extra-source', origin_key='machine-extra-source',
+        snapshot='snapshot_alpha', body='CacheKey has additional bounded evidence.', speaker='human',
+        root_run_id='run_terminal', agent_path='agent_terminal',
+        coverage=CaptureCoverage(status='observed_window', original_bytes=len(b'CacheKey has additional bounded evidence.'))))
+    await company.store.health(producer, SessionObservationCommand(
+        **mutation(company, 'machine-new-checkpoint'), stream_id='stream_terminal', segment_id='segment_terminal',
+        event_id='terminal_checkpoint', sequence=3, event='checkpoint', root_run_id='run_terminal',
+        agent_path='agent_terminal', source_refs=[{'id': extra.source_id, 'revision': 1}],
+        claim_refs=[{'id': claim.id, 'revision': claim.revision}], coverage='observed_segment'))
+    current = await company.store.inspect(company.actor, company.binding_id, ref, 'snapshot_alpha')
+    row = await terminal_work_row(company, first['pending_id'])
+    assert row['state'] == 'pending' and row['health_revision'] == resolved['health_revision'] + 1
+    assert 'disposition' not in row['payload'] and current['admission'] is not None
+    assert extra.source_id in {item['id'] for item in current['input_sources']}
+    assert (await health_view(company, claim))['health'] == health_before
+
+
+@pytest.mark.parametrize('scope', ['scoped', 'global'])
+async def test_feedback_resolution_current_disclosure_preserves_global_publication(company, scope):
+    original, _, claim = await candidate(company, snapshot='snapshot_alpha' if scope == 'scoped' else None)
+    feedback = await company.store.feedback(company.actor, FeedbackCommand(
+        binding_id=company.binding_id, idempotency_key='resolution-feedback', target_ref=claim.id,
+        kind='correct', body='This correction needs an independent exact decision.'))
+    feedback_ref = 'health:feedback:' + feedback.artifact_id
+    before = await company.store.inspect(company.actor, company.binding_id, feedback_ref, 'snapshot_alpha')
+    reason = 'The proposed correction is unsupported by the exact current evidence.'
+    operation = await company.store.health(company.actor, FeedbackResolutionCommand(
+        **mutation(company, 'resolution-decline'), admission_id=before['admission']['id'],
+        feedback_ref=feedback.artifact_id, expected_feedback_version=before['candidate']['version'],
+        decision='decline', reason=reason))
+    event_ref = 'health:event:' + operation.artifact_id
+    allowed = await company.store.inspect(company.actor, company.binding_id, event_ref, 'snapshot_alpha')
+    reason_ref = allowed['reason_source_ref']
+    assert allowed['payload']['decision'] == 'decline'
+    assert (await company.store.inspect(company.actor, company.binding_id, reason_ref, 'snapshot_alpha'))['body'] == reason
+    other = await company.store.inspect(company.actor, company.binding_id, event_ref, 'snapshot_beta')
+    candidate_view = await company.store.inspect(company.actor, company.binding_id, feedback_ref, 'snapshot_beta')
+    if scope == 'scoped':
+        assert candidate_view['candidate']['body_unavailable'] and 'target_ref' not in candidate_view['candidate']
+        assert other['payload'] is None and other['reason_source_ref'] is None
+        with pytest.raises(DomainError):
+            await company.store.inspect(company.actor, company.binding_id, reason_ref, 'snapshot_beta')
+    else:
+        assert candidate_view['candidate']['target_ref'] == claim.id
+        assert other['payload']['decision'] == 'decline'
+        assert (await company.store.inspect(company.actor, company.binding_id, reason_ref, 'snapshot_beta'))['body'] == reason
+    async with company.store.pool.acquire() as connection:
+        historical = await connection.fetchval('SELECT payload::text FROM am_health_events WHERE id=$1', operation.artifact_id)
+    assert json.loads(historical) == allowed['payload']
+    await company.store.retract(company.actor, company.binding_id, original.source_id, 'withdraw-resolution-source')
+    withheld = await company.store.inspect(company.actor, company.binding_id, event_ref, 'snapshot_alpha')
+    assert withheld['payload'] is None and withheld['reason_source_ref'] is None
+    try:
+        unavailable = await company.store.inspect(company.actor, company.binding_id, reason_ref, 'snapshot_alpha')
+    except DomainError as error:
+        assert error.code in {'INPUT_INELIGIBLE', 'SOURCE_INELIGIBLE', 'SNAPSHOT_INELIGIBLE'}
+    else:
+        assert unavailable.get('body') is None

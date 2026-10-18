@@ -162,7 +162,7 @@ workspace 등록은 원래 native receipt의 project/root·producer credential·
 
 닫힌 bounded 관측 창의 assessment는 처리한 작업을 resolved로 바꿀 수 있지만 source coverage·정확성·freshness를 complete로 바꾸지 않는다. close watermark가 없거나 origin/refresh가 미해결이면 held를 유지한다. operator는 정확한 pending ID·`health_revision`·snapshot·이유로 `close_unknown`/`reopen`을 선택할 수 있다. unknown 종결은 resolved history와 불완전 coverage를 보존하고 새 agent admission을 내주지 않는다. reopen은 현재 권한과 큐 수용량을 다시 검사한다. resolved 뒤 늦게 발견한 불완전 입력도 unknown으로 보존하며 닫힌 작업을 임의 재실행하지 않는다.
 
-현재 건강 분모와 claim health의 reusable view는 current source-selection policy와 request/dependency 자격을 공유한다. 인간의 exact review 기록과 source 분류는 독립이며 Accept만으로 구형 분류가 현재 자격을 얻지 않는다. 격리·미확정 assessment·명시 unknown 종결은 partial을 유지한다. bounded `health:quarantine`은 현재 snapshot·workspace·근거·복원/삭제 자격에 맞는 opaque claim ref/revision/version 목록이지 본문 검색이나 자동 정정 경로가 아니다.
+현재 건강 분모와 claim health의 reusable view는 current source-selection policy와 request/dependency 자격을 공유한다. 인간의 exact review 기록과 source 분류는 독립이며 Accept만으로 구형 분류가 현재 자격을 얻지 않는다. 격리·미확정 assessment·명시 unknown 종결은 partial을 유지한다. bounded `health:quarantine`은 현재 binding·snapshot·근거·복원/삭제 자격에 맞는 opaque claim ref/revision/version 목록이다. 이 inventory에는 context의 `code_workspace_id` 선택이 적용되지 않는다. final-context의 `health.withheld`는 요청 workspace 범위의 수이므로 snapshot-wide inventory와 같은 모집단이나 일대일 대응으로 해석하지 않는다. 본문 검색이나 자동 정정 경로도 아니다.
 
 health item·feedback의 사유도 현재 target/source의 공개 자격과 snapshot을 따른다. 전역 claim의 공개 scope는 source/claim snapshot을 따르며 selection audit의 request scope만으로 전역 게시나 전역 reject floor를 축소하지 않는다. 반대로 scoped source의 이유를 다른 snapshot에서 공개하지 않는다. recall 관계의 모든 입력은 admission과 같은 workspace 범위로 먼저 검사한 뒤 적격 관계를 중복 제거하므로 다른 workspace의 code-linked 관계가 유효 전역 기억의 전달을 막지 않는다.
 

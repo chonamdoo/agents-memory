@@ -249,7 +249,7 @@ Raw note·feedback reason·memory echo는 미판단 coverage에 포함하지 않
 | 새 맥락의 검증 | query relevance와 support/정확성·freshness를 분리한다. exact source span과 전체 health manifest로 판단하며 부분 관측은 unknown을 유지한다. 평가 evidence 연결은 명시 판단에 receipt digest를 붙일 뿐 task 성공을 기억의 사실성·최신성·인간 승인으로 승격하지 않는다. |
 | 명시적 Accept/Reject | operator가 exact claim revision·현재 health version/manifest·이유를 제출한다. 늦은 판정, 철회·삭제·권한 변경과 code 변경을 다시 검사한다. 기존 feedback reason/agent_note는 독립 근거가 아니며 자동 정정으로 바꾸지 않는다. |
 
-현재 source-selection policy·snapshot·근거 자격을 충족하는 기억만 건강 분모에 포함한다. exact operator Accept 기록도 구형 source 분류를 현재 분류로 승격하지 않는다. 격리·미확정 판정·명시 unknown 종결이 있으면 context의 `partial`과 bounded health metadata로 구분하며 `health:quarantine`에서 현재 권한에 맞는 opaque ref/revision 목록을 찾을 수 있다. 전역 claim의 공개 scope를 request에 묶인 selection audit만으로 좁히지는 않는다.
+현재 source-selection policy·snapshot·근거 자격을 충족하는 기억만 건강 분모에 포함한다. exact operator Accept 기록도 구형 source 분류를 현재 분류로 승격하지 않는다. 격리·미확정 판정·명시 unknown 종결이 있으면 context의 `partial`과 bounded health metadata로 구분하며 `health:quarantine`에서 현재 binding·snapshot의 opaque ref/revision 목록을 찾을 수 있다. 이 inventory는 `code_workspace_id`로 필터링하지 않으므로 workspace-scoped `context.health.withheld`와 같은 모집단은 아니다. 전역 claim의 공개 scope를 request에 묶인 selection audit만으로 좁히지는 않는다.
 
 `health apply --command-file FILE`은 완전한 strict command를 제출한다. producer의 `health observer --binding ID`는 body-free metadata만 읽는다. 이미 승인된 native receipt가 있는 workspace는 `health workspace-prepare`, `workspace-register`, `observe`를 사용하며 등록과 관측을 혼동하지 않는다. 이 명령은 native trust/strict capability·운영 corpus/egress 권한을 새로 부여하지 않는다.
 

@@ -257,11 +257,13 @@ gateway observation은 invocation별 단일 `gateway.json`과 terminal의 digest
 
 기존 health policy의 `max_audit_bytes`에는 전체 claim JSON과 source window의 UTF-8 bytes를 계산한다. 완전한 의미와 비어 있지 않은 source window가 안 들어가면 `HEALTH_BUNDLE_TOO_LARGE`이며, 의미를 축약하거나 예산·승인 fence를 완화하지 않는다. source-egress·provider·추가 health 처리 허가, 늦은 결과의 현재 권한/정책/claim revision 검사와 operator Reject·코드 stale·복구 quarantine 보호는 그대로다. typed 의미 전달과 engineering oracle은 실제 모델 정확성·인간 gold·freshness·자동 승인을 증명하지 않는다.
 
+`/readyz`의 비인증 probe는 DB·배포/삭제 barrier와 `accepting`을 확인한다. operator 인증 응답은 judgment가 `unavailable`인 경우에도 503/`ready:false`이며 `db_ready:true`와 양립한다. 따라서 두 응답의 기준은 다르고 operator 503을 곧바로 DB 장애로 해석하지 않는다. 본문 없는 판단 오류 code와 DB 상태를 각각 확인하며 native hook trust는 이 endpoint가 증명하지 않는다.
+
 닫힌 관측 segment의 assessment 완료는 해당 bounded 작업을 처리했다는 뜻이다. partial/unknown source coverage나 support/freshness를 complete로 표시하지 않는다. close 미관측·origin 누락·refresh conflict는 held로 남으며 다시 볼 수 없는 입력을 새로 수집하거나 판정을 추정해 해소하지 않는다.
 
 작업을 unknown으로 명시 종결하거나 다시 열려면 먼저 권한 있는 `health:item:<pending_id>` inspect로 현재 `health_revision`과 scope를 읽는다. 완전한 strict mutation command에 `kind="health_work_disposition"`, `pending_id`, `expected_pending_revision`(읽은 `health_revision`), 해당 snapshot, `decision="close_unknown"|"reopen"`, 이유와 기존 binding/revision/idempotency 필드를 넣고 `health apply --command-file FILE`로 제출한다. operator 전용 API/CLI 명령이며 MCP agent record의 승인 권한을 늘리지 않는다.
 
 `close_unknown`은 resolved history·불완전 coverage·unknown disposition을 남기고 admission을 닫는다. 사실의 정확성·freshness·인간 Accept나 source 분류 승인이 아니다. 늦은 agent 결과가 이 결정을 덮어쓸 수 없다. `reopen`은 최신 revision·권한·snapshot과 현재 queue capacity를 다시 검사하며, 근거가 여전히 없으면 그 gap을 유지한다. queue 상한이나 revision fence를 올려 재개하지 않는다. operator의 exact Accept/Reject로 code 작업이 처리된 뒤에도 늦은 assessment를 새 성공으로 받지 않는다.
 
-`health:quarantine`은 현재 scope에서 보류된 기억의 bounded opaque ref/revision/version 목록이다. `context.partial`과 `context.health`의 `withheld`·`unknown_assessments`·`closed_unknown_work`를 empty corpus나 healthy 완료로 해석하지 않는다. current source policy/dependency 자격을 잃은 분류는 건강 분모에서 제외하며 인간의 exact review 기록이 그 분류를 현재 것으로 바꾸지 않는다. body가 필요한 판단은 원래 inspect/admission·권한 경로를 사용한다.
+`health:quarantine`은 현재 binding·snapshot에서 보류된 기억의 bounded opaque ref/revision/version 목록이며 context의 `code_workspace_id`로 필터링하지 않는다. `context.health.withheld`는 해당 context workspace 범위의 수이므로 inventory와 수를 맞추거나 일대일 대응으로 간주하지 않는다. `context.partial`과 `context.health`의 `withheld`·`unknown_assessments`·`closed_unknown_work`를 empty corpus나 healthy 완료로 해석하지 않는다. current source policy/dependency 자격을 잃은 분류는 건강 분모에서 제외하며 인간의 exact review 기록이 그 분류를 현재 것으로 바꾸지 않는다. body가 필요한 판단은 원래 inspect/admission·권한 경로를 사용한다.
 
