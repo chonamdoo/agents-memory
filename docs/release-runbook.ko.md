@@ -263,7 +263,10 @@ gateway observation은 invocation별 단일 `gateway.json`과 terminal의 digest
 
 작업을 unknown으로 명시 종결하거나 다시 열려면 먼저 권한 있는 `health:item:<pending_id>` inspect로 현재 `health_revision`과 scope를 읽는다. 완전한 strict mutation command에 `kind="health_work_disposition"`, `pending_id`, `expected_pending_revision`(읽은 `health_revision`), 해당 snapshot, `decision="close_unknown"|"reopen"`, 이유와 기존 binding/revision/idempotency 필드를 넣고 `health apply --command-file FILE`로 제출한다. operator 전용 API/CLI 명령이며 MCP agent record의 승인 권한을 늘리지 않는다.
 
-`close_unknown`은 resolved history·불완전 coverage·unknown disposition을 남기고 admission을 닫는다. 사실의 정확성·freshness·인간 Accept나 source 분류 승인이 아니다. 늦은 agent 결과가 이 결정을 덮어쓸 수 없다. `reopen`은 최신 revision·권한·snapshot과 현재 queue capacity를 다시 검사하며, 근거가 여전히 없으면 그 gap을 유지한다. queue 상한이나 revision fence를 올려 재개하지 않는다. operator의 exact Accept/Reject로 code 작업이 처리된 뒤에도 늦은 assessment를 새 성공으로 받지 않는다.
+`close_unknown`은 resolved history·불완전 coverage·unknown disposition을 남기고 admission을 닫는다. 사실의 정확성·freshness·인간 Accept나 source 분류 승인이 아니다. 늦은 agent 결과뿐 아니라 capture 성공·동일 입력 refresh·refresh 실패도 원래 operator disposition과 event 연결을 덮거나 작업을 자동 재개할 수 없다. 실제 새 입력이 revision을 바꾸면 이전 revision의 reopen은 거절된다. `reopen`은 최신 revision·권한·snapshot과 현재 queue capacity를 다시 검사하며, 근거가 여전히 없으면 그 gap을 유지한다. queue 상한이나 revision fence를 올려 재개하지 않는다. machine assessment가 완료된 작업의 실제 새 근거 재등록은 operator의 terminal unknown과 구분한다. operator의 exact Accept/Reject로 code 작업이 처리된 뒤에도 늦은 assessment를 새 성공으로 받지 않는다.
 
 `health:quarantine`은 현재 binding·snapshot에서 보류된 기억의 bounded opaque ref/revision/version 목록이며 context의 `code_workspace_id`로 필터링하지 않는다. `context.health.withheld`는 해당 context workspace 범위의 수이므로 inventory와 수를 맞추거나 일대일 대응으로 간주하지 않는다. `context.partial`과 `context.health`의 `withheld`·`unknown_assessments`·`closed_unknown_work`를 empty corpus나 healthy 완료로 해석하지 않는다. current source policy/dependency 자격을 잃은 분류는 건강 분모에서 제외하며 인간의 exact review 기록이 그 분류를 현재 것으로 바꾸지 않는다. body가 필요한 판단은 원래 inspect/admission·권한 경로를 사용한다.
+
+feedback의 accept/decline 판정 이력·opaque event/reason 참조는 원문 접근 허가가 아니다. 사유 source를 `inspect --snapshot SNAPSHOT`으로 읽을 때 현재 실제 target/source 공개 자격을 다시 검사한다. scoped target을 다른 snapshot에서 보지 못하면 그 판정 사유 원문도 읽을 수 없다. 전역 target은 판정을 받은 request snapshot과 다르다는 이유만으로 숨기지 않는다. 후보 또는 사유의 private 원문 삭제 뒤에도 본문 없는 기존 판정 이력과 version을 보존하며 삭제된 본문을 복원하지 않는다.
+
 

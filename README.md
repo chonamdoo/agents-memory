@@ -253,7 +253,7 @@ Raw note·feedback reason·memory echo는 미판단 coverage에 포함하지 않
 
 `health apply --command-file FILE`은 완전한 strict command를 제출한다. producer의 `health observer --binding ID`는 body-free metadata만 읽는다. 이미 승인된 native receipt가 있는 workspace는 `health workspace-prepare`, `workspace-register`, `observe`를 사용하며 등록과 관측을 혼동하지 않는다. 이 명령은 native trust/strict capability·운영 corpus/egress 권한을 새로 부여하지 않는다.
 
-관측 근거를 더 확보할 수 없는 작업은 operator가 현재 `health_revision`에 묶인 `health_work_disposition`으로 `close_unknown`하거나 명시 `reopen`할 수 있다. unknown 종결은 기억의 Accept·사실성·freshness 승인이 아니며 agent가 자동 재개하지 않는다. 필수 입력과 재검사 조건은 [건강 판정 운영 계약](docs/release-runbook.ko.md#건강-판정-입력과-admission)을 따른다.
+관측 근거를 더 확보할 수 없는 작업은 operator가 현재 `health_revision`에 묶인 `health_work_disposition`으로 `close_unknown`하거나 명시 `reopen`할 수 있다. unknown 종결은 기억의 Accept·사실성·freshness 승인이 아니며 늦은 capture·refresh 성공/실패가 원래 operator 결정을 덮거나 자동 재개하지 않는다. 실제 새 입력은 revision을 갱신하므로 reopen에도 최신 revision·현재 권한·queue capacity가 필요하다. 필수 입력과 재검사 조건은 [건강 판정 운영 계약](docs/release-runbook.ko.md#건강-판정-입력과-admission)을 따른다.
 
 `health apply-evaluation --run-dir DIR --command-file FILE --expected-sha256 SHA`는 보존한 manifest·전체 attempt·실제 producer/MCP trace·oracle/cleanup receipt와 현재 inspect 결과로 evidence를 다시 구성한다. 원래 command의 admission을 교체하지 않으며 최종 권한 검사는 서버가 맡는다. 독립 adjudication은 `--adjudication-file FILE`로만 공급하고 없으면 unknown이다. digest는 파일 무결성 연결이지 독립 인간 검토·서명·실제 native 실행의 증명이 아니다.
 

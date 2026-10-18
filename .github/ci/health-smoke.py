@@ -742,8 +742,9 @@ class Smoke:
         self.begin("feedback_resolution_reason_disclosure")
         source = await self.capture("scoped-feedback-source", "CacheKey scoped evidence remains bounded.",
                                     snapshot="snapshot_alpha")
+        # The agent records this window; an operator-issued admission is not transferable.
         window = await self.cli("inspect", "--binding", self.binding, "--ref", source["source_id"],
-                                "--snapshot", "snapshot_alpha")
+                                "--snapshot", "snapshot_alpha", role="agent")
         span = window["span_inventory"][0]
         selected = await self.record({
             "kind": "source_selection", "binding_id": self.binding, "idempotency_key": "publish-scoped-feedback-claim",

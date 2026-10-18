@@ -5288,6 +5288,7 @@ class Store:
     async def _health_event_visible(self, connection, binding_id, event, snapshot, *, reason_body: bool = False) -> bool:
         if event['state'] != 'active' or event['payload'] is None or event['realm'] != self.settings.realm:
             return False
+        # Decision metadata outlives erased candidate text; its rationale still needs live target disclosure.
         if reason_body and event['kind'] == 'feedback_resolution':
             target = await connection.fetchrow('SELECT target_ref FROM am_feedback WHERE id=$1 AND binding_id=$2',
                 event['target_ref'], binding_id)

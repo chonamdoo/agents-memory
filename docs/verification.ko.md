@@ -1442,3 +1442,25 @@ source digest `7c8f14503cbafe5816c34f463d008349d367b0546ece9a87fbc357047b234761`
 현재 run의 `actions-b4c450c-current-policy-qualified-green/observed-success-summary.json`, 원본 phase/API/job/artifact·health/evaluation/cleanup·data-only distribution checksum과 current-policy source phase를 보존했다. 새 문서 포함 source의 재확인과 genuine6Opus5.5+6Sol6.1 xhigh/각600s whole-source review·CI-only QA는 다음 단계다. 원래18개 완료0, 로컬 검증0, 실제 native/OS/운영/egress/human120/60task×3·180validpair/실제1–2주/최종 publication/merge/release 미승인은 그대로다.
 
 
+### 정상 review R14–R17: model 관측·terminal 소유권·사유 공개 경계
+
+`0944b4904c9942704351a287b0c82fd4531e0199`의 정상 native review `eead9d92b040460a9baa85ed8a39d43d`는 실제12개 보고서를 완료했다. 판정은9approve·3request-changes·timeout/null0이며 원본 보고서12개와 archive15파일의 checksum 일치를 확인했다. 전체 판정은 request-changes다. 일부 보고서가6869c1e 이후 delta만 깊게 검토했다고 명시하므로 whole-PR 승인으로 재사용하지 않는다. 다음 정상 review는 전체 inherited source의 direct-read 범위를 명시하며 원래2MiB 입력 bound·각600초·provider/판정을 변경하지 않는다.
+
+| checkpoint / Actions | 전체 source pass/fail | 별도 설치 wheel pass/fail | 실제 관측·분류 |
+|---|---:|---:|---|
+| `7320c9ec` / [39098857295](https://github.com/chonamdoo/agents-memory/actions/runs/39098857295) |3110/17|724/17|12native model 관측·3terminal 소유권은 genuine call 실패. feedback2개는 본문 없는 판정 이력까지 숨기라는 과도한 기대에서 중단했으며 뒤의 직접 사유 읽기에 도달하지 않음 |
+| `fd954a75` / [39100188640](https://github.com/chonamdoo/agents-memory/actions/runs/39100188640) |3111/16|725/16|지원되지 않는 metadata 거절 기대를 삭제하고 실제 사유 원문 읽기로 교체.12native·3terminal·1scoped 사유 원문의 같은16개 node에서 setup/teardown pass·call fail |
+| `41dd0276` / [39100584091](https://github.com/chonamdoo/agents-memory/actions/runs/39100584091) |3127/0|741/0|위16개 node의 모든 phase pass. 실제 source/설치 HTTP·CLI는 각각24개 outcome pass 후 새 feedback 시나리오의 scoped source-selection 기록 전제에서 CLI_FAILED. strict aggregate는 실패 |
+
+각 완료 실행의 collection issue·skip·xfail·xpass는0이며 source는 네 disjoint shard다. 수정한 scoped 사유 회귀는 다른 snapshot에서 합성 rationale 원문이 실제 반환돼 실패했다. 실제 고객 비밀 유출·tenant 권한 상승·native 보호 proof로 확대하지 않는다. 전역 사유의 다른 request 공개, source 철회 뒤 사유 비공개, 후보/사유 원문 삭제 뒤 독립 판정 이력은 corrected-before부터 통과한 대조군이다. 이를 새로운 red→green으로 세지 않는다. 원래17실패 기록과 오진 정정·corrected16실패·source/설치 phase receipts를 모두 보존했다.
+
+model 관측은 initial/main/helper/pipeline/reroute를 공유 typed 값으로 구분한다. terminal 혼합만으로 main fallback을 단정하지 않으며 잘못된·귀속 불명·상관된 reroute를 같은 generic 원인으로 뭉개지 않는다. completed attempt·원래 입력/제출·usage/unknown cost·전체 실패 분모와 cleanup은 유지했다. actual installed 평가 smoke도 실제 producer HTTP→native protocol peer→MCP→controller→격리 verifier/scorer→health 경로를 완료했다. 합성 native peer와 engineering oracle이며 실제 구독 model 효익·독립 gold가 아니다.
+
+terminal unknown은 실제 늦은 capture 뒤에도 원래 operator disposition과 닫힌 admission을 유지한다. 새 입력 뒤 구형 revision의 reopen을 거절하고 최신 exact reopen에서 새 source를 확인하는 HTTP·CLI 경로가 source/설치 양쪽에서 통과했다. 반복 refresh 오류·다른 credential의 무변경 입력·machine-assessed 작업의 실제 새 근거 재등록도 source/설치 회귀에서 구분했다. health consumer의 project adapter·service 정상 종료·Store/admin close·private schema 제거와 private evidence 보존은 실패 경로에서도 성공했다.
+
+첫 수정본의 installed wheel receipt SHA256은 `6d2e441063d1306ed46a23986ef4e1789835522af9654c8c29629ca96545c37b`이며 full pipeline 실패로 공개 distribution artifact는 없었다. source digest 전후는 `87f9f6a47cd14303f099c8b76f30bee7e51c06675de66023bd29fb7234304d10`으로 같았다. 성공한 테스트나24개 소비 outcome을25개 전체 소비·전체 aggregate 성공으로 확대하지 않는다. 새 feedback 소비는 아직 사유 공개 검사에 도달하지 않았으며 후속 `af5a4b4f` / [Actions39101328192](https://github.com/chonamdoo/agents-memory/actions/runs/39101328192)에서 원문·traceback 없는 bounded CLI code 진단을 추가했다.
+
+현재 run의 `actions-fd954a7-corrected-private-reason-before/observed-failure-summary.json`, `actions-41dd027-first-fix/observed-partial-success-summary.json`, 원본 API/job/artifact/log와 `r17-feedback-reason-contract-correction.json`이 증거를 구분한다. 로컬 검증은 실행하지 않았다. current whole-source 승인·CI-only QA·최종 publication과 원래18개 완료는 이 기록으로 선언하지 않는다.
+
+`af5a4b4f` / [Actions39101328192](https://github.com/chonamdoo/agents-memory/actions/runs/39101328192)의 source/설치 소비 양쪽에서 새 bounded 진단은 `ADMISSION_STALE`이었다. 실제 fixture는 default operator로 source window admission을 발급받은 뒤 agent credential로 그 admission을 소비하려 했다. 기존 `_recheck_nonmodel`은 credential ID·generation·realm을 일치시켜야 하므로 이 혼용은 허용되지 않는다. fixture의 window inspect를 실제 record와 같은 agent credential로 고치며, 제품 admission fence·snapshot·판정·timeout을 완화하거나 실패를 retry로 덮지 않는다. 이 실행과 처음 CLI_FAILED 실행은 feedback 사유 검사의 red가 아니라 선행 admission 실패로 보존한다.
+
