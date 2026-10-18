@@ -553,6 +553,9 @@ async def exercise():
                 await call('memory_required_context', channel['required_request'])
                 if event_mode == 'valid':
                     await call('memory_required_context', channel['required_request'])
+                if event_mode == 'receipt-bound':
+                    for _ in range(12):
+                        await call('memory_required_context', channel['required_request'])
                 if {complete!r}:
                     key = hashlib.sha256(identity.encode()).hexdigest()
                     capture = json.loads((run_dir / 'ledger' / (key + '.capture.json')).read_bytes())
@@ -669,6 +672,27 @@ async def test_actual_controller_does_not_stamp_frozen_identity_after_model_rero
         assert gateway["observation_complete"] is True and gateway["final_reads"]
         assert result["input_tokens"] == 12 and result["output_tokens"] == 3
         assert result["cost_usd"] is None
+
+
+async def test_actual_bounded_gateway_completion_preserves_terminal_and_later_attempts(authority, tmp_path):
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        path, run_dir = tmp_path / "manifest.json", tmp_path / "run"
+        peer = _controller_peer(path, run_dir, True, event_mode="receipt-bound")
+        path, config, _ = fixture_inputs(
+            tmp_path, repeats=1, preflight_gateway=_actual_preflight_channel(agent, producer), peer=peer,
+        )
+        config["record_bytes"] = 16384
+        save(path, config)
+        manifest = load_manifest(path)
+        await asyncio.to_thread(run_evaluation, manifest, run_dir)
+        invocation = manifest.workload["invocations"][0]
+        terminal = evaluation._read_terminal(manifest, run_dir, invocation)
+        receipt, _ = evaluation._gateway_receipt(manifest, run_dir, invocation)
+        assert terminal["status"] == "completed" and terminal["comparable"] is True
+        assert terminal["native_identity_observed"] is True
+        assert terminal["evidence_refs"]["gateway"] == digest_bytes(canonical_bytes(receipt))
+        _, arms, retrieval = load_report_inputs(run_dir)
+        assert [(row.status, row.comparable) for row in (*arms, *retrieval)] == [("blocked", False)] * 4
 
 
 @pytest.mark.parametrize("event_mode", ["missing", "arguments", "result", "server", "duplicate", "foreign-meta", "call-id-meta"])

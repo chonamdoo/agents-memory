@@ -43,7 +43,7 @@
 | U33 | 구현·증거·실배포 구분 | 로컬/remote 구현과 격리 TLS/PG/vendor/native 실행, fresh 공식 review/QA/handoff, 실제 trial, 계정 provisioning·외부 witness·corpus 승인·publication을 별도 기록. cloud 개발은 최신 지시로 trial과 독립 진행하되 운영 승인으로 확대하지 않음 |
 | U34 | macOS 자동 시작·장애 복구·명시 중지 | per-user launchd RunAtLoad·abnormal restart. DB 왕복 ready 후 연결·새 event 없는 bounded spool 전송·unavailable/지원 strict fail-closed. stop은 disabled를 먼저 저장하고 native unload를 bounded 확인, client/install/recovery 부활 금지. remote는 PC recovery만 관리 |
 | U35 | 건강 관리·DB 비대화 제안 적대적 리뷰 | 원래 조사 결정: provenance/Health Audit/Accept-Reject/coalesce/retention·구형 DB/backup·참고 OSS의 성장 대책을 비교하며, 당시 리뷰만으로 새 subsystem·자동 삭제·전송·승격을 승인하지 않음. 이후 명시 구현 지시는 U36으로 구분 |
-| U36 | 빠진 네 메모리 건강 관리 경로 구현 | 최신 사용자 지시로 명시 코드 anchor와 변경 관측, 이미 관측한 세션 구간의 사후 재검토, 관련성/정확성/최신성 분리와 평가 연결, exact revision별 인간 Accept/Reject를 구현. health는 기본 비활성이며 권한·현재 manifest·버전 검사를 유지. 현재 전체 통합 smoke·새 whole-source 공식 review/QA는 미완료이며 실제 native·운영·human gold·trial·출시 승인과 별개 |
+| U36 | 빠진 네 메모리 건강 관리 경로 구현 | 최신 사용자 지시로 명시 코드 anchor와 변경 관측, 이미 관측한 세션 구간의 사후 재검토, 관련성/정확성/최신성 분리와 평가 연결, exact revision별 인간 Accept/Reject를 구현. health는 기본 비활성이며 권한·현재 manifest·버전 검사를 유지. source·설치 wheel health 및 전체 평가 통합 smoke의 engineering 성공은 검증 기록의 exact source·범위에만 적용한다. 새 whole-source 공식 review/QA는 미완료이며 실제 native·운영·human gold·trial·출시 승인과 별개 |
 
 ## 추가 필수 불변식
 
@@ -95,4 +95,4 @@ Spool의 local invalid 판정뿐 아니라 늦은 remote ACK·확정 거절도 �
 
 ## 공개·권한 경계
 
-기존 `research/`는 사용자의 기존 파일이다. 일괄 stage/삭제하지 않고 이번 작업 소유 제품·설계 파일만 명시적으로 stage한다. 회사 자료·credential·원문 capture·로컬 DB·모델 weight·backup은 repository에 넣지 않는다. 사용자는 **#5 전체 항목 해결과 공식 검증 후에만 commit→push→PR**, **main merge 확인 후 실제 Agent Flow 프로젝트 폴더에 merged MCP 설치·동작 확인**을 요구했다. 부분/draft PR로 대체하지 않으며 merge·원문/credential 공개 승인은 없다. 최신 검증 지시는 실패 항목만 재검사하는 것이므로 이미 통과한 테스트와 전체 suite를 반복하지 않고 중단/부분 결과를 정확히 기록한다.
+기존 `research/`는 사용자의 기존 파일이다. 일괄 stage/삭제하지 않고 이번 작업 소유 제품·설계 파일만 명시적으로 stage한다. 회사 자료·credential·원문 capture·로컬 DB·모델 weight·backup은 repository에 넣지 않는다. 사용자는 **#5 전체 항목 해결과 공식 검증 후에만 final commit→push→PR**, **main merge 확인 후 실제 Agent Flow 프로젝트 폴더에 merged MCP 설치·동작 확인**을 요구했다. 이후 명시 허용한 미검증 CI checkpoint commit·push와 기존 PR 갱신은 final publication과 구분하며 merge·원문/credential 공개 승인은 없다. 2026-10-14의 “실패한 항목만 재검사”는 당시 실행 이력이다. 2026-10-16 후속 지시는 기존 전체 suite·필수 조건·설치 소비자·최종 집계를 GitHub Actions에서 병렬 실행하고 로컬에서는 테스트·collection·lint·build·syntax·format·reproduction·추가 smoke를 실행하지 않는 것이다. 중단·부분·실패 결과를 성공으로 대체하지 않는다.
