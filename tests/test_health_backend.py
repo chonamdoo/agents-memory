@@ -282,6 +282,78 @@ async def test_feedback_accept_requires_actual_matching_authorized_successor(com
     assert (await company.store.source(company.actor, company.binding_id, replacement.source_id)).body == 'CacheKey is not retained offline.'
 
 
+@pytest.mark.parametrize(('entry', 'snapshot'), [
+    ('direct', None), ('direct', 'snapshot_beta'), ('pending', 'snapshot_beta'),
+])
+async def test_health_feedback_withholds_reason_and_target_outside_current_snapshot(company, entry, snapshot):
+    await enabled(company)
+    _, _, claim = await candidate(company, snapshot='snapshot_alpha')
+    marker = 'PrivateAlphaCorrection is not available in another request snapshot.'
+    feedback = await company.store.feedback(company.actor, FeedbackCommand(
+        binding_id=company.binding_id, idempotency_key='scoped-feedback', target_ref=claim.id,
+        kind='correct', body=marker))
+    ref = 'health:feedback:' + feedback.artifact_id
+    if entry == 'pending':
+        page = await company.store.inspect(company.actor, company.binding_id, 'health', 'snapshot_alpha')
+        ref = page['items'][0]['ref']
+    allowed = await company.store.inspect(company.actor, company.binding_id, ref, 'snapshot_alpha')
+    assert allowed['candidate']['body'] == marker
+    assert allowed['candidate']['target_ref'] == claim.id
+    withheld = await company.store.inspect(company.actor, company.binding_id, ref, snapshot)
+    assert withheld['candidate']['body_unavailable'] is True
+    assert withheld['candidate']['body'] is None
+    assert 'target_ref' not in withheld['candidate']
+    assert marker not in json.dumps(withheld)
+    unrelated = await capture(company, key='global-feedback-target')
+    global_feedback = await company.store.feedback(company.actor, FeedbackCommand(
+        binding_id=company.binding_id, idempotency_key='global-feedback', target_ref=unrelated.source_id,
+        kind='correct', body='Global correction remains visible in the current snapshot.'))
+    global_view = await company.store.inspect(company.actor, company.binding_id,
+        'health:feedback:' + global_feedback.artifact_id, snapshot)
+    assert global_view['candidate']['body'] == 'Global correction remains visible in the current snapshot.'
+
+
+@pytest.mark.parametrize('snapshot', [None, 'snapshot_beta'])
+async def test_health_item_requires_callers_snapshot_before_returning_exact_claim_meaning(company, snapshot):
+    await enabled(company)
+    _, _, claim = await candidate(company, snapshot='snapshot_alpha')
+    for sequence, boundary in enumerate(('start', 'end'), 1):
+        await company.store.health(company.actor, SessionObservationCommand(
+            **mutation(company, 'scoped-health-' + boundary), stream_id='stream_scoped', segment_id='segment_scoped',
+            event_id='event_' + boundary, sequence=sequence, event=boundary, root_run_id='run_scoped',
+            agent_path='agent_scoped', claim_refs=[{'id': claim.id, 'revision': claim.revision}],
+            coverage='partial', gaps=['HOST_SESSION_WINDOW_UNOBSERVED']))
+    page = await company.store.inspect(company.actor, company.binding_id, 'health', 'snapshot_alpha')
+    ref = page['items'][0]['ref']
+    allowed = await company.store.inspect(company.actor, company.binding_id, ref, 'snapshot_alpha')
+    assert allowed['claims'][0]['statement'] == claim.draft.statement
+    with pytest.raises(DomainError) as denied:
+        await company.store.inspect(company.actor, company.binding_id, ref, snapshot)
+    assert claim.draft.statement not in str(denied.value)
+
+
+async def test_health_feedback_withdrawal_scrubs_fresh_view_and_fences_prior_admission(company):
+    await enabled(company)
+    source, _, claim = await candidate(company)
+    marker = 'WithdrawnTargetCorrection must not escape through a health candidate.'
+    feedback = await company.store.feedback(company.actor, FeedbackCommand(
+        binding_id=company.binding_id, idempotency_key='withdrawn-health-feedback', target_ref=claim.id,
+        kind='retract_request', body=marker))
+    ref = 'health:feedback:' + feedback.artifact_id
+    before = await company.store.inspect(company.actor, company.binding_id, ref)
+    assert before['candidate']['body'] == marker
+    await company.store.retract(company.actor, company.binding_id, source.source_id, 'withdraw-feedback-target-source')
+    after = await company.store.inspect(company.actor, company.binding_id, ref)
+    assert after['candidate']['body_unavailable'] is True
+    assert after['candidate']['body'] is None and 'target_ref' not in after['candidate']
+    assert marker not in json.dumps(after)
+    with pytest.raises(DomainError):
+        await company.store.health(company.actor, FeedbackResolutionCommand(
+            **mutation(company, 'stale-feedback-decline'), admission_id=before['admission']['id'],
+            feedback_ref=feedback.artifact_id, expected_feedback_version=before['candidate']['version'],
+            decision='decline', reason='A withdrawn target cannot reuse the earlier disclosed admission.'))
+
+
 async def test_late_capture_revises_same_session_work_and_fences_old_assessment(company):
     await enabled(company)
     _, _, claim = await candidate(company)

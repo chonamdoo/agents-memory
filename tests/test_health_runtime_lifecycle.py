@@ -4,8 +4,11 @@ import asyncio
 import json
 import logging
 
+import httpx
 import pytest
 from test_edge_boundaries import AGENT_TOKEN, request, tool
+from test_evaluation_gateway import actual_upstream
+from test_store_authority import TOKEN
 from test_store_authority import authority as authority
 from uvicorn import Config
 from uvicorn.lifespan.on import LifespanOn
@@ -161,3 +164,26 @@ async def test_actual_uvicorn_lifespan_logs_only_body_free_failure_and_preserves
         edge.raise_for_lifecycle_failure()
     assert failed.value.code == "SERVICE_LIFECYCLE_FAILED"
     assert marker not in str(failed.value)
+
+
+async def test_actual_uvicorn_readiness_contains_unexpected_private_judge_state_failure(authority, tmp_path, monkeypatch, caplog):
+    from agents_memory import edge as edge_module
+
+    marker = "SYNTHETIC_PRIVATE_READINESS_PATH_DSN"
+
+    def denied_state(settings):
+        raise PermissionError(marker)
+
+    async with actual_upstream(authority, tmp_path) as (agent, _):
+        monkeypatch.setattr(edge_module, "load_state", denied_state)
+        with caplog.at_level(logging.ERROR, logger="uvicorn.error"):
+            async with httpx.AsyncClient() as client:
+                response = await client.get(agent.endpoint.base_url + "/readyz",
+                    headers={"Authorization": "Bearer " + TOKEN})
+        assert response.status_code == 503
+        ready = response.json()
+        assert ready["ready"] is False and ready["db_ready"] is True
+        assert ready["judgment"] == "unavailable" and ready["server_inference"] == "unknown"
+        assert ready["judge_error"] == "JUDGE_STATE_INVALID"
+    assert marker not in response.text and marker not in caplog.text
+    assert "Traceback" not in caplog.text

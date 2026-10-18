@@ -1231,6 +1231,26 @@ async def test_readyz_roundtrips_database_and_refuses_dispatch_on_authority_outa
         assert error["effect"] == "not_started" and "private" not in body.decode()
 
 
+@pytest.mark.parametrize("path", ["/mcp", "/api/context"])
+async def test_authentication_pool_exhaustion_preserves_database_busy_not_started(authority, path):
+    async with running(authority) as edge:
+        store = edge.application.store
+        store.settings = store.settings.model_copy(update={"pool_acquire_timeout_seconds": 0.2})
+        held = [await store.pool.acquire() for _ in range(store.pool.get_max_size())]
+        try:
+            arguments = {"binding_id": authority.binding_id, "query": "CacheKey offline"}
+            status, body = await request(edge, tool(arguments) if path == "/mcp" else arguments, path=path)
+            error = json.loads(body)["error"]
+            assert status == 503
+            assert error["code"] == "DATABASE_BUSY" and error["effect"] == "not_started"
+        finally:
+            for connection in held:
+                await store.pool.release(connection)
+        assert (await store.stats(authority.actor, authority.binding_id))["active_sources"] == 0
+        status, _ = await request(edge, tool(arguments) if path == "/mcp" else arguments, path=path)
+        assert status == 200
+
+
 @pytest.mark.parametrize("behavior", ["stalled", "slow_drip"])
 async def test_complete_post_deadline_releases_capacity_without_capturing_partial_memory(authority, monkeypatch, behavior):
     monkeypatch.setattr(edge_module, "HTTP_BODY_SECONDS", 0.05)

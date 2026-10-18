@@ -681,12 +681,17 @@ async def test_actual_bounded_gateway_completion_preserves_terminal_and_later_at
         path, config, _ = fixture_inputs(
             tmp_path, repeats=1, preflight_gateway=_actual_preflight_channel(agent, producer), peer=peer,
         )
-        config["record_bytes"] = 16384
+        config["record_bytes"] = 24576
         save(path, config)
         manifest = load_manifest(path)
         await asyncio.to_thread(run_evaluation, manifest, run_dir)
         invocation = manifest.workload["invocations"][0]
         terminal = evaluation._read_terminal(manifest, run_dir, invocation)
+        assert terminal["status"] == "completed", {
+            "code": terminal["code"], "reasons": terminal["comparability_reasons"],
+            "gateway_bytes": next((item.stat().st_size for item in (run_dir / "ledger").glob("*.gateway.json")), None),
+            "largest_trace_record": max(item.stat().st_size for item in (run_dir / "traces").rglob("*.json")),
+        }
         receipt, _ = evaluation._gateway_receipt(manifest, run_dir, invocation)
         assert terminal["status"] == "completed" and terminal["comparable"] is True
         assert terminal["native_identity_observed"] is True
