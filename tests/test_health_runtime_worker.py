@@ -532,3 +532,124 @@ async def test_health_admission_failure_is_not_repaid_until_observed_work_change
     view = await world.inspect("health:claim:" + claim.id)
     assert view["health"]["operator_review"] == "reject"
     assert world.worker.counts.health_assessments_recorded == 1
+
+
+@pytest.mark.parametrize("allow_health", [True, False])
+async def test_next_worker_judgment_uses_authorized_exact_reject_without_blacklisting_source(
+    world, authority, allow_health,
+):
+    claim = await health_work(world, authority, allow=allow_health)
+    reason = "CacheKey retention is disputed; do not confidently repeat thirty days."
+    view = await world.inspect("health:claim:" + claim.id)
+    await world.application.health(world.operator, MemoryReviewCommand(
+        binding_id=world.binding_id, expected_binding_revision=1, idempotency_key="worker-next-review",
+        admission_id=view["admission"]["id"], claim_ref=RevisionRef(id=claim.id, revision=claim.revision),
+        expected_health_version=view["health"]["version"], decision="reject", reason=reason,
+    ))
+    world.jev.remember_default = 0.95
+    original = world.jev.system_one
+
+    def reasoned_judgment(state, questions, *, before_attempt):
+        result = original(state, questions, before_attempt=before_attempt)
+        advice = state.get("health_dispositions", [])
+        if not any(item.get("decision") == "reject" and item.get("reason") == reason for item in advice):
+            return result
+        spans = {span["id"]: span["text"] for span in state.get("spans", [])}
+        answers = dict(result.answers)
+        for key in questions:
+            if key.startswith("remember_") and "thirty days" in spans.get(key.removeprefix("remember_"), ""):
+                answers[key] = {"type": "noul", "noul": 0.5}
+        return JevResult(result.model, answers, result.input_tokens)
+
+    world.jev.system_one = reasoned_judgment
+    health_provider(world)
+    disputed = await world.capture("worker-disputed-successor", "CacheKey keeps offline responses for thirty days.")
+    independent = await world.capture("worker-independent-successor", "AuditKey has a separate retention owner.")
+
+    await world.worker.cycle()
+
+    selected = await world.rows("SELECT label FROM am_source_selections WHERE source_id=$1", disputed.source_id)
+    assert selected == ([] if allow_health else [{"label": "remember"}])
+    assert await world.rows(
+        "SELECT label FROM am_source_selections WHERE source_id=$1", independent.source_id,
+    ) == [{"label": "remember"}]
+    if not allow_health:
+        assert reason not in json.dumps(world.jev.calls)
+
+
+def withdrawing_provider(world, withdraw, boundary):
+    loop = asyncio.get_running_loop()
+    calls = []
+    changed = False
+
+    def change():
+        nonlocal changed
+        if not changed:
+            asyncio.run_coroutine_threadsafe(withdraw(), loop).result()
+            changed = True
+
+    class Peer:
+        def open(self, request, timeout=None):
+            payload = json.loads(request.data)
+            calls.append(payload)
+            if boundary in {"retry", "support"}:
+                change()
+            if boundary == "retry" and len(calls) == 1:
+                raise http_error(503, {"Retry-After": "0"})
+            answers = {}
+            for key, question in payload["questions"].items():
+                if question["type"] == "noul":
+                    answers[key] = {"type": "noul", "noul": 0.95}
+                    continue
+                chosen = "s0" if key.startswith("evidence_") else (
+                    "related" if key.startswith("relevance_") else (
+                        "supported" if key.startswith("support_") else next(iter(question["criteria"]))
+                    )
+                )
+                answers[key] = {"type": "choice", "choice": chosen,
+                    "probabilities": {name: float(name == chosen) for name in question["criteria"]}}
+            return io.BytesIO(json.dumps({"model": "jev-1.13.0", "answers": answers}).encode())
+
+    client = JevClient(KEY, "jev-1.13.0", opener=Peer(), sleep=lambda _: None)
+
+    def system_one(state, questions, *, before_attempt):
+        if boundary == "first":
+            change()
+        return client.system_one(state, questions, before_attempt=before_attempt)
+
+    world.jev.system_one = system_one
+    return calls
+
+
+@pytest.mark.parametrize("boundary", ["first", "retry", "support"])
+async def test_health_withdrawal_blocks_new_actual_jev_dispatches(world, authority, boundary):
+    claim = await health_work(world, authority)
+    [source] = await world.rows("SELECT source_id FROM am_claim_sources WHERE claim_id=$1", claim.id)
+
+    async def withdraw():
+        await world.store.retract(world.operator, world.binding_id, source["source_id"], "worker-health-withdraw")
+
+    calls = withdrawing_provider(world, withdraw, boundary)
+
+    await world.worker.cycle()
+
+    assert len(calls) == (0 if boundary == "first" else 1)
+    assert await world.pending("health") == ["retracted"]
+    assert await world.rows(
+        "SELECT id FROM am_health_events WHERE binding_id=$1 AND kind='health_assessment'", world.binding_id,
+    ) == []
+    assert world.worker.counts.health_assessments_recorded == 0
+
+
+async def test_source_withdrawal_blocks_first_actual_jev_dispatch(world):
+    source = await world.capture("worker-source-withdraw", "AuditKey has a separate retention owner.")
+
+    async def withdraw():
+        await world.store.retract(world.operator, world.binding_id, source.source_id, "worker-source-withdraw")
+
+    calls = withdrawing_provider(world, withdraw, "first")
+
+    await world.worker.cycle()
+
+    assert calls == []
+    assert await world.rows("SELECT id FROM am_source_selections WHERE source_id=$1", source.source_id) == []
