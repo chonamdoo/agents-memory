@@ -590,6 +590,34 @@ class Smoke:
         self.check(event["payload"]["provenance"] == "human_presence_unattested", "HUMAN_PRESENCE_OVERCLAIM")
         pool = await self.context()
         self.check(self.claim in {item["claim_id"] for item in pool["candidate_manifest"]}, "REBOUND_CLAIM_MISSING")
+        async with self.store.pool.acquire() as connection:
+            selection = await connection.fetchrow("""SELECT q.id,q.policy_revision
+                FROM am_source_selections q JOIN am_claims c ON c.selection_id=q.id WHERE c.id=$1""", self.claim)
+            await connection.execute("UPDATE am_source_selections SET policy_revision=$2 WHERE id=$1",
+                                     selection["id"], "0" * 64)
+        try:
+            await self.apply(await self.review_command("accept", "review-obsolete-classification",
+                                                       observations=[replacement]))
+            obsolete_review = await self.claim_health()
+            self.check(obsolete_review["health"]["operator_review"] == "accept" and
+                       obsolete_review["health"]["reusable"] is False, "REVIEW_PROMOTED_OBSOLETE_CLASSIFICATION")
+            obsolete_pool = await self.context()
+            self.check(obsolete_pool["health"]["ordinary_claims"] == pool["health"]["ordinary_claims"] - 1,
+                       "OBSOLETE_POLICY_IN_HEALTH_DENOMINATOR")
+            self.check(obsolete_pool["coverage"]["unclassified_sources"] ==
+                       pool["coverage"]["unclassified_sources"] + 1, "OBSOLETE_POLICY_SOURCE_COVERAGE")
+            self.evidence("current-policy-health-qualification", {
+                "before": pool["health"], "obsolete": obsolete_pool["health"],
+                "coverage": obsolete_pool["coverage"], "review": obsolete_review["health"],
+            })
+        finally:
+            async with self.store.pool.acquire() as connection:
+                await connection.execute("UPDATE am_source_selections SET policy_revision=$2 WHERE id=$1",
+                                         selection["id"], selection["policy_revision"])
+        restored_pool = await self.context()
+        self.check(restored_pool["health"]["ordinary_claims"] == pool["health"]["ordinary_claims"],
+                   "INDEPENDENT_CURRENT_POLICY_NOT_PRESERVED")
+        self.check((await self.claim_health())["health"]["reusable"] is True, "CURRENT_POLICY_REUSE_NOT_RESTORED")
         self.passed("current_code_rebind")
         self.begin("required_rules_survive_ordinary_rejection")
         await self.apply(await self.review_command("reject", "ordinary-reject-preserve-rules"))
