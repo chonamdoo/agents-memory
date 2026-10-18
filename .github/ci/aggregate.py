@@ -84,6 +84,12 @@ HEALTH_CASES = {
     "observed_session_work", "late_session_input_fence", "bounded_session_assessment",
     "terminal_work_late_capture_ownership", "feedback_resolution_reason_disclosure",
 }
+CHANGED_HEALTH_CASES = {
+    "real_authority_ready", "producer_observer_body_free", "explicit_policy_opt_in",
+    "frozen_workspace_preparation", "registration_and_exact_retry", "explicit_initial_observation",
+    "grounded_claim_publication", "retracted_session_does_not_block_queued_capture",
+    "exact_health_review_reaches_next_judgment",
+}
 EVALUATION_OUTCOMES = {
     "producer_http_native_mcp_preflight": True, "separate_preflight_binding": True,
     "actual_gateway_stdio": True, "all_attempts": 5, "coding_arms": 2, "valid_pairs": 1,
@@ -145,15 +151,19 @@ def observer_authority(value: object) -> None:
                 "Residual subjects were not actually refused before file observation")
 
 
-def wheel_nodeids(collection: list[str]) -> list[str]:
+def _selected_nodeids(collection: list[str], selectors: tuple[str, ...] | list[str]) -> list[str]:
     selected: set[str] = set()
-    for selector in WHEEL_SELECTORS:
+    for selector in selectors:
         prefixes = (selector + "::", selector + "[")
         matches = {item for item in collection if item == selector or item.startswith(prefixes)}
         require(bool(matches), f"No collected installed-wheel consumer for {selector}")
         require(selected.isdisjoint(matches), "Overlapping installed-wheel selectors")
         selected.update(matches)
     return sorted(selected)
+
+
+def wheel_nodeids(collection: list[str]) -> list[str]:
+    return _selected_nodeids(collection, WHEEL_SELECTORS)
 
 
 def receipt(path: Path) -> dict:
@@ -261,7 +271,7 @@ def command_observation(value: dict) -> None:
 
 
 def health_evidence(value: dict, tested_sha: str, source: str, surface: str,
-                    wheel_digest: str, modules: dict[str, str]) -> tuple[str, str]:
+                    wheel_digest: str, modules: dict[str, str], *, changes_only: bool = False) -> tuple[str, str]:
     identity(value, tested_sha, source)
     owner = actions_identity(value, "tests" if surface == "source" else "checks")
     require(value.get("consumption") == surface, "Wrong health consumer surface")
@@ -275,8 +285,11 @@ def health_evidence(value: dict, tested_sha: str, source: str, surface: str,
     require(health.get("surface") == "health-api-cli" and type(health.get("schema")) is int and health["schema"] == 1
             and type(health.get("original18_completed")) is int and health["original18_completed"] == 0,
             "Wrong health evidence kind")
-    require(health.get("outcomes") == dict.fromkeys(HEALTH_CASES, "passed"),
+    require(health.get("outcomes") == dict.fromkeys(CHANGED_HEALTH_CASES if changes_only else HEALTH_CASES, "passed"),
             "Health semantic outcomes missing, failed or unknown")
+    if changes_only:
+        require(health.get("scope") == "changed_health_consumers_not_full_acceptance",
+                "Changed health consumer evidence incorrectly claims full scope")
     consumed = health.get("consumed")
     require(isinstance(consumed, dict) and consumed.get("child_identity_matches") is True,
             "Health child imported a different package")
@@ -480,19 +493,37 @@ def comment_evidence(artifacts: Path, tested_sha: str, source: str, comparison: 
             "manifest_digest": coverage["manifest_digest"], "finding_count": 0}
 
 
-def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_jobs: dict, *, comparison: dict) -> dict:
+def aggregate(
+    artifacts: Path, expected_shards: int, tested_sha: str, upstream_jobs: dict, *,
+    comparison: dict, selectors: list[str] | None = None, lint_paths: list[str] | None = None,
+) -> dict:
     require(SHA.fullmatch(tested_sha) is not None, "An exact tested head SHA is required")
     require(type(expected_shards) is int and 1 <= expected_shards <= 32, "Invalid shard count")
+    require((selectors is None) == (lint_paths is None), "Changed tests and lint paths must be paired")
+    scope = None
+    if selectors is not None:
+        selectors = nodeids(selectors, "declared changed-path selectors")
+        lint_paths = nodeids(lint_paths, "declared changed Python paths")
+        require(len(selectors) <= 64 and len(lint_paths) <= 64
+                and all(len(value) <= 512 for value in (*selectors, *lint_paths)),
+                "Changed-path selection is unbounded")
+        require(expected_shards == 1, "Changed-path verification uses one source shard and a parallel installed consumer")
+        scope = {"kind": "changes", "selectors": selectors}
     require(isinstance(upstream_jobs, dict)
             and set(upstream_jobs) == {"tests", "checks", "compatibility", "evaluation"},
             "Missing upstream job results")
-    require(all(isinstance(job, dict) and job.get("result") == "success"
-                for job in upstream_jobs.values()), "An upstream job failed, was skipped or was cancelled")
+    expected_jobs = {
+        "tests": "success", "checks": "success",
+        "compatibility": "skipped" if scope else "success", "evaluation": "skipped" if scope else "success",
+    }
+    require(all(isinstance(upstream_jobs[name], dict) and upstream_jobs[name].get("result") == outcome
+                for name, outcome in expected_jobs.items()),
+            "An upstream job disagrees with the declared verification scope")
     paths = sorted(artifacts.rglob("shard.json"))
     require(len(paths) == expected_shards, "Missing or duplicate shard artifacts")
     checks_paths = list(artifacts.rglob("checks.json"))
     require(len(checks_paths) == 1, "Missing or duplicate lint/build artifact")
-    require(len(list(artifacts.rglob("prerequisites.json"))) == expected_shards + 2,
+    require(len(list(artifacts.rglob("prerequisites.json"))) == expected_shards + (1 if scope else 2),
             "Missing or duplicate prerequisite artifacts")
     source = None
     collection = None
@@ -503,6 +534,7 @@ def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_j
         value = receipt(path)
         prerequisites(path.parent / "prerequisites.json", tested_sha, True)
         source = identity(value, tested_sha, source)
+        require(value.get("scope") == scope, "Source receipt has a different verification scope")
         index = value.get("index")
         if type(index) is not int or not 0 <= index < expected_shards:
             raise ValueError("Invalid shard index")
@@ -513,6 +545,8 @@ def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_j
         require(value.get("collection_issues") == [], "Pytest collection failed or skipped a module")
         current = nodeids(value.get("all_nodeids"), "complete collection")
         require(collection is None or collection == current, "Shards collected different tests")
+        if scope:
+            require(_selected_nodeids(current, selectors) == current, "Changed-path collection exceeds its declared selectors")
         collection = current
         selected = nodeids(value.get("selected_nodeids"), "selected tests")
         expected = [item for item in current
@@ -528,10 +562,22 @@ def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_j
     checks = receipt(checks_paths[0])
     prerequisites(checks_paths[0].parent / "prerequisites.json", tested_sha, True)
     identity(checks, tested_sha, source)
+    require(checks.get("scope") == scope, "Check receipt has a different verification scope")
+    commands = CHECK_COMMANDS
+    if scope:
+        require(checks.get("lint_paths") == lint_paths, "Lint paths differ from the declared changed files")
+        commands = {
+            **CHECK_COMMANDS,
+            "lint": ["uv", "run", "ruff", "check", *lint_paths],
+            "wheel-consumer": [
+                *CHECK_COMMANDS["wheel-consumer"],
+                "--test-paths-json", json.dumps(selectors, separators=(",", ":")),
+            ],
+        }
     outcomes = checks.get("checks")
-    if not isinstance(outcomes, dict) or set(outcomes) != set(CHECK_COMMANDS):
+    if not isinstance(outcomes, dict) or set(outcomes) != set(commands):
         raise ValueError("Missing lint/build/wheel outcomes")
-    for name, command in CHECK_COMMANDS.items():
+    for name, command in commands.items():
         outcome = outcomes[name]
         require(isinstance(outcome, dict) and outcome.get("command") == command,
                 f"Unexpected {name} command")
@@ -542,9 +588,10 @@ def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_j
     require(len(wheel_paths) == 1, "Missing or duplicate wheel-consumer artifact")
     wheel = receipt(wheel_paths[0])
     identity(wheel, tested_sha, source)
+    require(wheel.get("scope") == scope, "Installed receipt has a different verification scope")
     require(wheel.get("collection_issues") == [], "Wheel consumer did not collect cleanly")
     selected = nodeids(wheel.get("selected_nodeids"), "wheel-consumer execution")
-    expected_wheel = wheel_nodeids(collection)
+    expected_wheel = collection if scope else wheel_nodeids(collection)
     require(selected == expected_wheel, "The installed wheel did not exercise every declared consumer case")
     execution(wheel, selected)
     distributions = list((artifacts / "distribution").glob("*.whl"))
@@ -559,6 +606,25 @@ def aggregate(artifacts: Path, expected_shards: int, tested_sha: str, upstream_j
                 "Public wheel module inventory is missing or duplicated")
         modules = {name: hashlib.sha256(archive.read(name)).hexdigest() for name in module_names}
     require(wheel.get("installed_modules") == modules, "Installed-wheel module provenance is incomplete")
+    if scope:
+        source_owner = health_evidence(one_receipt(artifacts, "health-source.json"), tested_sha,
+            source, "source", wheel_digest, modules, changes_only=True)
+        installed_owner = health_evidence(one_receipt(artifacts, "health-installed.json"), tested_sha,
+            source, "installed", wheel_digest, modules, changes_only=True)
+        require(source_owner == installed_owner, "Changed health consumers belong to different Actions runs")
+        return {
+            "schema": 1, "complete": True, "tested_sha": tested_sha, "source_digest": source,
+            "scope": scope, "full_suite": False, "collected": len(collection), "passed": len(selected_union),
+            "failed": 0, "skipped": 0, "xfailed": 0, "xpassed": 0,
+            "shards": sorted(shards, key=lambda shard: shard["index"]), "checks": outcomes,
+            "wheel_consumer": {"sha256": wheel_digest, "passed": len(selected), "artifact": distributions[0].name},
+            "health": {"source": True, "installed": True, "scope": "changes", "cases": len(CHANGED_HEALTH_CASES)},
+            "comments": comments,
+            "not_executed": [
+                "unrelated_source_tests", "unrelated_installed_consumers",
+                "macos_ownership_compatibility", "docker_evaluation", "unrelated_health_scenarios",
+            ],
+        }
     health_source = health_evidence(one_receipt(artifacts, "health-source.json"), tested_sha,
                                     source, "source", wheel_digest, modules)
     health_installed = health_evidence(one_receipt(artifacts, "health-installed.json"), tested_sha,
@@ -599,6 +665,8 @@ def main() -> int:
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--expected-shards", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--test-paths-json", help="Expected changed-path source and installed regressions")
+    parser.add_argument("--lint-paths-json", help="Expected changed Python files")
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true":
         parser.error("This gate is GitHub Actions-only")
@@ -607,7 +675,12 @@ def main() -> int:
         jobs = json.loads(os.environ.get("CI_UPSTREAM_JOBS", "{}"))
         policy = runpy.run_path(str(Path(__file__).with_name("comment-check.py")))
         comparison = policy["comparison_base"](tested_sha)
-        result = aggregate(args.artifacts, args.expected_shards, tested_sha, jobs, comparison=comparison)
+        selectors = None if args.test_paths_json is None else nodeids(
+            sorted(json.loads(args.test_paths_json)), "declared changed-path selectors")
+        lint_paths = None if args.lint_paths_json is None else nodeids(
+            sorted(json.loads(args.lint_paths_json)), "declared changed Python paths")
+        result = aggregate(args.artifacts, args.expected_shards, tested_sha, jobs, comparison=comparison,
+                           selectors=selectors, lint_paths=lint_paths)
     except (OSError, ValueError, TypeError) as error:
         result = {"schema": 1, "complete": False, "tested_sha": tested_sha, "error": str(error)}
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -620,6 +693,8 @@ def main() -> int:
             stream.write(f"## Parallel verification: {'PASS' if result['complete'] else 'FAIL'}\n\n")
             stream.write(f"Tested head: `{tested_sha}`\n\n")
             if result["complete"]:
+                if result.get("scope"):
+                    stream.write("Scope: **changed paths only**; unrelated full suites were not executed.\n\n")
                 stream.write(f"{result['passed']} passed; 0 skipped/xfail/xpass; "
                              f"{len(result['shards'])} disjoint shards; lint/build passed.\n")
                 stream.write(f"Source: `{result['source_digest']}`\n")

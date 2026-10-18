@@ -101,3 +101,32 @@ def test_complete_structured_claim_meaning_consumes_the_authorized_byte_budget()
     with pytest.raises(DomainError) as failed:
         HealthInputs.from_bundle(work)
     assert failed.value.code == "HEALTH_EVIDENCE_INCOMPLETE"
+
+
+@pytest.mark.parametrize("invalid", [
+    "claim_polarity", "claim_modality", "claim_validity", "claim_not_mapping",
+    "source_ref_revision", "claim_ref_revision", "source_span", "source_not_mapping",
+])
+def test_malformed_health_evidence_is_an_item_refusal_without_private_validation_details(invalid):
+    work = bundle()
+    marker = "private-health-validation-marker"
+    if invalid == "claim_polarity":
+        work["claims"][0]["polarity"] = marker
+    elif invalid == "claim_modality":
+        work["claims"][0]["modality"] = marker
+    elif invalid == "claim_validity":
+        work["claims"][0]["valid_from"] = marker
+    elif invalid == "claim_not_mapping":
+        work["claims"] = [None]
+    elif invalid == "source_ref_revision":
+        work["input_sources"][0]["revision"] = 0
+    elif invalid == "claim_ref_revision":
+        work["input_claims"][0]["revision"] = 0
+    elif invalid == "source_span":
+        work["sources"][0]["byte_end"] += 1
+    else:
+        work["sources"] = [None]
+    with pytest.raises(DomainError) as refused:
+        HealthInputs.from_bundle(work)
+    assert refused.value.code == "HEALTH_EVIDENCE_INCOMPLETE"
+    assert marker not in str(refused.value.public())

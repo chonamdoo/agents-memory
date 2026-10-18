@@ -5,7 +5,7 @@ import json
 from datetime import UTC, datetime
 
 import pytest
-from test_company_authority import candidate, capture, deliver, judged_context
+from test_company_authority import candidate, capture, deliver, judged_context, judgment
 from test_company_authority import company as company
 
 from agents_memory.domain import (
@@ -86,13 +86,13 @@ async def recall(company, key='recall', *, workspace_id=None):
         request_digest=hashlib.sha256(key.encode()).hexdigest(), code_workspace_id=workspace_id)
 
 
-async def linked_claim(company, *, symbol=False):
+async def linked_claim(company, *, symbol=False, snapshot=None):
     await enabled(company)
     producer = await workspace(company)
     _, observations = await observe(company, producer, 1)
     observation = next(item['ref'] for item in observations['observations']
         if item['symbol_name'] == ('cache' if symbol else ''))
-    _, _, claim = await candidate(company)
+    _, _, claim = await candidate(company, snapshot=snapshot)
     view = await health_view(company, claim, observation)
     command = CodeLinkCommand(**mutation(company, 'link-code'), admission_id=view['admission']['id'],
         claim_ref={'id': claim.id, 'revision': claim.revision}, expected_health_version=view['health']['version'],
@@ -120,6 +120,136 @@ async def test_exact_reject_blocks_recall_and_inflight_delivery_but_not_inspecti
     view = await health_view(company, claim)
     event = await company.store.inspect(company.actor, company.binding_id, 'health:event:' + view['health']['review_event_id'])
     assert event['payload']['provenance'] == 'human_presence_unattested'
+
+
+@pytest.mark.parametrize('disposition', ['reject', 'code_stale', 'restore_unknown'])
+async def test_next_source_judgment_excludes_nonreusable_claims_but_keeps_independent_memory(company, disposition):
+    if disposition == 'code_stale':
+        producer, claim, _, _ = await linked_claim(company)
+        await observe(company, producer, 2, digest='c' * 64)
+        assert (await health_view(company, claim))['health']['freshness'] == 'stale'
+    else:
+        _, _, claim = await candidate(company)
+        await review(company, claim, 'generation-original-review',
+            'accept' if disposition == 'restore_unknown' else 'reject')
+        if disposition == 'restore_unknown':
+            async with company.store.pool.acquire() as connection:
+                head = await connection.fetchval('SELECT journal_head FROM am_clock WHERE singleton')
+            company.actor = await company.store.recover_after_restore(company.actor.id,
+                'generation-restored-operator-' + 'r' * 48, head)
+            assert (await health_view(company, claim))['health']['restore_unknown']
+    _, _, eligible = await candidate(company, key='generation-independent-memory',
+        body='AuditKey has an independent retention owner.')
+    source = await capture(company, key='generation-next-source',
+        body='CacheKey has a newly documented inspection boundary.')
+    view = await company.store.inspect(company.actor, company.binding_id, source.source_id)
+    assert view['judgment_required'] and view['admission_id']
+    assert (await company.store.inspect(company.actor, company.binding_id, claim.id))['statement'] == claim.draft.statement
+    assert {item['id'] for item in view['judgment_context']['accepted_memories']} == {eligible.id}
+
+
+async def test_next_judgment_consumes_current_exact_review_without_new_grounding_or_blanket_blacklist(company):
+    _, _, claim = await candidate(company)
+    rejected = await review(company, claim, 'generation-exact-reject', 'reject')
+    agent = await company.store.issue_token(company.actor, Role.AGENT, (company.binding_id,),
+        'generation-review-agent-' + 'a' * 48)
+    source = await capture(company, key='generation-independent-source', body=claim.draft.statement)
+    view = await company.store.inspect(agent, company.binding_id, source.source_id)
+    current = await company.store.inspect(agent, company.binding_id, 'health:claim:' + claim.id)
+    event = await company.store.inspect(agent, company.binding_id, 'health:event:' + rejected.artifact_id)
+    reason = await company.store.inspect(agent, company.binding_id, event['reason_source_ref'])
+    assert reason['body'] and reason['speaker'] == 'agent_note'
+    feedback = {item['review_event_id']: item for item in view['judgment_context'].get('health_dispositions', [])}
+    assert rejected.artifact_id in feedback, 'Next judgment must discover the current exact Reject.'
+    item = feedback[rejected.artifact_id]
+    assert item['claim_ref'] == {'id': claim.id, 'revision': claim.revision}
+    assert item['health_version'] == current['health']['version']
+    assert item['decision'] == 'reject'
+    assert item['reason_source_ref'] == event['reason_source_ref'] and item['reason'] == reason['body']
+    assert rejected.artifact_id not in view['judgment_context']['required_rejection_ids']
+    command = await judgment(company, source.source_id, 'generation-independent-selection', publish=True, actor=agent)
+    selected = await company.store.record(agent, command.model_copy(update={'rejection_comparisons': ()}))
+    selected_view = await company.store.inspect(agent, company.binding_id, selected.artifact_id)
+    successor = await company.store.claim(agent, company.binding_id, selected_view['claim_ids'][0])
+    assert successor.id != claim.id and successor.draft.statement == claim.draft.statement
+    assert successor.input_source_ids == (source.source_id,)
+    successor_health = await company.store.inspect(agent, company.binding_id, 'health:claim:' + successor.id)
+    assert successor_health['health']['operator_review'] is None
+    assert successor_health['health']['support'] == 'unknown'
+    await review(company, claim, 'generation-new-exact-accept', 'accept')
+    refreshed = await company.store.inspect(agent, company.binding_id, source.source_id)
+    assert rejected.artifact_id not in {
+        item['review_event_id'] for item in refreshed['judgment_context'].get('health_dispositions', [])
+    }
+    assert claim.id in {item['id'] for item in refreshed['judgment_context']['accepted_memories']}
+
+
+@pytest.mark.parametrize('late_change', ['reject', 'code_stale', 'accept'])
+async def test_next_judgment_fences_changed_health_input_without_invalidating_other_snapshot(company, late_change):
+    if late_change == 'code_stale':
+        producer, claim, _, _ = await linked_claim(company, snapshot='snapshot_alpha')
+    else:
+        _, _, claim = await candidate(company, snapshot='snapshot_alpha')
+        if late_change == 'accept':
+            await review(company, claim, 'generation-prior-reject', 'reject')
+    _, _, eligible = await candidate(company, key='generation-race-independent',
+        body='AuditKey has an independent retention owner.')
+    affected = await capture(company, key='generation-race-alpha', snapshot='snapshot_alpha',
+        body='CacheKey has a separately documented alpha inspection boundary.')
+    unaffected = await capture(company, key='generation-race-beta', snapshot='snapshot_beta',
+        body='AuditKey has a separately documented beta inspection boundary.')
+    beta_view = await company.store.inspect(company.actor, company.binding_id, unaffected.source_id, 'snapshot_beta')
+    assert {item['id'] for item in beta_view['judgment_context']['accepted_memories']} == {eligible.id}
+    alpha_command = (await judgment(company, affected.source_id, 'generation-race-alpha-select',
+        publish=True, snapshot='snapshot_alpha')).model_copy(update={'rejection_comparisons': ()})
+    beta_command = (await judgment(company, unaffected.source_id, 'generation-race-beta-select',
+        publish=True, snapshot='snapshot_beta')).model_copy(update={'rejection_comparisons': ()})
+    if late_change == 'code_stale':
+        await observe(company, producer, 2, digest='d' * 64)
+    else:
+        await review(company, claim, 'generation-late-review', late_change)
+    assert (await company.store.record(company.actor, beta_command)).state == 'candidate_ready'
+    with pytest.raises(DomainError) as stale:
+        await company.store.record(company.actor, alpha_command)
+    assert stale.value.code == 'ADMISSION_STALE'
+    refreshed = (await judgment(company, affected.source_id, 'generation-race-alpha-refreshed',
+        publish=True, snapshot='snapshot_alpha')).model_copy(update={'rejection_comparisons': ()})
+    assert (await company.store.record(company.actor, refreshed)).state == 'candidate_ready'
+
+
+@pytest.mark.parametrize('boundary', ['snapshot', 'scope', 'reason_withdrawn', 'target_withdrawn'])
+async def test_next_judgment_review_reason_obeys_current_disclosure_boundary(company, boundary):
+    original, _, claim = await candidate(company, snapshot='snapshot_alpha')
+    _, _, eligible = await candidate(company, key='generation-disclosure-independent',
+        body='AuditKey has an independent retention owner.')
+    rejected = await review(company, claim, 'generation-private-review', 'reject')
+    event_ref = 'health:event:' + rejected.artifact_id
+    allowed = await company.store.inspect(company.actor, company.binding_id, event_ref, 'snapshot_alpha')
+    reason_ref = allowed['reason_source_ref']
+    reason = await company.store.inspect(company.actor, company.binding_id, reason_ref, 'snapshot_alpha')
+    request_snapshot = 'snapshot_beta' if boundary == 'snapshot' else 'snapshot_alpha'
+    source = await capture(company, key='generation-disclosure-source', snapshot=request_snapshot,
+        body='CacheKey has an independent current inspection boundary.')
+    if boundary == 'scope':
+        other = await company.store.register_binding(company.actor, 'Other review scope',
+            '/synthetic/other-review-scope', 'generation-other-scope')
+        outsider = await company.store.issue_token(company.actor, Role.AGENT, (other.id,),
+            'generation-other-scope-agent-' + 's' * 48)
+        with pytest.raises(DomainError) as denied:
+            await company.store.inspect(outsider, company.binding_id, source.source_id, request_snapshot)
+        assert denied.value.code == 'SCOPE_DENIED'
+        assert reason['body'] not in str(denied.value)
+        return
+    if boundary == 'reason_withdrawn':
+        await company.store.retract(company.actor, company.binding_id, reason_ref, 'generation-withdraw-review-reason')
+    elif boundary == 'target_withdrawn':
+        await company.store.retract(company.actor, company.binding_id, original.source_id, 'generation-withdraw-review-target')
+    view = await company.store.inspect(company.actor, company.binding_id, source.source_id, request_snapshot)
+    assert {item['id'] for item in view['judgment_context']['accepted_memories']} == {eligible.id}
+    assert rejected.artifact_id not in {
+        item['review_event_id'] for item in view['judgment_context'].get('health_dispositions', [])
+    }
+    assert reason['body'] not in json.dumps(view)
 
 
 async def test_agent_cannot_review_or_self_assert_operator_authority(company):

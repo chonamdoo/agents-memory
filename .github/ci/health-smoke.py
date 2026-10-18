@@ -36,6 +36,10 @@ CASES = (
     "observed_session_work", "late_session_input_fence", "bounded_session_assessment",
     "terminal_work_late_capture_ownership", "feedback_resolution_reason_disclosure",
 )
+CHANGED_CASES = CASES[:7] + (
+    "grounded_claim_publication", "retracted_session_does_not_block_queued_capture",
+    "exact_health_review_reaches_next_judgment",
+)
 
 
 def digest(raw: bytes) -> str:
@@ -60,8 +64,9 @@ class SmokeFailure(Exception):
 
 
 class Smoke:
-    def __init__(self, root: Path, result: dict):
+    def __init__(self, root: Path, result: dict, *, changes_only: bool = False):
         self.root, self.result = root, result
+        self.changes_only = changes_only
         self.number = 0
         self.python = [sys.executable, *(["-I"] if sys.flags.isolated else [])]
         self.active = "real_authority_ready"
@@ -819,6 +824,53 @@ class Smoke:
                            "GLOBAL_NESTED_FEEDBACK_OVERRESTRICTED")
         self.passed("feedback_resolution_reason_disclosure")
 
+    async def changed_consumers(self):
+        from agents_memory.health_producer import observe_host_session
+        from agents_memory.hosts import load_receipt
+
+        self.begin("retracted_session_does_not_block_queued_capture")
+        captured = await self.capture("session-retracted-source", "This observed session source will be withdrawn.")
+        receipt = load_receipt(self.receipt)
+        identity = {"key": "1" * 64, "root": "engineering:session", "path": "2" * 64, "limited": False}
+        await asyncio.to_thread(observe_host_session, receipt, identity, "session_start")
+        await asyncio.to_thread(observe_host_session, receipt, identity, "capture_replay",
+            origin_key="session-retracted-source", source_pointer=captured["source_pointer"])
+        spool = self.runtime / "capture.sqlite3"
+        await self.cli("spool", "flush", "--file", spool, "--binding", self.binding, role="producer")
+        await self.cli("retract", "--binding", self.binding, "--ref", captured["source_id"],
+            "--key", "retract-observed-session-source")
+        await asyncio.to_thread(observe_host_session, receipt, identity, "session_shutdown")
+        envelope = self.evidence("independent-capture", {
+            "binding_id": self.binding, "idempotency_key": "queued-after-health-rejection",
+            "origin_key": "queued-after-health-rejection", "speaker": "human",
+            "body": "Independent capture must survive rejected session metadata.",
+        })
+        await self.cli("spool", "enqueue", "--file", spool, "--binding", self.binding,
+            "--envelope-file", envelope, role="producer")
+        flushed = await self.cli("spool", "flush", "--file", spool, "--binding", self.binding, role="producer")
+        self.check(flushed["pending"] == 0 and flushed["quarantined"] >= 1, "HEALTH_REJECTION_BLOCKED_CAPTURE")
+        replay = await self.cli("spool", "enqueue", "--file", spool, "--binding", self.binding,
+            "--envelope-file", envelope, role="producer")
+        self.check(replay["state"] == "committed" and replay["replay"], "INDEPENDENT_CAPTURE_NOT_COMMITTED")
+        self.passed("retracted_session_does_not_block_queued_capture")
+        self.begin("exact_health_review_reaches_next_judgment")
+        current = await self.inspect("health:claim:" + self.claim)
+        rejected = await self.apply(self.mutation("memory_review", "reject-for-next-judgment",
+            admission_id=current["admission"]["id"], claim_ref=self.claim_ref,
+            expected_health_version=current["health"]["version"],
+            expected_review_event_id=current["health"]["review_event_id"],
+            decision="reject", reason="Operator rejected this exact prior claim; do not treat the review note as new evidence."))
+        source = await self.capture("next-independent-source", "CacheKey has a new independent human observation.")
+        inspected = await self.inspect(source["source_id"])
+        context = inspected["judgment_context"]
+        self.check(self.claim not in {item["id"] for item in context["accepted_memories"]},
+                   "REJECTED_MEMORY_ADVERTISED_AS_ACCEPTED")
+        dispositions = context.get("health_dispositions", [])
+        self.check(any(item["review_event_id"] == rejected["artifact_id"] and item["decision"] == "reject"
+                       and item["claim_ref"] == self.claim_ref and item.get("reason") for item in dispositions),
+                   "EXACT_REVIEW_MISSING_FROM_NEXT_JUDGMENT")
+        self.passed("exact_health_review_reaches_next_judgment")
+
     async def cleanup(self):
         cleanup = self.result["owned_cleanup"]
         if self.host_install_attempted:
@@ -897,16 +949,19 @@ class Smoke:
                 await self.setup()
                 await self.observer_and_workspace()
                 await self.publish_claim()
-                await self.proposals()
-                await self.health_boundaries()
-                await self.sessions()
-                await self.feedback_reasons()
+                if self.changes_only:
+                    await self.changed_consumers()
+                else:
+                    await self.proposals()
+                    await self.health_boundaries()
+                    await self.sessions()
+                    await self.feedback_reasons()
         except BaseException as error:
             self.result["outcomes"][self.active] = "failed"
             self.evidence("failure", {"case": self.active, "trace": traceback.format_exc()})
             self.result["failure"] = "HEALTH_SMOKE_FAILED"
             self.result["failure_code"] = error.code if isinstance(error, SmokeFailure) else "HEALTH_EXCEPTION"
-            self.result["failure_stage"] = self.active if self.active in CASES else "UNKNOWN"
+            self.result["failure_stage"] = self.active if self.active in self.result["outcomes"] else "UNKNOWN"
             self.result["failure_type"] = type(error).__name__ if type(error).__name__ in {
                 "ValueError", "OSError", "TimeoutError", "RuntimeError", "DomainError",
                 "TypeError", "KeyError", "AttributeError", "CancelledError", "SmokeFailure",
@@ -939,6 +994,7 @@ class Smoke:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--result-dir", type=Path, default=Path(".ci-results"))
+    parser.add_argument("--changes-only", action="store_true", help="Only changed health consumers and necessary setup")
     args = parser.parse_args()
     # Refuse before creating state or importing any product dependency.
     if os.environ.get("GITHUB_ACTIONS") != "true" or sys.platform != "linux":
@@ -968,10 +1024,12 @@ def main() -> int:
     }))
     result = {"schema": 1, "complete": False, "tested_sha": sha, "surface": "health-api-cli",
               "scope": "engineering_real_product_http_cli_not_native_acceptance", "original18_completed": 0,
-              "consumed": None, "outcomes": dict.fromkeys(CASES, "not_run"),
+              "consumed": None, "outcomes": dict.fromkeys(CHANGED_CASES if args.changes_only else CASES, "not_run"),
               "owned_cleanup": {}, "source_unchanged": None}
+    if args.changes_only:
+        result["scope"] = "changed_health_consumers_not_full_acceptance"
     try:
-        asyncio.run(Smoke(root, result).run())
+        asyncio.run(Smoke(root, result, changes_only=args.changes_only).run())
     except BaseException:
         private_file(root / "harness-failure.json", encoded({"trace": traceback.format_exc()}))
         result["failure"] = "HEALTH_SMOKE_HARNESS_FAILED"

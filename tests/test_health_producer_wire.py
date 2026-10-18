@@ -125,34 +125,145 @@ def test_health_ack_requires_exact_kind_scope_reference_and_commit(tmp_path, cha
         spool.close()
 
 
-def test_unknown_health_dispatch_retains_original_envelope_before_capture(tmp_path):
+@pytest.mark.parametrize("code,effect,quarantined", [
+    ("SESSION_SOURCE_INVALID", EffectState.NOT_STARTED, True),
+    ("SESSION_SOURCE_INVALID", EffectState.NOT_COMMITTED, True),
+    ("SESSION_SNAPSHOT_CONFLICT", EffectState.NOT_STARTED, True),
+    ("SESSION_OBSERVATION_CONFLICT", EffectState.NOT_COMMITTED, True),
+    ("QUEUE_FULL", EffectState.NOT_STARTED, False),
+    ("SERVICE_UNAVAILABLE", EffectState.UNKNOWN, False),
+    ("SESSION_SOURCE_INVALID", EffectState.UNKNOWN, False),
+    ("SESSION_SOURCE_INVALID", EffectState.COMMITTED, False),
+    ("HEALTH_RECEIPT_INVALID", None, False),
+])
+def test_failed_health_preserves_disposition_without_blocking_independent_capture(
+    tmp_path, code, effect, quarantined,
+):
     command = health_command("session")
-    spool = ProducerSpool(tmp_path / "capture.sqlite3", "deployment-one", "binding-one", 65536)
+    source = CaptureCommand(
+        binding_id="binding-one", idempotency_key="capture-one", origin_key="capture-origin",
+        speaker="human", body="An independent prompt.",
+    )
+    path = tmp_path / "capture.sqlite3"
     calls = []
 
     class Endpoint:
-        failed = False
+        reject = True
 
         def request(self, route, payload):
             calls.append((route, payload))
-            if not self.failed:
-                self.failed = True
-                raise DomainError("SERVICE_UNAVAILABLE", "No private diagnostics", effect=EffectState.UNKNOWN)
             if route == "/api/capture":
                 return {"id": "capture-operation", "effect": "committed"}
+            if self.reject:
+                if effect is None:
+                    return {"id": "ambiguous-operation", "effect": "committed"}
+                raise DomainError(code, "Health completion is unconfirmed", effect=effect)
             return committed(command)
 
     endpoint = Endpoint()
+    spool = ProducerSpool(path, "deployment-one", "binding-one", 65536)
     try:
         spool.enqueue(command)
-        spool.enqueue(CaptureCommand(
-            binding_id="binding-one", idempotency_key="capture-one", origin_key="capture-origin",
-            speaker="human", body="An independent prompt.",
-        ))
-        assert spool.flush(endpoint)["pending"] == 2
-        assert spool.flush(endpoint)["pending"] == 0
-        assert calls[0] == calls[1]
-        assert [route for route, _ in calls] == ["/api/health", "/api/health", "/api/capture"]
+        spool.enqueue(source)
+        result = spool.flush(endpoint)
+        assert result["committed"] == 1
+        assert result["errors"] == [code]
+        assert spool.disposition(source.idempotency_key)["state"] == "committed"
+        health_receipt = spool.disposition(command.idempotency_key)
+        assert health_receipt["state"] == ("quarantined" if quarantined else "durably_spooled")
+        assert result["quarantined"] == int(quarantined)
+        assert result["pending"] == int(not quarantined)
+        if quarantined:
+            assert health_receipt["code"] == code
+        assert [payload for route, payload in calls if route == "/api/health"] == [command.model_dump(mode="json")]
+    finally:
+        spool.close()
+    reopened = ProducerSpool(path, "deployment-one", "binding-one", 65536)
+    try:
+        assert reopened.disposition(command.idempotency_key) == health_receipt
+        assert reopened.enqueue(source)["replay"] is True
+        if quarantined:
+            assert reopened.resolve(command.idempotency_key)["state"] == "durably_spooled"
+        else:
+            assert reopened.enqueue(command)["replay"] is True
+        endpoint.reject = False
+        assert reopened.flush(endpoint)["pending"] == 0
+        assert reopened.disposition(command.idempotency_key)["state"] == "committed"
+        assert [payload for route, payload in calls if route == "/api/health"] == [
+            command.model_dump(mode="json"), command.model_dump(mode="json"),
+        ]
+        assert len([route for route, _ in calls if route == "/api/capture"]) == 1
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("failure", ["unknown", "malformed_ack"])
+def test_health_bypass_does_not_bypass_an_uncertain_ordinary_capture(tmp_path, failure):
+    command = health_command("session")
+    sources = [CaptureCommand(
+        binding_id="binding-one", idempotency_key=f"capture-{index}", origin_key=f"origin-{index}",
+        speaker="human", body="Ordered ordinary evidence.",
+    ) for index in range(2)]
+    calls = []
+
+    class Endpoint:
+        reject_capture = True
+
+        def request(self, route, payload):
+            calls.append((route, payload))
+            if route == "/api/health":
+                raise DomainError("QUEUE_FULL", "Health work is full", effect=EffectState.NOT_STARTED)
+            if self.reject_capture:
+                if failure == "malformed_ack":
+                    return {"effect": "committed"}
+                raise DomainError("SERVICE_UNAVAILABLE", "Capture is unconfirmed", effect=EffectState.UNKNOWN)
+            return {"id": "operation-" + payload["idempotency_key"], "effect": "committed"}
+
+    spool = ProducerSpool(tmp_path / "capture.sqlite3", "deployment-one", "binding-one", 65536)
+    endpoint = Endpoint()
+    try:
+        spool.enqueue(command)
+        for source in sources:
+            spool.enqueue(source)
+        first = spool.flush(endpoint)
+        assert [payload["idempotency_key"] for route, payload in calls if route == "/api/capture"] == ["capture-0"]
+        assert first["committed"] == first["quarantined"] == 0
+        assert first["pending"] == 3
+        assert first["errors"] == [
+            "QUEUE_FULL", "CAPTURE_RECEIPT_INVALID" if failure == "malformed_ack" else "SERVICE_UNAVAILABLE",
+        ]
+        assert all(spool.disposition(source.idempotency_key)["state"] == "durably_spooled" for source in sources)
+        endpoint.reject_capture = False
+        second = spool.flush(endpoint)
+        assert second["committed"] == 2 and second["pending"] == 1
+        assert [payload["idempotency_key"] for route, payload in calls if route == "/api/capture"] == [
+            "capture-0", "capture-0", "capture-1",
+        ]
+        assert spool.disposition(command.idempotency_key)["state"] == "durably_spooled"
+    finally:
+        spool.close()
+
+
+def test_health_backlog_larger_than_a_flush_batch_cannot_starve_capture(tmp_path):
+    spool = ProducerSpool(tmp_path / "capture.sqlite3", "deployment-one", "binding-one", 131072)
+    source = CaptureCommand(binding_id="binding-one", idempotency_key="unrelated-capture",
+        origin_key="unrelated-origin", speaker="human", body="Independent queued evidence.")
+
+    class Endpoint:
+        def request(self, route, payload):
+            if route == "/api/health":
+                raise DomainError("QUEUE_FULL", "Health work is full", effect=EffectState.NOT_STARTED)
+            return {"id": "capture-operation", "effect": "committed"}
+
+    try:
+        for index in range(9):
+            spool.enqueue(health_command("session", key=f"health-backlog-{index}"))
+        spool.enqueue(source)
+        for _ in range(3):
+            spool.flush(Endpoint(), limit=4)
+        assert spool.disposition(source.idempotency_key)["state"] == "committed"
+        assert spool.status()["pending"] == 9
+        assert spool.status()["quarantined"] == 0
     finally:
         spool.close()
 

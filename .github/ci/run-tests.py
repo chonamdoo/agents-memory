@@ -36,6 +36,40 @@ def write_result(path: Path, value: dict) -> None:
     temporary.replace(path)
 
 
+def parse_paths(raw: str | None, *, tests: bool) -> list[str] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > 16384:
+        raise ValueError("CI selection must be bounded JSON")
+    values = json.loads(raw)
+    if not isinstance(values, list) or not 1 <= len(values) <= 64:
+        raise ValueError("CI selection requires explicit nonempty paths")
+    paths = []
+    for value in values:
+        if (not isinstance(value, str) or not 1 <= len(value) <= 512
+                or any(ord(character) < 32 or ord(character) == 127 for character in value)):
+            raise ValueError("Invalid CI selection")
+        filename, separator, member = value.partition("::")
+        pattern = (r"tests/(?:[A-Za-z0-9_]+/)*test_[A-Za-z0-9_]+\.py" if tests else
+                   r"(?:src|tests|\.github/ci)/(?:[A-Za-z0-9_]+/)*[A-Za-z0-9_-]+\.py")
+        if (re.fullmatch(pattern, filename) is None or (separator and (
+                not tests or not member or re.match(r"[A-Za-z_]", member) is None))):
+            raise ValueError("CI selection is outside the declared source surface")
+        path = ROOT
+        for part in Path(filename).parts:
+            path = path / part
+            if path.is_symlink():
+                raise ValueError("CI selection cannot follow symlinks")
+        if not path.is_file():
+            raise ValueError("CI selection requires an existing file")
+        paths.append(value)
+    paths.sort()
+    for previous, current in zip(paths, paths[1:]):
+        if current == previous or current.startswith((previous + "::", previous + "[")):
+            raise ValueError("CI selections must not overlap")
+    return paths
+
+
 class Shard:
     def __init__(self, index: int, count: int) -> None:
         self.index = index
@@ -144,6 +178,7 @@ def main() -> int:
     parser.add_argument("--index", type=int, required=True)
     parser.add_argument("--count", type=int, required=True)
     parser.add_argument("--result-dir", type=Path, required=True)
+    parser.add_argument("--test-paths-json", help="Explicit changed-path regression selectors; omitted means full collection")
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true":
         parser.error("This runner is GitHub Actions-only; do not execute tests locally")
@@ -154,6 +189,10 @@ def main() -> int:
         parser.error("CI_TESTED_SHA must identify the exact checked-out commit")
     if os.environ.get("PYTEST_ADDOPTS"):
         parser.error("CI requires the complete declared collection without environment selection options")
+    try:
+        selectors = parse_paths(args.test_paths_json, tests=True)
+    except (OSError, ValueError):
+        parser.error("Changed-path selectors must name bounded, nonoverlapping repository tests")
     os.chdir(ROOT)
     args.result_dir.mkdir(parents=True, exist_ok=True)
     result_file = args.result_dir / "shard.json"
@@ -163,12 +202,13 @@ def main() -> int:
         "index": args.index, "count": args.count, "all_nodeids": [], "selected_nodeids": [],
         "collection_issues": [],
         "pytest_exit_code": None,
+        **({"scope": {"kind": "changes", "selectors": selectors}} if selectors is not None else {}),
     }
     write_result(result_file, result)
     shard = Shard(args.index, args.count)
     began = time.monotonic()
     try:
-        code = int(pytest.main(["-q"], plugins=[shard]))
+        code = int(pytest.main(["-q", *(selectors or [])], plugins=[shard]))
         after = source_digest()
         counts = shard.counts()
         result.update(

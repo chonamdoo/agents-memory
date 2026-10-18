@@ -519,3 +519,163 @@ def test_exited_leader_permission_error_with_live_member(unreaped_leader, monkey
     with pytest.raises(PermissionError):
         cleanup(unreaped_leader)
     assert unreaped_leader.returncode == 0
+
+
+@pytest.fixture
+def changed_evidence(evidence):
+    selectors = ["tests/test_health_backend.py", "tests/test_health_inference.py"]
+    scope = {"kind": "changes", "selectors": selectors}
+    selected = sorted(node for node in evidence.ids if node.split("::")[0] in selectors)
+    reports = {}
+    for path in evidence.paths:
+        reports.update(json.loads(path.read_text())["reports"])
+    source = json.loads(evidence.paths[0].read_text())
+    source.update(scope=scope, index=0, count=1, all_nodeids=selected, selected_nodeids=selected,
+        reports={node: reports[node] for node in selected},
+        counts={"passed": len(selected), "failed": 0, "skipped": 0, "xfailed": 0, "xpassed": 0})
+    evidence.paths[0].write_text(json.dumps(source))
+    for path in evidence.paths[1:]:
+        path.unlink()
+        (path.parent / "prerequisites.json").unlink()
+    for path in evidence.job.parent.iterdir():
+        path.unlink()
+    evidence.compat.unlink()
+    cases = runpy.run_path(str(CI / "aggregate.py"))["CHANGED_HEALTH_CASES"]
+    for path in (evidence.health_source, evidence.health_installed):
+        health = json.loads(path.read_text())
+        health["health"]["outcomes"] = dict.fromkeys(cases, "passed")
+        health["health"]["scope"] = "changed_health_consumers_not_full_acceptance"
+        path.write_text(json.dumps(health))
+    lint_paths = ["src/agents_memory/store.py"]
+    checks = json.loads(evidence.checks.read_text())
+    checks.update(scope=scope, lint_paths=lint_paths)
+    checks["checks"]["lint"]["command"] = ["uv", "run", "ruff", "check", *lint_paths]
+    checks["checks"]["wheel-consumer"]["command"].extend([
+        "--test-paths-json", json.dumps(selectors, separators=(",", ":")),
+    ])
+    evidence.checks.write_text(json.dumps(checks))
+    wheel = json.loads(evidence.wheel.read_text())
+    wheel.update(scope=scope, all_nodeids=selected, selected_nodeids=selected,
+        reports={node: reports[node] for node in selected}, counts=source["counts"])
+    evidence.wheel.write_text(json.dumps(wheel))
+    evidence.jobs["compatibility"]["result"] = "skipped"
+    evidence.jobs["evaluation"]["result"] = "skipped"
+    return SimpleNamespace(evidence=evidence, selectors=selectors, lint_paths=lint_paths)
+
+
+def test_changed_ci_reports_only_exercised_scope_and_cannot_claim_the_full_suite(changed_evidence):
+    data = changed_evidence
+    evidence = data.evidence
+    result = evidence.aggregate(evidence.root, 1, evidence.sha, evidence.jobs,
+        selectors=data.selectors, lint_paths=data.lint_paths)
+    assert result["complete"] is True and result["full_suite"] is False
+    assert result["scope"] == {"kind": "changes", "selectors": data.selectors}
+    assert result["passed"] == result["collected"] == result["wheel_consumer"]["passed"] == 2
+    assert "macos_ownership_compatibility" in result["not_executed"]
+    assert "docker_evaluation" in result["not_executed"]
+    with pytest.raises(ValueError):
+        evidence.aggregate(evidence.root, 1, evidence.sha, evidence.jobs)
+
+
+@pytest.mark.parametrize("fault", [
+    "source_scope", "installed_scope", "source_omission", "installed_omission",
+    "source_teardown", "installed_call", "wrong_source", "wrong_wheel", "broad_lint", "unrelated_job",
+])
+def test_changed_ci_refuses_missing_failed_or_misrepresented_selected_work(changed_evidence, fault):
+    data = changed_evidence
+    evidence = data.evidence
+    path = evidence.wheel if fault.startswith("installed") or fault == "wrong_wheel" else evidence.paths[0]
+    value = json.loads(path.read_text())
+    if fault in {"source_scope", "installed_scope"}:
+        del value["scope"]
+    elif fault in {"source_omission", "installed_omission"}:
+        value["selected_nodeids"].pop()
+    elif fault in {"source_teardown", "installed_call"}:
+        phase = "teardown" if fault == "source_teardown" else "call"
+        value["reports"][value["selected_nodeids"][0]][phase]["outcome"] = "failed"
+    elif fault == "wrong_source":
+        value["source_after"] = "c" * 64
+    elif fault == "wrong_wheel":
+        value["wheel_sha256"] = "c" * 64
+    elif fault == "broad_lint":
+        checks = json.loads(evidence.checks.read_text())
+        checks["checks"]["lint"]["command"] = ["uv", "run", "ruff", "check", "src", "tests"]
+        evidence.checks.write_text(json.dumps(checks))
+    else:
+        evidence.jobs["compatibility"]["result"] = "success"
+    path.write_text(json.dumps(value))
+    with pytest.raises(ValueError):
+        evidence.aggregate(evidence.root, 1, evidence.sha, evidence.jobs,
+            selectors=data.selectors, lint_paths=data.lint_paths)
+
+
+@pytest.mark.parametrize("fault", ["missing", "wrong_scope", "failed_case", "cleanup_incomplete", "wrong_wheel"])
+def test_changed_ci_requires_actual_related_health_consumption_and_cleanup(changed_evidence, fault):
+    data = changed_evidence
+    evidence = data.evidence
+    path = evidence.health_installed
+    health = json.loads(path.read_text())
+    if fault == "missing":
+        path.unlink()
+    else:
+        if fault == "wrong_scope":
+            health["health"]["scope"] = "full_acceptance"
+        elif fault == "failed_case":
+            health["health"]["outcomes"]["retracted_session_does_not_block_queued_capture"] = "failed"
+        elif fault == "cleanup_incomplete":
+            health["health"]["owned_cleanup"]["child_service"] = "unconfirmed"
+        else:
+            health["wheel_sha256"] = "c" * 64
+        path.write_text(json.dumps(health))
+    with pytest.raises((OSError, ValueError)):
+        evidence.aggregate(evidence.root, 1, evidence.sha, evidence.jobs,
+            selectors=data.selectors, lint_paths=data.lint_paths)
+
+
+@pytest.mark.parametrize("selection", [
+    [], None, {}, ["--collect-only"], ["../tests/test_health_backend.py"],
+    ["src/agents_memory/store.py"], ["tests/test_missing_scope.py"],
+    ["tests/test_health_backend.py", "tests/test_health_backend.py"],
+    ["tests/test_health_backend.py", "tests/test_health_backend.py::test_exact_reject_blocks_recall_and_inflight_delivery_but_not_inspection"],
+    ["tests/test_health_backend.py::"], ["tests/test_health_backend.py\n--collect-only"],
+])
+def test_changed_test_selection_refuses_empty_escaping_or_overlapping_execution(selection):
+    parse = runpy.run_path(str(CI / "run-tests.py"))["parse_paths"]
+    with pytest.raises(ValueError):
+        parse(json.dumps(selection), tests=True)
+
+
+@pytest.mark.parametrize("component", ["directory", "file"])
+def test_changed_selection_never_executes_a_symlinked_source_tree(tmp_path, monkeypatch, component):
+    parse = runpy.run_path(str(CI / "run-tests.py"))["parse_paths"]
+    root = tmp_path / "checkout"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "test_behavior.py").write_text("raise AssertionError('not checked-out source')\n")
+    if component == "directory":
+        (root / "tests").symlink_to(outside, target_is_directory=True)
+    else:
+        (root / "tests").mkdir()
+        (root / "tests/test_behavior.py").symlink_to(outside / "test_behavior.py")
+    monkeypatch.setitem(parse.__globals__, "ROOT", root)
+    with pytest.raises(ValueError):
+        parse('["tests/test_behavior.py"]', tests=True)
+
+
+def test_invalid_changed_selection_refuses_before_any_full_test_fallback(tmp_path, monkeypatch):
+    main = runpy.run_path(str(CI / "run-tests.py"))["main"]
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("CI_TESTED_SHA", "a" * 40)
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    monkeypatch.setattr(sys, "argv", ["run-tests.py", "--index", "0", "--count", "1",
+        "--result-dir", str(tmp_path / "refused"), "--test-paths-json", "[]"])
+
+    def unapproved_full_collection(*args, **kwargs):
+        raise AssertionError("Invalid scope must not invoke pytest")
+
+    monkeypatch.setattr(pytest, "main", unapproved_full_collection)
+    with pytest.raises(SystemExit) as refused:
+        main()
+    assert refused.value.code == 2
+    assert not (tmp_path / "refused").exists()

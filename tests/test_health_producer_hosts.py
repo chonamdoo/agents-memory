@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import sys
 import uuid
 from pathlib import Path
 
@@ -8,7 +10,7 @@ import pytest
 from test_host_boundaries import installation as installation
 from test_host_boundaries import native
 
-from agents_memory import health_producer, hosts
+from agents_memory import cli, health_producer, hosts
 from agents_memory.domain import DomainError, EffectState
 from agents_memory.health_producer import (
     configure_health_workspace,
@@ -329,3 +331,115 @@ def test_late_capture_pointer_updates_closed_segment_without_reopening_it(health
     assert len({payload["segment_id"] for payload in events}) == 1
     assert events[-1]["source_refs"] == [{"id": "late-source", "revision": 1}]
     assert events[-1]["origin_keys"] == ["late-origin"]
+
+
+@pytest.mark.parametrize("ack", [
+    {"id": "unconfirmed-operation", "effect": "committed"},
+    None,
+])
+def test_registration_malformed_ack_preserves_preparation_and_current_configuration(
+    health_installation, monkeypatch, capsys, ack,
+):
+    from agents_memory.private_io import private_write
+
+    project, settings, receipt_path, receipt, _, _ = health_installation
+    config_path = Path(receipt["runtime_dir"]) / "health-workspace.json"
+    previous = config_path.read_bytes()
+    preparation = health_producer.prepare_health_registration(
+        receipt, "workspace-replacement", "producer-one", expected_binding_revision=1,
+        expected_workspace_revision=0, idempotency_key="registration-unconfirmed",
+    )
+    prepared_path = project.parent / "registration-prepared.json"
+    private_write(prepared_path, preparation.model_dump_json() + "\n")
+    prepared = prepared_path.read_bytes()
+    settings_path = project.parent / "registration-settings.json"
+    private_write(settings_path, settings.model_dump_json() + "\n")
+
+    class Endpoint:
+        def request(self, route, payload):
+            return ack
+
+    monkeypatch.setattr(cli, "client_from_settings", lambda *args, **kwargs: Endpoint())
+    monkeypatch.setattr(sys, "argv", [
+        "agents-memory", "--config", str(settings_path), "health", "workspace-register",
+        "--receipt", str(receipt_path), "--prepared-file", str(prepared_path),
+    ])
+    with pytest.raises(SystemExit) as refused:
+        cli.main()
+    assert refused.value.code == 1
+    output = capsys.readouterr()
+    error = json.loads(output.err)["error"]
+    assert error["code"] == "HEALTH_RECEIPT_INVALID" and error["effect"] == "unknown"
+    assert output.out == ""
+    assert prepared_path.read_bytes() == prepared
+    assert config_path.read_bytes() == previous
+
+
+def test_unchanged_code_observation_reuses_committed_identity_but_changed_bytes_do_not(health_installation):
+    project, _, _, receipt, endpoint, _ = health_installation
+    source = project / "module.py"
+    source.write_bytes(b"def answer(): return 1\n")
+    first = health_before_context(receipt)
+    second = health_before_context(receipt)
+    assert first["state"] == second["state"] == "observed"
+    assert second["operation_id"] == first["operation_id"]
+    assert endpoint.sequence == 1
+    source.write_bytes(b"def answer(): return 2\n")
+    changed = health_before_context(receipt)
+    assert changed["operation_id"] != first["operation_id"]
+    assert endpoint.sequence == 2
+
+
+@pytest.mark.parametrize("effect", [EffectState.NOT_STARTED, EffectState.NOT_COMMITTED])
+def test_proven_uncommitted_code_quarantine_allows_a_new_current_observation(
+    health_installation, monkeypatch, effect,
+):
+    project, _, _, receipt, endpoint, calls = health_installation
+    (project / "module.py").write_bytes(b"def answer(): return 1\n")
+    original = endpoint.request
+
+    def reject_observation(route, payload):
+        if route == "/api/health" and payload["kind"] == "code_observation":
+            calls.append((route, payload))
+            raise DomainError("HEALTH_STALE", "Registration was not used", effect=effect)
+        return original(route, payload)
+
+    monkeypatch.setattr(endpoint, "request", reject_observation)
+    assert observe_health_workspace(receipt)["code"] == "HEALTH_OBSERVATION_UNCOMMITTED"
+    first = next(payload for route, payload in calls if route == "/api/health")
+    monkeypatch.setattr(endpoint, "request", original)
+    current = health_before_context(receipt)
+    assert current["state"] == "observed"
+    observations = [payload for route, payload in calls
+                    if route == "/api/health" and payload["kind"] == "code_observation"]
+    assert observations[-1]["sequence"] > first["sequence"]
+    assert observations[-1]["idempotency_key"] != first["idempotency_key"]
+    spool = ProducerSpool(Path(receipt["runtime_dir"]) / "capture.sqlite3",
+        receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
+    try:
+        assert spool.disposition(first["idempotency_key"])["state"] == "quarantined"
+        assert spool.disposition(observations[-1]["idempotency_key"])["state"] == "committed"
+    finally:
+        spool.close()
+
+
+def test_bounded_session_metadata_cannot_starve_current_code_or_authorization(health_installation):
+    project, _, _, receipt, endpoint, _ = health_installation
+    endpoint.linked = []
+    observe_health_workspace(receipt)
+    results = [observe_host_session(receipt, {
+        "key": f"{index:064x}", "root": f"omp:bounded-{index}",
+        "path": f"{index + 64:064x}", "limited": False,
+    }, "session_start", client=endpoint) for index in range(24)]
+    assert any(result.get("code") == "HEALTH_STATE_FULL" for result in results)
+    endpoint.linked = [{"relative_path": "module.py", "symbol_names": ["answer"]}]
+    (project / "module.py").write_bytes(b"def answer(): return 1\n")
+    assert health_before_context(receipt)["state"] == "observed"
+    assert endpoint.sequence == 1
+    spool = ProducerSpool(Path(receipt["runtime_dir"]) / "capture.sqlite3",
+        receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
+    try:
+        assert spool.read_health_state("session:" + f"{0:064x}")["stream_id"]
+        assert spool.read_health_state("authorization")["enabled"] is True
+    finally:
+        spool.close()

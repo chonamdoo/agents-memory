@@ -159,7 +159,9 @@ def runtime_receipt(raw: bytes, before: str) -> dict:
             "source_after": helpers()["source_digest"](), "actions": actions()}
 
 
-def health_smoke(result_dir: Path, consumption: str, wheel_digest: str | None = None) -> int:
+def health_smoke(
+    result_dir: Path, consumption: str, wheel_digest: str | None = None, *, changes_only: bool = False,
+) -> int:
     runner = admitted()
     accounting = helpers()
     before = accounting["source_digest"]()
@@ -179,7 +181,8 @@ def health_smoke(result_dir: Path, consumption: str, wheel_digest: str | None = 
                 raise ValueError("SOURCE_HEALTH_RESOLVED_INSTALLED_PACKAGE")
             environment["PYTHONPATH"] = str(ROOT / "src")
         argv = [sys.executable, *(["-I"] if consumption == "installed" else []), str(CI / "health-smoke.py"),
-                "--result-dir", str(result_dir / ("health-" + consumption))]
+                "--result-dir", str(result_dir / ("health-" + consumption)),
+                *(["--changes-only"] if changes_only else [])]
         result = command(private, "health-smoke", argv, 420, env=environment)
         value["execution"] = result.public()
         value["health"] = json.loads((result_dir / ("health-" + consumption) / "health-smoke.json").read_text())
@@ -446,6 +449,7 @@ def main() -> int:
     parser.add_argument("action", choices=("run", "cleanup", "scenarios", "health-source"))
     parser.add_argument("--result-dir", type=Path, default=Path(".ci-results"))
     parser.add_argument("--installed-wheel", type=Path)
+    parser.add_argument("--changes-only", action="store_true", help="Only directly changed health consumers")
     args = parser.parse_args()
     try:
         admitted()
@@ -453,8 +457,10 @@ def main() -> int:
             raise ValueError("EXACT_RESULT_DIRECTORY_REQUIRED")
         if os.environ.get("PYTEST_ADDOPTS"):
             raise ValueError("INHERITED_TEST_SELECTION_REFUSED")
+        if args.changes_only and args.action != "health-source":
+            raise ValueError("CHANGED_SCOPE_REQUIRES_HEALTH_SOURCE_ACTION")
         if args.action == "health-source":
-            return health_smoke(args.result_dir.resolve(), "source")
+            return health_smoke(args.result_dir.resolve(), "source", changes_only=args.changes_only)
         if args.action == "cleanup":
             return cleanup(args.result_dir.resolve())
         if args.installed_wheel is None:

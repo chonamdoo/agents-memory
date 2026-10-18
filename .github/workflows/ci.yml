@@ -5,27 +5,42 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      verification_scope:
+        description: Full collection or explicitly selected changed-path regressions
+        type: choice
+        options: [full, changes]
+        default: full
+        required: true
+      test_paths_json:
+        description: JSON array of directly affected test paths or node selectors
+        type: string
+      lint_paths_json:
+        description: JSON array of changed Python files
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 env:
   CI_TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   UV_NO_PROGRESS: '1'
+  CI_SCOPE_TEST_PATHS: ${{ inputs.test_paths_json }}
+  CI_SCOPE_LINT_PATHS: ${{ inputs.lint_paths_json }}
 
 jobs:
   tests:
-    name: Tests (${{ matrix.index }}/4)
+    name: Tests (${{ matrix.index }}/${{ inputs.verification_scope == 'changes' && '1' || '4' }})
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        index: [0, 1, 2, 3]
+        index: ${{ fromJSON(inputs.verification_scope == 'changes' && '[0]' || '[0,1,2,3]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -46,12 +61,21 @@ jobs:
       - name: Install frozen dependencies
         run: uv sync --frozen
       - name: Run complete collection partition
+        if: inputs.verification_scope != 'changes'
         env:
           SHARD_INDEX: ${{ matrix.index }}
         run: timeout --signal=TERM --kill-after=15s 600s uv run python .github/ci/run-tests.py --index "$SHARD_INDEX" --count 4 --result-dir .ci-results
+      - name: Run only directly affected source regressions
+        if: inputs.verification_scope == 'changes'
+        run: >-
+          timeout --signal=TERM --kill-after=15s 600s uv run python .github/ci/run-tests.py
+          --index 0 --count 1 --result-dir .ci-results --test-paths-json "$CI_SCOPE_TEST_PATHS"
       - name: Exercise source health API and CLI
-        if: matrix.index == 0
+        if: matrix.index == 0 && inputs.verification_scope != 'changes'
         run: uv run --no-sync python .github/ci/run-evaluation.py health-source --result-dir .ci-results
+      - name: Exercise only changed real health consumers
+        if: always() && inputs.verification_scope == 'changes'
+        run: uv run --no-sync python .github/ci/run-evaluation.py health-source --changes-only --result-dir .ci-results
       - name: Clean owned prerequisites
         if: always()
         run: python3 .github/ci/environment.py cleanup --state-dir "$RUNNER_TEMP/agents-memory-ci"
@@ -93,11 +117,23 @@ jobs:
       - name: Install frozen dependencies
         run: uv sync --frozen
       - name: Run bounded lint and build
+        if: inputs.verification_scope != 'changes'
         run: uv run python .github/ci/run-checks.py --result-dir .ci-results
+      - name: Check changed Python files and exact installed consumers
+        if: inputs.verification_scope == 'changes'
+        run: >-
+          uv run python .github/ci/run-checks.py --result-dir .ci-results
+          --test-paths-json "$CI_SCOPE_TEST_PATHS" --lint-paths-json "$CI_SCOPE_LINT_PATHS"
       - name: Exercise exact installed-wheel health API and CLI
+        if: inputs.verification_scope != 'changes'
         run: |
           "$UV_PROJECT_ENVIRONMENT/bin/python" -I .github/ci/wheel-consumer.py \
             --installed-wheel "$GITHUB_WORKSPACE"/dist/*.whl --health-only --result-dir .ci-results
+      - name: Exercise only changed exact installed-wheel health consumers
+        if: always() && inputs.verification_scope == 'changes'
+        run: |
+          "$UV_PROJECT_ENVIRONMENT/bin/python" -I .github/ci/wheel-consumer.py \
+            --installed-wheel "$GITHUB_WORKSPACE"/dist/*.whl --health-changes-only --result-dir .ci-results
       - name: Clean owned prerequisites
         if: always()
         run: python3 .github/ci/environment.py cleanup --state-dir "$RUNNER_TEMP/agents-memory-ci"
@@ -128,6 +164,7 @@ jobs:
           retention-days: 14
 
   compatibility:
+    if: inputs.verification_scope != 'changes'
     name: Ownership compatibility (macOS Python 3.12)
     runs-on: macos-15
     timeout-minutes: 15
@@ -160,6 +197,7 @@ jobs:
           retention-days: 14
 
   evaluation:
+    if: inputs.verification_scope != 'changes'
     name: Real Docker evaluation engineering (installed wheel)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -219,7 +257,7 @@ jobs:
           retention-days: 14
 
   aggregate:
-    name: Complete CI gate
+    name: ${{ inputs.verification_scope == 'changes' && 'Changed-path CI gate' || 'Complete CI gate' }}
     if: always()
     needs: [tests, checks, compatibility, evaluation]
     runs-on: ubuntu-24.04
@@ -246,12 +284,14 @@ jobs:
           name: ci-checks
           path: .ci-artifacts/ci-checks
       - name: Download compatibility evidence
+        if: inputs.verification_scope != 'changes'
         continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: ci-compatibility
           path: .ci-artifacts/ci-compatibility
       - name: Download real evaluation evidence
+        if: inputs.verification_scope != 'changes'
         continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -264,8 +304,14 @@ jobs:
           name: distribution
           path: .ci-artifacts/distribution
       - name: Require complete passing evidence
-        if: always()
+        if: always() && inputs.verification_scope != 'changes'
         run: python3 .github/ci/aggregate.py --artifacts .ci-artifacts --expected-shards 4 --output .ci-results/summary.json
+      - name: Require passing evidence for every declared changed-path regression
+        if: always() && inputs.verification_scope == 'changes'
+        run: >-
+          python3 .github/ci/aggregate.py --artifacts .ci-artifacts --expected-shards 1
+          --output .ci-results/summary.json --test-paths-json "$CI_SCOPE_TEST_PATHS"
+          --lint-paths-json "$CI_SCOPE_LINT_PATHS"
       - name: Preserve aggregate result
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

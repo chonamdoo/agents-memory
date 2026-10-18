@@ -44,11 +44,21 @@ def main() -> int:
     parser.add_argument("--result-dir", type=Path, required=True)
     parser.add_argument("--installed-wheel", type=Path)
     parser.add_argument("--health-only", action="store_true")
+    parser.add_argument("--test-paths-json", help="Explicit changed-path installed-consumer regressions")
+    parser.add_argument("--health-changes-only", action="store_true")
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true":
         parser.error("This consumer gate is GitHub Actions-only")
     if os.environ.get("PYTEST_ADDOPTS"):
         parser.error("Inherited pytest selectors or reporters are not accepted")
+    helpers = runpy.run_path(str(Path(__file__).with_name("run-tests.py")))
+    try:
+        selected_paths = helpers["parse_paths"](args.test_paths_json, tests=True)
+    except (OSError, ValueError):
+        parser.error("Changed-path selectors must name bounded, nonoverlapping repository tests")
+    if (args.health_only and args.health_changes_only) or (
+            (args.health_only or args.health_changes_only) and selected_paths is not None):
+        parser.error("Health smoke and explicit regression selection are separate consumers")
     root = Path(__file__).resolve().parents[2]
     os.chdir(root)
     args.result_dir.mkdir(parents=True, exist_ok=True)
@@ -63,24 +73,33 @@ def main() -> int:
                         "--reinstall", "--no-deps", "--link-mode", "copy", str(wheel)], check=True, timeout=60)
         os.execv(sys.executable, [sys.executable, "-I", str(Path(__file__).resolve()),
                                  "--result-dir", str(args.result_dir.resolve()),
-                                 "--installed-wheel", str(wheel), *(["--health-only"] if args.health_only else [])])
+                                 "--installed-wheel", str(wheel),
+                                 *(["--health-only"] if args.health_only else []),
+                                 *(["--health-changes-only"] if args.health_changes_only else []),
+                                 *(["--test-paths-json", json.dumps(selected_paths, separators=(",", ":"))]
+                                   if selected_paths is not None else [])])
     wheel = args.installed_wheel.resolve(strict=True)
     if not sys.flags.isolated:
         raise RuntimeError("The installed consumer must use isolated Python")
     modules = installed_identity(root, wheel)
-    if args.health_only:
+    if args.health_only or args.health_changes_only:
         helper = runpy.run_path(str(Path(__file__).with_name("run-evaluation.py")))
-        return helper["health_smoke"](args.result_dir.resolve(), "installed", hashlib.sha256(wheel.read_bytes()).hexdigest())
+        return helper["health_smoke"](
+            args.result_dir.resolve(), "installed", hashlib.sha256(wheel.read_bytes()).hexdigest(),
+            changes_only=args.health_changes_only,
+        )
     import pytest
 
-    helpers = runpy.run_path(str(Path(__file__).with_name("run-tests.py")))
-    selectors = runpy.run_path(str(Path(__file__).with_name("aggregate.py")))["WHEEL_SELECTORS"]
+    selectors = selected_paths if selected_paths is not None else runpy.run_path(
+        str(Path(__file__).with_name("aggregate.py")))["WHEEL_SELECTORS"]
     shard = helpers["Shard"](0, 1)
     output = args.result_dir / "wheel-consumer.json"
     before = helpers["source_digest"]()
     result = {"schema": 1, "complete": False, "tested_sha": os.environ["CI_TESTED_SHA"],
               "source_before": before, "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
               "installed_module_count": len(modules), "installed_modules": modules, "pytest_exit_code": None}
+    if selected_paths is not None:
+        result["scope"] = {"kind": "changes", "selectors": selected_paths}
     helpers["write_result"](output, result)
     try:
         code = int(pytest.main(["-q", *selectors], plugins=[shard]))
