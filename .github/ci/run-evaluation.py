@@ -213,6 +213,9 @@ def runtime_digest(state: Path) -> str:
 
 
 def scenarios(result_dir: Path, wheel: Path) -> int:
+    from agents_memory.private_io import private_read
+    from agents_memory.wire import decode_json
+
     accounting = helpers()
     if (result_dir / "evaluation-scenarios.json").exists():
         raise ValueError("SCENARIOS_ALREADY_INVOKED")
@@ -230,6 +233,8 @@ def scenarios(result_dir: Path, wheel: Path) -> int:
                                    "-o", "tmp_path_retention_policy=all"], plugins=[shard]))
         value.update(pytest_exit_code=code, all_nodeids=shard.collected, selected_nodeids=shard.selected,
                      reports=shard.reports, collection_issues=shard.collection_issues, counts=shard.counts())
+        value["observer_authority"] = decode_json(private_read(state / "observer-authority.json", 2048))
+        gate()["observer_authority"](value["observer_authority"])
         gate()["execution"](value, gate()["SCENARIO_NODEIDS"])
         value["complete"] = (shard.collected == shard.selected == gate()["SCENARIO_NODEIDS"]
                              and not shard.collection_issues)

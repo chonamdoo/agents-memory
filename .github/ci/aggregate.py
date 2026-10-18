@@ -112,6 +112,7 @@ SCENARIO_NODEIDS = sorted("tests/evaluation_docker_scenarios.py::" + name for na
     "test_actual_declared_file_effect_uses_trusted_observer",
     "test_actual_private_file_effect_and_expected_nonzero_exit[0]",
     "test_actual_private_file_effect_and_expected_nonzero_exit[2]",
+    "test_actual_surviving_subject_cannot_turn_observer_interference_into_success",
     "test_actual_lost_create_response_recovers_full_id_without_replay",
     "test_actual_recovery_after_created_publication_temporary_link[owner]",
     "test_actual_recovery_after_created_publication_temporary_link[created]",
@@ -127,6 +128,26 @@ EVALUATION_IMAGE = "docker.io/library/python@sha256:2ed6491b93cd49272ee6de2b5a38
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
+
+
+def observer_authority(value: object) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("Missing observer authority evidence object")
+    expected = {
+        "schema": 1, "scope": "owned_engineering_only",
+        "subject_uid": 65532, "observer_uid": 65532,
+        "residual_descendant": True, "observer_stopped": True, "signal_sent": True,
+        "file_effect_refused": True, "oracle_passed": False, "cleanup_complete": True,
+    }
+    fields = {"proc_mem_errno", "proc_stdout_errno"}
+    require(set(value) == set(expected) | fields,
+            "Missing bounded observer authority characterization")
+    for key, item in expected.items():
+        require(type(value[key]) is type(item) and value[key] == item,
+                "Observer interference was not actually observed and refused")
+    for key in fields:
+        require(type(value[key]) is int and 0 <= value[key] <= 4095,
+                "Missing actual proc permission outcome")
 
 
 def wheel_nodeids(collection: list[str]) -> list[str]:
@@ -336,6 +357,7 @@ def evaluation_evidence(artifacts: Path, tested_sha: str, source: str,
             and nodeids(scenarios.get("selected_nodeids"), "scenario execution") == SCENARIO_NODEIDS,
             "The actual Docker scenarios were not executed exactly once")
     execution(scenarios, SCENARIO_NODEIDS)
+    observer_authority(scenarios.get("observer_authority"))
     smoke = one_receipt(artifacts, "evaluation-smoke.json")
     require(type(smoke.get("schema")) is int and smoke["schema"] == 1
             and smoke.get("code") == "COMPLETED", "Unknown or incomplete full-smoke receipt")

@@ -122,7 +122,14 @@ def complete_evidence(root: Path) -> SimpleNamespace:
                 "runtime_digest": runtime_digest, "image_config_digest": "1" * 64, "tool_digest": "2" * 64})
     scenario = evaluation / "evaluation-scenarios.json"
     write_json(scenario, {**owned("evaluation"), **execution(module["SCENARIO_NODEIDS"]),
-                          "runtime_digest": runtime_digest, "wheel_sha256": evaluation_wheel, "installed_modules": modules})
+                          "runtime_digest": runtime_digest, "wheel_sha256": evaluation_wheel, "installed_modules": modules,
+                          "observer_authority": {
+                              "schema": 1, "scope": "owned_engineering_only",
+                              "subject_uid": 65532, "observer_uid": 65532,
+                              "residual_descendant": True, "observer_stopped": True, "signal_sent": True,
+                              "file_effect_refused": True, "oracle_passed": False, "cleanup_complete": True,
+                              "proc_mem_errno": 13, "proc_stdout_errno": 13,
+                          }})
     mapping = {"controller": "evaluation", "artifacts": "evaluation_artifacts", "runtime_driver": "evaluation_runtime",
                "native_driver": "evaluation_native", "gateway_driver": "evaluation_gateway", "scoring": "evaluation_scoring",
                "diagnostics": "evaluation_diagnostics", "context_renderer": "context", "health_compiler": "evaluation_health",
@@ -212,6 +219,10 @@ def test_complete_ci_refuses_nonpassing_evaluation_job(evidence, status):
     ("scenario", ("runtime_digest",), "0" * 64),
     ("scenario", ("collection_issues",), [{"outcome": "skipped"}]),
     ("scenario", ("counts", "skipped"), 1),
+    ("scenario", ("observer_authority",), None),
+    ("scenario", ("observer_authority", "signal_sent"), False),
+    ("scenario", ("observer_authority", "oracle_passed"), True),
+    ("scenario", ("observer_authority", "proc_mem_errno"), None),
     ("smoke", ("complete",), None),
     ("smoke", ("identity", "runtime_digest"), "0" * 64),
     ("smoke", ("identity", "wheel_sha256"), "0" * 64),
