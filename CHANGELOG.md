@@ -29,6 +29,21 @@
 - `76254a76`의 [Actions39079833321](https://github.com/chonamdoo/agents-memory/actions/runs/39079833321)는 R10–R12 수정 후 source3079·설치 wheel703·실제 Docker14·Mac compatibility36, 양쪽 health·전체 평가 consumer·owned cleanup·strict aggregate를 통과했다. genuine before의 source3062pass10fail/설치686pass10fail와 같은 node의 phase 비교를 보존한다. fresh whole-source canonical12review/QA와 원래18개 acceptance는 별도 미완료다.
 - `5524a835`의 [Actions39084573279](https://github.com/chonamdoo/agents-memory/actions/runs/39084573279)는 R13 수정 후 source3088·설치 wheel712·실제 Docker14·Mac compatibility36, source/설치 health·전체 평가/health consumer·owned cleanup·strict aggregate를 통과했다. 제품 불변 test-only before의 source3080pass8fail/설치704pass8fail와 같은9node의 모든 phase 성공을 보존한다. 전체 지시/누락 전수 재대조·잔여 개발과 fresh canonical12review/QA·원래18개 acceptance는 별도 미완료다.
 
+### 전수 재대조 후 잔여 경계 수정
+
+- health item·feedback 이유의 현재 target/source disclosure와 snapshot을 재검사하고 전역 claim의 독립 게시·전역 reject floor는 유지했다. request-scoped selection audit를 전역 claim의 새 공개 제한으로 사용하지 않는다.
+- 닫힌 bounded 관측 창의 작업 처리와 사실의 support/freshness·source coverage를 분리했다. operator 전용 exact-revision `health_work_disposition`의 unknown 종결·명시 reopen, capacity 검사와 late-result fence를 추가했으며 이미 resolved인 불완전 refresh는 unknown history로 보존한다.
+- context의 bounded health partial metadata와 opaque quarantine 발견 경로를 연결하고 건강 분모·health reusable view의 current policy/dependency 자격을 공유했다. 인간 Accept 기록을 current source 분류로 승격하지 않는다.
+- final recall의 관계 입력을 admission과 같은 workspace로 제한해 무관한 workspace의 code-linked 관계가 유효 전역 기억을 차단하지 않게 했다.
+- recovery의 예상 밖 cycle 실패를 body-free로 남기고 stop 취소 뒤에도 task 소유권·join을 유지한다. 초기 인증의 `DATABASE_BUSY/not_started`와 judge 상태 실패의 정직한 readiness unavailable을 보존한다.
+- backup/restore/recover의 모든 owned finalizer를 시도하며 원래 실패·bounded cleanup 실패·알려진 committed 효과를 구분한다. CLI Ctrl-C는 bounded `COMMAND_INTERRUPTED/unknown`·exit130으로 보고하며 SIGTERM과 native signal 의미는 바꾸지 않는다.
+- 평가 gateway receipt를 digest-bound 단일 파일로 연결해 유효 terminal 완료를 중복 본문 크기로 잃지 않게 했다. report/health 소비자를 함께 이주하고 원래 byte/event/deadline·전체 attempt·unknown·cleanup을 유지한다.
+- 원래14개 경계의 genuine Actions before와 후속 setup/call/teardown 성공, 잘못된 fixture·전역 공개 scope 진단·operator denial 기대를 구분해 보존한다. 정확한 새 전체 CI·정규 review/QA 범위는 [검증 기록](docs/verification.ko.md)을 따르며 checkpoint push를 final 검증·원래18개 완료로 표현하지 않는다.
+- [Managed Agents 영상 보안 검토](docs/research/2026-10-18-managed-agents-security.ko.md)는 자막·공식 문서·현재 credential/격리/복구 경계를 대조한 조사다. 새 vault/event store·원문 수집·운영/egress/trust 변경은 채택하지 않았다.
+
+
+
+- `b4c450c4`의 [Actions39095319703](https://github.com/chonamdoo/agents-memory/actions/runs/39095319703)는 전체 source3114·별도 설치 wheel728·실제 Docker14·Mac ownership36, 양쪽 실제 health HTTP/CLI23outcome·전체 평가/health·owned cleanup·8job9artifact strict aggregate를 통과했다. current-policy denominator의 genuine before와 잘못된 operator denial 기대의 정정을 구분한다. 문서 포함 head·fresh whole-source canonical12/QA와 원래18개는 별도이며 로컬 검증·실제 native/운영/trial·merge/release를 실행한 것은 아니다.
 
 ### CI 전용 검증 전환과 OSS 후속 보완
 

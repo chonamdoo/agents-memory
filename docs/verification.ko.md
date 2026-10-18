@@ -1387,3 +1387,58 @@ before의 setup/teardown은 모두pass이고 collection issue·skip·xfail·xpas
 현재 run의 `actions-b1a9042-model-drift-before`, `actions-c469236-controller-model-drift-before`, `actions-5524a83-observed-model-green`에 원본 API/jobs/artifacts/log/phase와9same-node 비교를 보존했다. engineering peer와 oracle의 실제 경로 회귀이며 구독 모델 효익·공식 native/보호 행동이나 독립 human gold의 증명이 아니다. primary5attempt/2coding arms/1valid engineering pair/2final reads, 별도 optional-rule drift5attempt/4completed/1blocked/0validpair/0retry와 모든 비용 미관측·owned cleanup을 유지했다.
 
 R13 engineering component만 완료다. 최신 사용자가 요청한 전체 지시·개발 누락의 source/증거 전수 재대조와 잔여 개발, fresh whole-source canonical6Opus5.5+6Sol6.1 xhigh/각600s·QA는 별도다. 이전 실패/승인/401/abort를 재사용하거나 삭제하지 않는다. 원래18개 완료0과 모든 로컬 runtime/import/test/collection/lint/build/syntax/format/reproduction/추가 smoke 금지, 실제 native·human120/60task×3·180validpair·OS·운영/egress·실제1–2주 trial·최종 publication/merge/release 미승인을 유지한다.
+
+### 전체 지시 재대조 뒤 E/F/N 경계 수정과 진단 정정
+
+R13 뒤에는 당시 조회한 archive의 worktree201·leader95개 prompt와 U01–U36/I01–I39, issue5 원래 결정/후속 지시, 실제 API/CLI/MCP·schema/복구·host/CI, 기존 OSS86항목을 대조했다. health4·원래 누락 A–D·평가8개·외부18개와 의도적 보류를 합치거나 새 중복 누락으로 세지 않았다. source index·분류·전체111개 당시 todo와 사용자 원본 omission audit를 현재 run context에 보존했다. 이후 영상 검토의3개 조사 항목도 별도로 완료했으며 [Managed Agents 보안 메모](research/2026-10-18-managed-agents-security.ko.md)는 새 운영/egress·vault·event store 도입 승인이 아니다.
+
+새 수정은 bounded terminal receipt 중복(E), 실제 source scope에 맞는 health 이유 disclosure(F4), bounded 작업 처리와 unknown의 정직한 종결/재개(F2), workspace 관계 closure(F3), health partial·quarantine·현재 분모(F1), recovery owner/초기 DB 인증/운영 finalizer/readiness/CLI 중단(N3/N4/N5/N6/N1)이다. 같은 UID native 격리나 실제 모델 의미 품질을 새로 보장한 것이 아니다.
+
+| source / Actions | 전체 source pass/fail | 별도 설치 wheel pass/fail | 실제 관측과 한계 |
+|---|---:|---:|---|
+| `72cefd46` / [39087698006](https://github.com/chonamdoo/agents-memory/actions/runs/39087698006) |3089/14|713/7| scoped health 이유6·초기 busy2·judge readiness1·recovery owner4·실제 CLI SIGINT1의 genuine call fail. 해당 setup/teardown pass. SIGTERM은 원래부터 pass |
+| `a58a5de5` / [39088640316](https://github.com/chonamdoo/agents-memory/actions/runs/39088640316) |3102/7|719/4| 원래14개 실패는 사라졌지만 추가 health/workspace/finalizer 경계로 pipeline 실패. dump 상한8192는 허용 최소보다 작은 잘못된 fixture이며 실제 dump 실패 증거가 아님 |
+| `958d8eda` / [39091351655](https://github.com/chonamdoo/agents-memory/actions/runs/39091351655) |3103/9|718/8| 유효한44032 record budget에서 실제 gateway 완료 뒤 terminal publication이 `RECORD_BOUND`로 실패. source/설치 같은 node의 setup/teardown pass. 기존 native/trace/deadline을 늘리지 않음 |
+| `a1442d88` / [39092173085](https://github.com/chonamdoo/agents-memory/actions/runs/39092173085) |3103/13|718/12| 추가 global-claim privacy 기대3건은 기존 공개 계약과 대조해 오진으로 정정. 다른 feedback fixture는 허용되지 않은 `reason` 필드로 중단. 원본 관측은 보존하되 새로운 privacy red로 세지 않음 |
+| `fed67ebc` / [39092633573](https://github.com/chonamdoo/agents-memory/actions/runs/39092633573) |3107/9|729/1| E·실제 producer/unknown disposition·finalizer consumer는 pass. 과도한 global-publication/audit 결합의 기존 회귀8개와 operator Reject 뒤 held를 기대한 구형 test1개가 실패 |
+| `7a6f2c3a` / [39093288698](https://github.com/chonamdoo/agents-memory/actions/runs/39093288698) |3112/0|726/0| global 게시/거절 floor를 복구하고 실제 late assessment 거절을 검증. source health API/CLI23개 outcome도 pass. 전체 run은 import 순서 I001 두 건으로 실패해 installed health CLI·distribution·aggregate 완료로 세지 않음 |
+| `40d6b051` / [39093745014](https://github.com/chonamdoo/agents-memory/actions/runs/39093745014) |3112/2|726/2| obsolete policy를 현재 건강 분모2개로 세던 genuine 실패1개와 근거 없이 추가한 operator Accept 거절 기대1개. setup/teardown·collection은 정상, lint/comment/build pass |
+| `5b42c12c` / [39094181544](https://github.com/chonamdoo/agents-memory/actions/runs/39094181544) |3113/1|727/1| shared current-policy 비교 뒤 같은 denominator node의 모든 phase가 source/설치 pass. 남은 실패는 operator Accept가 거절돼야 한다는 잘못된 기대이며 새 승인 guard로 덮지 않음 |
+
+위 완료 run의 collection issue·skip·xfail·xpass는0이다. 원래72cefd의14source/7installed node는7a6에서 같은 ID의 setup/call/teardown을 모두 통과했다. `original-genuine-boundaries-same-node-phase-comparison.json`과 각각의 raw API/job/artifact/log·phase JSON을 보존했다. 실제 CLI SIGINT before는 returncode−2의 계약 실패였으며 그 run에서 raw stderr 유출을 관측했다고 확대하지 않는다.
+
+중간 실패도 삭제하지 않았다. `402ed02`는 terminal 이전 native trace bound로 중단돼 terminal overflow red가 아니고, `e5cb42d`는 없는 httpx import의 collection 실패다. `4293785`는 다음 push의 원래 workflow concurrency로 취소돼 일부 shard 결과를 전체 성공으로 합치지 않는다. `54b977f`의 required speaker 누락 등은 fixture 오류다. `a9b3eb1`에서 실제 producer→HTTP→Store의 닫힌 partial work가 held에 남는 경로는 source/설치에서 관측했으나, 그때의 큰 native-record 진단과 terminal bytes 측정 자체를 bound 실패라고 부르지 않는다. N5의 성공 후에는 실제 archive를 새 credential로 restore·journal reconcile해 내용 소비까지 확인했고, 중간 fixture가 incidental code 기대에서 멈췄던 상태를 실제 committed-effect red로 소급하지 않는다.
+
+수정 과정의 두 scope 오판을 명시적으로 정정했다.
+
+- 전역 source/claim의 publication scope와 selection audit의 request scope는 다르다. 전역으로 게시된 기억과 전역 reject floor를 다른 request에서 숨기는 추가 제한 및 그 잘못된4개 기대는 제거했다. 실제 scoped source의 health item/feedback 이유 fence와 전체 target disclosure 검사는 유지했다.
+- exact operator review 기록과 현재 source 분류 자격은 다르다. `operator_accept DID NOT RAISE`는 실제 관측이지만 그 자체로 권한 우회가 아니다. unsupported denial 기대를 제거하고 `operator_review` 전이 뒤에도 구형 분류의 health reusable=false·현재 ordinary/reusable 분모·불완전 coverage를 유지하는 경로를 검증 대상으로 삼았다. 새 이름의 전이를 before source에서 실행했다고 하거나 같은-node red→green을 만들어 내지 않는다. genuine before/after는 기존 `[denominator]` node다.
+
+기능상 처리 완료도 사실의 완전성과 분리한다. 닫힌 bounded 관측 창을 처리하면 작업은 resolved가 될 수 있지만 partial/unknown coverage·support/freshness는 그대로다. operator 전용 `close_unknown`/`reopen`은 exact pending revision·snapshot·현재 권한·capacity에 묶이고 unknown history와 늦은 결과 거절을 보존한다. explicit Accept/Reject가 끝낸 code 작업도 늦은 assessment로 되돌리지 않는다. context의 optional health metadata·opaque quarantine inventory와 current-policy 분모가 이 차이를 공개한다.
+
+평가 terminal에는 단일 `gateway.json`의 digest만 묶고 report·health replay가 동일 bytes를 재검사한다. 원래 stdout65536/native record16384/events200·frozen44032·timeout5/cleanup1/gateway lifetime5의 해당 회귀 예산을 유지한 채12개의 실제 admitted final read를 처리한다. diagnostic padding은 제거했으며 위조된 bound gateway를 report가 거절한다. 모든 attempt·blocked 후속 시도·unknown·cleanup을 남기고 과거 inline-only run을 현재 계약으로 자동 재작성하지 않는다.
+
+이후 `b4c450c4` / [Actions39095319703](https://github.com/chonamdoo/agents-memory/actions/runs/39095319703)는 정상 미검증 checkpoint로 push했다. 현재 source-policy 전이의 실제 health CLI/HTTP consumer를 같은23-outcome smoke 안에 추가했고, 결과를 기다리는 동안 로컬 product/runtime 검증을 하지 않았다. 아직 이 문단으로 새 전체 pipeline·정규 canonical12·CI-only QA·원래18개 완료를 선언하지 않는다. 정확한 완료 후 증거는 이어지는 source별 기록으로 구분한다.
+
+#### b4c450c4 전체 engineering 성공
+
+정확한 `b4c450c4b8653b9a83e3858858a366b0d227ff23` / [Actions39095319703](https://github.com/chonamdoo/agents-memory/actions/runs/39095319703)는2026-10-18T04:01:17Z에 success로 완료했다.
+
+| 실행 범위 | pass | fail·skip·xfail·xpass |
+|---|---:|---|
+| 전체 source4개 disjoint shard |3114|모두0, collection issue0 |
+| 별도 noneditable 설치 wheel consumer |728|모두0, collection issue0 |
+| 실제 owned Docker 평가 engineering |14|모두0 |
+| 실제 macOS CPython3.12.13 ownership compatibility |36|모두0 |
+
+lint/build·canonical comments·source/설치 health HTTP/CLI·전체 평가/health smoke와8job/9artifact strict aggregate가 모두 성공했다. 다섯 source/checks owned prerequisite cleanup과 별도 evaluation의 runtime/schema/process cleanup도 성공했다. health는 양쪽23개 outcome 전부 pass이며 owned project adapter 제거·서비스 정상 종료·fixture Store/관리 connection close·private schema 제거와 private evidence 보존을 확인했다. `current_code_rebind` outcome 안에서 실제 CLI/HTTP로 obsolete policy의 exact operator review를 기록한 뒤 reusable=false·현재 건강 분모 제외·source unclassified 증가·원래 policy 복구 후 현재 reuse를 확인했다. 이는 synthetic DB 상태를 준비한 실제 제품 소비이며 실제 native 승인이나 독립 인간 현존은 아니다.
+
+genuine `[denominator]` node는40d6b05의 source/설치 call fail에서5b42·b4c450c4의 동일 node 모든 phase pass로 바뀌었다. 새 `[operator_review]` 전이도 source/설치 setup·call·teardown pass이나 before가 없는 after-only 검증으로 남긴다. 잘못된 `[operator_accept]` 거절 기대를 재사용하거나 제품 guard를 추가하지 않았다. original72cefd 경계·terminal44032·실제 producer/unknown disposition·published backup의 restore 소비·workspace/global floor 회귀도 현재 전체 collection 안에서 유지됐다.
+
+full evaluation smoke는 실제 producer HTTP→native stdio protocol peer→MCP→controller→격리 blackbox verifier/scorer→health evidence 경로다. primary5attempt·2coding arm·1valid engineering pair·2final read와 별도 optional-rule drift5attempt/4completed/1blocked/0validpair/0retry를 보존했다. 기존 evidence 위조5건·native-link 위조2건을 거절하며 모든 비용 unknown과 exact cleanup을 유지했다. protocol peer·합성 oracle의 성공을 실제 구독 model 판단·native 보호·독립 human gold로 확대하지 않는다.
+
+source digest `7c8f14503cbafe5816c34f463d008349d367b0546ece9a87fbc357047b234761`은 모든 관련 전후 receipt에서 같다. 설치 consumer와 evaluation의 wheel SHA256은 `5235de15fb9ba2f386b3fec11e685960e9d20e716023790689fd48d015747ac9`이며 내려받은 bytes의 data-only checksum도 같다. sdist checksum은 `f2c6c1dfea5ad12380401037b75b934637678029b279a502326f13e25ea10690`, runtime digest는 `053e0d187706475d04dbb810dce5b30c40d82d4ae631704edf00862d42625167`이다. canonical checker는 실제 PR base `2892ca25e199386c672f23a0ba11841acaa023b3`에서98eligible full old/new file·4571652inputbytes·complete coverage·finding0/exit0을 기록했다.
+
+현재 run의 `actions-b4c450c-current-policy-qualified-green/observed-success-summary.json`, 원본 phase/API/job/artifact·health/evaluation/cleanup·data-only distribution checksum과 current-policy source phase를 보존했다. 새 문서 포함 source의 재확인과 genuine6Opus5.5+6Sol6.1 xhigh/각600s whole-source review·CI-only QA는 다음 단계다. 원래18개 완료0, 로컬 검증0, 실제 native/OS/운영/egress/human120/60task×3·180validpair/실제1–2주/최종 publication/merge/release 미승인은 그대로다.
+
+

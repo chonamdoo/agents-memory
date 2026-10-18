@@ -153,6 +153,8 @@ AM_BIN="$NEXT_AM_BIN"
 | 빈 remote spool·원격 장애·stop | 빈 queue는 probe하지 않고 pending 실패는 cycle backoff. 준비/DNS 대기는 중단하고 이미 송신한 I/O는 원래 deadline으로 drain | 반복 TLS/DNS busy polling, 매 cycle backoff 초기화, unknown mutation 새 key 재전송 |
 | 불완전 POST upload | 전체 body15초 뒤408/not_started·HTTP/1 연결 종료. 준비된 완전 요청을 새 연결로 실행 | chunk마다 deadline 연장, 부분 source 저장, unknown mutation 자동 재전송 |
 | 삭제 journal/head 부재·불일치 | authority read 차단 유지, 독립 보존 자료·허가된 operator 절차로 복구 | DB archive의 옛 head를 최신이라고 승인하거나 삭제 floor 초기화 |
+| backup/restore/recover의 `cleanup.complete=false` | 원래 code/effect와 bounded cleanup stage/code/type을 함께 보존. `committed`라면 작업에 맞는 archive 게시·marker 해제 상태를 확인하고 cleanup만 구분 | cleanup 오류를 원래 작업 미실행으로 바꾸거나 새 key로 무조건 재실행, 원래 실패·다른 close 시도 누락 |
+| CLI Ctrl-C | `COMMAND_INTERRUPTED/unknown`과 원래 operation/intent를 보존해 효과를 확인 | exit130을 `not_started`로 간주하거나 SIGTERM·provider 취소/erasure의 성공으로 확대 |
 
 ### 명시 restore
 
@@ -247,9 +249,19 @@ native mapping은 해당 host의 실제 server/tool 이름과 관측 가능한 p
 
 controller의 read-only rule fence는 native arm budget을 재설정하는 경로가 아니다. 원래 frozen `rules.probe`를 별도 controller scope의 required/context request에 그대로 사용하고 health replay도 그 값을 대조한다. corpus 준비의 재열기·rule probe는 서로 다른 관측 invocation ID를 사용한다. native gateway의 budget/workspace 강제를 예외 처리하거나 controller-only judgment 권한을 native에 추가하지 않는다.
 
+gateway observation은 invocation별 단일 `gateway.json`과 terminal의 digest 참조로 연결한다. report와 health replay는 같은 참조 bytes를 재검사하며 terminal 안에 receipt 본문을 중복 저장하지 않는다. inline receipt만 있는 과거 run을 새 계약으로 자동 해석·덮어쓰기하지 않고 해당 source와 원본 attempt를 보존한다.
+
 ## 건강 판정 입력과 admission
 
 `health_work.claims`는 `id/revision`과 완전한 `ClaimMeaning` 필드를 담는다. statement·kind·subject/predicate/object·polarity·modality·conditions·exceptions·valid_from/valid_until·entities를 evidence 선택과 support 판단에 모두 전달한다. nullable/default 의미도 응답에 명시하며 빠진 필드를 추정해 statement-only 판단으로 되돌리지 않는다. 정확한 meaning digest를 live admission manifest에 묶으므로 과거 statement-only work/admission은 새 inspect 없이 재사용하지 않는다.
 
 기존 health policy의 `max_audit_bytes`에는 전체 claim JSON과 source window의 UTF-8 bytes를 계산한다. 완전한 의미와 비어 있지 않은 source window가 안 들어가면 `HEALTH_BUNDLE_TOO_LARGE`이며, 의미를 축약하거나 예산·승인 fence를 완화하지 않는다. source-egress·provider·추가 health 처리 허가, 늦은 결과의 현재 권한/정책/claim revision 검사와 operator Reject·코드 stale·복구 quarantine 보호는 그대로다. typed 의미 전달과 engineering oracle은 실제 모델 정확성·인간 gold·freshness·자동 승인을 증명하지 않는다.
+
+닫힌 관측 segment의 assessment 완료는 해당 bounded 작업을 처리했다는 뜻이다. partial/unknown source coverage나 support/freshness를 complete로 표시하지 않는다. close 미관측·origin 누락·refresh conflict는 held로 남으며 다시 볼 수 없는 입력을 새로 수집하거나 판정을 추정해 해소하지 않는다.
+
+작업을 unknown으로 명시 종결하거나 다시 열려면 먼저 권한 있는 `health:item:<pending_id>` inspect로 현재 `health_revision`과 scope를 읽는다. 완전한 strict mutation command에 `kind="health_work_disposition"`, `pending_id`, `expected_pending_revision`(읽은 `health_revision`), 해당 snapshot, `decision="close_unknown"|"reopen"`, 이유와 기존 binding/revision/idempotency 필드를 넣고 `health apply --command-file FILE`로 제출한다. operator 전용 API/CLI 명령이며 MCP agent record의 승인 권한을 늘리지 않는다.
+
+`close_unknown`은 resolved history·불완전 coverage·unknown disposition을 남기고 admission을 닫는다. 사실의 정확성·freshness·인간 Accept나 source 분류 승인이 아니다. 늦은 agent 결과가 이 결정을 덮어쓸 수 없다. `reopen`은 최신 revision·권한·snapshot과 현재 queue capacity를 다시 검사하며, 근거가 여전히 없으면 그 gap을 유지한다. queue 상한이나 revision fence를 올려 재개하지 않는다. operator의 exact Accept/Reject로 code 작업이 처리된 뒤에도 늦은 assessment를 새 성공으로 받지 않는다.
+
+`health:quarantine`은 현재 scope에서 보류된 기억의 bounded opaque ref/revision/version 목록이다. `context.partial`과 `context.health`의 `withheld`·`unknown_assessments`·`closed_unknown_work`를 empty corpus나 healthy 완료로 해석하지 않는다. current source policy/dependency 자격을 잃은 분류는 건강 분모에서 제외하며 인간의 exact review 기록이 그 분류를 현재 것으로 바꾸지 않는다. body가 필요한 판단은 원래 inspect/admission·권한 경로를 사용한다.
 

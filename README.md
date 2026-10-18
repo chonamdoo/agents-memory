@@ -245,11 +245,15 @@ Raw note·feedback reason·memory echo는 미판단 coverage에 포함하지 않
 | 경로 | 구현 계약과 한계 |
 |---|---|
 | 코드와 기억 연결 | 명시한 worktree/root·파일 digest·UTF-8/Python AST symbol anchor를 claim revision에 연결한다. 변경 관측 뒤 stale input은 검색뿐 아니라 admission·최종 delivery·관계의 전체 입력에서 재검사한다. required rule을 stale 필터로 숨기지 않는다. 일반 Code map 서비스나 임의 파일 재귀 수집을 켜는 기능은 아니다. |
-| 관측 구간 사후 재검토 | 이미 허용된 producer의 segment·origin·close watermark를 bounded manifest/pending으로 묶는다. 다음 권한 있는 agent 또는 별도 허용된 Jev가 근거를 판단한다. 오류 지적·수정 후보의 발견과 실제 accept/decline·정정 successor를 구분한다. 없는 Stop/tool-result/transcript를 새로 수집하거나 background API로 구독 agent를 깨우지 않는다. |
+| 관측 구간 사후 재검토 | 이미 허용된 producer의 segment·origin·close watermark를 bounded manifest/pending으로 묶는다. 다음 권한 있는 agent 또는 별도 허용된 Jev가 근거를 판단한다. 닫힌 관측 구간의 처리 완료와 full-session coverage·사실의 정확성/최신성은 다르며 부분 관측의 unknown은 남는다. 오류 지적·수정 후보의 발견과 실제 accept/decline·정정 successor를 구분한다. 없는 Stop/tool-result/transcript를 새로 수집하거나 background API로 구독 agent를 깨우지 않는다. |
 | 새 맥락의 검증 | query relevance와 support/정확성·freshness를 분리한다. exact source span과 전체 health manifest로 판단하며 부분 관측은 unknown을 유지한다. 평가 evidence 연결은 명시 판단에 receipt digest를 붙일 뿐 task 성공을 기억의 사실성·최신성·인간 승인으로 승격하지 않는다. |
 | 명시적 Accept/Reject | operator가 exact claim revision·현재 health version/manifest·이유를 제출한다. 늦은 판정, 철회·삭제·권한 변경과 code 변경을 다시 검사한다. 기존 feedback reason/agent_note는 독립 근거가 아니며 자동 정정으로 바꾸지 않는다. |
 
+현재 source-selection policy·snapshot·근거 자격을 충족하는 기억만 건강 분모에 포함한다. exact operator Accept 기록도 구형 source 분류를 현재 분류로 승격하지 않는다. 격리·미확정 판정·명시 unknown 종결이 있으면 context의 `partial`과 bounded health metadata로 구분하며 `health:quarantine`에서 현재 권한에 맞는 opaque ref/revision 목록을 찾을 수 있다. 전역 claim의 공개 scope를 request에 묶인 selection audit만으로 좁히지는 않는다.
+
 `health apply --command-file FILE`은 완전한 strict command를 제출한다. producer의 `health observer --binding ID`는 body-free metadata만 읽는다. 이미 승인된 native receipt가 있는 workspace는 `health workspace-prepare`, `workspace-register`, `observe`를 사용하며 등록과 관측을 혼동하지 않는다. 이 명령은 native trust/strict capability·운영 corpus/egress 권한을 새로 부여하지 않는다.
+
+관측 근거를 더 확보할 수 없는 작업은 operator가 현재 `health_revision`에 묶인 `health_work_disposition`으로 `close_unknown`하거나 명시 `reopen`할 수 있다. unknown 종결은 기억의 Accept·사실성·freshness 승인이 아니며 agent가 자동 재개하지 않는다. 필수 입력과 재검사 조건은 [건강 판정 운영 계약](docs/release-runbook.ko.md#건강-판정-입력과-admission)을 따른다.
 
 `health apply-evaluation --run-dir DIR --command-file FILE --expected-sha256 SHA`는 보존한 manifest·전체 attempt·실제 producer/MCP trace·oracle/cleanup receipt와 현재 inspect 결과로 evidence를 다시 구성한다. 원래 command의 admission을 교체하지 않으며 최종 권한 검사는 서버가 맡는다. 독립 adjudication은 `--adjudication-file FILE`로만 공급하고 없으면 unknown이다. digest는 파일 무결성 연결이지 독립 인간 검토·서명·실제 native 실행의 증명이 아니다.
 

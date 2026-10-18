@@ -67,6 +67,8 @@ macOS per-user launchd는 private deployment receipt·plist·code/config 소유�
 
 원격 recovery는 유효한 receipt와 pending spool이 있을 때만 readiness를 요청한다. 실패는 cycle 사이에도 상한·jitter가 있는 backoff를 유지하고 성공한 전송 뒤 초기화한다. 기존 cycle 절대20초 예산 안에서 DNS 결과를 재사용하되 cycle 종료/만료 뒤 버리고 TLS·identity·현재 권한은 매번 검증한다. stop은 준비 대기·DNS 자식을 중단하며, 이미 송신한 business I/O는 원래 deadline으로 drain한다. unknown mutation을 새 요청으로 자동 재시도하지 않고 기존 stable-key reconciliation과 단일 flush owner를 유지한다.
 
+recovery owner의 예상 밖 cycle 실패도 body-free 상태로 남기고 기존 cadence로 다음 cycle을 수행한다. stop 호출자의 취소는 살아 있는 task의 소유권이나 eventual join을 버리는 근거가 아니다. 최초 인증의 `DATABASE_BUSY/not_started`를 일반 장애로 덮지 않고, judge 상태를 읽지 못하면 DB ready와 판단 unavailable을 구분한다.
+
 ### 2c. 클라우드 authority와 PC client
 
 서버 `Settings`는 DB·journal·operator authority를 유지한다. 별도 strict `RemoteClientSettings(kind="remote_client",version=1)`는 HTTPS origin·deployment/realm/mode·wire/spool bounds·private PC state·auth mode·선택 public CA/digest만 갖는다. PC에 DB DSN·operator credential·server locator를 보내지 않는다. `/api/client-bootstrap`은 현재 agent/producer의 one-binding grant·revision·identity·bounds만 반환하며 PC 경로를 cloud에서 stat하지 않는다.
@@ -157,6 +159,12 @@ workspace 등록은 원래 native receipt의 project/root·producer credential·
 사후 분석은 이미 허용된 source/segment/origin과 close watermark를 bounded manifest로 pending에 연결한다. full-session 관측으로 확대하거나 없는 Stop/tool-result/transcript를 수집하지 않는다. 다음 권한 있는 agent가 판단하며 background API로 구독을 깨우지 않는다. Jev는 독립 source-egress 허가·명시 provider 선택·health 허용이 모두 있어야 한다. 기존 correct/retract_request는 agent_note 후보이고 explicit accept/decline 및 승인된 correction successor와 구분한다.
 
 관련성·support/정확성 판단·freshness는 별도 값이다. 부분 관측·변경·평가 미관측은 unknown으로 남긴다. operator Accept/Reject는 exact revision·health version/manifest·이유와 현재 권한을 검사한다. 평가 compiler는 고정 manifest와 전체 attempt·실제 producer/MCP trace·artifact/oracle/cleanup을 재구성해 명시 command에 digest를 연결할 뿐 자동 사실 판정이나 인간 승인을 만들지 않는다. 매 inspect가 새 admission을 만들더라도 command의 원래 admission을 바꾸지 않고 서버가 최종 검사한다.
+
+닫힌 bounded 관측 창의 assessment는 처리한 작업을 resolved로 바꿀 수 있지만 source coverage·정확성·freshness를 complete로 바꾸지 않는다. close watermark가 없거나 origin/refresh가 미해결이면 held를 유지한다. operator는 정확한 pending ID·`health_revision`·snapshot·이유로 `close_unknown`/`reopen`을 선택할 수 있다. unknown 종결은 resolved history와 불완전 coverage를 보존하고 새 agent admission을 내주지 않는다. reopen은 현재 권한과 큐 수용량을 다시 검사한다. resolved 뒤 늦게 발견한 불완전 입력도 unknown으로 보존하며 닫힌 작업을 임의 재실행하지 않는다.
+
+현재 건강 분모와 claim health의 reusable view는 current source-selection policy와 request/dependency 자격을 공유한다. 인간의 exact review 기록과 source 분류는 독립이며 Accept만으로 구형 분류가 현재 자격을 얻지 않는다. 격리·미확정 assessment·명시 unknown 종결은 partial을 유지한다. bounded `health:quarantine`은 현재 snapshot·workspace·근거·복원/삭제 자격에 맞는 opaque claim ref/revision/version 목록이지 본문 검색이나 자동 정정 경로가 아니다.
+
+health item·feedback의 사유도 현재 target/source의 공개 자격과 snapshot을 따른다. 전역 claim의 공개 scope는 source/claim snapshot을 따르며 selection audit의 request scope만으로 전역 게시나 전역 reject floor를 축소하지 않는다. 반대로 scoped source의 이유를 다른 snapshot에서 공개하지 않는다. recall 관계의 모든 입력은 admission과 같은 workspace 범위로 먼저 검사한 뒤 적격 관계를 중복 제거하므로 다른 workspace의 code-linked 관계가 유효 전역 기억의 전달을 막지 않는다.
 
 health work는 statement만 보내지 않는다. 기존 `ClaimDraft`의 의미를 공통 `ClaimMeaning`으로 분리해 kind·subject/predicate/object·polarity·modality·조건·예외·valid time·entities를 evidence 선택과 support 판단 양쪽에 보존한다. 원래 evidence와 시간 validator는 `ClaimDraft`에 그대로 적용한다. exact claim revision과 meaning digest를 admission에 묶고 직렬화한 전체 claim을 기존 `max_audit_bytes`에 계산한다. 의미 필드 누락이나 예산 초과는 불완전 입력이며 조건을 잘라내거나 statement-only로 되돌려 판단하지 않는다. 새 판단의 근거는 허용된 source window이고 관련성·support·freshness·인간 승인은 여전히 별개다.
 
