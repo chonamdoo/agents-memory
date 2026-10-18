@@ -1,6 +1,6 @@
 # agents-memory
 
-**로컬 기본 구성과 클라우드 원격 경로를 작업트리에 구현했다.** 배포 위치(로컬/클라우드), 운영 주체(개인/회사), Jev 허용 정책과 명시적 provider 선택은 독립적이다. 실제 Jev API와 격리된 HTTPS·PostgreSQL·native coding-agent 실행은 [검증 기록](docs/verification.ko.md)의 해당 배포·모델·범위에만 적용한다. 작업트리 구현을 PR #9에 push된 코드나 병합·운영 배포 완료로 바꾸지 않는다. 사용자 지시에 따라 클라우드 구현·합성 검증은 trial과 별도로 진행하며 실제 cloud provisioning·실제 corpus 이동·일반 출시는 승인하지 않는다. 실제 1–2주 trial과 전체 #5 acceptance·공식 review/QA/handoff·publication gate는 별개다.
+**로컬 기본 구성과 클라우드 원격 경로를 구현하고 개발 checkpoint를 PR #9에 push했다.** 배포 위치(로컬/클라우드), 운영 주체(개인/회사), Jev 허용 정책과 명시적 provider 선택은 독립적이다. 실제 Jev API와 격리된 HTTPS·PostgreSQL·native coding-agent 실행은 [검증 기록](docs/verification.ko.md)의 해당 배포·모델·범위에만 적용한다. checkpoint의 push·source별 CI 성공은 병합·운영 배포 완료가 아니다. 승인된 개발 버전 main 병합과 정확한 commit의 설치는 정상 전체 소스 리뷰·지적 해결·CI-only QA 뒤 진행한다. 실제 cloud provisioning·실제 corpus 이동·일반 출시는 별도이며, 실제 1–2주 trial과 전체 #5 acceptance를 개발 병합의 완료로 치환하지 않는다.
 
 Python 3.12 이상 기반의 독립적인 메모리 서비스다. PC capture spool은 Python 버전과 별도로 안전한 SQLite runtime을 요구한다. Agent Flow는 선택 사항이다. Claude Code, Codex, OMP, 일반 MCP client와 CLI가 같은 인증·project binding·메모리 core를 사용한다.
 
@@ -248,6 +248,9 @@ Raw note·feedback reason·memory echo는 미판단 coverage에 포함하지 않
 | 관측 구간 사후 재검토 | 이미 허용된 producer의 segment·origin·close watermark를 bounded manifest/pending으로 묶는다. 다음 권한 있는 agent 또는 별도 허용된 Jev가 근거를 판단한다. 닫힌 관측 구간의 처리 완료와 full-session coverage·사실의 정확성/최신성은 다르며 부분 관측의 unknown은 남는다. 오류 지적·수정 후보의 발견과 실제 accept/decline·정정 successor를 구분한다. 없는 Stop/tool-result/transcript를 새로 수집하거나 background API로 구독 agent를 깨우지 않는다. |
 | 새 맥락의 검증 | query relevance와 support/정확성·freshness를 분리한다. exact source span과 전체 health manifest로 판단하며 부분 관측은 unknown을 유지한다. 평가 evidence 연결은 명시 판단에 receipt digest를 붙일 뿐 task 성공을 기억의 사실성·최신성·인간 승인으로 승격하지 않는다. |
 | 명시적 Accept/Reject | operator가 exact claim revision·현재 health version/manifest·이유를 제출한다. 늦은 판정, 철회·삭제·권한 변경과 code 변경을 다시 검사한다. 기존 feedback reason/agent_note는 독립 근거가 아니며 자동 정정으로 바꾸지 않는다. |
+
+다음 자동 Jev 원문 판단도 현재 `health_dispositions`를 advisory로 소비하지만, 일반 Jev 허가·명시 선택에 더해 health 전송 허가가 있어야 사유를 보낸다. 허가가 없으면 일반 원문 판단만 계속한다. 원문·advisory·기존 비교 근거의 state JSON 전체가 health input budget 안에 있어야 하며 긴 사유의 미리보기로 전체를 읽었다고 간주하지 않는다. 첫 HTTP 시도·재시도·다단계 판단마다 원래 admission의 source/claim·snapshot·disclosure·health dependency와 현재 권한을 다시 검사한다. 철회 뒤 추가 전송·늦은 게시는 막지만 이미 전송한 요청의 회수나 DB 검사와 외부 wire의 물리적 원자성은 보장하지 않는다.
+
 
 다음 원문 판단의 `judgment_context.accepted_memories`도 Reject·code stale·복원 quarantine을 재사용하지 않는다. `health_dispositions`는 현재 권한·snapshot에서 읽을 수 있는 exact Reject와 사유 ref를 최대8개 제공하며 긴 사유는 별도 inspect한다. 목록 발견과 admission·최종 재검사가 같은 claim·event·reason disclosure 검사를 공유한다. 확인된 부적격 review는 제외하지만 예상 밖 DB·서버 오류를 성공으로 바꾸지 않는다. 이 bounded 참고 입력은 독립 근거나 내용 전체의 금지 목록이 아니며 기존 필수 rejection comparison을 대체하지 않는다. 표시한 claim·health/code version·review/reason의 현재 disclosure를 source-selection admission에 묶는다.
 

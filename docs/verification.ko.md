@@ -1639,3 +1639,21 @@ P028의 정확한 임시 screenshot은 현재 없고 당시에도 EPERM이었으
 
 남은 정상 whole-source 리뷰에는 전체 Store 및 상속 구현의 실제 읽기 coverage가 필요하다. 기존 quorum/profile·600초·판정은 바꾸지 않았고401을 우회·재로그인하거나 다른 provider로 대체하지 않았다. 새 source의 genuine review·CI-only QA·개발 main 병합·정확 main 설치·별도 trial-only 이슈는 이 수정 범위 성공과 별도다. 실제 Codex enforceable 보호·원래18개 외부 조건도 완료로 치환하지 않는다.
 
+
+
+### R35–R37: 실제 model 전송의 현재 자격과 exact feedback 소비
+
+`8fbee3f`의 새 정상 리뷰 `4de8101080a34c36b741cb16ce93e430`는12planned 중7processes·6completed, Codex4approve/2request-changes였다. Claude의 실제 probe1개가 OAuth401/error-null이어서 나머지5개는 canonical runner가 실행하지 않았다. 이를12개 검토 완료·인증 복구·전체 소스 승인으로 세지 않는다. 실제 R35 medium과 R36 high를 정상 `continue`의 fix-loop에서 수정했으며 R37은 비차단 typing 정합성 보완이다.
+
+| 정확한 source / Actions | 직접 영향 source | 별도 설치 wheel 소비 | 실제 HTTP/CLI·worker와 판정 |
+|---|---|---|---|
+| `76437190f2416675ca893bf93915784ab435e760` / [39165059642](https://github.com/chonamdoo/agents-memory/actions/runs/39165059642) |1pass·5call fail|1pass·5call fail|제품 wheel은 직전 `8fbee3f`와 동일한 `ad113f5d0902f4a429a84353664dd2b55cbed1cd3145bc18ff65086f1a65562a`. 새 회귀만 추가한 before이며 실패를 성공 gate로 세지 않음|
+| `0cc2473d32f88f40c848fd8c1a0e285a7bde1457` / [39165667759](https://github.com/chonamdoo/agents-memory/actions/runs/39165667759) |274pass|274pass|기존 변경 영향 HTTP/CLI10개씩 성공, changed aggregate·lint/build/comments·owned cleanup 성공|
+| `8f9b293315c1c76a43d10955c0b293d50287846c` / [39165941445](https://github.com/chonamdoo/agents-memory/actions/runs/39165941445) |274pass|274pass|양쪽 실제 HTTP/CLI·worker12개씩 성공. 실제 loopback provider6요청씩 중 철회 대상은 최초 허용된1요청뿐이며 후속 retry·게시 없음. owned listener join/close와 기존 cleanup 성공|
+
+- before의 다섯 실패는 health 첫 전송·backoff retry·evidence→support, 일반 source 첫 전송, 허용된 exact Reject가 다음 model 판단에 빠지는 경우다. health 미허용 대조1개는 before부터 통과했고 사유를 보내지 않은 일반 source 판단·독립 기억 게시는 유지했다. 같은6node의 source/설치 setup·call·teardown을 after와 직접 대조했으며 skip·xfail·xpass·collection issue는 모두0이다.
+- 원래 source·claim·snapshot·disclosure·health manifest의 현재 자격은 Store의 기존 canonical 검사로 재검사한다. 원래 admission을 새로 발급하거나 network 동안 DB lock을 유지하지 않는다. 정책 변경·stop·late-result fence는 보존하며 완료 응답의 관측과 게시 실패를 구분한다. 이미 보낸 요청을 회수하거나 DB 검사와 외부 전송 사이의 물리적 원자성을 증명하지 않는다.
+- 실제 HTTP consumer는 소유 PostgreSQL/API/CLI와 소비한 패키지의 `JudgeWorker`·`JevClient`를 사용했다. 별도 private fixture state와 synthetic key·허용 verify callback, owned loopback HTTP peer만 사용했으며 실행 중인 fixture service의 원래 provider는 바꾸지 않았다. live Jev·native host 승인·실제 corpus 처리·운영 방어 성공으로 확대하지 않는다.
+- R37은 model class와 `TypeAdapter`의 실제 소비 형태에 맞춘 annotation 교정이다. scorer와 strict API/JSON 소비 회귀를 실행했으며 decoding·공개 schema를 느슨하게 하지 않았다. 기존 in-flight health 회귀의 고정 요청 수 대신 동일 입력의 추가 지출 없음·독립 source 진행·새 입력 뒤 실제 복구라는 소비자 invariant를 유지했다.
+
+원본은 현재 run의 `actions-7643719-jev-feedback-before`, `actions-0cc2473-guarded-jev-initial`, `actions-8f9b293-real-worker-http-green`에 보존했다. 최신 사용자 범위대로 직접 영향 경로만 병렬 Actions로 실행했으며 관련 없는 전체 source/installed·Mac·Docker와 전 협업자의 로컬 runtime 검증은 하지 않았다. 이 delta 성공은 fresh whole-source normal review·CI-only QA·main 병합·정확한 main commit의 개발 설치나 원래18개 외부 acceptance 완료가 아니다.

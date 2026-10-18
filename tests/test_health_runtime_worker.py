@@ -654,3 +654,33 @@ async def test_source_withdrawal_blocks_first_actual_jev_dispatch(world):
 
     assert calls == []
     assert await world.rows("SELECT id FROM am_source_selections WHERE source_id=$1", source.source_id) == []
+
+
+async def test_authorized_health_advice_cannot_expand_source_past_operator_input_budget(world, authority):
+    claim = await health_work(world, authority)
+    await world.application.health(world.operator, HealthPolicyCommand(
+        binding_id=world.binding_id, expected_binding_revision=1, idempotency_key="worker-small-health-budget",
+        expected_policy_revision=1, enabled=True, allow_jev_health=True, max_audit_bytes=1024,
+    ))
+    view = await world.inspect("health:claim:" + claim.id)
+    await world.application.health(world.operator, MemoryReviewCommand(
+        binding_id=world.binding_id, expected_binding_revision=1, idempotency_key="worker-budget-review",
+        admission_id=view["admission"]["id"], claim_ref=RevisionRef(id=claim.id, revision=claim.revision),
+        expected_health_version=view["health"]["version"], decision="reject",
+        reason="This exact retention memory is disputed.",
+    ))
+    world.jev.remember_default = 0.95
+    health_provider(world)
+    oversized = await world.capture(
+        "worker-over-health-budget", "PrivateBudgetBoundary has an owned synthetic retention constraint. " * 24,
+    )
+    independent = await world.capture("worker-within-health-budget", "AuditKey has a separate retention owner.")
+
+    await world.worker.cycle()
+
+    assert not any("PrivateBudgetBoundary" in span["text"]
+                   for call in world.jev.calls for span in call["state"].get("spans", []))
+    assert await world.rows("SELECT id FROM am_source_selections WHERE source_id=$1", oversized.source_id) == []
+    assert await world.rows(
+        "SELECT label FROM am_source_selections WHERE source_id=$1", independent.source_id,
+    ) == [{"label": "remember"}]
