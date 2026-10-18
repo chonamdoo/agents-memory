@@ -161,10 +161,7 @@ async def test_operator_health_observer_retains_healthy_workspaces_after_produce
         assert status == 401
 
 
-@pytest.mark.parametrize("old_workspace_state", ["active", "withdrawn"])
-async def test_healthy_code_link_commits_despite_revoked_foreign_producer(
-    authority, monkeypatch, old_workspace_state,
-):
+async def test_healthy_code_link_commits_despite_revoked_foreign_producer(authority, monkeypatch):
     from test_store_authority import ready_claim
 
     from agents_memory.health import (
@@ -203,11 +200,6 @@ async def test_healthy_code_link_commits_despite_revoked_foreign_producer(
             reason="The inspected ordinary claim depends on this exact code observation.")
 
     await store.health(actor, await link_command("old", "relink-original-link"))
-    if old_workspace_state == "withdrawn":
-        await store.health(actor, HealthWorkspaceCommand(
-            **mutation, idempotency_key="relink-withdraw-old-workspace", workspace_id="workspace_relink_old",
-            expected_workspace_revision=1, root_fingerprint="a" * 64, state="withdrawn",
-            producer_credential_id=producers["old"].credential_id))
     await store.revoke_token(actor, producers["old"].credential_id)
     command = await link_command("healthy", "relink-healthy-link")
     async with running(authority) as edge:

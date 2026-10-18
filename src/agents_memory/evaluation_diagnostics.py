@@ -40,14 +40,14 @@ def _require(condition: bool, code: str) -> None:
 
 
 class _Input(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True, validate_default=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True, validate_default=True, serialize_by_alias=True)
 
     @field_validator("*", mode="before")
     @classmethod
     def _tuples(cls, value: Any) -> Any:
         return tuple(value) if isinstance(value, list) else value
 
-    @field_validator("schema", "limit", mode="before", check_fields=False)
+    @field_validator("schema_version", "limit", mode="before", check_fields=False)
     @classmethod
     def _literal_integer(cls, value: Any) -> Any:
         if type(value) is not int:
@@ -114,13 +114,13 @@ class RawDiagnosticCase(_Input):
 
 
 class FrozenDiagnostics(_Input):
-    schema: Literal[1]
+    schema_version: Literal[1] = Field(alias="schema")
     independence: Literal["provided_unattested"]
     cases: tuple[RawDiagnosticCase, ...] = Field(max_length=10000)
 
 
 class SourceScopeInput(_Input):
-    schema: Literal[1]
+    schema_version: Literal[1] = Field(alias="schema")
     case_id: Identity
     corpus_digest: Digest
     gold_digest: Digest
@@ -129,7 +129,7 @@ class SourceScopeInput(_Input):
 
 
 class QualityRubric(_Input):
-    schema: Literal[1]
+    schema_version: Literal[1] = Field(alias="schema")
     definition: Annotated[str, Field(min_length=1, max_length=65536)]
 
 
@@ -194,7 +194,7 @@ class TransportLimits(_Input):
 
 
 class IndependentPackingInput(_Input):
-    schema: Literal[1]
+    schema_version: Literal[1] = Field(alias="schema")
     case_id: Identity
     corpus_digest: Digest
     required_rules_digest: Digest
@@ -441,7 +441,7 @@ class AdjudicatedCase(_Input):
 
 
 class PostRunAdjudication(_Input):
-    schema: Literal[1]
+    schema_version: Literal[1] = Field(alias="schema")
     manifest_digest: Digest
     independence: Literal["provided_unattested"]
     cases: tuple[AdjudicatedCase, ...] = Field(max_length=10000)

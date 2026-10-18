@@ -48,13 +48,14 @@ const hashlineFootprint = (value: unknown): string[] | undefined => {
   while (cursor < end) {
     const newline = value.indexOf("\n", cursor);
     if (newline < 0 || newline >= end) return;
-    const line = value.slice(cursor, newline);
-    cursor = newline + 1;
-    if (line.startsWith("+")) {
+    if (value.startsWith("+", cursor)) {
+      cursor = newline + 1;
       if (!bodyAllowed) return;
       bodyRequired = false;
       continue;
     }
+    const line = value.slice(cursor, newline);
+    cursor = newline + 1;
     if (bodyRequired) return;
     const header = patchHeader.exec(line);
     if (header) {
