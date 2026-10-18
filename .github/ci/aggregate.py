@@ -134,20 +134,15 @@ def observer_authority(value: object) -> None:
     if not isinstance(value, dict):
         raise ValueError("Missing observer authority evidence object")
     expected = {
-        "schema": 1, "scope": "owned_engineering_only",
-        "subject_uid": 65532, "observer_uid": 65532,
-        "residual_descendant": True, "observer_stopped": True, "signal_sent": True,
-        "file_effect_refused": True, "oracle_passed": False, "cleanup_complete": True,
+        "schema": 2, "scope": "owned_engineering_only",
+        "frozen_daemon_inventory": True, "subject_quiescence_refused": True,
+        "observer_started": False, "file_effect_refused": True,
+        "oracle_passed": False, "cleanup_complete": True,
     }
-    fields = {"proc_mem_errno", "proc_stdout_errno"}
-    require(set(value) == set(expected) | fields,
-            "Missing bounded observer authority characterization")
+    require(set(value) == set(expected), "Missing bounded observer quiescence evidence")
     for key, item in expected.items():
         require(type(value[key]) is type(item) and value[key] == item,
-                "Observer interference was not actually observed and refused")
-    for key in fields:
-        require(type(value[key]) is int and 0 <= value[key] <= 4095,
-                "Missing actual proc permission outcome")
+                "Residual subjects were not actually refused before file observation")
 
 
 def wheel_nodeids(collection: list[str]) -> list[str]:

@@ -509,6 +509,8 @@ def test_completed_nonzero_exit_still_observes_declared_effects(owned_runtime, m
             raw = canonical_bytes({"watchdog_secure": True, "subject_secure": True, "tool": {"engineering": True}})
         elif label == "effect":
             raw = canonical_bytes({"content": base64.b64encode(b"error report").decode(), "size": 12})
+        elif label == "effect-processes":
+            raw = b"UID PID STAT\n0 123 S\n"
         return CommandObservation("completed", 0, raw, b"", 1, True, True, True)
     instance.spec = replace(instance.spec, tool_identity=digest_bytes(canonical_bytes({"engineering": True})))
     intent = instance.intent(case_id=intent.case_id, snapshot=intent.snapshot, snapshot_path=Path(intent.snapshot_path), watchdog_path=Path(intent.watchdog_path), observer_path=Path(intent.observer_path))

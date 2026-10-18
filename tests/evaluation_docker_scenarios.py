@@ -213,125 +213,40 @@ def test_actual_private_file_effect_and_expected_nonzero_exit(actual_runtime, ex
     assert not compare_case(replace(case, expected_exit=exit_code + 1), result).passed
 
 
-def test_actual_surviving_subject_cannot_turn_observer_interference_into_success(actual_runtime, monkeypatch):
-    original_command = actual_runtime.command
-    probes = []
-
-    def command(label, args, **kwargs):
-        result = original_command(label, args, **kwargs)
-        if label == "effect":
-            report = original_command("observer-authority-report", [
-                "exec", "--user", "65532:65532", "--workdir", "/", args[5],
-                actual_runtime.spec.python_executable, "-I", "-S", "-c",
-                "import sys\nwith open('/scratch/observer-authority.json', 'rb') as stream:\n sys.stdout.buffer.write(stream.read(2049))\n",
-            ])
-            if not report.completed or len(report.stdout) > 2048:
-                raise ScenarioFailure("EVALUATION_OBSERVER_INTERFERENCE_NOT_OBSERVED")
-            probes.append(decode_json(report.stdout))
-        return result
-
-    monkeypatch.setattr(actual_runtime, "command", command)
-    raw = b"OPERATION_SECONDS = " + str(actual_runtime.spec.limits.operation_seconds).encode("ascii") + b"\n" + b'''import json, os, signal, time
+def test_actual_surviving_subject_cannot_turn_observer_interference_into_success(actual_runtime):
+    raw = b'''import os, time
 with open("/scratch/effect", "wb") as stream:
-    stream.write(b"wrong effect")
-read_fd, write_fd = os.pipe()
-if os.fork() != 0:
-    os.close(write_fd)
-    ready = os.read(read_fd, 1)
-    os.close(read_fd)
-    os._exit(0 if ready == b"1" else 110)
-os.setsid()
-os.close(read_fd)
-for fd in (0, 1, 2):
-    os.close(fd)
-os.write(write_fd, b"1")
-os.close(write_fd)
-deadline = time.monotonic() + OPERATION_SECONDS
-while os.getppid() != 1 and time.monotonic() < deadline:
-    pass
-while time.monotonic() < deadline:
-    for name in os.listdir("/proc"):
-        if not name.isdecimal() or int(name) <= 1 or int(name) == os.getpid():
-            continue
-        root = "/proc/" + name
-        try:
-            with open(root + "/cmdline", "rb") as stream:
-                argv = stream.read(4096).split(b"\\0")
-            if b"/observer.py" not in argv:
-                continue
-            with open(root + "/status", encoding="ascii") as stream:
-                status = dict(line.rstrip().split(":", 1) for line in stream if ":" in line)
-            uid = [int(value) for value in status["Uid"].split()]
-            if uid != [os.getuid()] * 4 or "Z" in status["State"]:
-                continue
-            pid = int(name)
-            os.kill(pid, signal.SIGSTOP)
-            while time.monotonic() < deadline:
-                with open(root + "/status", encoding="ascii") as stream:
-                    stopped = dict(line.rstrip().split(":", 1) for line in stream if ":" in line)
-                if stopped["State"].lstrip().startswith("T"):
-                    break
-            else:
-                os._exit(111)
-            report = {"schema": 1, "subject_uid": os.getuid(), "observer_uid": uid[0],
-                      "residual_descendant": os.getppid() == 1, "observer_stopped": True}
-            output_fd = None
-            for field, path, flags in (
-                ("proc_mem_errno", root + "/mem", os.O_RDWR),
-                ("proc_stdout_errno", root + "/fd/1", os.O_WRONLY),
-            ):
-                try:
-                    fd = os.open(path, flags)
-                except OSError as error:
-                    report[field] = error.errno
-                else:
-                    if field == "proc_stdout_errno":
-                        output_fd = fd
-                    else:
-                        os.close(fd)
-                    report[field] = 0
-            if output_fd is None:
-                os.kill(pid, signal.SIGKILL)
-            else:
-                os.write(output_fd, b'{"content":"ZXhhY3QgZWZmZWN0","size":12,"observer_output":')
-                os.kill(pid, signal.SIGCONT)
-                while time.monotonic() < deadline:
-                    try:
-                        with open(root + "/status", encoding="ascii") as stream:
-                            finished = dict(line.rstrip().split(":", 1) for line in stream if ":" in line)
-                    except FileNotFoundError:
-                        break
-                    if finished["State"].lstrip().startswith("Z"):
-                        break
-                else:
-                    os.kill(pid, signal.SIGKILL)
-                    os._exit(113)
-                os.write(output_fd, b"}")
-                os.close(output_fd)
-            report["signal_sent"] = True
-            with open("/scratch/observer-authority.json", "w", encoding="ascii") as stream:
-                json.dump(report, stream)
-            os._exit(0)
-        except (OSError, ValueError, KeyError):
-            continue
-os._exit(112)
+    stream.write(b"exact effect")
+ready, started = os.pipe()
+if os.fork() == 0:
+    os.close(ready)
+    for fd in (0, 1, 2):
+        os.close(fd)
+    os.write(started, b"1")
+    os.close(started)
+    while True:
+        time.sleep(1)
+os.close(started)
+assert os.read(ready, 1) == b"1"
+os.close(ready)
 '''
     result = contained_program(actual_runtime, raw, effects=(("effect", 1024),))
     require_execution(result, "completed")
     assert result.execution.exit_code == 0
-    assert len(probes) == 1
-    probe = probes[0]
-    assert probe["subject_uid"] == probe["observer_uid"] == 65532
-    assert probe["residual_descendant"] and probe["observer_stopped"] and probe["signal_sent"]
+    assert result.state == "runtime_unknown" and result.effects == ()
+    operations = dict(result.operations)
+    assert operations["effect-pause"].completed and operations["effect-processes"].completed
+    assert any(row.split()[0] == "65532" for row in operations["effect-processes"].stdout.decode("ascii").splitlines()[1:])
+    assert "effect" not in operations and "effect-unpause" not in operations
     case = OracleCase("observer-interference", (actual_runtime.spec.python_executable,), b"", b"", b"", 0,
                       (FileExpectation("effect", 1024, b"exact effect"),))
-    verdict = compare_case(case, result)
-    evidence = {**probe, "scope": "owned_engineering_only",
-                "file_effect_refused": result.effects != (("effect", b"exact effect"),),
-                "oracle_passed": verdict.passed, "cleanup_complete": result.cleanup.exact_absence}
+    assert not compare_case(case, result).passed
     state = Path(os.environ["AGENTS_MEMORY_EVALUATION_RUNTIME_SPEC"]).parent
+    evidence = {"schema": 2, "scope": "owned_engineering_only", "frozen_daemon_inventory": True,
+                "subject_quiescence_refused": True, "observer_started": False,
+                "file_effect_refused": True, "oracle_passed": False,
+                "cleanup_complete": result.cleanup.exact_absence}
     private_write(state / "observer-authority.json", json.dumps(evidence, sort_keys=True).encode("ascii"))
-    assert not verdict.passed
 
 
 def test_actual_lost_create_response_recovers_full_id_without_replay(actual_runtime, monkeypatch):

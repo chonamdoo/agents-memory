@@ -726,6 +726,36 @@ class DockerRuntime:
             outcomes.append(outcome)
         return tuple(outcomes)
 
+    def _prepare_file_effects(self, container_id: str) -> None:
+        # Freeze before the daemon inventory: an in-container probe shares subject authority.
+        if not self.command("effect-pause", ["container", "pause", container_id]).completed:
+            raise RuntimeRefusal("FILE_EFFECT_FREEZE_UNKNOWN")
+        inventory = self.command("effect-processes", ["container", "top", container_id, "-eo", "uid,pid,stat"])
+        if not inventory.completed:
+            raise RuntimeRefusal("FILE_EFFECT_INVENTORY_UNKNOWN")
+        rows = inventory.stdout.decode("ascii").splitlines()
+        if not rows or rows[0].split() != ["UID", "PID", "STAT"] or not 1 < len(rows) <= self.spec.limits.pids + 1:
+            raise RuntimeRefusal("FILE_EFFECT_INVENTORY_INVALID")
+        identities: set[int] = set()
+        watchdogs = 0
+        for row in rows[1:]:
+            fields = row.split()
+            if len(fields) != 3 or not fields[0].isdigit() or not fields[1].isdigit() or not re.fullmatch(r"[A-Z][A-Za-z<+]*", fields[2]):
+                raise RuntimeRefusal("FILE_EFFECT_INVENTORY_INVALID")
+            uid, pid = int(fields[0]), int(fields[1])
+            if pid <= 0 or pid in identities:
+                raise RuntimeRefusal("FILE_EFFECT_INVENTORY_INVALID")
+            identities.add(pid)
+            if fields[2][0] in {"Z", "X"}:
+                continue
+            if uid != 0:
+                raise RuntimeRefusal("FILE_EFFECT_SUBJECTS_ALIVE")
+            watchdogs += 1
+        if watchdogs != 1:
+            raise RuntimeRefusal("FILE_EFFECT_WATCHDOG_UNKNOWN")
+        if not self.command("effect-unpause", ["container", "unpause", container_id]).completed:
+            raise RuntimeRefusal("FILE_EFFECT_UNFREEZE_UNKNOWN")
+
     def run(self, intent: ResourceIntent, argv: tuple[str, ...], stdin: bytes, effects: tuple[tuple[str, int], ...], *, stop_event: Event | None = None) -> SubjectObservation:
         limit = self.spec.limits
         expected_intent = self.intent(case_id=intent.case_id, snapshot=intent.snapshot, snapshot_path=Path(intent.snapshot_path), watchdog_path=Path(intent.watchdog_path), observer_path=Path(intent.observer_path))
@@ -733,7 +763,8 @@ class DockerRuntime:
             raise RuntimeRefusal("RESOURCE_INTENT_CHANGED")
         if len(stdin) > limit.stdin_bytes or not argv or len(argv) > 128 or sum(len(item.encode("utf-8")) for item in argv) > limit.stdin_bytes or any("\x00" in item for item in argv):
             raise RuntimeRefusal("SUBJECT_INVOCATION_BOUND")
-        if limit.watchdog_seconds <= limit.wall_seconds + limit.cleanup_seconds + limit.operation_seconds * (3 + len(effects)):
+        effect_operations = 3 if effects else 0
+        if limit.watchdog_seconds <= limit.wall_seconds + limit.cleanup_seconds + limit.operation_seconds * (3 + effect_operations + len(effects)):
             raise RuntimeRefusal("WATCHDOG_OPERATION_MARGIN")
         self.operations = []
         container_id = None
@@ -786,6 +817,8 @@ class DockerRuntime:
                 execution = lease.observation
                 state = execution.state
                 if execution.state == "completed" and execution.stdout_complete and execution.stderr_complete:
+                    if effects:
+                        self._prepare_file_effects(container_id)
                     for index, (path, maximum) in enumerate(effects):
                         self.record(intent.name + f".effect-{index}-intent.json", {"container_id": container_id, "path": path, "maximum": maximum})
                         result = self.command("effect", ["exec", "--user", "65532:65532", "--workdir", "/", container_id, self.spec.python_executable, "-I", "-S", "/observer.py", path, str(maximum)])
