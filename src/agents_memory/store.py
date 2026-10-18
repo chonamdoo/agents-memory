@@ -1859,14 +1859,14 @@ class Store:
         health_dispositions = []
         for row in review_rows:
             try:
-                await self._claim_row(connection, binding_id, row["id"], snapshot)
-                if await self._disclosure_manifest(
-                    connection, binding_id, row["reason_source_id"], snapshot,
-                ) is None:
-                    continue
+                await self._source_judgment_health_manifest(
+                    connection, binding_id, snapshot, [{
+                        "id": row["id"], "revision": row["revision"], "review_event_id": row["review_event_id"],
+                    }],
+                )
                 reason = await self._source_row(connection, binding_id, row["reason_source_id"], snapshot, True)
             except DomainError as error:
-                if error.code not in _DISCLOSURE_ERRORS:
+                if error.code not in _DISCLOSURE_ERRORS and error.code != "ADMISSION_STALE":
                     raise
                 continue
             item = {

@@ -279,7 +279,7 @@ def observe_health_workspace(
             response, workspace = _observer(receipt, config, spool, client)
             if workspace is None:
                 return {"state": "disabled", "configured": True, "workspace_id": config.workspace_id, "freshness": "unknown"}
-            # Reconcile the previous immutable observation before reserving a new sequence.
+            # Reconcile retained envelopes; expired effects remain unknown.
             prior = spool.read_health_state("code")
             prior_receipt = {}
             if prior.get("key"):
@@ -294,9 +294,7 @@ def observe_health_workspace(
                     prior_disposition = "expired_or_unknown"
                 if prior_disposition == "quarantined" and prior_receipt.get("effect") != "unknown":
                     prior_disposition = "proven_uncommitted"
-                if (prior_disposition not in {"committed", "expired", "discarded", "expired_or_unknown", "proven_uncommitted"}
-                        or (prior_disposition in {"expired", "expired_or_unknown"}
-                            and workspace["last_sequence"] < prior.get("sequence", 0))):
+                if prior_disposition not in {"committed", "expired", "discarded", "expired_or_unknown", "proven_uncommitted"}:
                     return _incomplete(require_committed, "HEALTH_OBSERVATION_UNCOMMITTED")
             paths = workspace.get("linked_paths") if explicit_paths is None else [
                 {"relative_path": path, "symbol_names": list(names)} for path, names in explicit_paths

@@ -886,18 +886,21 @@ class Smoke:
                 box = ProducerSpool(spool, receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
                 try:
                     prior = box.read_health_state("code")
+                    pending = box.db.execute("SELECT payload FROM outbox WHERE key=?", (prior["key"],)).fetchone()
+                    self.check(pending is not None, "OWNED_OBSERVATION_NOT_PENDING")
+                    prior_command = json.loads(pending[0])
                     now = time.time()
                     changed = box.db.execute("UPDATE outbox SET created_at=?,expires_at=? WHERE key=?",
                         (now - PAYLOAD_RETENTION_SECONDS - 1, now - 1, prior["key"])).rowcount
                     self.check(changed == 1, "OWNED_OBSERVATION_NOT_PENDING")
                     self.check(box.disposition(prior["key"])["state"] == "expired", "EXPIRY_NOT_PRESERVED")
-                    return prior
+                    return prior, prior_command
                 finally:
                     box.close()
             finally:
                 os.close(descriptor)
 
-        prior = await asyncio.to_thread(expire_owned_observation)
+        prior, prior_command = await asyncio.to_thread(expire_owned_observation)
         paths = self.evidence("post-expiry-paths", [{"relative_path": "src/cache.py", "symbol_names": ["cache"]}])
         observed = await self.cli("health", "observe", "--receipt", self.receipt, "--paths-file", paths)
         self.check(observed["state"] == "observed" and observed["files"] == 1, "EXPIRED_OBSERVATION_BLOCKED_RECOVERY")
@@ -911,6 +914,7 @@ class Smoke:
                        box.status()["gaps"].get("SPOOL_PAYLOAD_EXPIRED", 0) >= 1, "EXPIRY_HISTORY_LOST")
         finally:
             box.close()
+        await self.api("/api/health", prior_command, role="producer", denied=("OBSERVATION_OUT_OF_ORDER",))
         workspace = await self.inspect("health:workspace:workspace_engineering", complete=True)
         self.check(any(item.get("metadata") and item["metadata"]["file_digest"] == digest(self.code.read_bytes())
                        for item in workspace["observations"]), "CURRENT_BYTES_NOT_OBSERVED_AFTER_EXPIRY")
