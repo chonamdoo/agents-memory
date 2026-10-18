@@ -553,9 +553,6 @@ async def exercise():
                 await call('memory_required_context', channel['required_request'])
                 if event_mode == 'valid':
                     await call('memory_required_context', channel['required_request'])
-                if event_mode == 'receipt-bound':
-                    for _ in range(12):
-                        await call('memory_required_context', channel['required_request'])
                 if {complete!r}:
                     key = hashlib.sha256(identity.encode()).hexdigest()
                     capture = json.loads((run_dir / 'ledger' / (key + '.capture.json')).read_bytes())
@@ -583,10 +580,14 @@ async def exercise():
                     candidates = await call('memory_context', recall)
                     for item in candidates['candidate_manifest']:
                         await inspect(item['inspection_ref'])
-                    final = await call('memory_context', {{**recall, 'admission_id': candidates['admission_id'],
+                    final_request = {{**recall, 'admission_id': candidates['admission_id'],
                         'relevance': [{{'claim_id': item['claim_id'], 'relevant': True,
                                        'reason': 'Engineering peer checks actual qualified final delivery.'}}
-                                      for item in candidates['candidate_manifest']]}})
+                                      for item in candidates['candidate_manifest']]}}
+                    final = await call('memory_context', final_request)
+                    if event_mode == 'receipt-bound':
+                        for _ in range(12):
+                            final = await call('memory_context', final_request)
                     assert final['judgment_required'] is False
                 if {final_empty!r}:
                     await call('memory_context', manifest.workload['retrieval'][0]['request'])
@@ -681,7 +682,7 @@ async def test_actual_bounded_gateway_completion_preserves_terminal_and_later_at
         path, config, _ = fixture_inputs(
             tmp_path, repeats=1, preflight_gateway=_actual_preflight_channel(agent, producer), peer=peer,
         )
-        config["record_bytes"] = 24576
+        config["record_bytes"] = 49152
         save(path, config)
         manifest = load_manifest(path)
         await asyncio.to_thread(run_evaluation, manifest, run_dir)
@@ -692,6 +693,7 @@ async def test_actual_bounded_gateway_completion_preserves_terminal_and_later_at
             "gateway_record_bytes": prefix.with_suffix(".gateway.json").stat().st_size,
             "terminal_record_bytes": prefix.with_suffix(".terminal.json").stat().st_size,
             "largest_trace_record_bytes": max(item.stat().st_size for item in (run_dir / "traces").rglob("*.json")),
+            "native_link_record_bytes": prefix.with_suffix(".native-tool-link.json").stat().st_size,
         }))
         assert terminal["status"] == "completed", {
             "code": terminal["code"], "reasons": terminal["comparability_reasons"],

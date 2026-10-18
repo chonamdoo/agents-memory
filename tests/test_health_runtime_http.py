@@ -25,6 +25,15 @@ async def test_health_policy_is_operator_only_and_observer_is_producer_safe(auth
         for token in (AGENT_TOKEN, producer_token):
             status, body = await request(edge, {**payload, "idempotency_key": "forbidden-policy"}, token, path="/api/health")
             assert status == 403
+        disposition = {
+            "kind": "health_work_disposition", "binding_id": authority.binding_id,
+            "expected_binding_revision": 1, "idempotency_key": "forbidden-work-disposition",
+            "pending_id": "pending_fixture", "expected_pending_revision": 1,
+            "decision": "close_unknown", "reason": "Unknown work does not approve facts.",
+        }
+        for token in (AGENT_TOKEN, producer_token):
+            status, body = await request(edge, disposition, token, path="/api/health")
+            assert status == 403
         workspace = {
             "kind": "health_workspace", "binding_id": authority.binding_id, "expected_binding_revision": 1,
             "idempotency_key": "health-wire-workspace", "workspace_id": "workspace_health_wire",
@@ -44,10 +53,24 @@ async def test_health_policy_is_operator_only_and_observer_is_producer_safe(auth
         assert status == 403
 
 
-@pytest.mark.parametrize("kind", ["health_policy", "health_workspace", "memory_review", "feedback_resolution"])
-async def test_mcp_record_never_exposes_operator_health_commands(authority, kind):
+@pytest.mark.parametrize("payload", [
+    {"kind": "health_policy", "expected_policy_revision": 0, "enabled": True},
+    {"kind": "health_workspace", "workspace_id": "workspace_fixture", "expected_workspace_revision": 0,
+        "root_fingerprint": "a" * 64, "producer_credential_id": "producer_fixture"},
+    {"kind": "memory_review", "admission_id": "admission_fixture", "claim_ref": {"id": "claim_fixture", "revision": 1},
+        "expected_health_version": 0, "decision": "reject", "reason": "Explicit operator review."},
+    {"kind": "feedback_resolution", "admission_id": "admission_fixture", "feedback_ref": "feedback_fixture",
+        "expected_feedback_version": 0, "decision": "decline", "reason": "Explicit candidate disposition."},
+    {"kind": "health_work_disposition", "pending_id": "pending_fixture", "expected_pending_revision": 1,
+        "decision": "close_unknown", "reason": "Unknown work is not an assessment."},
+])
+async def test_mcp_record_never_exposes_operator_health_commands(authority, payload):
+    from agents_memory.health import HEALTH_ADAPTER
+
+    command = HEALTH_ADAPTER.validate_python({"binding_id": authority.binding_id,
+        "expected_binding_revision": 1, "idempotency_key": "operator-command-schema-boundary", **payload})
     async with running(authority) as edge:
-        status, body = await request(edge, tool({"kind": kind, "binding_id": authority.binding_id}, name="memory_record"))
+        status, body = await request(edge, tool(command.model_dump(mode="json"), name="memory_record"))
         assert status == 200
         assert tool_code(body) == "INPUT_INVALID"
 

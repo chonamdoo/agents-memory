@@ -2105,7 +2105,7 @@ async def test_real_backup_dump_failure_preserves_primary_and_removes_staging_de
         body = "\n".join("Synthetic dump row: " + hashlib.sha256(
             f"{source_index}:{row}".encode()).hexdigest() for row in range(512))
         await store.capture(actor, CaptureCommand(binding_id=binding.id,
-            idempotency_key=f"dump-bound-{source_index}", origin_key=f"dump-bound-{source_index}", body=body))
+            idempotency_key=f"dump-bound-{source_index}", origin_key=f"dump-bound-{source_index}", body=body, speaker="human"))
     directory = root / "failed-backup"
     directory.mkdir(mode=0o700)
     archive = directory / "backup.age"
@@ -2161,10 +2161,14 @@ async def test_real_published_backup_retains_committed_effect_and_is_restorable_
     restored = await restore(settings, root / "operator", archive, identity, head,
         recovered_token, settings.deployment_id, runtime)
     assert restored["effect"] == "committed" and restored["tokens_rotated"] is True
-    await store.open()
-    recovered_actor = await store.authenticate(recovered_token.read_text().strip())
-    assert (await store.source(recovered_actor, binding.id, captured.source_id)).body == (
-        "Published encrypted evidence survives a connection cleanup failure.")
+    consumer = Store(settings, DeletionJournal(settings.journal_dir, settings.deployment_id))
+    await consumer.open()
+    try:
+        recovered_actor = await consumer.authenticate(recovered_token.read_text().strip())
+        assert (await consumer.source(recovered_actor, binding.id, captured.source_id)).body == (
+            "Published encrypted evidence survives a connection cleanup failure.")
+    finally:
+        await consumer.close()
 
 
 @pytest.mark.asyncio
@@ -2207,6 +2211,10 @@ async def test_real_restore_primary_failure_and_fence_survive_multiple_private_c
     assert marker not in json.dumps(public)
     assert failed_stores and all(selected.pool is None for selected in failed_stores)
     assert (settings.state_dir / "restore-barrier.json").exists()
-    with pytest.raises(DomainError) as fenced:
-        await store.open()
-    assert fenced.value.code == "RESTORE_RECOVERY_REQUIRED"
+    await store.open()
+    try:
+        with pytest.raises(DomainError) as fenced:
+            await store.authenticate(TOKEN)
+        assert fenced.value.code == "RESTORE_RECOVERY_REQUIRED"
+    finally:
+        await store.close()

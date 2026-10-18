@@ -740,7 +740,7 @@ async def test_quarantined_current_claims_are_partial_and_discoverable_without_e
     withheld = await company.application.context(company.actor, request)
     assert withheld['status'] == 'partial' and withheld['partial'] is True
     assert withheld['refs'] == [] and withheld['candidate_manifest'] == []
-    assert withheld['stats']['health']['withheld'] == 3
+    assert withheld['health']['withheld'] == 3
     discovered, cursor = [], 0
     while True:
         page = await company.store.inspect(company.actor, company.binding_id, 'health:quarantine',
@@ -760,8 +760,8 @@ async def test_quarantined_current_claims_are_partial_and_discoverable_without_e
     await review(company, recovered_claim, 'fresh-discovered-health-review', 'accept', view=current)
     delivered = await judged_context(company, company.actor, request)
     assert delivered['refs'] == [recovered_claim.id]
-    assert delivered['partial'] is True and delivered['stats']['health']['withheld'] == 2
-    assert delivered['stats']['coverage']['unclassified_sources'] == 0
+    assert delivered['partial'] is True and delivered['health']['withheld'] == 2
+    assert delivered['coverage']['unclassified_sources'] == 0
 
 
 async def test_actual_producer_partial_segments_finish_bounded_work_without_claiming_freshness(company, tmp_path, monkeypatch):
@@ -801,7 +801,7 @@ async def test_actual_producer_partial_segments_finish_bounded_work_without_clai
             assert result['state'] == 'durably_spooled', result
         await emit('session_start')
         command = CaptureCommand(binding_id=company.binding_id, idempotency_key='real-segment-capture',
-            origin_key='real-segment-origin', body='CacheKey still needs independent freshness review.',
+            origin_key='real-segment-origin', body='CacheKey still needs independent freshness review.', speaker='human',
             root_run_id=identity['root'], agent_path=identity['path'])
         captured = await asyncio.to_thread(client.request, '/api/capture', command.model_dump(mode='json'))
         assert captured['effect'] == 'committed'
@@ -843,7 +843,7 @@ async def test_refresh_conflict_work_has_exact_operator_unknown_disposition_and_
         coverage='partial', gaps=['HOST_SESSION_WINDOW_UNOBSERVED']))
     await company.store.capture(company.actor, CaptureCommand(binding_id=company.binding_id,
         idempotency_key='conflicted-late-capture', origin_key='conflicted-origin', snapshot='snapshot_beta',
-        body='CacheKey has incompatible snapshot evidence.', root_run_id='run_conflict', agent_path='agent_conflict'))
+        body='CacheKey has incompatible snapshot evidence.', speaker='human', root_run_id='run_conflict', agent_path='agent_conflict'))
     page = await company.store.inspect(company.actor, company.binding_id, 'health', 'snapshot_alpha')
     item = page['items'][0]
     command = {**mutation(company, 'operator-close-unknown'), 'kind': 'health_work_disposition',
