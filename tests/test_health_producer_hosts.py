@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -443,3 +444,83 @@ def test_bounded_session_metadata_cannot_starve_current_code_or_authorization(he
         assert spool.read_health_state("authorization")["enabled"] is True
     finally:
         spool.close()
+
+
+@pytest.mark.parametrize("scenario", ["expired", "receipt_pruned", "committed_ack_lost", "workspace_changed"])
+def test_expired_code_delivery_recovers_current_observation_without_erasing_history(
+    health_installation, monkeypatch, scenario,
+):
+    from agents_memory.spool import PAYLOAD_RETENTION_SECONDS, RECEIPT_RETENTION_SECONDS
+
+    project, _, _, receipt, endpoint, calls = health_installation
+    source = project / "module.py"
+    source.write_bytes(b"def answer(): return 1\n")
+    if scenario == "workspace_changed":
+        assert health_before_context(receipt)["state"] == "observed"
+    else:
+        assert observe_health_workspace(receipt, defer_flush=True)["state"] == "queued"
+    spool = ProducerSpool(Path(receipt["runtime_dir"]) / "capture.sqlite3",
+        receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
+    original = endpoint.request
+    try:
+        prior = spool.read_health_state("code")
+        if scenario != "workspace_changed":
+            def failed_delivery(route, payload):
+                if route == "/api/health":
+                    if scenario == "committed_ack_lost":
+                        original(route, payload)
+                    raise DomainError("SERVICE_UNAVAILABLE", "Delivery completion is unconfirmed", effect=EffectState.UNKNOWN)
+                return original(route, payload)
+
+            monkeypatch.setattr(endpoint, "request", failed_delivery)
+            assert spool.flush(endpoint)["pending"] == 1
+            now = time.time()
+            spool.db.execute("UPDATE outbox SET created_at=?,expires_at=? WHERE key=?",
+                (now - PAYLOAD_RETENTION_SECONDS - 1, now - 1, prior["key"]))
+            assert spool.disposition(prior["key"])["state"] == "expired"
+            assert spool.status()["gaps"]["SPOOL_PAYLOAD_EXPIRED"] == 1
+            monkeypatch.setattr(endpoint, "request", original)
+        if scenario in {"receipt_pruned", "workspace_changed"}:
+            spool.db.execute("UPDATE receipts SET created_at=? WHERE key=?",
+                (time.time() - RECEIPT_RETENTION_SECONDS - 1, prior["key"]))
+            with pytest.raises(DomainError) as missing:
+                spool.disposition(prior["key"])
+            assert missing.value.code == "SPOOL_REPLAY_EXPIRED_OR_UNKNOWN"
+    finally:
+        spool.close()
+    if scenario == "workspace_changed":
+        config, _ = prepare_health_workspace(receipt, "workspace-replacement", "producer-one",
+            expected_binding_revision=1, expected_workspace_revision=0, idempotency_key="replacement-workspace")
+        configure_health_workspace(receipt, config)
+        endpoint.sequence = 0
+
+        def current_workspace(route, payload):
+            result = original(route, payload)
+            if route == "/api/health/observer":
+                result["workspaces"][0].update(
+                    workspace_id=config.workspace_id, root_fingerprint=config.pin.fingerprint,
+                )
+            return result
+
+        monkeypatch.setattr(endpoint, "request", current_workspace)
+    source.write_bytes(b"def answer(): return 2\n")
+    current = health_before_context(receipt)
+    assert current["state"] == "observed"
+    observations = [payload for route, payload in calls
+                    if route == "/api/health" and payload["kind"] == "code_observation"]
+    latest = observations[-1]
+    assert latest["sequence"] > prior["sequence"]
+    assert latest["idempotency_key"] != prior["key"]
+    assert latest["files"][0]["file_digest"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    if scenario == "workspace_changed":
+        assert latest["workspace_id"] == config.workspace_id
+    reopened = ProducerSpool(Path(receipt["runtime_dir"]) / "capture.sqlite3",
+        receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
+    try:
+        assert reopened.disposition(latest["idempotency_key"])["state"] == "committed"
+        if scenario in {"expired", "committed_ack_lost"}:
+            assert reopened.disposition(prior["key"])["state"] == "expired"
+        if scenario != "workspace_changed":
+            assert reopened.status()["gaps"]["SPOOL_PAYLOAD_EXPIRED"] == 1
+    finally:
+        reopened.close()

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import hashlib
 import importlib
 import importlib.metadata
@@ -21,6 +22,7 @@ import signal
 import socket
 import sys
 import tempfile
+import time
 import traceback
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -39,6 +41,7 @@ CASES = (
 CHANGED_CASES = CASES[:7] + (
     "grounded_claim_publication", "retracted_session_does_not_block_queued_capture",
     "exact_health_review_reaches_next_judgment",
+    "expired_code_observation_recovers_with_history",
 )
 
 
@@ -865,6 +868,53 @@ class Smoke:
                        and item["claim_ref"] == self.claim_ref and item.get("reason") for item in dispositions),
                    "EXACT_REVIEW_MISSING_FROM_NEXT_JUDGMENT")
         self.passed("exact_health_review_reaches_next_judgment")
+        self.begin("expired_code_observation_recovers_with_history")
+        from agents_memory.health_producer import observe_health_workspace
+        from agents_memory.spool import PAYLOAD_RETENTION_SECONDS, ProducerSpool
+
+        self.code.write_bytes(b"def cache(key):\n    return key + '-current'\n")
+
+        def expire_owned_observation():
+            descriptor = os.open(str(spool) + ".flush.lock",
+                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                queued = observe_health_workspace(
+                    receipt, defer_flush=True, explicit_paths=(("src/cache.py", ("cache",)),),
+                )
+                self.check(queued["state"] == "queued", "FRESH_OBSERVATION_NOT_QUEUED")
+                box = ProducerSpool(spool, receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
+                try:
+                    prior = box.read_health_state("code")
+                    now = time.time()
+                    changed = box.db.execute("UPDATE outbox SET created_at=?,expires_at=? WHERE key=?",
+                        (now - PAYLOAD_RETENTION_SECONDS - 1, now - 1, prior["key"])).rowcount
+                    self.check(changed == 1, "OWNED_OBSERVATION_NOT_PENDING")
+                    self.check(box.disposition(prior["key"])["state"] == "expired", "EXPIRY_NOT_PRESERVED")
+                    return prior
+                finally:
+                    box.close()
+            finally:
+                os.close(descriptor)
+
+        prior = await asyncio.to_thread(expire_owned_observation)
+        paths = self.evidence("post-expiry-paths", [{"relative_path": "src/cache.py", "symbol_names": ["cache"]}])
+        observed = await self.cli("health", "observe", "--receipt", self.receipt, "--paths-file", paths)
+        self.check(observed["state"] == "observed" and observed["files"] == 1, "EXPIRED_OBSERVATION_BLOCKED_RECOVERY")
+        box = ProducerSpool(spool, receipt["deployment_id"], receipt["binding_id"], receipt["spool_limit_bytes"])
+        try:
+            current = box.read_health_state("code")
+            self.check(current["sequence"] > prior["sequence"] and current["key"] != prior["key"],
+                       "EXPIRED_OBSERVATION_WAS_REPLAYED")
+            self.check(box.disposition(current["key"])["state"] == "committed", "FRESH_OBSERVATION_NOT_COMMITTED")
+            self.check(box.disposition(prior["key"])["state"] == "expired" and
+                       box.status()["gaps"].get("SPOOL_PAYLOAD_EXPIRED", 0) >= 1, "EXPIRY_HISTORY_LOST")
+        finally:
+            box.close()
+        workspace = await self.inspect("health:workspace:workspace_engineering", complete=True)
+        self.check(any(item.get("metadata") and item["metadata"]["file_digest"] == digest(self.code.read_bytes())
+                       for item in workspace["observations"]), "CURRENT_BYTES_NOT_OBSERVED_AFTER_EXPIRY")
+        self.passed("expired_code_observation_recovers_with_history")
 
     async def cleanup(self):
         cleanup = self.result["owned_cleanup"]

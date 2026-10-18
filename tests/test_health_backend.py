@@ -252,6 +252,32 @@ async def test_next_judgment_review_reason_obeys_current_disclosure_boundary(com
     assert reason['body'] not in json.dumps(view)
 
 
+async def test_ineligible_review_input_does_not_block_an_independent_source_judgment(company, monkeypatch):
+    _, _, rejected_claim = await candidate(company)
+    rejected = await review(company, rejected_claim, 'generation-bounded-disclosure-review', 'reject')
+    _, _, eligible = await candidate(company, key='generation-bounded-disclosure-independent',
+        body='AuditKey retains an independent valid owner.')
+    source = await capture(company, key='generation-bounded-disclosure-source',
+        body='AuditKey has a newly documented independent boundary.')
+    original = company.store._source_judgment_health_manifest
+
+    async def undisclosed_review(connection, binding_id, snapshot, inputs):
+        if any(item['id'] == rejected_claim.id for item in inputs):
+            raise DomainError('ADMISSION_STALE', 'A bounded review dependency is not currently disclosed')
+        return await original(connection, binding_id, snapshot, inputs)
+
+    monkeypatch.setattr(company.store, '_source_judgment_health_manifest', undisclosed_review)
+    view = await company.store.inspect(company.actor, company.binding_id, source.source_id)
+    assert view['judgment_required'] and view['admission_id']
+    assert {item['id'] for item in view['judgment_context']['accepted_memories']} == {eligible.id}
+    assert rejected.artifact_id not in {
+        item['review_event_id'] for item in view['judgment_context']['health_dispositions']
+    }
+    selected = await judgment(company, source.source_id, 'generation-bounded-disclosure-select', publish=True)
+    assert (await company.store.record(company.actor, selected)).state == 'candidate_ready'
+    assert (await company.store.inspect(company.actor, company.binding_id, rejected_claim.id))['statement'] == rejected_claim.draft.statement
+
+
 async def test_agent_cannot_review_or_self_assert_operator_authority(company):
     _, _, claim = await candidate(company)
     view = await health_view(company, claim)

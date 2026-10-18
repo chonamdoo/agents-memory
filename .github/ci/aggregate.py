@@ -89,6 +89,7 @@ CHANGED_HEALTH_CASES = {
     "frozen_workspace_preparation", "registration_and_exact_retry", "explicit_initial_observation",
     "grounded_claim_publication", "retracted_session_does_not_block_queued_capture",
     "exact_health_review_reaches_next_judgment",
+    "expired_code_observation_recovers_with_history",
 }
 EVALUATION_OUTCOMES = {
     "producer_http_native_mcp_preflight": True, "separate_preflight_binding": True,
