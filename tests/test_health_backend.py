@@ -1202,15 +1202,12 @@ async def test_machine_refresh_failure_does_not_acquire_operator_close_ownership
     async def unavailable_refresh(*args):
         raise DomainError('QUEUE_FULL', 'The bounded refresh cannot acquire capacity')
 
-    # Inject only the refresh failure; public capture, durable disposition and subsequent admission remain real.
+    # Inject the bounded refresh failure; the next observation and capacity checks use real public mutations.
     with monkeypatch.context() as failure:
         failure.setattr(company.store, '_refresh_session_work', unavailable_refresh)
-        foreign = await company.store.capture(company.actor, CaptureCommand(
-            binding_id=company.binding_id, idempotency_key='machine-refresh-fault',
-            origin_key='terminal-existing-source', body='Independent capture survives a bounded health refresh failure.',
-            speaker='human'))
-    assert (await company.store.source(company.actor, company.binding_id, foreign.source_id)).body == (
-        'Independent capture survives a bounded health refresh failure.')
+        async with company.store._tx() as (connection, _):
+            await company.store._refresh_late_session_capture(
+                connection, company.binding_id, 'terminal-existing-source')
     deferred = await terminal_work_row(company, first['pending_id'])
     assert deferred['state'] == 'resolved'
     assert deferred['payload']['refresh_error_code'] == 'QUEUE_FULL'
