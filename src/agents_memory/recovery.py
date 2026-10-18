@@ -99,13 +99,15 @@ class SpoolRecovery:
     async def stop(self) -> None:
         self._stop.set()
         self._wake.set()
-        if self._task is not None:
-            # Do not cancel a thread while it owns a SQLite connection or HTTP request.
+        task = self._task
+        if task is not None:
+            # A cancelled waiter must not abandon the thread's SQLite or HTTP ownership.
             try:
-                await self._task
+                await asyncio.shield(task)
             finally:
-                self._task = None
-                self._report(state="stopped")
+                if task.done() and self._task is task:
+                    self._task = None
+                    self._report(state="stopped")
 
     async def wait_closed(self) -> None:
         task = self._task
@@ -115,14 +117,17 @@ class SpoolRecovery:
     async def _run(self) -> None:
         try:
             while not self._stop.is_set():
-                if isinstance(self.settings, RemoteClientSettings):
-                    await asyncio.to_thread(self.cycle)
-                else:
-                    ready = await self.store.readiness()
-                    if ready["ready"] and not self._stop.is_set():
+                try:
+                    if isinstance(self.settings, RemoteClientSettings):
                         await asyncio.to_thread(self.cycle)
-                    elif not ready["ready"]:
-                        self._report(state="waiting_database")
+                    else:
+                        ready = await self.store.readiness()
+                        if ready["ready"] and not self._stop.is_set():
+                            await asyncio.to_thread(self.cycle)
+                        elif not ready["ready"]:
+                            self._report(state="waiting_database")
+                except Exception as error:
+                    self._failure(error)
                 try:
                     await asyncio.wait_for(self._wake.wait(), self.interval)
                 except TimeoutError:

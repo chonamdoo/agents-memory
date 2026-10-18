@@ -2440,12 +2440,14 @@ class Store:
             raise DomainError('ADMISSION_STALE', 'The binding, selection policy or deletion generation changed')
         saved_health = _decode(row['health_manifest'])
         if row['purpose'] == 'health_work':
-            live_health, _ = await self._health_work_manifest(connection, admission.binding_id, saved_health['pending_id'])
+            live_health, _ = await self._health_work_manifest(
+                connection, admission.binding_id, saved_health['pending_id'], admission.snapshot)
         elif row['purpose'] == 'health_claim':
             live_health, _ = await self._claim_review_manifest(connection, admission.binding_id,
                 admission.claim_ids[0], admission.snapshot, saved_health['nominated'])
         elif row['purpose'] == 'health_feedback':
-            live_health, _ = await self._feedback_health_manifest(connection, admission.binding_id, saved_health['feedback_ref'])
+            live_health, _ = await self._feedback_health_manifest(
+                connection, admission.binding_id, saved_health['feedback_ref'], admission.snapshot)
         else:
             live_health = await self._admitted_health_manifest(connection, admission.binding_id,
                 admission.claim_ids, admission.relation_ids,
@@ -4730,11 +4732,13 @@ class Store:
                     AND (state<>'held' OR health_payload->>'refresh_error_code' IS DISTINCT FROM $3)''',
                     binding_id, key, error.code)
 
-    async def _health_work_manifest(self, connection, binding_id: str, pending_id: str) -> tuple[dict, dict]:
+    async def _health_work_manifest(self, connection, binding_id: str, pending_id: str, snapshot: str | None) -> tuple[dict, dict]:
         pending = await connection.fetchrow("""SELECT * FROM am_pending_judgments WHERE id=$1 AND binding_id=$2
             AND kind='health' AND state IN ('pending','held')""", pending_id, binding_id)
         if pending is None:
             raise DomainError('ADMISSION_STALE', 'This health work is no longer pending')
+        if pending['snapshot'] is not None and pending['snapshot'] != snapshot:
+            raise DomainError('SNAPSHOT_INELIGIBLE', 'The health work belongs to a different request snapshot')
         policy = await self._health_policy(connection, binding_id)
         payload = _decode(pending['health_payload'])
         gaps = set(payload.get('gaps', []))
@@ -4745,7 +4749,7 @@ class Store:
         from .lexical import tokens as tokenize
         source_rows, source_refs, tokens = [], [], set()
         for identifier in pending['source_ids']:
-            source = await self._source_row(connection, binding_id, identifier, pending['snapshot'], True)
+            source = await self._source_row(connection, binding_id, identifier, snapshot, True)
             raw = source['body'].encode('utf-8')
             source_rows.append((source, raw))
             source_refs.append({'id': identifier, 'revision': source['revision']})
@@ -4764,7 +4768,7 @@ class Store:
                     WHERE d.claim_id=c.id AND (s.state<>'active' OR s.body IS NULL OR s.revision<>d.source_revision
                         OR s.binding_id<>$1 OR s.realm<>$5 OR (s.snapshot IS NOT NULL AND s.snapshot IS DISTINCT FROM $3)))
                 ORDER BY cardinality(ARRAY(SELECT unnest(c.lexical_tokens) INTERSECT SELECT unnest($2::text[]))) DESC,c.id
-                LIMIT $4""", binding_id, sorted(tokens)[:2048], pending['snapshot'], policy['max_audit_claims'] + 1,
+                LIMIT $4""", binding_id, sorted(tokens)[:2048], snapshot, policy['max_audit_claims'] + 1,
                 self.settings.realm)
             if len(rows) > policy['max_audit_claims']:
                 gaps.add('AUDIT_TARGET_CANDIDATES_PARTIAL')
@@ -4773,7 +4777,7 @@ class Store:
             raise DomainError('HEALTH_BUNDLE_TOO_LARGE', 'The complete target manifest exceeds current explicit policy')
         claims, manifests = [], []
         for identifier in claim_ids:
-            claim = await self._claim_row(connection, binding_id, identifier, pending['snapshot'])
+            claim = await self._claim_row(connection, binding_id, identifier, snapshot)
             meaning = ClaimMeaning.model_validate(_decode(claim['draft'])).model_dump(mode='json')
             manifests.append({**await self._claim_health_manifest(connection, claim),
                 'meaning_digest': canonical_digest(meaning)})
@@ -4805,7 +4809,7 @@ class Store:
             gaps.add('AUDIT_NO_SOURCE_EVIDENCE')
         manifest = {'purpose': 'health_work', 'pending_id': pending_id, 'pending_revision': pending['health_revision'],
             'payload_digest': canonical_digest(payload), 'policy': policy, 'claims': manifests,
-            'input_sources': source_refs, 'snapshot': pending['snapshot'],
+            'input_sources': source_refs, 'snapshot': snapshot,
             'evidence_windows': [{'ref': source['source_ref'], 'byte_start': source['byte_start'], 'byte_end': source['byte_end'],
                 'digest': hashlib.sha256(source['body'].encode('utf-8')).hexdigest()} for source in sources],
             'coverage': {'scope': 'bounded_authorized_inputs', 'complete': not gaps, 'partial': bool(gaps), 'gaps': sorted(gaps)}}
@@ -4876,13 +4880,14 @@ class Store:
         await connection.execute('DELETE FROM am_admissions WHERE id=$1', command.admission_id)
         return event
 
-    async def _feedback_health_manifest(self, connection, binding_id, feedback_ref) -> tuple[dict, dict]:
+    async def _feedback_health_manifest(self, connection, binding_id, feedback_ref, snapshot) -> tuple[dict, dict]:
         feedback = await connection.fetchrow("SELECT * FROM am_feedback WHERE id=$1 AND binding_id=$2 AND kind IN ('correct','retract_request')",
             feedback_ref, binding_id)
         if feedback is None:
             raise _missing()
+        disclosure = await self._disclosure_manifest(connection, binding_id, feedback_ref, snapshot)
         reason = None
-        if feedback['source_id']:
+        if disclosure is not None and feedback['source_id']:
             row = await connection.fetchrow("""SELECT revision,state,body FROM am_sources WHERE id=$1 AND binding_id=$2
                 AND realm=$3""", feedback['source_id'], binding_id, self.settings.realm)
             if row and row['state'] == 'active':
@@ -4890,10 +4895,14 @@ class Store:
         manifest = {'purpose': 'health_feedback', 'feedback_ref': feedback_ref,
             'version': feedback['health_version'], 'resolution_event_id': feedback['resolution_event_id'],
             'target_ref': feedback['target_ref'], 'kind': feedback['kind'], 'state': feedback['state'],
-            'reason_digest': canonical_digest({'reason': reason})}
-        return manifest, {'id': feedback_ref, 'kind': feedback['kind'], 'target_ref': feedback['target_ref'],
+            'snapshot': snapshot, 'disclosure': disclosure, 'reason_digest': canonical_digest({'reason': reason})}
+        candidate = {'id': feedback_ref, 'kind': feedback['kind'],
             'version': feedback['health_version'], 'resolution_event_id': feedback['resolution_event_id'],
             'body': reason, 'body_unavailable': reason is None, 'candidate': True}
+        if disclosure is not None:
+            candidate['target_ref'] = feedback['target_ref']
+        return manifest, candidate
+
 
     async def _resolve_health_feedback(self, connection, clock, actor, command, operation_id: str) -> str:
         _, manifest = await self._health_admission(connection, clock, actor, command.binding_id,
@@ -5102,16 +5111,18 @@ class Store:
         if byte_start != 0 or max_bytes != 4096:
             raise DomainError('HEALTH_WINDOW_INVALID', 'Health work and admissions require one complete bounded response')
         if prefix == 'item':
-            pending = await connection.fetchrow('''SELECT health_payload FROM am_pending_judgments
+            pending = await connection.fetchrow('''SELECT snapshot,health_payload FROM am_pending_judgments
                 WHERE id=$1 AND binding_id=$2 AND kind='health' AND state IN ('pending','held')''', identifier, binding_id)
             if pending is None:
                 raise DomainError('ADMISSION_STALE', 'This health work is no longer pending')
+            if pending['snapshot'] is not None and pending['snapshot'] != snapshot:
+                raise DomainError('SNAPSHOT_INELIGIBLE', 'The health work belongs to a different request snapshot')
             pending_payload = _decode(pending['health_payload'])
             if pending_payload.get('cause') == 'feedback_candidate':
                 return await self._inspect_health(connection, clock, actor, binding_id,
                     'health:feedback:' + pending_payload['feedback_ref'], snapshot, byte_start=byte_start,
                     max_bytes=max_bytes, representation_bytes=representation_bytes, measure_json=measure_json)
-            manifest, bundle = await self._health_work_manifest(connection, binding_id, identifier)
+            manifest, bundle = await self._health_work_manifest(connection, binding_id, identifier, snapshot)
             sources = tuple(RevisionRef.model_validate(item) for item in manifest['input_sources'])
             claims = tuple(RevisionRef.model_validate(item['claim']) for item in manifest['claims'])
             admission = await self._new_caller_admission(connection, clock, actor, binding_id, 'health_work',
@@ -5140,7 +5151,7 @@ class Store:
                 'history_continuation': {'ref': 'health:history:' + claim_id, 'byte_start': 8} if len(history) > 8 else None,
                 'coverage': {'complete': True, 'scope': 'exact_claim_and_current_dependency_candidates'}}
         elif prefix == 'feedback':
-            manifest, bundle = await self._feedback_health_manifest(connection, binding_id, identifier)
+            manifest, bundle = await self._feedback_health_manifest(connection, binding_id, identifier, snapshot)
             admission = await self._new_caller_admission(connection, clock, actor, binding_id, 'health_feedback',
                 canonical_digest(manifest), snapshot, health_manifest=manifest)
             result = {'kind': 'health_feedback', 'candidate': bundle, 'admission': admission.model_dump(mode='json'),

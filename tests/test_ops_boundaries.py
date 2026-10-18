@@ -9,6 +9,7 @@ import subprocess
 import threading
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -2093,3 +2094,114 @@ async def test_restore_refuses_unsupported_versions_before_journal_reconcile_or_
     assert simulated_restore.journal_rechecks == 0 and "journal_reconcile" not in simulated_restore.events
     assert simulated_restore.pg_starts == 0
     assert not (settings.state_dir / "restore-barrier.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_real_backup_dump_failure_preserves_primary_and_removes_staging_despite_close_failure(live_authority, binary_runtime, monkeypatch):
+    store, actor, _, settings, root = live_authority
+    runtime, keygen = binary_runtime
+    _, recipients = age_keys(root, keygen)
+    directory = root / "failed-backup"
+    directory.mkdir(mode=0o700)
+    archive = directory / "backup.age"
+    close = Store.close
+    marker = "SYNTHETIC_PRIVATE_BACKUP_CLOSE_DSN"
+
+    async def failed_close(selected):
+        await close(selected)
+        raise RuntimeError(marker)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(Store, "close", failed_close)
+        with pytest.raises(DomainError) as failed:
+            await backup(settings, root / "operator", archive, recipients,
+                replace(runtime, max_archive_bytes=8192))
+    assert failed.value.code == "BACKUP_TOO_LARGE"
+    assert failed.value.effect == EffectState.NOT_STARTED
+    public = failed.value.public()
+    assert public["cleanup"]["complete"] is False
+    assert any(item["code"] == "OPERATIONS_CLOSE_FAILED" for item in public["cleanup"]["failures"])
+    assert marker not in json.dumps(public)
+    assert list(directory.iterdir()) == []
+    assert (await store.authenticate(TOKEN)).credential_id == actor.credential_id
+
+
+@pytest.mark.asyncio
+async def test_real_published_backup_retains_committed_effect_and_is_restorable_after_close_failure(live_authority, binary_runtime, monkeypatch):
+    store, actor, binding, settings, root = live_authority
+    runtime, keygen = binary_runtime
+    identity, recipients = age_keys(root, keygen)
+    captured = await store.capture(actor, CaptureCommand(binding_id=binding.id,
+        idempotency_key="published-cleanup-source", origin_key="published-cleanup-source",
+        body="Published encrypted evidence survives a connection cleanup failure.", speaker="human"))
+    archive = root / "published-cleanup.age"
+    close = Store.close
+    marker = "SYNTHETIC_PRIVATE_PUBLISHED_BACKUP_CLOSE_DSN"
+
+    async def failed_close(selected):
+        await close(selected)
+        raise RuntimeError(marker)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(Store, "close", failed_close)
+        with pytest.raises(DomainError) as failed:
+            await backup(settings, root / "operator", archive, recipients, runtime)
+    assert failed.value.code == "OPERATIONS_CLOSE_FAILED" and failed.value.effect == EffectState.COMMITTED
+    assert failed.value.public()["cleanup"]["complete"] is False
+    assert marker not in json.dumps(failed.value.public())
+    assert not list(root.glob(".memory-encrypted-*"))
+    head = store.journal.verify()["head"]
+    await store.close()
+    recovered_token = root / "published-cleanup-recovered-operator"
+    restored = await restore(settings, root / "operator", archive, identity, head,
+        recovered_token, settings.deployment_id, runtime)
+    assert restored["effect"] == "committed" and restored["tokens_rotated"] is True
+    await store.open()
+    recovered_actor = await store.authenticate(recovered_token.read_text().strip())
+    assert (await store.source(recovered_actor, binding.id, captured.source_id)).body == (
+        "Published encrypted evidence survives a connection cleanup failure.")
+
+
+@pytest.mark.asyncio
+async def test_real_restore_primary_failure_and_fence_survive_multiple_private_close_failures(live_authority, binary_runtime, monkeypatch):
+    store, _, _, settings, root = live_authority
+    runtime, keygen = binary_runtime
+    identity, recipients = age_keys(root, keygen)
+    archive = root / "restore-cleanup.age"
+    await backup(settings, root / "operator", archive, recipients, runtime)
+    head = store.journal.verify()["head"]
+    await store.close()
+    authenticate, close = Store.authenticate, Store.close
+    failed_stores = []
+    fail_cleanup = False
+    marker = "SYNTHETIC_PRIVATE_RESTORE_CLOSE_DSN"
+
+    async def failed_verification(selected, token, roles=None):
+        nonlocal fail_cleanup
+        result = await authenticate(selected, token) if roles is None else await authenticate(selected, token, roles)
+        if token != TOKEN:
+            fail_cleanup = True
+            raise DomainError("SYNTHETIC_VERIFICATION_FAILURE", "Synthetic independent final credential verification failure")
+        return result
+
+    async def failed_close(selected):
+        await close(selected)
+        if fail_cleanup:
+            failed_stores.append(selected)
+            raise RuntimeError(marker)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(Store, "authenticate", failed_verification)
+        patcher.setattr(Store, "close", failed_close)
+        with pytest.raises(DomainError) as failed:
+            await restore(settings, root / "operator", archive, identity, head,
+                root / "restore-cleanup-recovered-operator", settings.deployment_id, runtime)
+    assert failed.value.code == "RESTORE_RECOVERY_REQUIRED" and failed.value.effect == EffectState.UNKNOWN
+    public = failed.value.public()
+    assert public["cleanup"]["complete"] is False and len(public["cleanup"]["failures"]) == 2
+    assert marker not in json.dumps(public)
+    assert failed_stores and all(selected.pool is None for selected in failed_stores)
+    assert (settings.state_dir / "restore-barrier.json").exists()
+    with pytest.raises(DomainError) as fenced:
+        await store.open()
+    assert fenced.value.code == "RESTORE_RECOVERY_REQUIRED"

@@ -5,12 +5,13 @@ import json
 from datetime import UTC, datetime
 
 import pytest
-from test_company_authority import candidate, capture, deliver
+from test_company_authority import candidate, capture, deliver, judged_context
 from test_company_authority import company as company
 
 from agents_memory.domain import (
     CaptureCommand,
     CaptureCoverage,
+    ContextCommand,
     DomainError,
     FeedbackCommand,
     Role,
@@ -228,6 +229,9 @@ async def test_restore_quarantines_old_accept_and_requires_new_current_operator_
     assert restored['health']['operator_review'] is None
     assert not (await company.store.health_policy(company.actor, company.binding_id))['enabled']
     assert (await recall(company, 'restored'))[0] == []
+    discovery = await company.store.inspect(company.actor, company.binding_id, 'health:quarantine')
+    assert {item['claim_id'] for item in discovery['items']} == {claim.id}
+    assert discovery['items'][0]['ref'] == 'health:claim:' + claim.id
     with pytest.raises(DomainError):
         await deliver(company, old_admission, selected=(claim.id,))
     with pytest.raises(DomainError):
@@ -675,3 +679,86 @@ async def test_disabled_policy_blocks_code_recall_delivery_and_rebinding_not_ord
     with pytest.raises(DomainError):
         await company.store.delivery(company.actor, company.binding_id, (), ())
     await company.store.delivery(company.actor, company.binding_id, (), rule_versions)
+
+
+@pytest.mark.parametrize('workspace_id', [None, 'workspace_other'])
+async def test_two_stage_context_keeps_global_fact_when_touching_relation_is_outside_workspace(company, workspace_id):
+    from agents_memory.selection import ClaimJudgmentCommand
+
+    producer, linked, _, _ = await linked_claim(company)
+    _, _, global_claim = await candidate(company, key='workspace-global-fact',
+        body='CacheKey is retained offline as a global independent fact.')
+    if workspace_id is not None:
+        await company.store.health(company.actor, HealthWorkspaceCommand(
+            **mutation(company, 'register-other-workspace'), workspace_id=workspace_id,
+            expected_workspace_revision=0, root_fingerprint='d' * 64,
+            producer_credential_id=producer.credential_id))
+    view = await company.store.inspect(company.actor, company.binding_id, 'judgment',
+        claim_ids=(global_claim.id, linked.id))
+    await company.store.record(company.actor, ClaimJudgmentCommand(
+        kind='claim_judgment', binding_id=company.binding_id, idempotency_key='workspace-touching-relation',
+        admission_id=view['admission_id'], manifest_digest=view['manifest_digest'], claims=view['claims'],
+        sources=view['sources'], relations=[{'left_id': global_claim.id, 'right_id': linked.id,
+            'relation': 'supports', 'reason': 'The explicit relation has a workspace-scoped input.'}],
+        reason='The exact global and code-linked source inputs were inspected together.'))
+    command = ContextCommand(binding_id=company.binding_id, query='CacheKey offline', code_workspace_id=workspace_id)
+    delivered = await judged_context(company, company.actor, command)
+    assert delivered['refs'] == [global_claim.id]
+    assert global_claim.draft.statement in delivered['context']
+    assert linked.draft.statement not in delivered['context']
+    matched = await judged_context(company, company.actor, command.model_copy(update={'code_workspace_id': 'workspace_test'}))
+    assert set(matched['refs']) == {global_claim.id, linked.id}
+    pending = await company.application.context(company.actor, command.model_copy(update={'code_workspace_id': 'workspace_test'}))
+    await observe(company, producer, 2, digest='c' * 64)
+    with pytest.raises(DomainError):
+        await company.application.context(company.actor, ContextCommand(
+            binding_id=company.binding_id, query=command.query, code_workspace_id='workspace_test',
+            admission_id=pending['admission_id'],
+            relevance=[{'claim_id': item['claim_id'], 'relevant': True,
+                'reason': 'The old relation input cannot bypass its code revision fence.'}
+                for item in pending['candidate_manifest']],
+        ))
+
+
+async def test_quarantined_current_claims_are_partial_and_discoverable_without_exposing_other_snapshots(company):
+    await enabled(company)
+    claims = []
+    for index in range(3):
+        _, _, claim = await candidate(company, key='quarantined-global-' + str(index),
+            body=f'CacheKey is retained offline for independent purpose {index}.')
+        await review(company, claim, 'quarantine-accept-' + str(index), 'accept')
+        accepted = await health_view(company, claim)
+        await company.store.retract(company.actor, company.binding_id, accepted['health']['review_event_id'],
+            'withdraw-quarantine-accept-' + str(index))
+        claims.append(claim)
+    _, _, scoped = await candidate(company, key='quarantined-alpha', snapshot='snapshot_alpha')
+    await review(company, scoped, 'quarantine-alpha-accept', 'accept')
+    accepted = await health_view(company, scoped)
+    await company.store.retract(company.actor, company.binding_id, accepted['health']['review_event_id'],
+        'withdraw-quarantine-alpha-accept')
+    request = ContextCommand(binding_id=company.binding_id, query='CacheKey offline', snapshot='snapshot_beta')
+    withheld = await company.application.context(company.actor, request)
+    assert withheld['status'] == 'partial' and withheld['partial'] is True
+    assert withheld['refs'] == [] and withheld['candidate_manifest'] == []
+    assert withheld['stats']['health']['withheld'] == 3
+    discovered, cursor = [], 0
+    while True:
+        page = await company.store.inspect(company.actor, company.binding_id, 'health:quarantine',
+            'snapshot_beta', byte_start=cursor, max_bytes=512)
+        assert len(json.dumps(page, ensure_ascii=False, separators=(',', ':')).encode()) <= 512
+        discovered.extend(page['items'])
+        if page['next_byte'] is None:
+            break
+        assert page['next_byte'] > cursor
+        cursor = page['next_byte']
+    assert {item['claim_id'] for item in discovered} == {claim.id for claim in claims}
+    assert len(discovered) == len(claims)
+    assert scoped.id not in json.dumps(discovered)
+    assert all(item['ref'] == 'health:claim:' + item['claim_id'] for item in discovered)
+    current = await company.store.inspect(company.actor, company.binding_id, discovered[0]['ref'], 'snapshot_beta')
+    recovered_claim = next(claim for claim in claims if claim.id == discovered[0]['claim_id'])
+    await review(company, recovered_claim, 'fresh-discovered-health-review', 'accept', view=current)
+    delivered = await judged_context(company, company.actor, request)
+    assert delivered['refs'] == [recovered_claim.id]
+    assert delivered['partial'] is True and delivered['stats']['health']['withheld'] == 2
+    assert delivered['stats']['coverage']['unclassified_sources'] == 0

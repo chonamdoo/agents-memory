@@ -491,7 +491,7 @@ class SecurityEdge:
             scope["agents_memory_token"] = token
             scope["agents_memory_auth_mode"] = "oauth" if oauth_request else "bearer"
         except DomainError as error:
-            if error.status == 503:
+            if error.status == 503 and error.code != "DATABASE_BUSY":
                 error = DomainError(
                     "SERVICE_UNAVAILABLE", "The database authority is not ready",
                     status=503, effect=EffectState.NOT_STARTED,
@@ -585,6 +585,8 @@ def readiness_judgment(settings: Settings) -> dict:
         judgment = describe(settings, load_state(settings), operator=False)["source_judgment"]
     except DomainError as error:
         return {"judgment": "unavailable", "server_inference": "unknown", "judge_error": error.code}
+    except Exception:
+        return {"judgment": "unavailable", "server_inference": "unknown", "judge_error": "JUDGE_STATE_INVALID"}
     if judgment == "jev_background_then_server_validation":
         return {"judgment": judgment, "server_inference": "typesafe_jev_explicit_egress_opt_in"}
     if judgment == "current_coding_agent_via_mcp":
@@ -722,11 +724,13 @@ def create_app(settings: Settings):
             await actor_from_scope(application, request.scope, (Role.OPERATOR,))
         except DomainError as error:
             return error_response(error)
+        judgment = readiness_judgment(settings)
+        ready["ready"] = ready["ready"] and judgment["judgment"] != "unavailable"
         return JSONResponse({
             **ready,
             "authority": "connected" if ready["db_ready"] else "unavailable",
             "capability": settings.capability,
-            **readiness_judgment(settings),
+            **judgment,
             "candidate_index": "lexical_entity",
             "cleanup_scheduler": worker.status,
             "judge_worker": judge.status,

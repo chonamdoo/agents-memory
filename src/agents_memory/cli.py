@@ -1199,6 +1199,9 @@ def main() -> None:
         if result is not None:
             sys.stdout.buffer.write(json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n")
             sys.stdout.buffer.flush()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print(json.dumps({"error": {"code": "COMMAND_INTERRUPTED", "message": "The command was interrupted; reconcile its durable state", "effect": "unknown"}}), file=sys.stderr)
+        raise SystemExit(130) from None
     except DomainError as error:
         print(json.dumps({"error": error.public()}, ensure_ascii=False), file=sys.stderr)
         raise SystemExit(1) from None
