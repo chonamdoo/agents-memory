@@ -15,6 +15,74 @@ type Reply = {
 };
 type AgentState = { agent: string; instance: string; generation: number; prepared?: string; ingress?: string };
 
+const patchRange = "[1-9]\\d*\\.=[1-9]\\d*";
+const patchBlock = "[1-9]\\d*\\*";
+const patchGap = "(?:<[1-9]\\d*|>[1-9]\\d*\\*?|>\\$)";
+const patchLocator = `(?:${patchRange}|${patchBlock}|${patchGap})`;
+const patchBody = new RegExp(`^PUT ${patchLocator}:$`);
+const patchPaste = new RegExp(`^PUT ${patchLocator} @[A-Za-z0-9_-]+$`);
+const patchRestore = new RegExp(`^PUT ${patchGap}$`);
+const patchCut = new RegExp(`^CUT (?:${patchRange}|${patchBlock})(?: @[A-Za-z0-9_-]+)?$`);
+const patchHeader = /^\[([^#\r\n]+)#[0-9A-F]{4}\]$/;
+const unresolvedPatchPath = /[:?\\\0\r\n"']/;
+const unquotedPatchWhitespace = /\s/;
+
+const hashlineFootprint = (value: unknown): string[] | undefined => {
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > hookInputBytes) return;
+  const beginning = "*** Begin Patch\n";
+  const ending = value.endsWith("*** End Patch\n") ? "*** End Patch\n" : "*** End Patch";
+  if (!value.startsWith(beginning) || !value.endsWith(ending)) return;
+  const paths = new Set<string>();
+  const addPath = (path: string): boolean => {
+    // Resource selectors, escapes and home shorthand require a native resolver; never guess their scope.
+    if (!path || path.trim() !== path || path.startsWith("~") || unresolvedPatchPath.test(path)) return false;
+    paths.add(path);
+    return paths.size <= 64;
+  };
+  let cursor = beginning.length;
+  const end = value.length - ending.length;
+  let inFile = false;
+  let hasOperation = false;
+  let bodyAllowed = false;
+  let bodyRequired = false;
+  while (cursor < end) {
+    const newline = value.indexOf("\n", cursor);
+    if (newline < 0 || newline >= end) return;
+    if (value.startsWith("+", cursor)) {
+      cursor = newline + 1;
+      if (!bodyAllowed) return;
+      bodyRequired = false;
+      continue;
+    }
+    const line = value.slice(cursor, newline);
+    cursor = newline + 1;
+    if (bodyRequired) return;
+    const header = patchHeader.exec(line);
+    if (header) {
+      if ((inFile && !hasOperation) || !addPath(header[1])) return;
+      inFile = true;
+      hasOperation = false;
+      bodyAllowed = false;
+      continue;
+    }
+    if (!inFile) return;
+    bodyAllowed = patchBody.test(line);
+    bodyRequired = bodyAllowed;
+    if (!bodyAllowed && !patchPaste.test(line) && !patchRestore.test(line) && !patchCut.test(line) && line !== "REM") {
+      if (!line.startsWith("MV ")) return;
+      let destination = line.slice(3);
+      if (destination.startsWith("\"") || destination.startsWith("'")) {
+        if (destination.length < 3 || destination.at(-1) !== destination[0]) return;
+        destination = destination.slice(1, -1);
+      } else if (unquotedPatchWhitespace.test(destination)) return;
+      if (!addPath(destination)) return;
+    }
+    hasOperation = true;
+  }
+  if (!inFile || !hasOperation || bodyRequired) return;
+  return [...paths];
+};
+
 // The factory is rebound for children. No state lives in the shared module cache.
 export default function (pi: ExtensionAPI) {
   const agents = new Map<string, AgentState>();
@@ -136,11 +204,17 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("tool_call", async (event, ctx) => {
     if (!["write", "edit", "read"].includes(event.toolName)) return;
-    // Transmit footprint fields, not file contents, code bodies or provider traces.
-    const input = event.input as Record<string, unknown>;
+    // Transmit bounded footprint fields, never patch bodies or provider traces.
+    const nativeInput: unknown = event.input;
+    const input = nativeInput && typeof nativeInput === "object" && !Array.isArray(nativeInput)
+      ? nativeInput as Record<string, unknown> : {};
+    const toolInput = event.toolName === "edit"
+      && (typeof nativeInput === "string" || Object.prototype.hasOwnProperty.call(input, "input"))
+      ? { paths: hashlineFootprint(typeof nativeInput === "string" ? nativeInput : input.input) }
+      : { path: input.path, file_path: input.file_path, notebook_path: input.notebook_path };
     const result = await invoke(ctx, "tool_call", {
       tool_name: event.toolName,
-      tool_input: { path: input.path, file_path: input.file_path, notebook_path: input.notebook_path },
+      tool_input: toolInput,
       tool_use_id: event.toolCallId,
     });
     notify(ctx, result);

@@ -25,7 +25,9 @@ def source_payload(**changes):
 
 
 @pytest.fixture
-def local_client(tmp_path):
+def local_client(tmp_path, monkeypatch):
+    # Transport-boundary tests begin after successful readiness; readiness has its own behavioral suite.
+    monkeypatch.setattr("agents_memory.client.ensure_local_ready", lambda *args, **kwargs: {"ready": True})
     token = tmp_path / "producer.token"
     token.write_text("test-only-producer-credential\n")
     token.chmod(0o600)

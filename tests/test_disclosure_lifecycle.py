@@ -212,3 +212,34 @@ async def test_feedback_source_and_explicit_descendant_are_withdrawn_purged_and_
         assert (await store.source(actor, authority.binding_id, independent.source_id)).body == reason
         if target_kind in {"claim", "selection", "feedback", "feedback-source"}:
             assert (await store.source(actor, authority.binding_id, root.source_id)).body == command(authority).body
+
+
+@pytest.mark.parametrize("purge", (False, True))
+async def test_identical_body_after_deletion_requires_new_origin_and_new_judgment(authority, purge):
+    store, actor = authority.store, authority.actor
+    body = "CacheKey is retained only offline."
+    original, original_claim = await ready_claim(authority, "before-deletion", body)
+    await store.retract(actor, authority.binding_id, original.source_id, "withdraw-original-identity")
+    if purge:
+        await store.purge(actor, authority.binding_id, original.source_id, "purge-original-identity")
+
+    replay = await store.capture(actor, command(authority, "late-replay", body, origin="before-deletion"))
+    assert replay.id == original.id and replay.state == "retracted"
+    withdrawn = await store.inspect(actor, authority.binding_id, original.source_id)
+    assert withdrawn["state"] == ("purged" if purge else "retracted")
+    assert "body" not in withdrawn
+
+    fresh = await store.capture(actor, command(authority, "after-deletion", body))
+    assert fresh.state == "captured" and fresh.source_id != original.source_id
+    application = Application(store.settings, store)
+    unjudged = await application.context(actor, ContextCommand(binding_id=authority.binding_id, query="CacheKey"))
+    assert unjudged["candidate_manifest"] == []
+    selected = await store.record(actor, await source_selection(authority, fresh.source_id, "judge-new-origin"))
+    selection = await store.inspect(actor, authority.binding_id, selected.artifact_id)
+    fresh_claim = await store.claim(actor, authority.binding_id, selection["claim_ids"][0])
+    assert {quote.source_id for quote in fresh_claim.evidence} == {fresh.source_id}
+
+    recalled = json.dumps(await recall_context(authority))
+    assert fresh_claim.id in recalled and fresh.source_id in recalled
+    assert original_claim.id not in recalled and original.source_id not in recalled
+    assert (await store.inspect(actor, authority.binding_id, original.source_id))["state"] == withdrawn["state"]

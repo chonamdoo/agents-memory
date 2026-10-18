@@ -1,22 +1,33 @@
-"""Background Jev judge for personal deployments.
+"""Background Jev judge for explicitly authorized deployments.
 
-The worker judges pending captured sources and cleanup manifests through the same
+The worker judges captured sources, cleanup and explicitly opted-in health manifests through the same
 ``inspect`` → ``record`` validation a coding agent uses over MCP, under its own agent credential.
-It never falls back to another provider: uncertain or failed work stays pending for the agent.
+Failures never trigger a provider fallback or an inferred successful judgment.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from .config import Settings
 from .domain import Claim, DomainError, Role
+from .health_inference import HealthInputs
 from .jev import JevClient, JevFailure, JevResult, SystemOneClient
-from .judge import JudgeState, load_state, read_key, read_worker_token, save_worker_snapshot
+from .judge import (
+    JudgeState,
+    judge_guard,
+    load_egress_policy,
+    load_state,
+    read_key,
+    read_worker_token,
+    require_jev_allowed,
+    save_worker_snapshot,
+)
+from .representation import serialized_json_bytes
 from .selection import ClaimJudgmentCommand, SourceSelectionCommand
 from .semantic import grounded_identifiers
 
@@ -82,6 +93,10 @@ RELATION_CRITERIA = {
 
 class ProviderChanged(Exception):
     """The operator changed or disabled the judge; stop before sending or recording anything else."""
+
+    def __init__(self, code: str | None = None) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 class Escalated(Exception):
@@ -172,6 +187,8 @@ class WorkerCounts:
     escalated: int = 0
     requests: int = 0
     input_tokens: int = 0
+    unknown_usage_requests: int = 0
+    health_assessments_recorded: int = 0
 
 
 @dataclass
@@ -193,7 +210,9 @@ class JudgeWorker:
         self._wake = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._paused_revision: int | None = None
+        self._policy_revision: int | None = None
         self._skipped: set[tuple] = set()
+        self._health_skipped: dict[tuple, tuple] = {}
         self.counts = WorkerCounts()
         self.phase = "idle"
         self.provider = "agent"
@@ -208,7 +227,7 @@ class JudgeWorker:
             "provider": self.provider, "revision": self.revision, "phase": self.phase,
             "last_error": self.last_error,
             "last_cycle_at": self.last_cycle_at.isoformat() if self.last_cycle_at else None,
-            "escalated_this_process": len(self._skipped),
+            "escalated_this_process": len(self._skipped) + len(self._health_skipped),
             "counts": dict(self.counts.__dict__),
         }
 
@@ -230,6 +249,10 @@ class JudgeWorker:
             except TimeoutError:
                 return {"local_drained": False, "durable_work_recoverable": True}
         return {"local_drained": True, "durable_work_recoverable": True}
+
+    async def wait_closed(self) -> None:
+        if self._task is not None:
+            await asyncio.shield(self._task)
 
     async def run(self) -> None:
         while not self._stop.is_set():
@@ -256,8 +279,13 @@ class JudgeWorker:
             logger.warning("Jev judge status could not be persisted")
 
     def _current(self, expected: JudgeState) -> None:
+        try:
+            require_jev_allowed(self.settings)
+            policy = load_egress_policy(self.settings)
+        except DomainError as error:
+            raise ProviderChanged(error.code) from None
         state = load_state(self.settings)
-        if state.provider != "jev" or state.revision != expected.revision or self.settings.mode != "personal":
+        if state.provider != "jev" or state.revision != expected.revision or policy.revision != self._policy_revision:
             raise ProviderChanged()
 
     async def cycle(self) -> bool:
@@ -272,8 +300,11 @@ class JudgeWorker:
         if state.provider != "jev":
             self.phase, self.last_error, self._paused_revision = "idle", None, None
             return False
-        if self.settings.mode != "personal":
-            self.phase, self.last_error = "refused", "JUDGE_PROVIDER_FORBIDDEN"
+        try:
+            require_jev_allowed(self.settings)
+            self._policy_revision = load_egress_policy(self.settings).revision
+        except DomainError as error:
+            self.phase, self.last_error = "refused", error.code
             return False
         if self._paused_revision == state.revision:
             return False
@@ -292,8 +323,8 @@ class JudgeWorker:
                     await self._binding(actor, binding_id, snapshot, client, state, budget)
                     if self._stop.is_set() or budget.windows <= 0:
                         return budget.windows <= 0 and not self._stop.is_set()
-        except ProviderChanged:
-            self.phase = "idle"
+        except ProviderChanged as change:
+            self.phase, self.last_error = ("refused", change.code) if change.code else ("idle", None)
             return False
         except JevFailure as failure:
             if failure.kind == "auth":
@@ -324,29 +355,114 @@ class JudgeWorker:
                         await self._source_item(actor, binding_id, snapshot, item, client, state, budget)
                     elif item["kind"] == "cleanup":
                         await self._cleanup_item(actor, binding_id, snapshot, item, client, state, budget)
+                    elif item["kind"] == "health":
+                        await self._health_item(actor, binding_id, snapshot, item, client, state, budget)
                 except DomainError as error:
                     if error.code in CYCLE_ERRORS:
                         raise
+                    if item["kind"] == "health":
+                        self.last_error = "HEALTH_PENDING_REVIEW"
+                        continue
                     # A changed or ineligible item waits for the coding agent; the cycle continues.
                     self._escalate(("pending", item["id"]), "item_" + error.code.lower())
             if not page["partial"] or page["next_cursor"] is None:
                 return
             cursor = page["next_cursor"]
 
-    async def _ask(self, client: SystemOneClient, state: JudgeState, payload: dict, questions: dict) -> dict:
+    async def _ask(
+        self, client: SystemOneClient, state: JudgeState, payload: dict, questions: dict, *,
+        before_request: Callable[[], Awaitable[None]], health: bool = False, max_input_bytes: int | None = None,
+    ) -> dict:
+        if max_input_bytes is not None and serialized_json_bytes(payload) > max_input_bytes:
+            raise Escalated("health_input_budget")
         answers: dict[str, dict] = {}
-        identifiers = list(questions)
-        for chunk in _chunks(identifiers, QUESTIONS_PER_REQUEST):
+        loop = asyncio.get_running_loop()
+
+        async def current() -> None:
             self._current(state)
-            selected = {identifier: questions[identifier] for identifier in chunk}
-            result: JevResult = await asyncio.to_thread(client.system_one, payload, selected)
+            if self._stop.is_set():
+                raise ProviderChanged("SERVICE_DRAINING")
+            await before_request()
+
+        def before_attempt() -> None:
+            asyncio.run_coroutine_threadsafe(current(), loop).result()
+
+        for chunk in _chunks(list(questions), QUESTIONS_PER_REQUEST):
+            await current()
+            result: JevResult = await asyncio.to_thread(
+                client.system_one, payload, {identifier: questions[identifier] for identifier in chunk},
+                before_attempt=before_attempt,
+            )
             self.counts.requests += 1
-            self.counts.input_tokens += result.input_tokens or 0
+            if health and result.input_tokens is None:
+                self.counts.unknown_usage_requests += 1
+            else:
+                self.counts.input_tokens += result.input_tokens or 0
+            await current()
             answers.update(result.answers)
         return answers
 
-    def _escalate(self, key: tuple, reason: str) -> str:
-        self._skipped.add(key)
+    async def _health_current(self, actor, binding_id, state, revision: int) -> None:
+        self._current(state)
+        if self._stop.is_set():
+            raise ProviderChanged("SERVICE_DRAINING")
+        policy = await self.store.health_policy(actor, binding_id)
+        if (
+            policy.get("enabled") is not True or policy.get("allow_jev_health") is not True
+            or policy.get("revision") != revision
+        ):
+            raise ProviderChanged("HEALTH_EGRESS_DENIED")
+
+    async def _health_item(self, actor, binding_id, snapshot, item, client, state, budget) -> None:
+        policy = await self.store.health_policy(actor, binding_id)
+        if policy.get("enabled") is not True or policy.get("allow_jev_health") is not True:
+            return
+        revision = policy["revision"]
+        key = (binding_id, snapshot, item["id"])
+        version = (item["health_revision"], revision, state.revision, self._policy_revision)
+        if self._health_skipped.get(key) == version:
+            return
+        try:
+            await self._health_current(actor, binding_id, state, revision)
+            bundle = await self.application.inspect(actor, f"health:item:{item['id']}", binding_id, snapshot)
+            if bundle.get("policy", {}).get("revision") != revision:
+                return
+            inputs = HealthInputs.from_bundle(bundle)
+
+            async def before_request() -> None:
+                await self._health_current(actor, binding_id, state, revision)
+                await self.store.recheck_judgment_admission(
+                    actor, binding_id, bundle["admission"]["id"], bundle["health_manifest_digest"],
+                    bundle["admission"]["snapshot"], purpose="health_work",
+                )
+
+            budget.windows -= 1
+            payload, questions = inputs.evidence_questions()
+            selections = await self._ask(client, state, payload, questions, before_request=before_request, health=True)
+            payload, questions = inputs.support_questions(selections)
+            supports = await self._ask(client, state, payload, questions, before_request=before_request, health=True)
+            command = inputs.command(selections, supports)
+            async with judge_guard(self.settings):
+                await self._health_current(actor, binding_id, state, revision)
+                await self.application.record(actor, command)
+        except DomainError as error:
+            if error.code in CYCLE_ERRORS:
+                raise
+            self._escalate(key, "health_" + error.code.lower(), health_version=version)
+            self.last_error = "HEALTH_PENDING_REVIEW"
+        except JevFailure as failure:
+            if failure.kind not in {"request", "response", "redirect"}:
+                raise
+            self._escalate(key, "health_jev_" + failure.kind, health_version=version)
+            self.last_error = "HEALTH_PENDING_REVIEW"
+        else:
+            self.counts.health_assessments_recorded += 1
+
+    def _escalate(self, key: tuple, reason: str, *, health_version: tuple | None = None) -> str:
+        if health_version is None:
+            self._skipped.add(key)
+        else:
+            self._health_skipped[key] = health_version
         self.counts.escalated += 1
         logger.info("Jev judge left work for the coding agent: reason=%s", reason)
         return "escalated"
@@ -414,10 +530,38 @@ class JudgeWorker:
             return await self._record_selection(actor, binding_id, snapshot, window, state, "discard", None, (),
                 f"Jev worker({model}): no span has two or more letters or digits; nothing to remember.")
         payload = {"speaker": window["source_speaker"], "spans": [{"id": span["span_id"], "text": span["quote"]} for span in spans]}
+        health_policy = None
+        dispositions = window.get("judgment_context", {}).get("health_dispositions", [])
+        if dispositions:
+            policy = await self.store.health_policy(actor, binding_id)
+            if policy.get("enabled") is True and policy.get("allow_jev_health") is True:
+                health_policy = policy
+                payload["health_dispositions"] = dispositions
+                payload["health_dispositions_partial"] = window["judgment_context"]["health_dispositions_partial"]
+
+        async def before_request() -> None:
+            if health_policy is not None:
+                await self._health_current(actor, binding_id, state, health_policy["revision"])
+            await self.store.recheck_judgment_admission(
+                actor, binding_id, window["admission_id"], window["window_digest"], snapshot,
+                purpose="source_selection",
+            )
+
+        max_input_bytes = health_policy["max_audit_bytes"] if health_policy is not None else None
         questions = remember_questions(candidates)
+        if health_policy is not None:
+            for question in questions.values():
+                question["instructions"] += (
+                    " health_dispositions are bounded current operator feedback about exact memories, not independent "
+                    "evidence or a blacklist for this new source. Keep a disputed repetition uncertain unless the new "
+                    "source resolves it; unrelated evidence remains usable. A reason_requires_inspection marker does "
+                    "not disclose the full reason, and partial feedback is not an exhaustive catalog."
+                )
         if window["source_speaker"] != "human":
             questions["instruction_injection"] = INJECTION_QUESTION
-        answers = await self._ask(client, state, payload, questions)
+        answers = await self._ask(
+            client, state, payload, questions, before_request=before_request, max_input_bytes=max_input_bytes,
+        )
         if answers.get("instruction_injection", {}).get("noul", 0.0) >= INJECTION_AT:
             raise Escalated("instruction_injection")
         scores = {span["span_id"]: answers[f"remember_{span['span_id']}"]["noul"] for _, span in candidates}
@@ -431,7 +575,7 @@ class JudgeWorker:
         rejections = await self._rejections(actor, binding_id, snapshot, window)
         attributes = await self._ask(client, state, {**payload, "rejections": [
             {"reason": item["reason"], "text": item["text"]} for item in rejections]},
-            attribute_questions(confident, len(rejections)))
+            attribute_questions(confident, len(rejections)), before_request=before_request, max_input_bytes=max_input_bytes)
         kept, same_max = [], {item["id"]: 0.0 for item in rejections}
         for _, span in confident:
             identifier = span["span_id"]
@@ -476,7 +620,9 @@ class JudgeWorker:
             "reason": reason, "rejection_comparisons": list(comparisons),
         })
         try:
-            await self.application.record(actor, command)
+            async with judge_guard(self.settings):
+                self._current(state)
+                await self.application.record(actor, command)
         except DomainError as error:
             if error.code == "SELECTION_ALREADY_RECORDED":
                 return "already_judged"
@@ -527,8 +673,15 @@ class JudgeWorker:
                 }
                 for number, (newer, older, options) in enumerate(pairs)
             }
+
+            async def before_request() -> None:
+                await self.store.recheck_judgment_admission(
+                    actor, binding_id, manifest["admission_id"], manifest["manifest_digest"], snapshot,
+                    purpose="claim_judgment",
+                )
+
             try:
-                answers = await self._ask(client, state, payload, questions)
+                answers = await self._ask(client, state, payload, questions, before_request=before_request)
             except JevFailure as failure:
                 if failure.kind not in {"request", "response", "redirect"}:
                     raise
@@ -556,7 +709,9 @@ class JudgeWorker:
                        f"recorded {len(relations)} relation(s) with p ≥ {RELATION_AT:.2f}; other pairs stay unrelated."),
         })
         try:
-            await self.application.record(actor, command)
+            async with judge_guard(self.settings):
+                self._current(state)
+                await self.application.record(actor, command)
         except DomainError as error:
             if error.code in {"JUDGMENT_RELATION_INVALID", "JUDGMENT_MANIFEST_INVALID", "INPUT_INVALID"}:
                 self._escalate(key, "record_" + error.code.lower())

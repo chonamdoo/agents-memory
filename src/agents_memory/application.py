@@ -12,6 +12,7 @@ from .domain import (
     Principal,
     canonical_digest,
 )
+from .health import HealthCommand
 from .judge import describe, load_state
 from .judge_worker import JudgeWorker, public_status
 from .lexical import tokens
@@ -41,6 +42,17 @@ class Application:
         self.require_accepting()
         operation = await self.store.feedback(actor, command)
         return operation.model_dump(mode="json")
+
+    async def health(self, actor: Principal, command: HealthCommand) -> dict[str, Any]:
+        self.require_accepting()
+        operation = await self.store.health(actor, command)
+        if self.judge is not None:
+            self.judge.notify()
+        return operation.model_dump(mode="json")
+
+    async def health_observer(self, actor: Principal, binding_id: str) -> dict[str, Any]:
+        self.require_accepting()
+        return await self.store.health_observer(actor, binding_id)
 
     async def inspect(
         self, actor: Principal, ref: str, binding_id: str | None, snapshot: str | None = None,
@@ -74,12 +86,13 @@ class Application:
                 raise DomainError("CAUSAL_NOT_READY", "The requested operation is not candidate-ready")
         rules = await self.store.rules(actor, binding)
         request_digest = canonical_digest(command.model_dump(mode="json", include={
-            "query", "query_expansions", "paths", "purpose", "host", "snapshot",
+            "query", "query_expansions", "paths", "purpose", "host", "snapshot", "code_workspace_id",
         }))
         if command.relevance is None:
             terms = tokens(" ".join((command.query, *command.query_expansions)))
             rows, admission = await self.store.search_lexical(
                 actor, binding, terms, command.snapshot, 20, request_digest=request_digest,
+                code_workspace_id=command.code_workspace_id,
             )
             candidates = [claim for claim, _ in rows]
             composed = compose(command, [rule for rule in rules if rule.required] if candidates else rules, (), ())
@@ -127,6 +140,7 @@ class Application:
         candidates = [by_id[item.claim_id] for item in judgments if item.relevant]
         relationships = await self.store.relations(
             actor, binding, tuple(claim.id for claim in candidates), snapshot=command.snapshot,
+            code_workspace_id=command.code_workspace_id, workspace_scoped=True,
         )
         composed = compose(command, rules, candidates, relationships)
         delivered = await self.store.delivery(
@@ -144,14 +158,17 @@ class Application:
     ) -> dict[str, Any]:
         stats = delivered["stats"]
         coverage = stats.get("coverage", {})
+        health = stats.get("health", {})
+        health_partial = any(health.get(key, 0) for key in ("withheld", "unknown_assessments", "closed_unknown_work"))
         partial = bool(
             composed.omitted or composed.unknown_rule_refs
             or any(stats.get(key, 0) for key in ("pending", "blocked", "failed", "dlq", "stale_index_claims"))
             or any(coverage.get(key, 0) for key in (
                 "unclassified_sources", "incomplete_sources", "previous_policy_claims",
             ))
+            or health_partial
         )
-        return {
+        result = {
             "capability": self.settings.capability,
             "status": status or (
                 "partial" if partial else "ready" if composed.claim_ids or composed.rule_versions else "empty"
@@ -170,6 +187,9 @@ class Application:
             "selector_authority": "caller_hints_not_execution_authority",
             "evidence_role": "memory_candidates_not_execution_authority",
         }
+        if health.get("enabled") or health_partial or health.get("rejected"):
+            result["health"] = health
+        return result
 
     async def required_context(self, actor: Principal, command: ContextCommand) -> dict[str, Any]:
         self.require_accepting()
@@ -200,3 +220,8 @@ class Application:
         state: dict[str, Any] = {"accepting": False, "active_requests": self.inflight}
         state["local_drained"] = self.inflight == 0
         return state
+
+    async def wait_closed(self) -> None:
+        self.accepting = False
+        while self.inflight:
+            await asyncio.sleep(0.05)

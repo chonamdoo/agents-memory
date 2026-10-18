@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 from alembic import command
 from alembic.config import Config
@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from ..database import CANDIDATE_VECTOR_SQL, INSTALLED_VECTOR_SQL, require_server
 
-MIGRATIONS = ("0001_authority", "0002_directional_tombstones", "0003_origin_and_vector_compat", "0004_operation_successors", "0005_company_selection", "0006_agent_judged")
+MIGRATIONS = ("0001_authority", "0002_directional_tombstones", "0003_origin_and_vector_compat", "0004_operation_successors", "0005_company_selection", "0006_agent_judged", "0007_memory_health")
 MIGRATION = MIGRATIONS[-1]
 
 
@@ -21,6 +21,9 @@ def _arguments(dsn: str) -> tuple[str, dict]:
     query = dict(parse_qsl(parts.query))
     schema = query.pop("schema", None)
     options = {"passfile": "/dev/null"}
+    host = unquote(parts.netloc.rsplit("@", 1)[-1].split(":", 1)[0])
+    if host.startswith("/"):
+        options["host"] = host
     if schema is not None:
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", schema):
             raise ValueError("Invalid schema name")
@@ -78,6 +81,16 @@ def restore_preparation_sql(archived_revision: str, schema: str) -> str:
         f"'{MIGRATION}' THEN RAISE EXCEPTION 'Unsupported current authority migration'; END IF; END $$",
     ]
     archived_index = MIGRATIONS.index(archived_revision)
+    if archived_index < 6:
+        statements.extend([
+            "DROP TABLE am_code_links",
+            "DROP TABLE am_health_events",
+            "DROP TABLE am_session_observations",
+            "DROP TABLE am_claim_health",
+            "DROP TABLE am_code_observations",
+            "DROP TABLE am_code_workspaces",
+            "DROP TABLE am_health_policies",
+        ])
     if archived_index < 5:
         statements.extend([
             "ALTER TABLE am_claims DROP COLUMN cleanup_sequence",

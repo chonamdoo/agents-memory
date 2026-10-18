@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -13,7 +14,17 @@ from urllib.parse import urlsplit
 
 from .client import NoRedirect
 from .config import Settings
+from .connection import (
+    RemoteClientSettings,
+    local_opener,
+    open_http,
+    read_http_body,
+    read_remote_credential,
+    remote_opener,
+    validate_remote_endpoint,
+)
 from .domain import DomainError, EffectState
+from .readiness import ensure_local_ready, ensure_remote_ready
 from .wire import decode_json
 
 
@@ -22,8 +33,18 @@ class RelayEndpoint:
     base_url: str
     max_http_body_bytes: int = 65536
     max_mcp_response_bytes: int = 16384
+    state_dir: Path | None = None
+    deployment_id: str | None = None
+    remote_settings: RemoteClientSettings | None = None
+    health_receipt: Path | None = None
 
     def __post_init__(self) -> None:
+        if self.remote_settings is not None:
+            validate_remote_endpoint(self.remote_settings, self.base_url, self.state_dir, self.deployment_id)
+            if (self.max_http_body_bytes != self.remote_settings.max_http_body_bytes
+                    or self.max_mcp_response_bytes != self.remote_settings.max_mcp_response_bytes):
+                raise DomainError("DESTINATION_DENIED", "The relay bounds do not match the remote profile")
+            return
         url = urlsplit(self.base_url)
         if (
             url.scheme != "http" or url.hostname not in {"127.0.0.1", "::1"}
@@ -46,32 +67,73 @@ class StdioRelay:
         self.initialize_params: dict | None = None
         # Set while a lost session still needs a successful re-initialize; survives a failed handshake.
         self.recovery_pending = False
-        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        self.remote_settings = settings.remote_settings if isinstance(settings, RelayEndpoint) else None
+        self.opener = (
+            remote_opener(self.remote_settings, NoRedirect()) if self.remote_settings is not None
+            else local_opener(NoRedirect())
+        )
 
     def forward(self, message: dict) -> dict | None:
-        # A request without a session would be refused by the SDK, so recover before sending it.
-        if self.recovery_pending and message.get("method") != "initialize" and not self._reinitialize():
-            return self.error(message, "SESSION_NOT_FOUND")
-        result, session_lost = self._send(message)
-        # Only the edge's validated not_started SESSION_NOT_FOUND proves no handler ran, so one resend cannot duplicate a write.
-        if not session_lost or not self._reinitialize():
-            return result
-        return self._send(message)[0]
+        deadline = time.monotonic() + 120
+        try:
+            if (isinstance(self.settings, RelayEndpoint) and self.settings.health_receipt is not None
+                    and message.get("method") == "tools/call"
+                    and isinstance(message.get("params"), dict)
+                    and message["params"].get("name") == "memory_context"):
+                from .health_producer import health_before_context
+                from .hosts import load_receipt
 
-    def _reinitialize(self) -> bool:
+                receipt = load_receipt(self.settings.health_receipt)
+                if (receipt["base_url"] != self.settings.base_url
+                        or receipt["deployment_id"] != self.settings.deployment_id
+                        or Path(receipt["agent_token_file"]) != self.token_file):
+                    raise DomainError("HEALTH_WORKSPACE_SCOPE", "The relay receipt changed scope")
+                observed = health_before_context(receipt)
+                arguments = message["params"].get("arguments", {})
+                if not isinstance(arguments, dict):
+                    return self.error(message, "RPC_ENVELOPE_INVALID")
+                workspace_id = observed.get("workspace_id")
+                if (arguments.get("code_workspace_id") is not None
+                        and arguments["code_workspace_id"] != workspace_id):
+                    raise DomainError("HEALTH_WORKSPACE_SCOPE", "The caller selected another code workspace")
+                if workspace_id is not None:
+                    message = {
+                        **message,
+                        "params": {
+                            **message["params"],
+                            "arguments": {**arguments, "code_workspace_id": workspace_id},
+                        },
+                    }
+            # A request without a session would be refused by the SDK, so recover before sending it.
+            if (self.recovery_pending and message.get("method") != "initialize"
+                    and not self._reinitialize(deadline=deadline)):
+                return self.error(message, "SESSION_NOT_FOUND")
+            result, session_lost = self._send(message, deadline=deadline)
+            # Only validated not_started SESSION_NOT_FOUND proves a resend cannot duplicate a write.
+            if not session_lost or not self._reinitialize(deadline=deadline):
+                return result
+            return self._send(message, deadline=deadline)[0]
+        except DomainError as error:
+            # Readiness can fail during reinitialization too; preserve its explicit unavailable/stop code.
+            return self.error(message, error.code, EffectState.NOT_STARTED)
+
+    def _reinitialize(self, *, deadline: float) -> bool:
         params, negotiated, self.session_id = self.initialize_params, self.protocol_version, None
         if params is None:
             return False
         self.recovery_pending = True
-        result, _ = self._send({"jsonrpc": "2.0", "id": _REINITIALIZE_ID, "method": "initialize", "params": params})
+        result, _ = self._send(
+            {"jsonrpc": "2.0", "id": _REINITIALIZE_ID, "method": "initialize", "params": params},
+            deadline=deadline,
+        )
         # The host still speaks the version it negotiated; a restarted server offering another cannot stand in.
         if result is None or "result" not in result or self.session_id is None or self.protocol_version != negotiated:
             self.session_id, self.protocol_version, self.recovery_pending = None, negotiated, True
             return False
-        self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self._send({"jsonrpc": "2.0", "method": "notifications/initialized"}, deadline=deadline)
         return True
 
-    def _send(self, message: dict) -> tuple[dict | None, bool]:
+    def _send(self, message: dict, *, deadline: float) -> tuple[dict | None, bool]:
         params = message.get("params", {})
         if (message.get("jsonrpc") != "2.0"
                 or ("id" in message and type(message["id"]) not in {str, int, type(None)})
@@ -84,12 +146,23 @@ class StdioRelay:
             return self.error(message, "RPC_ENVELOPE_INVALID"), False
         from .private_io import private_read
 
-        try:
-            token = private_read(self.token_file, 4096).decode("utf-8").strip()
-            if not token or not token.isascii() or any(character.isspace() for character in token):
-                raise ValueError
-        except (DomainError, OSError, ValueError, UnicodeError):
-            return self.error(message, "RELAY_CREDENTIAL_UNAVAILABLE"), False
+        if self.remote_settings is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return self.error(message, "SERVICE_UNAVAILABLE"), False
+            ensure_remote_ready(self.remote_settings, timeout=min(remaining, 5))
+            self.opener = remote_opener(self.remote_settings, NoRedirect())
+            try:
+                token = read_remote_credential(self.token_file, self.remote_settings)
+            except DomainError:
+                return self.error(message, "RELAY_CREDENTIAL_UNAVAILABLE"), False
+        else:
+            try:
+                token = private_read(self.token_file, 4096).decode("utf-8").strip()
+                if not token or not token.isascii() or any(character.isspace() for character in token):
+                    raise ValueError
+            except (DomainError, OSError, ValueError, UnicodeError):
+                return self.error(message, "RELAY_CREDENTIAL_UNAVAILABLE"), False
         meta = params.get("_meta", {})
         if not isinstance(meta, dict):
             return self.error(message, "RPC_ENVELOPE_INVALID"), False
@@ -102,6 +175,8 @@ class StdioRelay:
             "Accept": "application/json, text/event-stream",
             "Mcp-Method": message.get("method", ""),
         }
+        if self.remote_settings is not None:
+            headers["Origin"] = self.remote_settings.base_url
         if name:
             headers["Mcp-Name"] = name
         version = request_version or self.protocol_version
@@ -114,17 +189,31 @@ class StdioRelay:
         try:
             for value in headers.values():
                 value.encode("latin-1")
+            raw = json.dumps(message, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            if len(raw) > self.settings.max_http_body_bytes:
+                return self.error(message, "BOUNDED_INPUT_INVALID"), False
             request = urllib.request.Request(
                 self.settings.base_url + "/mcp",
-                data=json.dumps(message, ensure_ascii=False, allow_nan=False).encode("utf-8"),
+                data=raw,
                 headers=headers,
             )
         except (ValueError, TypeError, UnicodeError):
             return self.error(message, "RPC_ENVELOPE_INVALID"), False
+        if self.remote_settings is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return self.error(message, "SERVICE_UNAVAILABLE"), False
+            ensure_local_ready(
+                self.settings.base_url, state_dir=self.settings.state_dir,
+                deployment_id=self.settings.deployment_id,
+                timeout=min(remaining, 5),
+            )
+        if time.monotonic() >= deadline:
+            return self.error(message, "SERVICE_UNAVAILABLE", EffectState.NOT_STARTED), False
         sent_session = "Mcp-Session-Id" in headers
         try:
-            with self.opener.open(request, timeout=120) as response:
-                result = self.read_response(response)
+            with open_http(self.opener, request, deadline=deadline) as response:
+                result = self.read_response(response, deadline=deadline)
                 if result is None and "id" not in message:
                     return None, False
                 if not self.valid_response(message, result):
@@ -140,7 +229,7 @@ class StdioRelay:
                 return result, False
         except urllib.error.HTTPError as error:
             try:
-                result = self.read_response(error)
+                result = self.read_response(error, deadline=deadline)
                 edge = self._edge_error(result)
                 if edge is None:
                     return self.public_error(message, result), False
@@ -156,13 +245,13 @@ class StdioRelay:
         except DomainError as error:
             return self.error(message, error.code, error.effect), False
 
-    def read_response(self, response) -> dict | None:
-        raw = response.read(self.settings.max_mcp_response_bytes + 1)
+    def read_response(self, response, *, deadline: float | None = None) -> dict | None:
+        raw = read_http_body(
+            response, maximum=self.settings.max_mcp_response_bytes,
+            deadline=deadline if deadline is not None else time.monotonic() + 120,
+        )
         if len(raw) > self.settings.max_mcp_response_bytes:
             raise DomainError("RESULT_TOO_LARGE", "The relay response exceeds its wire limit", effect=EffectState.UNKNOWN)
-        length = response.headers.get("Content-Length")
-        if length is not None and (not length.isascii() or not length.isdecimal() or int(length) != len(raw)):
-            raise DomainError("RPC_RESPONSE_INVALID", "The relay response is incomplete", effect=EffectState.UNKNOWN)
         try:
             return decode_json(raw) if raw else None
         except (ValueError, UnicodeError):
@@ -228,26 +317,34 @@ class StdioRelay:
         }}
 
 
-def _write_result(result: dict) -> None:
-    sys.stdout.buffer.write(
-        json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
-    )
-    sys.stdout.buffer.flush()
+def _write_result(result: dict) -> bool:
+    try:
+        sys.stdout.buffer.write(
+            json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
+        )
+        sys.stdout.buffer.flush()
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 async def run_stdio(settings: Settings | RelayEndpoint, token_file: Path) -> None:
     relay = StdioRelay(settings, token_file)
     while True:
-        raw = await asyncio.to_thread(sys.stdin.buffer.readline, settings.max_http_body_bytes + 2)
+        try:
+            raw = await asyncio.to_thread(sys.stdin.buffer.readline, settings.max_http_body_bytes + 2)
+        except (OSError, ValueError):
+            return
         if not raw:
             return
+        if len(raw) > settings.max_http_body_bytes or not raw.endswith(b"\n"):
+            if not _write_result(relay.error({"id": None}, "BOUNDED_INPUT_INVALID", rpc_code=-32700)):
+                raise DomainError("STDIO_DELIVERY_FAILED", "The response channel is closed", status=503)
+            return
         try:
-            if len(raw) > settings.max_http_body_bytes or not raw.endswith(b"\n"):
-                _write_result(relay.error({"id": None}, "BOUNDED_INPUT_INVALID", rpc_code=-32700))
-                return
             message = decode_json(raw)
             result = await asyncio.to_thread(relay.forward, message)
         except (DomainError, ValueError, UnicodeError):
             result = relay.error({"id": None}, "BOUNDED_INPUT_INVALID", rpc_code=-32700)
-        if result is not None:
-            _write_result(result)
+        if result is not None and not _write_result(result):
+            raise DomainError("STDIO_DELIVERY_FAILED", "The response channel is closed; reconcile any dispatched mutation", status=503, effect=EffectState.UNKNOWN)

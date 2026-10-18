@@ -2,7 +2,165 @@
 
 ## Unreleased
 
-### 판단 provider 선택 (agent | Jev)
+### 명시적 메모리 건강 관리와 평가 engineering
+
+- 코드/worktree/root·파일/Python AST symbol anchor와 현재 health dependency를 claim의 검색·admission·게시·최종 delivery·관계 입력에 연결했다. required rule을 ordinary stale 필터로 숨기지 않는다.
+- 이미 허용된 관측 segment와 close watermark를 bounded pending으로 연결하고 다음 권한 있는 agent/별도 허용 Jev가 판단하는 경로를 추가했다. 새 transcript 수집·구독 agent 깨우기·자동 정정/승격/삭제는 추가하지 않았다.
+- relevance·support/정확성 판단·freshness와 exact-revision operator Accept/Reject를 분리했다. 늦은 판정·삭제·철회·권한 변경·code 변경을 다시 검사한다. `0007_memory_health`와 archive/init/restore closure를 연결하며 restored source의 ordinary claim은 최신 판정 증거 없이 재사용하지 않는다. 새 health disaster ledger는 없다.
+- shutdown의 false drain·eventual join·원래/동시 실패를 보존하고 실제 ASGI/Uvicorn 노출 진단을 body-free로 제한했다. proposal의 전체 UTF-8 body/예외/exact source revision inspect와 권한 제한 shared-rule projection을 구분했다. coverage·stats·pending·health 분모의 current request_snapshot/policy/review dependency 자격을 통일했다.
+- workspace 등록의 malformed ACK와 건강 입력의 중첩 validation 실패를 각각 bounded unknown-effect·항목별 incomplete로 처리한다. 준비 파일·기존 활성 설정·미완료 작업을 보존하고 사적인 validation 세부를 출력하지 않는다.
+- 공유 outbox에서 건강 거절·unknown ACK·queue full이 독립 capture를 굶기지 않도록 분리하되 ordinary capture의 unknown 앞 FIFO는 보존한다. 같은 committed code fingerprint의 receipt를 재사용하고 확정 미commit quarantine·bounded session metadata 경쟁을 처리한다.
+- code 관측의 payload 만료·receipt 소실 뒤 현재 workspace/root와 더 높은 sequence의 실제 새 관측으로 복구한다. 원래 unknown·expiry/gap 이력·미완료 payload fence는 보존하며 새 committed ACK와 서버의 늦은 구형 sequence 거절을 요구한다.
+- 다음 source-selection의 accepted context에 ordinary health 재사용 자격을 적용하고, exact Reject·현재 공개 가능한 사유를 별도 bounded `health_dispositions`로 전달한다. 발견과 admission·최종 검사가 같은 claim/event/reason 공개 자격을 사용하며 확인된 부적격 review가 무관한 원문 판단을 막지 않는다. 실제 표시한 health/code/review/reason dependency를 admission에 묶되 독립 근거나 내용 전체의 금지 목록으로 승격하지 않는다.
+- 다음 Jev 판단에도 별도 health 허가가 있을 때만 exact Reject 사유·현재 revision advisory를 연결한다. 원문·advisory·기존 비교 근거의 전체 state input budget과 긴 사유의 incomplete 표시를 보존하며 일반 원문 판단·독립 근거를 blacklist로 막지 않는다.
+- source·cleanup·health의 실제 첫 HTTP 시도·재시도·다단계 호출마다 원래 admission의 현재 권한·source/claim·snapshot·disclosure·health dependency를 canonical Store 경계에서 다시 확인한다. DB lock을 network 동안 잡거나 admission을 새로 만들어 철회를 우회하지 않는다. 이미 전송한 요청의 회수나 외부 wire 원자성을 주장하지 않는다.
+- strict decoder의 공개 typing을 실제 Pydantic `BaseModel`과 임의 값의 `TypeAdapter` 두 소비 형태에 맞췄다. 기존 strict JSON/schema/오류 의미는 유지했다. R35–R37의 실제 source·설치 소비 실패→성공과 owned HTTP worker 증거는 [검증 기록](docs/verification.ko.md)을 따른다.
+- 고정 manifest/전체 attempt ledger·정책을 상속하는 native CLI driver·required-only off/실제 wire gateway·immutable artifact/허용 diff witness·격리 Docker oracle/control·pair scheduler·cluster bootstrap/unknown cost·평가 CLI와 명시 health evidence compiler를 추가했다. task 성공은 자동 support/freshness나 인간 승인이 아니다. raw diagnostic gold와 engineering oracle은 `provided_unattested`이며 인간 holdout을 만들어 채우지 않는다.
+- 건강 판정용 retained evidence는 private observation array를 포함해 bounded byte-exact로 보존한다. object 조건은 실제 typed object 소비 지점에서 검사하며 receipt·terminal·digest·현재 authority 검증은 유지한다.
+- MCP catalog는 flat root와 variant의 required/allowed/null 제약을 유지하면서 schema 참조·중복을 줄였다. 실제 최대 escaped JSON-RPC ID의 응답 상한을 올리지 않는다. 출력 상한에 걸린 Docker exec는 container removal 전에 닫고 기존 deadline/TTL·소유권·exact cleanup을 유지한다.
+- 복구 주기의 공유 discovery cursor를 직렬화하고 상태 갱신을 동기화했다. 새 scan이 끝나기 전에 이전 실패를 idle로 숨기지 않는다. 실제 `/readyz` 실패 전후와 event로 멈춘 scan의 판정 유지·후속 복구를 source/설치 wheel에서 검증했다.
+- interrupted intent의 증명된 private-writer 임시 hardlink를 소유권 경계에서 복구한다. 읽기 전용 report는 ledger를 고치지 않고 unknown 분모를 보존하며, resume의 정리는 재실행 허가가 아니다. 임의·추가·symlink·비소유 link 및 frozen input의 single-link 제한은 유지한다. 별도 source/설치 wheel 실패→성공과 전체 engineering smoke를 Actions에서 검증했다.
+- measured corpus/rules를 `schema=2`로 전환하고 실제 `context_renderer`를 frozen source identity에 포함했다. applicable optional rule과 eligible 관계의 전체 집합·의미·revision/digest를 고정해 arm 전후와 실제 context에 대조한다. bounded prefix·미리보기만으로 완전성을 추정하지 않으며 controller의 judgment 권한을 native에 넘기지 않는다.
+- 독립 packing의 costed claim을 승인 projection의 완전한 의미·조건·예외·시점과 모든 evidence의 provenance에 연결했다. input digest를 다시 맞춰 내용·optional rule·관계를 줄이거나 바꿔도 완전한 F로 받아들이지 않는다. 불완전한 입력은 unknown을 유지한다.
+- native delivery credit을 tool 반환에서 실제 downstream stdio response의 완전한 write로 옮겼다. 원래 ID·tool/arguments·payload·MCP metadata stamp와 wire bytes를 맞추며 부분 write·output cap·취소·deadline·중복 ID·대체 응답·receipt 실패를 완료로 세지 않는다. health evidence는 모든 유효 invocation의 실제 gateway trace를 보존·재검증하며 write 완료를 모델 소비로 확대하지 않는다.
+- control 선검증에도 pair/current subject와 같은 stop event를 전달한다. 취소된 첫 control의 부분 receipt·intent·cleanup을 보존하고 후속 control과 잘못된 eligible 승격을 막는다.
+- 평가 gateway가 candidate/final dispatch 전에 frozen `limit`·`max_bytes`·정규화한 `code_workspace_id`를 강제한다. 원래 workspace가 null인 경우의 생략/null 동등성은 보존한다.
+- 필수 frozen `native_tool_mapping`과 immutable native-tool-link를 추가했다. 실제 native tool start/result·invocation/generation·정확한 arguments/result와 완료 gateway write를 연결하고 health export/replay에서도 검증한다. 별도 MCP client/agentMessage만의 성공, 다른 호출·server·결과·generation은 credit이 아니다. Codex native lineage와 JSON-RPC ID를 구분하고 Claude의 모호한 병렬 반복은 비교 불가로 남긴다. provider 소비·native 보호 증거로 확대하지 않는다.
+- post-spawn helper 생성자 interruption과 selector 생성/close 실패에서도 owned process group을 reap 전 종료하고 bounded final wait·모든 pipe close를 시도한다. 원래 실패와 cleanup 실패를 함께 보존하며 미관측 회수를 성공으로 숨기거나 timeout을 늘리지 않는다.
+- health work가 claim의 전체 typed 의미·조건·예외·부정/양태·valid time을 admission과 두 판단 단계에 보존하고 전체 JSON을 기존 byte budget에 계산한다. 의미가 빠지거나 예산을 넘으면 statement-only 판단으로 잘라내지 않는다. 같은 statement의 offline 조건이 online 정정 때문에 잘못 격리되는 회귀를 실제 건강 상태와 recall로 검증했다.
+- candidate↔final context는 정규화한 내부 identity로 상관관계를 확인해 같은 default 생략/명시·null 전환의 실제 final read를 잃지 않는다. native/wire 원래 arguments·frozen scope·실제 write credit은 유지한다.
+- native 제출은 실행 전에 승인 root descriptor를 고정하고 모든 경로 성분을 no-follow로 읽는다. root 교체·symlink·backtracking·hardlink·변경된 leaf를 수입하지 않으며 정상 nested 제출과 bounded cleanup을 보존한다.
+- 초기 model 이름과 실제 실행 관측을 분리한다. driver·controller·health replay는 같은 typed model observation으로 Claude main 변경·다른 helper model·미귀속 pipeline 혼합과 Codex correlated/uncorrelated/malformed reroute를 구분한다. A→B→A·원래 identity/제출·완료 시도·usage/비용 미관측·cleanup과 전체 분모를 보존하며 pipeline 혼합만으로 main fallback을 단정하지 않는다.
+- operator의 exact `close_unknown`은 늦은 capture·동일 입력 refresh·refresh 실패에도 원래 disposition/event와 닫힌 admission을 보존한다. 실제 새 입력은 revision fence만 갱신하며 최신 revision·권한·capacity를 검사한 explicit reopen과 machine-assessed 작업의 재등록을 구분한다.
+- feedback 판정 사유의 source 읽기는 기존 disclosure 경계에서 현재 실제 target 자격을 재검사한다. 전역 공개를 request snapshot에 묶거나 지워진 후보·사유 원문 때문에 본문 없는 독립 판정 이력을 삭제하지 않는다.
+- `1541ec4`의 [Actions39101868318](https://github.com/chonamdoo/agents-memory/actions/runs/39101868318)는 R14–R17 수정 후 source3127·별도 설치741·실제 Docker14·Mac ownership36, 양쪽 실제 health HTTP/CLI25개 outcome·전체 평가/health 소비·cleanup·canonical comments·8job strict aggregate를 통과했다. corrected-before16개 node의 전 phase 비교와 과도한 metadata 거절 기대·credential 혼용 fixture 실패는 [검증 기록](docs/verification.ko.md)에 구분 보존했다. fresh 전체 inherited source review·CI-only QA와 원래18개 외부 acceptance는 별도다.
+- Claude assistant의 실행 model 필드 누락도 null과 같은 관측 불명으로 처리한다. 실제 stdio 완료·제출·usage는 보존하되 driver·controller·health replay가 frozen identity나 comparable 결과로 승격하지 않는다. 현재 다른 helper model의 허용 manifest는 없으며 pipeline 혼합의 비교 불가 한계를 명시했다.
+- health 사유 source의 소유권·현재 target을 같은 bounded 재귀 disclosure manifest에 포함했다. 중첩 feedback의 다른 snapshot 공개와 구형 admission을 거절하되 정상 전역 target과 본문 없는 독립 판정 이력을 보존한다.
+- bounded HTTP reader가 적용 가능한 `Content-Length`와 실제 본문 길이를 대조한다. 짧은 EOF의 유효 JSON을 producer202 ACK나 오류의 확정 효과로 받아들이지 않으며 정상 fixed/chunked/EOF framing·deadline·unknown 비재전송을 유지한다. relay의 중복 길이 검사는 공통 경계로 통합했다.
+- operator event 없는 machine `deferred_unknown`을 명시 종결과 구분해 실제 새 근거의 capacity-checked 재등록을 보존했다. operator의 exact `close_unknown`·구형 revision 거절·명시 reopen 권한은 유지한다.
+- `acb131c`의 [Actions39107089779](https://github.com/chonamdoo/agents-memory/actions/runs/39107089779)는 R18–R21 수정 후 source3138·별도 설치752·실제 Docker14·Mac36, 양쪽 health HTTP/CLI25 outcome·전체 평가/health 소비·cleanup·lint/build/comments·strict aggregate를 통과했다. 같은6개 유효 before node의 전 phase 성공과 앞선 fixture 실패를 [검증 기록](docs/verification.ko.md)에 분리 보존했다. 직전 정상 review의8approve/3request-changes/1timeout은 새 source 승인이나 whole-PR coverage가 아니다.
+- revoke된 producer의 남은 workspace 등록을 operator health observer에서 현재 권한에 따라 제외한다. registry 조회 뒤 revoke된 경우도 같은 credential 경계를 사용하며 호출자401·agent403·예상 밖 `DATABASE_BUSY`503은 보존한다. scoring `evidence_refs`의 공개 annotation과 validator 반환 타입을 실제 읽기 전용 `Mapping`에 맞췄으며 기존 bounded JSON serializer는 유지했다.
+- context의 workspace-scoped `withheld`·`unknown_assessments`와 binding/snapshot-wide `closed_unknown_work`를 문서에 구분했다. R20의 stdio relay 오류 코드 전환과 private incomplete-prefix 비보존을 명시하되 unknown·비재전송 의미는 바꾸지 않았다.
+- `31f9f7c`의 [Actions39110710800](https://github.com/chonamdoo/agents-memory/actions/runs/39110710800)는 source3140·별도 설치754·실제 Docker14·Mac36·양쪽 실제 health HTTP/CLI25개 outcome·전체 평가 소비·owned cleanup·lint/build/comments·strict aggregate를 통과했다. 유효 `09e1b58` before의 두401 node와 실제 CLI `AUTH_DENIED`를 대조했고, 초기 잘못된 Store patch와 smoke `Role` NameError/F821은 별도 fixture 실패로 보존했다. 직전 review10approve/1request-changes/1timeout은 새 source나 전체 미검토 영역의 승인이 아니다.
+- 설치된 canonical comment 정책과 같은 공개 immutable source/checksum을 Actions에서만 실행한다. 정확한 PR base/head의 전체 old/new code와 source·coverage receipt를 확인하며, 누락·불일치·정책 실패는 aggregate가 거절한다. 로컬 hook·guard·trust·settings·pins 변경은 없다.
+- revoked 타 producer 때문에 정상 code relink가 중단되지 않도록 현재 authority를 검사하되 자기 caller401·scope/refusal·예상 밖 오류는 보존한다. journal로 철회한 health pending은 늦은 capture/session boundary 때문에 재개하지 않는다.
+- Jev health의 비허용·불완전 입력을 shared paid budget에서 제외하고 같은 binding/snapshot/item의 최신 health·policy·provider·egress revision별 실패를 보존한다. 일반 source/cleanup·후속 binding 진행과 stop·권한 실패의 의미를 유지한다.
+- 평가 CLI는 typed `EvaluationError`의 bounded code를 보존하고 일반 private 오류는 generic으로 남긴다. scoring/diagnostic 모델의 내부 `schema_version`과 외부 `schema` alias를 분리해 import 경고가 실제 CLI JSON 오류 출력을 오염시키지 않게 했다. warning filter는 추가하지 않았다.
+- 생성 OMP hook은 실제 hashline edit의 전체 bounded 파일 footprint만 전송하고 원문 patch를 전달하지 않는다. capture는 누적 영수증 만료 이력과 현재 실패를 구분하며 이력·대기·격리 상태는 보존한다. 기존 설치본을 자동 변경하거나 native strict 지원을 추가하지 않는다.
+- `a33615c`의 [Actions39120772813](https://github.com/chonamdoo/agents-memory/actions/runs/39120772813)에서 위 수정의 source·별도 설치 소비와 기존 전체 engineering gate를 통과했다. 유효 red/green·지원하지 않는 workspace 상태 fixture의 제외·중간 실패·정상 review의 request-changes는 [검증 기록](docs/verification.ko.md)에 구분했다. fresh whole-source review/QA와 원래 외부 acceptance 완료로 확대하지 않는다.
+- file-effect observer 전에 exact owned container를 Docker daemon으로 동결하고 subject quiescence를 확인한다. 잔존 process나 불명 inventory·freeze/unfreeze 실패는 oracle 성공이 아니라 `runtime_unknown`이며 frozen 자원도 기존 owned cleanup으로 제거한다. 정상 private file·expected nonzero exit는 유지한다. 실제 defect before와 방어 후 [Actions39136163814](https://github.com/chonamdoo/agents-memory/actions/runs/39136163814)의 경계를 [검증 기록](docs/verification.ko.md)에 구분했다.
+- `78184763`의 [Actions39077297030](https://github.com/chonamdoo/agents-memory/actions/runs/39077297030)는 R5–R9 수정 후 source3061·설치 wheel685·실제 Docker14·Mac compatibility36, source/설치 health·전체 native-event/health consumer·owned cleanup·8job strict aggregate를 통과했다. 두 test-only before와 중간 caller/fixture 실패를 보존한다. fresh whole-source canonical12review/QA는 별도 미완료다. source별 결과는 [PR9](https://github.com/chonamdoo/agents-memory/pull/9)와 [검증 기록](docs/verification.ko.md)을 따른다. 합성 native protocol peer를 실제 native 승인·모델 효익으로 세지 않으며 로컬 runtime 검증·native trust/운영/egress·human120/60task×3·실제1–2주 trial·merge/release 실행을 승인하거나 완료한 기록이 아니다.
+- `76254a76`의 [Actions39079833321](https://github.com/chonamdoo/agents-memory/actions/runs/39079833321)는 R10–R12 수정 후 source3079·설치 wheel703·실제 Docker14·Mac compatibility36, 양쪽 health·전체 평가 consumer·owned cleanup·strict aggregate를 통과했다. genuine before의 source3062pass10fail/설치686pass10fail와 같은 node의 phase 비교를 보존한다. fresh whole-source canonical12review/QA와 원래18개 acceptance는 별도 미완료다.
+- `5524a835`의 [Actions39084573279](https://github.com/chonamdoo/agents-memory/actions/runs/39084573279)는 R13 수정 후 source3088·설치 wheel712·실제 Docker14·Mac compatibility36, source/설치 health·전체 평가/health consumer·owned cleanup·strict aggregate를 통과했다. 제품 불변 test-only before의 source3080pass8fail/설치704pass8fail와 같은9node의 모든 phase 성공을 보존한다. 전체 지시/누락 전수 재대조·잔여 개발과 fresh canonical12review/QA·원래18개 acceptance는 별도 미완료다.
+
+### 전수 재대조 후 잔여 경계 수정
+
+- health item·feedback 이유의 현재 target/source disclosure와 snapshot을 재검사하고 전역 claim의 독립 게시·전역 reject floor는 유지했다. request-scoped selection audit를 전역 claim의 새 공개 제한으로 사용하지 않는다.
+- 닫힌 bounded 관측 창의 작업 처리와 사실의 support/freshness·source coverage를 분리했다. operator 전용 exact-revision `health_work_disposition`의 unknown 종결·명시 reopen, capacity 검사와 late-result fence를 추가했으며 이미 resolved인 불완전 refresh는 unknown history로 보존한다.
+- context의 bounded health partial metadata와 opaque quarantine 발견 경로를 연결하고 건강 분모·health reusable view의 current policy/dependency 자격을 공유했다. 인간 Accept 기록을 current source 분류로 승격하지 않는다.
+- final recall의 관계 입력을 admission과 같은 workspace로 제한해 무관한 workspace의 code-linked 관계가 유효 전역 기억을 차단하지 않게 했다.
+- recovery의 예상 밖 cycle 실패를 body-free로 남기고 stop 취소 뒤에도 task 소유권·join을 유지한다. 초기 인증의 `DATABASE_BUSY/not_started`와 judge 상태 실패의 정직한 readiness unavailable을 보존한다.
+- backup/restore/recover의 모든 owned finalizer를 시도하며 원래 실패·bounded cleanup 실패·알려진 committed 효과를 구분한다. CLI Ctrl-C는 bounded `COMMAND_INTERRUPTED/unknown`·exit130으로 보고하며 SIGTERM과 native signal 의미는 바꾸지 않는다.
+- 평가 gateway receipt를 digest-bound 단일 파일로 연결해 유효 terminal 완료를 중복 본문 크기로 잃지 않게 했다. report/health 소비자를 함께 이주하고 원래 byte/event/deadline·전체 attempt·unknown·cleanup을 유지한다.
+- 원래14개 경계의 genuine Actions before와 후속 setup/call/teardown 성공, 잘못된 fixture·전역 공개 scope 진단·operator denial 기대를 구분해 보존한다. 정확한 새 전체 CI·정규 review/QA 범위는 [검증 기록](docs/verification.ko.md)을 따르며 checkpoint push를 final 검증·원래18개 완료로 표현하지 않는다.
+- [Managed Agents 영상 보안 검토](docs/research/2026-10-18-managed-agents-security.ko.md)는 자막·공식 문서·현재 credential/격리/복구 경계를 대조한 조사다. 새 vault/event store·원문 수집·운영/egress/trust 변경은 채택하지 않았다.
+
+
+
+- `b4c450c4`의 [Actions39095319703](https://github.com/chonamdoo/agents-memory/actions/runs/39095319703)는 전체 source3114·별도 설치 wheel728·실제 Docker14·Mac ownership36, 양쪽 실제 health HTTP/CLI23outcome·전체 평가/health·owned cleanup·8job9artifact strict aggregate를 통과했다. current-policy denominator의 genuine before와 잘못된 operator denial 기대의 정정을 구분한다. 문서 포함 head·fresh whole-source canonical12/QA와 원래18개는 별도이며 로컬 검증·실제 native/운영/trial·merge/release를 실행한 것은 아니다.
+
+### CI 전용 검증 전환과 OSS 후속 보완
+
+- GitHub Actions에 실제 PG18/pgvector·지원 Python/SQLite·Node·native PG18 도구·age 준비, 전체 collection의4개 disjoint shard, lint/build·설치 wheel 소비, 누락/skip/실패/source drift·artifact mismatch를 거절하는 최종 집계를 구성했다. raw failure/captured output 대신 outcome-only JUnit을 업로드한다.
+- purge/reconcile의 동일 값 UPDATE를 null-safe 조건으로 억제했다. restore된 payload 재-scrub·삭제 floor·global clock·operation epoch 의미는 유지한다.
+- adapter6의 생성 hook/MCP에 Python `-I`를 적용하고 validated v5는 owned cleanup/reinstall만 허용한다. pending spool·foreign native/Agent Flow 설정은 보존한다.
+- serve/service-run은 lifespan 전에 configured socket을 확보하며 bind 실패를 `SERVICE_BIND_FAILED/not_started`로 반환한다. 임의 port fallback·기존 listener kill은 없다.
+- ingress 권한 재확인, stop 가능한 remote TCP/TLS/GET·최초 send, 이미 전송한 business drain, retained bad-first recovery 공정성, service uninstall 효과·upgrade 순서의 회귀를 추가/보완했다.
+- [OSS 후속 조사](docs/research/2026-10-16-oss-followup.ko.md)에서 원인·고정 PR/source·회귀·license·평가 방법과 추가 적용/기존 반영/보류/거절을 구분했다. paired 평가의 identity·전체 attempt 분모·oracle 대조군·최종 artifact 불변 계약을 보완했다.
+- 첫 실제 두 CI 준비 실패와 uv selector 충돌 원인을 보존했다. `c59377e`의 [실제 Actions](https://github.com/chonamdoo/agents-memory/actions/runs/38917025242)는 전체2408/skip0·lint/build·설치 wheel subset31을 통과했다. 이는 해당 source의 CI 증거이며 이후 수정·native acceptance·정상 QA/handoff·release 승인이 아니다. 로컬 test/collection/lint/build/추가 smoke는 실행하지 않았다.
+- 그 source의 정상 공식 리뷰는 request-changes를 유지했다. README를 원래 owned service uninstall→새 entrypoint의 config migration 순서로 맞추고, installed replay의 durable intent 제거 효과와 CI timeout의 잔존 process-group 정리를 보완했다. file publication 오류는 DB 장애로 바꾸기 전에 구분하며 실행 host template도 CI source digest에 포함한다. 새 회귀는 수정 전/후 GitHub Actions에서만 검증한다. 원본 reviewer timeout과 외부18개 acceptance는 별도 보존한다. 정확한 source·실행·리뷰 상태는 [검증 기록](docs/verification.ko.md)을 따른다.
+- 후속 `bc30804`의 [Actions38922413453](https://github.com/chonamdoo/agents-memory/actions/runs/38922413453)는 전체2430/skip0·lint/build·별도 wheel31을 통과했다. 그 전 regression-only20실패와 첫 수정본의 기존 mock-echo assertion5실패도 보존했다. 실제 파일 오류 분류·durable 효과·명시 복구 검증은 유지하며 주입한 DB 오류값을 모든 DomainError에 기대하던 assertion만 제거했다. 이는 정상 fresh review/QA/handoff나 full issue5·출시 승인이 아니다.
+- 후속 양 모델12개 angle은 실제 approve였지만 원래 요구 범위의 service readiness upgrade 오류와 소멸한 PGID 재신호 위험은 controller request-changes로 남겼다. owned config의 `CONFIG_UPGRADE_REQUIRED`를 readiness에도 보존하고, TERM/존재 확인에서 이미 사라진 group은 다시 신호하지 않되 owned parent reap·살아 있는 자손의 TERM/grace/KILL은 유지한다. 회귀-only Actions의 실제2435건 중5실패를 보존했고, 수정본877a56d의 [Actions38929819006](https://github.com/chonamdoo/agents-memory/actions/runs/38929819006)는 전체2435/skip0·lint/build·별도 wheel31과 앞선5건의 setup/call/teardown을 모두 통과했다. 이 수정본의 fresh formal review·QA/handoff와 외부 acceptance는 별도다.
+- `8aa611b` 당시 설치 wheel 실행기와 집계는 단일13-selector 정책을 공유했고 checks에도 실제 owned PG 준비를 요구했다. self-consistent한 import-only receipt를 승인하던 회귀의 Actions 실패2건을 보존했다. [Actions38977685346](https://github.com/chonamdoo/agents-memory/actions/runs/38977685346)는 전체2436/skip0·lint/build와 별도 noneditable wheel85를 통과했다. 설치 소비에 service readiness·HTTP/MCP·operator 권한/publication·native child 정리·TLS stop/drain·bad-first recovery 및 ESRCH 뒤 PGID 재사용 주입의 native 두 경계를 포함한다. fixture 수준의 설치 소비를 실제 native activation·운영 cloud·kernel PID wraparound·human trial/출시 승인으로 확대하지 않는다.
+- 정상 독립 리뷰의 group leader 조기 reap P1를 수용했다. native/CI cleanup은 중간 poll 없이 leader PID를 최종 group 신호까지 보존하고 이미 reap된 입력에는 신호하지 않는다. grace 상수·deadline·최종 parent wait는 유지하지만 Linux에서는 zombie leader 때문에 full grace를 기다리는 지연이 생긴다. 이 안전성 trade-off와 실제 call phase 측정은 [검증 기록](docs/verification.ko.md#group-leader-소유권-보존--7df1eb4)에 명시하며 macOS 지연은 추정하지 않는다. malformed fixture의 취소 이력을 보존했고, 유효 Actions의 실제 source4/installed-native2 실패(-9/-15) 뒤 7df1eb4의 [Actions38982950669](https://github.com/chonamdoo/agents-memory/actions/runs/38982950669)는 전체2440/skip0·lint/build·별도 설치87을 통과했다. MCP 증거도 직접 Store capture 후 modern/legacy inspect→record와 별도 HTTP producer 권한 거절로 좁혔다. 실제 kernel wraparound·native 활성·운영/평가/출시 승인을 주장하지 않는다.
+- macOS CPython3.12에 없는 `os.waitid` 때문에 ownership 회귀8건이 setup 실패하던 지적을 수용했다. kqueue exit 등록 뒤 child를 해제해 reap 없는 관측을 보존하고, fault injector의 owned group만 가상 처리하되 소유권 상실 시 실제 survivor에 신호하는 조건을 유지한다. 제품 exception을 삼키거나 Mac을 skip하지 않았다. 병렬 Mac3.12 job과 exact-runtime/node/phase/source 집계를 추가했다. before8setup 실패와 첫 수정6통과/2call 실패를 보존했고, 92cc360의 [Actions38987056695](https://github.com/chonamdoo/agents-memory/actions/runs/38987056695)는 별도 Mac8·Linux full2443·설치87 및 lint/build/aggregate를 통과했다. 이는 실제 native 보호나 Mac 전체 suite·운영/평가/출시 승인 증명이 아니다.
+- 후속 정상12개 독립 리뷰는5approve/7request-changes였고 “fixture만의 문제” 진단이 불완전했음을 확인했다. Darwin 제품 cleanup의 EPERM은 reap 없는 leader exit와 원자적·고정 크기 libproc group census가 **그 leader 하나만** 확인할 때만 terminal로 분류한다. live leader/다른 member/관찰 실패의 권한 오류는 유지한다. 정상 EOF/TERM inventory의 유효 before4실패와 첫 제품 수정의 kqueue context-manager TypeError8실패를 보존했다. `contextlib.closing`으로 고친2656828의 [Actions38991986933](https://github.com/chonamdoo/agents-memory/actions/runs/38991986933)는 실제 Mac16·Linux 전체2451·별도 설치92와 lint/build/aggregate를 통과했다. 실제 setuid/native 보호·Mac 설치 wheel·운영/평가/출시 승인으로 확대하지 않으며 원래18개는 완료0개다.
+- 후속 독립 리뷰9approve/3request-changes가 찾은 테스트 finalizer의 reap 뒤 PGID 신호를 제거했다. 두 회귀는 공통 private IPC·원본 Popen 정리를 사용하며 별도 실제 process 생존과 reap 뒤 살아 있는 자손의 해제를 검증한다. FIFO EOF는 nonblocking read를 먼저 관측하고 집계는 매개변수 없는 ID도 인정한다. 유효19teardown 실패·별도 집계1call 실패와 첫 수정의 Mac19teardown·CI 미사용 import 실패를 모두 보존했다. 6b082a5의 [Actions39001624481](https://github.com/chonamdoo/agents-memory/actions/runs/39001624481)는 Linux 전체2452·별도 설치92·실제 Mac36의 모든 phase와 lint/build/aggregate를 통과했다. 실제 native 보호·운영/평가/출시 승인으로 확대하지 않으며 원래18개는 완료0개다.
+
+
+### 네 번째 리뷰 후 권한·복구와 PR #9 ingress 보안 수정
+
+- Jev 파일 게시를 현재 operator credential/generation과 같은 PostgreSQL clock 권한 경계로 직렬화했다. private state scalar는 strict하게 검증하고 오류 효과는 명시 상태로 선택한다.
+- fenced Jev 선택의 unavailable을 authenticated readiness에도 보존한다. 최초/재개 service install과 fresh host 진단의 durable/native 효과, `CONFIG_UPGRADE_REQUIRED` 전파를 바로잡았다.
+- 직접 부모 선종료 뒤에도 native 진단 자손·pipe를 정리한다. 원격 spool recovery는 pending-only·cycle 간 backoff·중단 가능한 준비/DNS·cycle 범위 해석 재사용을 사용하며 기존 단일 flush owner와 unknown-effect reconciliation을 유지한다.
+- localhost Host는 ingress mode와 무관하게 실제 loopback peer가 있어야 허용한다. 누락/비 loopback peer의 local operator/bearer 우회를 거절하고 정상 loopback·public OAuth 경계를 회귀로 확인했다. README의 원격 PC `service install`을 host bootstrap 앞으로 옮겼다.
+- 현재 설치본의 개인/회사 실제 PG·launchd·fenced readiness·명시 stop/start·capture 보존 smoke를 확인했다. 새 live Jev·구독 모델·native hook 보호·운영 배포의 증거는 아니다. 정확한 전체 gate와 보안 socket 검증 상태는 [검증 기록](docs/verification.ko.md)을 따른다.
+
+
+### 세 번째 공식 리뷰 — body deadline·전환 효과·진단
+
+- POST body 전체15초 deadline·408/not_started·HTTP/1 연결 종료로 slow/stalled upload의 슬롯 점유를 제한했다. 실제 설치 launchd/PG에서 부분 source0·용량 회수 뒤 capture202를 확인했다.
+- Jev 교체 fence 뒤 오류·crash에서 선택 provider를 유지하고 구 worker를 차단한다. 명시 재선택으로 복구하며 durable policy/선택과 unknown credential 폐기·pending intent를 구분한다.
+- service start/stop의 저장된 intent 뒤 native 실패를 not_started로 보고하지 않는다. strict receipt JSON/int UID, 과거 Codex strict의 cleanup-only 로딩, pending 설치 재개 경고를 보완했다.
+- Claude 환경0의 force-on·settings env unknown·진단 프로세스 provenance를 반영했다. doctor는 effective provider를 사용하고 invalid project를 조기에 거절한다. native 상태의 부작용 필드는 관측 단정이 아닌 요청 범위로 변경했다.
+- 이전 공식 wave는3 approve/8 request-changes/1 timeout이었다. 새 집중 실행826 pass/5 fixture fail 뒤 해당5개를 수정·통과했고 설치 byte46·실제 launchd crash/stop/start·PG Jev fence·CLI를 확인했다. 다음 독립 승인·공식 QA/handoff·전체 suite 결과를 대신하지 않는다.
+- age Sigsum positive/변조 negative·Go module h1/license와 공개213 checksum, 격리 Linux canary를 추가 검증했다. 전체 P3·native 보호·법적/출시 승인은 아니다.
+
+### Native 공존 진단과 offline build 준비
+
+- DB/config 없이 실행하는 `native-status`와 명시 `doctor --project`, 신규/동일 `host-install`의 metadata-only 공존 경고를 추가했다. Claude/Codex 설정 증거·storage 잔존·unknown을 분리하며 본문/auth·사용자 설정은 변경하지 않는다.
+- Codex 정상 `config/read`·`hooks/list`로 layer/hook 수를 조회하는 bounded opt-in 진단을 추가했다. native callback·실제 행동 차단·신뢰 승인을 대신하지 않는다. 새 회귀29개와 실제 Codex inventory CLI를 확인했다.
+- source-build backend를 `hatchling==1.32.4`로 고정했다. 공식 standalone Python3.13.16/SQLite3.53.1과 hash 고정 build9/runtime34 wheels로 OS network-deny sdist/wheel build·새 환경 전체 설치·CLI를 실행했고, 누락 wheel은 거절했다. 공개 PG/vector·새 app image·macOS age artifact도 별도 보존하며 offline 설치와 전체 offline 운영/법적 승인은 구분한다.
+- 안정 DB를 read-only transaction으로 관측했다: `0004_operation_successors`, failed6/DLQ6·retirement schema 없음. 현재 값이며 해결·migration 성공으로 표시하지 않는다.
+- 새 source의 첫 전체 실행은1,954 pass/235 fail/1 error였다. 제품 guard를 유지하고 저장소 내부 QA 임시 경로만 바로잡은 뒤 동일236개 실패 항목을 전부 통과했다. Ruff/build도 통과했으며 새 단일 전체-pass 실행으로 표현하지 않는다.
+- Jev deny/agent에서 실제 구독 Opus5.5가 합성 악성 원문/의미 재유입을 discard하고 정상 조건/예외 claim을 최종 MCP context로 재조회했다. 중간 MCP 오류4회와 제한된 oracle·native 소비 미관측을 기록한다. 전체 PMPA·paired 평가·trial·효익의 증명은 아니다.
+
+### 이슈 #5 후속 — strict 설치 안전성과 삭제 재유입
+
+- 이전 checkpoint source의 정확한 `uv run pytest -q`는 **2,161 pass/skip0/518.79초**다. 최초2113pass/48fail의 Homebrew symlink ownership 거절을 보존하고 private regular interpreter·정상 ownership·isolated source와69개 실패 표면을 먼저 검증했다. 제품 guard·Homebrew 권한은 변경하지 않았다.
+
+- Codex 신규 `--strict`는 실제 native 보호 실패 상태에서 성공처럼 등록하지 않고 `HOST_STRICT_UNSUPPORTED/not_started`로 설정 쓰기 전에 거절한다. 자동 advisory downgrade는 없으며 명시 advisory/MCP·기존 owned 정리는 유지한다. Codex native 보호 구현 완료로 표시하지 않는다.
+- 삭제 identity/lineage floor와 동일 본문의 새 origin 재판단을 문서화했다. retract/purge 두 회귀와 새 설치 CLI/advisory MCP→HTTP/PG에서 기존 origin 비부활·옛 본문 부재·재판단 전 비노출·새 claim/source만 citation을 확인했다. R05의 누락 비교·잘못된 reference·비독립 근거 오류를 구분했다.
+- [설치·업그레이드·장애 복구 runbook](docs/release-runbook.ko.md)을 추가했다. 문서 절차와 실제 안정 cutover·OS login/reboot/sleep·restore 수행 증거를 혼동하지 않는다.
+- app+runtime34 wheels를 hash 필수·index/cache 비활성 local 입력으로 설치하고 `pip check`·isolated Python43파일 일치를 확인했다. lock CycloneDX와 실제 target35 distributions의 license-file inventory를 준비했다. Python/PG/tools/age/OS·build backend·다른 ABI·license/배포 승인까지 포함한 offline release 완료는 아니다.
+- 이 checkpoint source는 `744b84b1…297f15`다. 앞선2,164 pass는 이전 source 이력이며 해당 controller 실행·남은 공식/native/trial gate는 [검증 기록](docs/verification.ko.md#이슈-5-후속--승인-없는-구현과-설치-소비자-검증)을 따른다.
+
+
+### 두 번째 공식 리뷰 — Jev 재시도·발급 복구·readiness
+
+- Jev와 key 검증의 실제 HTTP 시도마다 현재 허가를 확인한다. backoff 중 철회·provider/policy revision 변경 뒤 새 전송을 차단하며 이미 admission된 요청의 회수를 주장하지 않는다.
+- deny 중단 후 reallow는 agent 전환·폐기를 먼저 완결한다. 새 credential의 발급 전 private intent와 PG clock 직렬화로 lost-response/미확정 commit을 복구한다. 손상 provider는 명시 agent 복구를 요구한다.
+- 익명 readiness도 삭제 barrier를 유지하되 Store 소유의 단일 live 검증을 공유한다. 실제 HTTP timeout8건·검증1개·health 유지·해제 후 DB readiness 회복과 새 wheel의 합성 live Jev remember/active claim을 확인했다.
+- effective 허가와 configured provider를 구분하고 project add의 후속 grant 실패는 committed로 보고한다. bootstrap principal 용어와 [원래 Shorts 분석의 출처 연결](docs/research/2026-10-16-shorts-lTja2ZxXYyI.ko.md)을 보완했다.
+- 같은 source에서 Ruff/build와 **정확한 `uv run pytest -q`:2,164 pass/skip0**를 확인했다. QA interpreter·isolated MCP project 설치 prerequisite를 고친 과정의 실패 이력은 보존했다. 새 noneditable wheel의 실제 구독 Claude/Codex/OMP도 deny/agent·키 없음에서 원문 판단·저장·같은 claim/예외 최종 context를 통과했다.
+- 두 번째 공식 리뷰의 request-changes를 controller 실행으로 승인으로 바꾸지 않았다. Codex native trust/callback·실제 보호·수정 후 승인 리뷰·공식 QA/handoff·trial·runtime 게시는 여전히 별도 gate다.
+- 재개 검증용 subscriber native 등록·credential·private trace/project와 QA env/cache를 정리하고 owned service/PG를 중지했다. 정상 native 승인 재검증용 최소 private fixture는 남아 있으며 전체 철거·운영 cutover 완료를 주장하지 않는다.
+
+### 공식 리뷰 후 deadline·경합·운영 복구 수정
+
+- HTTP DNS/connect/TLS/send/response 전체 deadline과 종료·회수 가능한 resolver를 적용했다. unknown mutation은 재전송하지 않는다. remote recovery20초 cycle budget과 private spool 단일 flush owner를 추가했다.
+- launchd 설치/삭제 durable intent·중단 후 정상 명령 재개·disabled 보존을 구현했다. Jev setup/deny/provider/credential retirement와 실제 publication commit의 cross-process 경합을 막고 미완료 revoke intent를 보존한다.
+- bootstrap identity/권한 경계, public operator 거절과 business route의 인증 전 journal sweep 제거, remote CA commit rollback, MixedCase Unix socket 및 Codex context 미출력 lifecycle metadata를 수정했다. 익명 readiness의 검증 누적은 위 두 번째 리뷰에서 별도로 해결했다.
+- 이 첫 fix-loop 당시 직접 실행은 Ruff/build 성공·전체2,143 pass/skip0, 실제 HTTP/TLS16경우·launchd crash intent·새 개인/회사 HTTPS package·noneditable wheel·실제 구독 Claude/Codex/OMP MCP 판단/저장/최종 read다. 후속 source의 새 통과로 재사용하지 않으며 [관측과 한계](docs/verification.ko.md#공식-리뷰-후-fix-loop--development20261015-131245)를 구분한다.
+- **Codex strict native 보호는 아직 입증되지 않았고 유효 patch의 실제 변경 실패를 기록했다.** 합성 파일은 원복했다. 설치/MCP 성공을 native 첫 행동 차단으로 취급하지 않으며 native 승인이나 workflow guard를 우회하지 않는다. fresh 공식 review/QA/handoff·전체 acceptance·trial·runtime 게시는 미완료다.
+
+### 로컬·클라우드 원격 경로와 독립 판단 정책
+
+- 개인/회사 × 로컬/클라우드 × Jev 허용/불가의 독립 축을 유지한다. 개인·회사 로컬은 별도 `egress-policy.json` default-deny, 명시 allow+확인과 provider 선택·키 검증을 분리했다. deny는 먼저 저장하고 agent 전환·worker credential 폐기, 요청·응답·게시 revision fence를 적용한다. 키·기존 personal 설정만으로 허가를 추론하지 않는다.
+- per-user macOS launchd install/start/stop/status/uninstall, 로그인 시작 등록·비정상 종료 재시작·durable manual stop을 추가했다. native 제어와 DB-inclusive `/readyz`가 하나의 전체 기한을 공유하며 살아 있는 DB-unready 서비스를 죽이지 않는다. PostgreSQL/Docker 자체는 관리하지 않는다.
+- provider와 독립적인 bounded capture spool recovery가 새 host event 없이 준비 회복 후 전송한다. 기존24시간 TTL·물리 상한·stable key/unknown-effect 계약을 유지하며 owned intermediate0755/leaf0700 설치 layout을 안전하게 처리한다. operator-only body-free 상태, 실패 격리된 worker shutdown·application drain·DB close를 추가했다.
+- claude-mem OMP/Claude/Codex의 실제 구현·merged/open 수정과 #5의86개 후보를 [OSS 연구](docs/research/2026-10-15-oss-local-runtime.ko.md)에 정리했다. deadline·실패 격리·production pipe·설치 소비자·비공허 native gate 검증 패턴만 기존 계약에 독립 구현하며 새 memory engine/provider·transcript 수집을 도입하지 않는다.
+- 새 정책에서 개인/회사 × 로컬/클라우드 실제 Jev remember·원문 span·재조회를 합성 데이터로 확인했다. 다운로드 원본 키는 프로그램만 읽고0600 서비스 사본을 사용하며 assistant/로그/GitHub에 값을 노출하지 않는다. 구독 Claude/Codex/OMP의 실제 MCP 판단·저장·동일 claim 재조회 및 no-call 관측 범위는 [검증 기록](docs/verification.ko.md)에 구분한다. 현재 작업트리를 PR #9 remote runtime·공식 QA·일반 출시로 표현하지 않는다.
+- 메모리 건강 관리 제안을 실제 native Opus5.5/Sol6.1로 독립 리뷰하고 최초 과장을 반증·정정했다. [건강 관리 리뷰](docs/research/2026-10-15-memory-health-adversarial.ko.md)는 provenance/Accept-Reject/coalesce/retention·구형 DB/backup의 영향과 권한을 구분한다. [DB 성장 조사](docs/research/2026-10-15-oss-db-growth.ko.md)는 #5 후보의 실제 merged 수정·코드·기본값·재개/삭제 위험과 별도 PG/SQLite 합성 실험을 기록한다. Reject가 즉시 recall 제외·철회가 아니고 post-backup disposition rollback은 별도 요구임을 현재 문서에 명시했다. health subsystem·자동 망각·추가 전송은 도입하지 않았다.
+- strict remote profile·verified HTTPS/public CA·전체 body deadline·현재 PG bearer/OAuth 매핑·one-binding bootstrap·DB 비밀 없는 PC host receipt와 remote client supervisor를 추가했다. 정확한404/not_started session만 안전하게 재초기화하며 unknown write 재전송·원격 authority 자동 기동은 하지 않는다.
+- 실제 실패를 수정했다: unsupported SQLite의 WAL 쓰기 전 차단, CLI closed-pipe 성공 exit, Python3.13 symlink-loop와 missing-cwd 분류, custom Claude native 경로의 clean-env 보존, launchd 비동기 bootout 뒤 즉시 start race, SQLAlchemy Unix DSN host decode. 원문/권한 guard를 완화하거나 기억 없음으로 숨기지 않았다.
+- Caddy shared-network-namespace의 app crash 후 영구 HTTPS 장애를 재현해 독립 private-network 컨테이너와 exact proxy IP 신뢰로 전환했다. non-root/read-only·backend 미공개·proxy의 app secret/journal/socket 미mount를 유지하고 자동 HTTPS+DB 회복을 확인했다. pgBackRest/restic/Headscale·외부 삭제 witness·실제 cloud 계정 provisioning은 추가하지 않았다.
+- cloud 구현·합성 검증은 최신 지시로 trial과 별도 진행한다. 실제1–2주 trial·전체 #5 acceptance·fresh 공식 review/QA/handoff·publication gate와 실제 corpus 승인 경계는 유지한다.
+
+
+### 이전 PR #8 판단 provider 선택 (agent | Jev)
+
+아래는 당시 개인 전용 구현·검증 이력이다. 현재 허용 정책은 위의 운영 주체 독립 default-deny 계약을 따른다.
 
 - 원문 선택·관계 정리 판단 provider를 `agent`(기본, 지금 쓰는 coding agent)와 `jev`(TypeSafe Jev, 개인 배포 전용) 중에서 고른다. `init --judge`(개인 터미널에서는 대화형 질문)로 설치 때 정하고 `judge set agent|jev`·`judge status`로 언제든 바꾸고 확인한다. MCP는 `memory_inspect(ref="judge")` 조회만 하며 provider를 바꿀 수 없다. relevance는 provider와 무관하게 coding agent가 판단한다.
 - provider·키·worker token은 Settings·DB가 아니라 `state_dir/judge`의 0600 파일에 둔다. Settings digest·init intent·host receipt·backup/restore 형식은 바뀌지 않는다. 키는 `--key-file` 또는 화면 표시 없는 입력으로만 받고 합성 질문으로 검증한 뒤 저장하며, 응답에는 HMAC fingerprint만 나온다. 회사 모드는 설정과 worker 실행 모두에서 `JUDGE_PROVIDER_FORBIDDEN`이다.

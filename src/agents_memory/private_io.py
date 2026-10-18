@@ -24,20 +24,32 @@ def sync_file(fd: int) -> None:
                 raise
 
 
-def private_read(path: Path, maximum: int, *, private: bool = True) -> bytes:
+def private_read(path: Path, maximum: int, *, private: bool = True, directory: int | None = None) -> bytes:
+    """A supplied parent descriptor confines a stable, single-link input to one leaf."""
+    if directory is not None and (path.is_absolute() or len(path.parts) != 1 or path.name in {"", ".", ".."}):
+        raise DomainError("PATH_DENIED", "Descriptor-relative input must name one leaf")
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
     except OSError:
         raise DomainError("PATH_DENIED", "The input is unavailable") from None
     try:
         info = os.fstat(descriptor)
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or (private and info.st_mode & 0o077) or info.st_size > maximum):
+                or (private and info.st_mode & 0o077) or info.st_size > maximum
+                or (directory is not None and info.st_nlink != 1)):
             raise DomainError("PATH_DENIED", "The input must be an owned permitted regular file")
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
             raw = stream.read(maximum + 1)
         if len(raw) > maximum:
             raise DomainError("INPUT_TOO_LARGE", "The input exceeds its bound")
+        if directory is not None:
+            after = os.fstat(descriptor)
+            named = os.stat(path, dir_fd=directory, follow_symlinks=False)
+            if (len(raw) != info.st_size or
+                    (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                    or (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino)):
+                raise DomainError("PATH_DENIED", "The pinned input changed during its bounded read")
         return raw
     finally:
         os.close(descriptor)

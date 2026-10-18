@@ -77,3 +77,7 @@ class CleanupScheduler:
                 return {"local_drained": False, "scheduling": self._scheduling,
                         "durable_work_recoverable": True}
         return {"local_drained": True, "scheduling": False, "durable_work_recoverable": True}
+
+    async def wait_closed(self) -> None:
+        if self._task is not None:
+            await asyncio.shield(self._task)

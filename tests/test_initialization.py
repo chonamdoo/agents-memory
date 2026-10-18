@@ -612,3 +612,16 @@ async def test_completed_format_one_does_not_adopt_foreign_current_authority(
         await initialize_deployment(**requested, resume=True)
     assert denied.value.effect == EffectState.NOT_STARTED
     assert snapshot(arguments) == before
+
+
+@pytest.mark.parametrize("socket_path", ["/tmp/MixedCaseSocket", "/tmp/Folder:WithColon"])
+def test_migration_keeps_case_sensitive_encoded_socket_authority(socket_path):
+    from urllib.parse import quote
+
+    from agents_memory.migrations import _arguments
+
+    dsn = "postgresql://migrator:synthetic@" + quote(socket_path, safe="") + ":5432/postgres?schema=fixture_schema"
+    url, arguments = _arguments(dsn)
+    assert arguments["host"] == socket_path
+    assert arguments["server_settings"]["search_path"] == '"fixture_schema"'
+    assert url.startswith("postgresql+asyncpg://")

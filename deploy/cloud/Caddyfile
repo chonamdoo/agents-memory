@@ -1,0 +1,24 @@
+{
+	admin off
+	persist_config off
+	skip_install_trust
+}
+
+https://{$AM_PUBLIC_HOSTNAME} {
+	route {
+		request_header -Forwarded
+		request_header -X-Forwarded-*
+		request_header -X-Real-IP
+		request_header -X-Original-Host
+		request_header -X-Original-Proto
+		reverse_proxy app:{$AM_BACKEND_PORT} {
+			header_up -Forwarded
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Real-IP
+			header_up -X-Original-Host
+			header_up -X-Original-Proto
+			header_up X-Forwarded-Proto https
+		}
+	}
+}

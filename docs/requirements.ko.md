@@ -1,6 +1,8 @@
 # 요구사항·완료 계약
 
-상태: 개인·회사 공통 coding-agent 판단의 제품 요구 계약. 이전 Qwen/full-semantic 및 회사 lexical/entity 실행 결과는 해당 historical run의 [검증 기록](verification.ko.md)에만 적용한다. 현재 전환의 runtime/native proof는 별도 실행해야 하며 요구 표·시나리오 정의를 완료 주장으로 사용하지 않는다.
+상태: **로컬 기본 구성과 클라우드 원격 경로를 작업트리에 구현하고 격리 합성 검증 중**이다. 배포 위치·개인/회사 운영·Jev 허가/명시선택은 독립 축이며 [12개 사례](../README.md#배포-위치--운영-주체--jev-정책)를 유지한다. 새 정책의 실제 Jev vendor/API와 구독 coding-agent 실행은 검증 기록의 배포·모델·범위에만 적용한다. PR remote 코드·병합/운영 설치·공식 QA·elapsed trial·일반 출시와 별개다. 최신 cloud 개발 지시는 실제 계정 provisioning·실제 corpus 저장/이동·egress나 publication을 승인하지 않는다.
+
+이 문서는 공통 coding-agent 판단의 제품 요구 계약이다. 실행 결과는 해당 run의 [검증 기록](verification.ko.md)에만 적용한다. 이전 Qwen/full-semantic 및 회사 lexical/entity 기록을 다른 실행의 증거로 재사용하지 않으며 요구 표·시나리오 정의를 완료 주장으로 사용하지 않는다.
 
 ## 사용자 요구
 
@@ -15,20 +17,20 @@
 | U07 | 정확하고 일관된 호출 | 한 core handler, strict schema, 인증 principal·binding, 의미 idempotency |
 | U08 | 세션마다 불필요한 context 방지 | 연결 시 corpus·규칙 본문 0, 작은 고정 catalog, 요청별 bounded selection |
 | U09 | MCP 2 형태 | 공식 SDK의 modern protocol 실제 호출. legacy 동일 handler 경로 별도 확인 |
-| U10 | Python 적합성 확인 | Python 3.12·공식 SDK2 실제 wire 호출. 제품 runtime 증거는 probe와 분리 |
-| U11 | 로컬 우선 | cloud memory 없이 실제 PG·같은 MCP source_selection/claim_judgment/relevance·정정·다음 read를 실행. 기본 provider에서 서버 모델 없음(개인 opt-in Jev는 U32) |
-| U12 | 1–2주 직접 사용 후 cloud | architecture 10절의 고정 paired memory-on/off 제한 trial. 시작·지표·중단·통과 조건 제공, elapsed/효익 조작 금지 |
-| U13 | 로컬·cloud 동일 설계 | core·schema·API·rule semantics 유지. 배포·인증·network 경계만 차이 |
-| U14 | 회사 정보는 외부 memory 저장 불가 | 회사·개인·고객 deployment 분리. 회사→개인/cloud sync 없음 |
-| U15 | 개인도 보안 필요 | loopback·인증·권한·egress·secret·backup·삭제·복구 정책 동일 core |
-| U16 | 회사 팀 Claude/Codex 사용 | 현재 coding-agent의 모델 처리와 외부 memory 저장 허가를 구분. 구독을 background API 허가로 간주하지 않음 |
-| U17 | strict no-egress 회사도 고려 | 허가된 coding-agent 실행 경로·OS/network 경계. 서버 inference/download/provider fallback 없음 |
+| U10 | Python 적합성 확인 | Python≥3.12·공식 SDK2 실제 wire 호출. PC spool의 patched SQLite runtime 검사·unsafe 버전의 쓰기 전 거절. 제품 runtime 증거는 probe와 분리 |
+| U11 | 로컬 환경 기본 구성과 운영 복구 | loopback agents-memory·PG18·host·stdio. 개인/회사 기본 agent의 실제 PG/MCP 판단과 macOS 서비스 복구·중지·DB readiness·capture 자동 전송을 검증. native 등록과 실제 로그인 관측 구분, Jev 새 live API는 별도 U32 |
+| U12 | 1–2주 직접 사용 trial | architecture10절의 frozen paired memory-on/off trial은 미시작. 로컬/클라우드 기능 구현·합성 검증과 별도로 실제 기간·기록·중단·판정 조건 준수, elapsed/효익 조작 금지 |
+| U13 | 개인·회사 클라우드 원격 경로 | 동일 core/schema/API/rule, verified HTTPS·bearer/OAuth·현재 PG 권한·one-binding bootstrap·PC remote profile·capture recovery 구현. source/API/native/배포 proof를 구분하고 실제 계정 provisioning·corpus 이동은 별도 |
+| U14 | corpus별 저장·외부 전송 허가와 격리 유지 | 회사·개인·고객 corpus를 독립 deployment로 격리하고 각 corpus의 명시적 허가 준수. 다른 deployment로의 자동 동기화·무승인 이전 금지. 승인된 회사 클라우드는 회사 배포이며 “회사”라는 명칭만으로 외부 memory 저장을 일괄 금지하거나 허용하지 않음 |
+| U15 | 배포 위치·운영 주체·Jev 허가/선택의 독립 축 | 12개 사례. 개인/회사 × 로컬/클라우드 모두 default-deny, allow와 provider 선택 분리. 실제 Jev·구독 agent·no-call 관측 범위 및 미검증 행을 사례별 명시 |
+| U16 | 구독 coding-agent 판단과 허가 분리 | Jev 불가·미설정·미선택이면 Claude Code·Codex·OMP 현재 세션이 MCP inspect → source_selection·관계 판단 → record. 서버가 구독을 API 키처럼 쓰지 않음. coding-agent 모델 처리·memory 저장·Jev 외부 전송 허가는 별개이며 자동 fallback이 아님 |
+| U17 | 명시 egress 정책·strict no-egress | 개인/회사 모두 허가 누락·deny 시 Jev 키 검증/전송/게시 차단, allow만으로 provider 변경·네트워크 호출 없음. 허가된 coding-agent 경로·OS/network 경계는 별도이며 자동 fallback 없음 |
 | U18 | review·컨벤션이 skill처럼 갱신 | candidate→exact revision 승인→active rule→조건별 선택→정정·철회 |
 | U19 | 적용 범위 정확히 세 가지 | 이 로컬 프로젝트 / 내 프로젝트들 / 팀 또는 프로젝트 공유 |
 | U20 | 개인 프로젝트는 팀 배포 불필요 | local-project 승인·적용 가능. team/Git/PR 강제 없음 |
 | U21 | 팀 공유도 root 규칙 비대화 금지 | root AGENTS.md·CLAUDE.md·eager rulebook에 full body/catalog 설치하지 않음 |
 | U22 | PR334·341 및 기존 논의 고려 | 이전 source 조사·유효 contract를 재사용하되 AF core cutover·obsolete 경로는 만들지 않음 |
-| U23 | 제공 자료·논문·GitHub·영상 고려 | frozen research provenance 유지. CueFinder 앱 codegraph 재사용 주장은 제외 |
+| U23 | 제공 자료·논문·GitHub·영상 고려 | frozen research provenance 유지. 요청 [Shorts 원문 설명·단독 분석과 관측 한계](research/2026-10-16-shorts-lTja2ZxXYyI.ko.md)를 별도 연결하며 전체 재생·embedding 실측 완료를 주장하지 않음. CueFinder 앱 codegraph 재사용 주장은 제외 |
 | U24 | SIE 포함 OSS 참고 | 버전·source pin·license·보안·채택/참고/제외 이유 기록. SIE v1 기반을 SDK2처럼 사용하지 않음 |
 | U25 | DB·검색·queue·모델·ops까지 비교 | 실제 source로 정본·queue owner·모델 license·운영 경계 선택 |
 | U26 | 실제 두 모델 parallel 적대적 review | native gpt-6.1-sol·claude-opus-5-5 xhigh 설정, 동일 입력 hash·overlap·exit·output 검증 |
@@ -37,24 +39,28 @@
 | U29 | 최신 Agent Flow 설치 | 고정된 최신 main의 실제 version·설치 결과. 기존 global tool은 보존 |
 | U30 | 프로젝트 성질에 맞춘 AF 설정 | Python, local architecture, local verification gates, 요청된 두 native reviewer |
 | U31 | 최종안을 Agent Flow로 실행 | 실제 run·isolated worktree·phase artifact·review·QA·local handoff. PR/merge는 별도 사용자 승인 |
-| U32 | 판단 provider 선택 | 설치(`init`) 때 agent/jev 선택, operator CLI로 언제든 변경·재시작 없이 반영. jev는 개인만·회사 거절, 키는 0600 사본·argv/MCP/로그 미노출, MCP는 조회만, 자동 fallback 없음, 기록은 agent와 같은 검증 |
+| U32 | 판단 provider 선택·동일 검증 | 두 mode 모두 allow·egress 확인·유효 키·명시선택 때만 Jev worker, 나머지는 구독 coding-agent MCP. 동일 span/revision/권한/삭제/snapshot 검증과 request/response/publication fence. MCP 조회만·키0600·값 미노출. 새 정책의 실제 vendor proof를 옛 PR 이력과 구분 |
+| U33 | 구현·증거·실배포 구분 | 로컬/remote 구현과 격리 TLS/PG/vendor/native 실행, fresh 공식 review/QA/handoff, 실제 trial, 계정 provisioning·외부 witness·corpus 승인·publication을 별도 기록. cloud 개발은 최신 지시로 trial과 독립 진행하되 운영 승인으로 확대하지 않음 |
+| U34 | macOS 자동 시작·장애 복구·명시 중지 | per-user launchd RunAtLoad·abnormal restart. DB 왕복 ready 후 연결·새 event 없는 bounded spool 전송·unavailable/지원 strict fail-closed. stop은 disabled를 먼저 저장하고 native unload를 bounded 확인, client/install/recovery 부활 금지. remote는 PC recovery만 관리 |
+| U35 | 건강 관리·DB 비대화 제안 적대적 리뷰 | 원래 조사 결정: provenance/Health Audit/Accept-Reject/coalesce/retention·구형 DB/backup·참고 OSS의 성장 대책을 비교하며, 당시 리뷰만으로 새 subsystem·자동 삭제·전송·승격을 승인하지 않음. 이후 명시 구현 지시는 U36으로 구분 |
+| U36 | 빠진 네 메모리 건강 관리 경로 구현 | 최신 사용자 지시로 명시 코드 anchor와 변경 관측, 이미 관측한 세션 구간의 사후 재검토, 관련성/정확성/최신성 분리와 평가 연결, exact revision별 인간 Accept/Reject를 구현. health는 기본 비활성이며 권한·현재 manifest·버전 검사를 유지. source·설치 wheel health 및 전체 평가 통합 smoke의 engineering 성공은 검증 기록의 exact source·범위에만 적용한다. 새 whole-source 공식 review/QA는 미완료이며 실제 native·운영·human gold·trial·출시 승인과 별개 |
 
 ## 추가 필수 불변식
 
 | ID | 계약 | 관측 가능한 실패 사례 |
 |---|---|---|
 | I01 | source·claim·조건·부정·시간·entity·evidence graph | 조건이 다른 주장을 합치거나 단순 latest-write로 삭제하지 않음 |
-| I02 | capture→원문 inspect→source_selection→claim_judgment→candidate manifest→전체 relevance→정정→next use | 개인·회사 동일한 실제 PG/MCP loop. server LLM·lexical 자동 판단·echo/mock를 대체 증거로 쓰지 않음 |
+| I02 | capture→원문 inspect→source_selection→claim_judgment→candidate manifest→전체 relevance→정정→next use | runtime `mode=personal`·`mode=company`에서 동일한 기본 `agent` provider의 실제 PG/MCP loop. server LLM·lexical 자동 판단·echo/mock를 대체 증거로 쓰지 않음 |
 | I03 | 구형 model work retirement와 pending successor | 원래 job/오류/attempt/generation/시간 audit 보존. Qwen 재시도·성공 relabel·실패 삭제 금지 |
-| I04 | caller admission와 게시/최종 전달 모두 eligibility 검사 | source/claim revision·credential/grant·binding·contract·snapshot·deadline·deletion 변경 후 stale 판단/전달 거절. 구형 NULL request_digest도 DTO 내부 오류 대신 ADMISSION_STALE/not_started이며 새 inspect로 재개 |
+| I04 | caller admission와 게시/최종 전달 모두 eligibility 검사 | source/claim revision·credential/grant·binding·contract·request_snapshot/current policy·rejection/review 전체 dependency·health/code version·deadline·deletion 변경 뒤 stale 판단/전달 거절. 구형 NULL request_digest/health_manifest는 ADMISSION_STALE/not_started이며 과거 row를 삭제·자동 backfill하지 않고 새 inspect로 재개 |
 | I05 | logical retract·local drain·provider unknown·physical purge 분리 | cancel/소켓 종료를 provider erasure라고 하지 않음 |
-| I06 | causal read와 accepted/indexed 분리 | pending을 빈 corpus나 queryable 완료로 표현하지 않음 |
+| I06 | causal read와 accepted/indexed 분리 | pending을 빈 corpus나 queryable 완료로 표현하지 않음. coverage·stats·pending 완료·health 분모는 현재 request_snapshot/policy/review dependency 자격을 공유하고 unrelated 유효 coverage는 보존 |
 | I07 | idempotency payload fingerprint | 같은 key·다른 payload conflict. 응답 유실 retry도 하나의 operation |
 | I08 | principal·realm·binding 신뢰 경계 | body/CWD/branch/MCP session을 authority로 쓰지 않음. 연결된 MCP는 리더/워크트리·호출 CWD와 무관하게 같은 credential/project binding으로 동작. 설치 소유권·자동 capture/hook 경로 검사는 별도 유지 |
 | I09 | 전체 입력 dependency lineage | 인용하지 않은 입력도 철회에 영향을 줌 |
 | I10 | source identity·spool replay·삭제 floor | 과거 spool/import/backup으로 철회 자료가 부활하지 않음 |
 | I11 | PG restore 밖 본문 없는 journal | 최신 head 확인 불가·reconciliation 미완료 때 읽기 차단 |
-| I12 | approval exact digest·target-set revision | body/selector/예외/범위 변경 후 이전 승인 재사용 거절. 기억 판단과 required-rule 승인은 별개 |
+| I12 | approval exact digest·target-set revision | proposal ref 하나로 bounded continuation의 전체 UTF-8 body·예외·selector·required·exact source revision manifest·digest를 승인 전에 읽음. 페이지/승인 사이 권한·입력 변경 거절. body/범위 변경 후 옛 승인 재사용 금지. 제한된 shared-rule projection은 full approval inspect가 아니며 기억 판단과 required-rule 승인은 별개 |
 | I13 | candidate와 active rule 분리 | 모델 confidence·human=true·MCP hint가 활성화 권한이 아님 |
 | I14 | 선택·전달·model-input·준수·enforcement 구분 | receipt만 기록하고 첫 보호 행동을 allow하지 않음 |
 | I15 | child·resume·compact·fork context generation | 보존 확인 불가 시 새 generation, 다른 agent의 receipt 재사용 금지 |
@@ -65,20 +71,23 @@
 | I20 | local restore·토큰 폐기·명시 migration | current auth·0006 forward/old archive floor·원래 private config/서명/token 보존. 실제 format-one init resume와 exact-file SHA256 명시 model-intent retirement·중단 재개. 취소된 DDL thread 종료까지 exclusive lock 유지, unknown은 request/operator-bound durable fence와 명시 복구. migration/restore intent 구분·보존 원본과 exact published target 재검증. 구형 route disable·원래 효과 unknown, live 실행 증거는 별도 |
 | I21 | 운영 보장의 한계 | 같은 UID unrestricted agent를 인간 승인으로 포장하지 않음. 별도 identity/approver는 선택적 공유 규칙 활성화 경계이며 회사 기억판단의 별도 승인 절차가 아님 |
 | I22 | proof 층위 분리 | source 사실·설계 선택·실행 결과·unverified·trial pending 별도 표기 |
-| I23 | 개인·회사 단일 `agent_judged` capability | `full_semantic`/company-only `lexical_entity` 기본·selection-policy approve/enable 제거. 모델-derived legacy claim은 원래 provenance/awaiting_revalidation 유지 |
+| I23 | runtime `mode=personal`·`mode=company`의 단일 `agent_judged` capability | 배포 환경 분류와 다른 축. `full_semantic`/company-only `lexical_entity` 기본·selection-policy approve/enable 제거. 모델-derived legacy claim은 원래 provenance/awaiting_revalidation 유지 |
 | I24 | capture ≠ 판단 ≠ candidate | capture는 `captured`, 판단은 `selection_recorded`, grounded 게시만 `candidate_ready`. discard/reject는 삭제가 아니며 오류는 판단 label이 아님 |
 | I25 | saved candidate manifest의 두 호출 relevance | 첫 응답은 전체 candidate IDs/ref·admission·required rules. wire 예산 부족은 선택적 preview만 축약/partial, ID 삭제 금지. 둘째는 같은 admission/request·전체 exact IDs의 relevant/irrelevant/reason. 후보0이면 승인 optional rule도 전달 |
 | I26 | 관계는 명시 원문 근거·complete manifest | claim_ids 공동20개·기존 logical 관계128 ref/요약8개·overflow 명시. 각 judgment의 독립 전체 dependency/edge를 보존하고 적격 logical read만 중복 제거. 공개 duplicate 정규화·조건/부정/예외 보존 |
 | I27 | bounded cleanup은 pending scheduling뿐 | transaction당 pending32·고정 삽입위치20개 bucket4·scope group32와 durable progress/more. 현재 manifest·pending ID·관계0 dependency·held 보존. non-deriving 철회는 extraction floor 없이 uncovered 원문 재개. server LLM 없음 |
 | I28 | 거절 이유와 재진입 방지 | 관련 색인 후보 최대8개만 필수 비교, 선택적 history/review와 현재 fingerprint 검사. 무관한 새 history로 전체 재검토 강제 금지. exact evidence 차단은 색인과 독립·scope/파생 target privacy 선검사. 새 독립 근거 reopening만 허용하며 의미 판단은 agent |
-| I29 | agent_note는 독립 grounding 아님 | raw log/inspection은 보존하되 판단 admission·신규 pending·독립 backlog·미판단 coverage를 만들지 않음. note/feedback reason만 남으면 partial 원인이 아니며 미해결 human·일반 assistant·tool·document는 여전히 반영. note-only remember·memory echo는 새 support가 아니며 과거 note discard로 인간 근거를 오염시키지 않음 |
+| I29 | agent_note는 독립 grounding 아님 | raw log/inspection은 보존하되 신규 source-selection admission·독립 capture backlog·미판단 source coverage를 만들지 않음. note-only remember·memory echo는 새 support가 아니며 note discard로 인간 근거를 오염시키지 않음. U36의 기존 claim/source 재검토 후보 연결은 새 독립 근거가 아니고 feedback reason도 agent_note 그대로. 현재 적격 human·일반 assistant·tool·document와 capture gap은 계속 partial에 반영 |
 | I30 | 비밀은 저장·digest 이전 거절 | generic SOURCE_SECRET_REJECTED/not_started/422·body-free durable host gap. legacy outbox/quarantine 모두 scrub, 앞 transient 실패로 뒤 secret 잔존 금지. local invalid 판정은 읽은 key+digest+payload가 같은 row에만 적용하며 새 durably_spooled replacement와 gap/error 집계를 오염시키지 않음. body/key/digest 노출·원문 rewrite 금지 |
 | I31 | hostile exact-source와 hostnative 중복 시나리오 | architecture 9절 PMPA·secret/content reentry·native memory 공존 expected result를 실제 executor별로 확인. source-only/SDK/native proof 혼합 금지 |
-| I32 | trial/health/publication 범위 분리 | 1–2주 trial은 정의만, 시작·측정 효익 주장 없음. health metrics·native 설정 변경·commit/push/PR/merge는 별도 범위/승인 |
+| I32 | trial/health/publication 범위 분리 | trial 미시작·효익 미측정. U35의 과거 조사와 U36의 최신 제한 구현 승인을 구분. health 정책·workspace·Jev 판단/egress는 각각 명시 권한이 필요하며 구독 agent를 background API로 깨우지 않음. 새 metrics/telemetry·전면 세션 수집·자동 삭제/승격·미승인 전송은 켜지 않음. checkpoint commit/push/PR와 final commit·merge·출시는 별도 |
 | I33 | 사라진 MCP 세션의 안전한 복구 | 재시작·유휴 만료·세션 수 초과 뒤 요청은 SESSION_NOT_FOUND/404/not_started, 다른 credential 세션은 SESSION_CREDENTIAL_DENIED/403. relay는 모든 필드가 검증된 SESSION_NOT_FOUND+not_started에서만 재initialize 후 원 요청을 1회 재전송하며 unknown 효과는 재전송 금지. 재연결 실패·다른 protocol version 협상 시 요청을 보내지 않고 SESSION_NOT_FOUND/not_started |
 | I34 | 하나의 DB 지원 계약 | serve·migrate·backup·restore 모두 PostgreSQL 18.x·pgvector ≥0.8.7·같은 major PG 도구. archive는 live 버전 기록, restore는 같은 계약으로 검사. 위반은 journal reconcile·DDL·restore fence 전 DATABASE_VERSION_UNSUPPORTED/not_started(backup은 staging·recipients 전) |
 | I35 | 원문 창당 하나의 판단 승자와 응답 유실 재시도 | 같은 source revision·contract·snapshot의 겹치는 창을 잡는 active complete remember/discard는 하나뿐(SELECTION_ALREADY_RECORDED, review 예외, 거절·파생 floor 우선). 게시한 claim이 모두 철회된 remember는 창을 놓으며 파생 floor가 새 claim을 막음, claim 없이 기록한 remember는 창을 계속 잡음. 같은 admission·같은 판단의 새 key 재시도는 원래 operation, 다른 판단은 ADMISSION_CONSUMED. receipt digest 불변 |
 | I36 | 과부하의 not_started 거절 | 동시 요청 상한 초과는 인증 전 SERVICE_BUSY/503, pool 획득 기한 초과는 DATABASE_BUSY/503 모두 not_started. 인증은 전역 am_clock 잠금을 기다리지 않음 |
+| I37 | recovery와 명시 stop의 우선순위 | disabled intent를 native stop 전에 영속화. shared healthy 조회·exclusive mutation, 시작 전에 intent 재검사. stop 직후 native drain 중 상태를 즉시 종료로 위장하지 않음 |
+| I38 | readiness와 미확정 쓰기 | process가 아니라 DB·identity·삭제 barrier 확인. native와 HTTP 전체 deadline 공유. unavailable를 empty로 바꾸지 않고 unknown-effect business write를 재전송하지 않음 |
+| I39 | shutdown failure isolation | recovery/judge/scheduler/application의 false drain을 버리지 않고 미완료로 기록. outstanding work의 소유권과 eventual join을 보존한 뒤 DB close를 시도하며 다른 cleanup·원래/동시 실패를 잃지 않음. 노출 진단은 bounded stage/code/type이며 raw message·traceback은 내보내지 않음. grace/deadline 증가로 미완료를 성공 처리하지 않음 |
 
 `source_selection.coverage="complete_window"`는 판단한 원문 창의 계약이다. native capture의 전체 session·human-presence 관측 gap은 판단 완료로 없어지지 않으며, unclassified0이어도 incomplete/partial이 남을 수 있다. OMP preparation secret 거부는 source digest 이전에 body-free gap으로 durable하게 기록하고 기존 capture/offer 권한·generation은 전진시키지 않는다.
 
@@ -86,4 +95,6 @@ Spool의 local invalid 판정뿐 아니라 늦은 remote ACK·확정 거절도 �
 
 ## 공개·권한 경계
 
-기존 `research/`는 사용자의 기존 파일이다. 일괄 stage/삭제하지 않고 이번 작업 소유 제품·설계 파일만 명시적으로 stage한다. 회사 자료·credential·원문 capture·로컬 DB·모델 weight·backup은 repository에 넣지 않는다. 사용자는 **#5 전체 항목 해결과 공식 검증 후에만 commit→push→PR**, **main merge 확인 후 실제 Agent Flow 프로젝트 폴더에 merged MCP 설치·동작 확인**을 요구했다. 부분/draft PR로 대체하지 않으며 merge·원문/credential 공개 승인은 없다. 최신 검증 지시는 실패 항목만 재검사하는 것이므로 이미 통과한 테스트와 전체 suite를 반복하지 않고 중단/부분 결과를 정확히 기록한다.
+기존 `research/`는 사용자의 기존 파일이다. 일괄 stage/삭제하지 않고 이번 작업 소유 제품·설계 파일만 명시적으로 stage한다. 회사 자료·credential·원문 capture·로컬 DB·모델 weight·backup은 repository에 넣지 않는다. 원래 **#5 전체 항목 해결과 공식 검증 후 final commit→push→PR**, **main merge 확인 후 실제 Agent Flow 프로젝트 폴더에 merged MCP 설치·동작 확인**을 요구했고, 이후 미검증 CI checkpoint commit·push와 기존 PR 갱신만 별도로 허용했다. 당시 허용은 merge·원문/credential 공개 승인이 아니었다. 2026-10-14의 “실패한 항목만 재검사”는 당시 실행 이력이다. 2026-10-16 후속 지시는 기존 전체 suite·필수 조건·설치 소비자·최종 집계를 GitHub Actions에서 병렬 실행하고 로컬에서는 테스트·collection·lint·build·syntax·format·reproduction·추가 smoke를 실행하지 않는 것이다. 중단·부분·실패 결과를 성공으로 대체하지 않는다.
+
+최신 사용자는 **개발 버전**에 대해 지시사항·누락 목록 재대조와 남은 개발/수정, 정확 source의 GitHub Actions 검증, 정상 독립 리뷰·지적 해결, CI-only QA를 마친 뒤 PR #9를 main에 병합하고 병합된 정확한 커밋으로 개발용 설치하도록 승인했다. 실제1–2주 trial·독립 인간 gold·운영 배포·일반 출시는 개발 병합과 별도이며 미완료 증거를 완료로 바꾸지 않는다. 병합·설치 뒤에는 trial 준비·진행·평가 내용만 별도 이슈로 기록한다. 이 승인은 native trust·guard·설정의 임의 변경이나 로컬 검증 금지를 해제하지 않는다.
