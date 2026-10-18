@@ -1464,3 +1464,24 @@ terminal unknown은 실제 늦은 capture 뒤에도 원래 operator disposition�
 
 `af5a4b4f` / [Actions39101328192](https://github.com/chonamdoo/agents-memory/actions/runs/39101328192)의 source/설치 소비 양쪽에서 새 bounded 진단은 `ADMISSION_STALE`이었다. 실제 fixture는 default operator로 source window admission을 발급받은 뒤 agent credential로 그 admission을 소비하려 했다. 기존 `_recheck_nonmodel`은 credential ID·generation·realm을 일치시켜야 하므로 이 혼용은 허용되지 않는다. fixture의 window inspect를 실제 record와 같은 agent credential로 고치며, 제품 admission fence·snapshot·판정·timeout을 완화하거나 실패를 retry로 덮지 않는다. 이 실행과 처음 CLI_FAILED 실행은 feedback 사유 검사의 red가 아니라 선행 admission 실패로 보존한다.
 
+#### 1541ec4 전체 소비와 engineering 성공
+
+정확한 `1541ec468e1360532e5e1e400105ed70ec3a11b0` / [Actions39101868318](https://github.com/chonamdoo/agents-memory/actions/runs/39101868318)는2026-10-18T05:54:49Z에 success로 완료했다.
+
+| 실행 범위 | pass | fail·skip·xfail·xpass |
+|---|---:|---|
+| 전체 source4개 disjoint shard |3127|모두0, collection issue0 |
+| 별도 noneditable 설치 wheel |741|모두0, collection issue0 |
+| 실제 owned Docker 평가 engineering |14|모두0 |
+| 실제 macOS CPython3.12.13 ownership compatibility |36|모두0 |
+
+Source/설치 실제 HTTP·CLI는 각각25개 outcome 모두 통과했다. 기존23개를 보존하면서 `terminal_work_late_capture_ownership`은 late capture 뒤 operator close 유지·구형 reopen 거절·최신 exact reopen의 새 근거를 확인했다. `feedback_resolution_reason_disclosure`은 같은 agent credential의 original-window inspect→record로 scoped claim을 만들고, 실제 feedback CLI→operator exact decline→본문 없는 event history→현재 snapshot의 rationale inspect를 실행했다. 전역 target의 다른 request 공개는 유지하고 scoped target의 다른 snapshot 사유 읽기는 거절했다. 합성 데이터의 현재-context 공개 경계이지 실제 native 보호나 고객 데이터 유출 실험이 아니다.
+
+Corrected-before의 같은16개 node는 source/설치 setup·call·teardown을 모두 통과했다. 이전 두 unsupported metadata 기대는 이16개에 포함하지 않는다. bounded diagnostic 실행과 첫 consumer 실패는 operator admission을 agent에게 넘긴 fixture 실패로 남기며, 제품의 credential/generation/realm fence는 수정하지 않았다. 모든 health cleanup은 정상 service exit0·project adapter 제거·Store/admin close·private schema 제거와 harness private evidence 보존을 확인했다.
+
+실제 producer HTTP→native protocol peer→MCP→controller→격리 verifier/scorer→health의 전체 smoke, optional-rule drift·모든 attempt/blocked/unknown cost·위조 거절·exact cleanup도 통과했다. 여덟 job과 아홉 artifact, source/checks의 다섯 owned prerequisite cleanup 및 별도 evaluation runtime/schema/process cleanup, lint/build와 strict aggregate가 성공했다. 원래 native 설정·승인·관측 bound·deadline을 늘리지 않았다.
+
+Source digest 전후는 `223da49b15bf2a380f5af316a7d6b66c0fac27328609f929375dee2ad8cb1bb9`다. 실제 소비한 wheel과 내려받은385424bytes의 data-only SHA256은 `8ca1b0f8a8b72d7f5d3bc24103affe2f7896285b29e0b2078cbd797bcab3d470`으로 일치한다. 내려받은3500911bytes sdist는 `f41e6867f22fd4a93230e1623d9540943b6639ad1c434a70838f47eef94cc157`, 실제 runtime digest는 `053e0d187706475d04dbb810dce5b30c40d82d4ae631704edf00862d42625167`이다. Canonical immutable checker는 실제 PR base2892ca25에서98eligible full old/new file·4604626inputbytes·complete coverage·finding0·CHECKED/exit0을 기록했다.
+
+현재 run의 `actions-1541ec4-complete-consumer-green/observed-success-summary.json`과 모든 원본 phase/API/job/artifact·checksum·same-node 비교를 보존했다. 최신 PR 전체127파일을 API pagination과 독립 changed-files count로 대조했고 production39·CI12·runtime config7파일의 실제 bytes가1541ec4의 Git blob과 일치했다. 이 direct-read manifest는 다음 정상 whole-source review의 입력 근거이지 reviewer의 실제 읽기·승인 증거는 아니다. 문서 포함 최신 head의 CI와 fresh 전체 범위 review·CI-only QA·publication은 별도이며 원래18개 완료0과 native/OS/운영/egress/human gold·실제 trial·merge/release 미승인은 유지한다.
+
