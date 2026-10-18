@@ -12,6 +12,7 @@ from .domain import (
     Principal,
     canonical_digest,
 )
+from .health import HealthCommand
 from .judge import describe, load_state
 from .judge_worker import JudgeWorker, public_status
 from .lexical import tokens
@@ -41,6 +42,17 @@ class Application:
         self.require_accepting()
         operation = await self.store.feedback(actor, command)
         return operation.model_dump(mode="json")
+
+    async def health(self, actor: Principal, command: HealthCommand) -> dict[str, Any]:
+        self.require_accepting()
+        operation = await self.store.health(actor, command)
+        if self.judge is not None:
+            self.judge.notify()
+        return operation.model_dump(mode="json")
+
+    async def health_observer(self, actor: Principal, binding_id: str) -> dict[str, Any]:
+        self.require_accepting()
+        return await self.store.health_observer(actor, binding_id)
 
     async def inspect(
         self, actor: Principal, ref: str, binding_id: str | None, snapshot: str | None = None,
@@ -74,12 +86,13 @@ class Application:
                 raise DomainError("CAUSAL_NOT_READY", "The requested operation is not candidate-ready")
         rules = await self.store.rules(actor, binding)
         request_digest = canonical_digest(command.model_dump(mode="json", include={
-            "query", "query_expansions", "paths", "purpose", "host", "snapshot",
+            "query", "query_expansions", "paths", "purpose", "host", "snapshot", "code_workspace_id",
         }))
         if command.relevance is None:
             terms = tokens(" ".join((command.query, *command.query_expansions)))
             rows, admission = await self.store.search_lexical(
                 actor, binding, terms, command.snapshot, 20, request_digest=request_digest,
+                code_workspace_id=command.code_workspace_id,
             )
             candidates = [claim for claim, _ in rows]
             composed = compose(command, [rule for rule in rules if rule.required] if candidates else rules, (), ())
@@ -200,3 +213,8 @@ class Application:
         state: dict[str, Any] = {"accepting": False, "active_requests": self.inflight}
         state["local_drained"] = self.inflight == 0
         return state
+
+    async def wait_closed(self) -> None:
+        self.accepting = False
+        while self.inflight:
+            await asyncio.sleep(0.05)

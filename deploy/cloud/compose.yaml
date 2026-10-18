@@ -1,0 +1,127 @@
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: deploy/cloud/Dockerfile
+      args:
+        APP_UID: "${AM_APP_UID:?Set the non-root numeric owner UID of the app private files}"
+        APP_GID: "${AM_APP_GID:?Set the non-root numeric owner GID of the app private files}"
+    command:
+      - --config
+      - "${AM_CONFIG_PATH:?Set the canonical absolute private config file path inside AM_STATE_DIR}"
+      - serve
+    environment:
+      AM_BACKEND_PORT: "${AM_BACKEND_PORT:?Set the backend port matching the initialized config, between 1024 and 65535}"
+    volumes:
+      - type: bind
+        source: "${AM_STATE_DIR:?Set the existing canonical absolute private durable state directory}"
+        target: "${AM_STATE_DIR:?Set the existing canonical absolute private durable state directory}"
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${AM_JOURNAL_DIR:?Set the existing canonical absolute private durable journal directory disjoint from AM_STATE_DIR}"
+        target: "${AM_JOURNAL_DIR:?Set the existing canonical absolute private durable journal directory disjoint from AM_STATE_DIR}"
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${AM_DATABASE_SOCKET_DIR:?Set the existing local PostgreSQL 18 Unix socket directory with password-authenticated local connections}"
+        target: "${AM_DATABASE_SOCKET_DIR:?Set the existing local PostgreSQL 18 Unix socket directory with password-authenticated local connections}"
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 180s
+    healthcheck:
+      test:
+        - CMD
+        - /opt/agents-memory/venv/bin/python
+        - -c
+        - |
+          import http.client
+          import json
+          import os
+          import signal
+          signal.alarm(4)
+          connection = http.client.HTTPConnection("127.0.0.1", int(os.environ["AM_BACKEND_PORT"]), timeout=2)
+          try:
+              connection.request("GET", "/readyz")
+              response = connection.getresponse()
+              body = response.read(16385)
+              payload = json.loads(body) if len(body) <= 16384 else {}
+              healthy = response.status == 200 and payload.get("ready") is True and payload.get("db_ready") is True
+          finally:
+              connection.close()
+          raise SystemExit(0 if healthy else 1)
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  caddy:
+    image: caddy:2.11.7-alpine
+    user: "${AM_CADDY_UID:?Set the non-root numeric owner UID of AM_CADDY_DATA_DIR}:${AM_CADDY_GID:?Set the non-root numeric owner GID of AM_CADDY_DATA_DIR}"
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+      - "443:443/udp"
+    networks:
+      default:
+      backend:
+        ipv4_address: "${AM_PROXY_IP:?Set the exact private IPv4 address in the cloud ingress profile}"
+    depends_on:
+      app:
+        condition: service_healthy
+        restart: true
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        test "$$(id -u)" -gt 0
+        test "$$(id -g)" -gt 0
+        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    environment:
+      AM_PUBLIC_HOSTNAME: "${AM_PUBLIC_HOSTNAME:?Set the approved public DNS hostname without scheme or port}"
+      AM_BACKEND_PORT: "${AM_BACKEND_PORT:?Set the backend port matching the initialized config, between 1024 and 65535}"
+      XDG_DATA_HOME: "${AM_CADDY_DATA_DIR:?Set the existing canonical absolute private Caddy data directory disjoint from app state and journal}"
+      XDG_CONFIG_HOME: /tmp/caddy-config
+    volumes:
+      - type: bind
+        source: ./Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${AM_CADDY_DATA_DIR:?Set the existing canonical absolute private Caddy data directory disjoint from app state and journal}"
+        target: "${AM_CADDY_DATA_DIR:?Set the existing canonical absolute private Caddy data directory disjoint from app state and journal}"
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777,size=16m
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+networks:
+  default:
+  backend:
+    ipam:
+      config:
+        - subnet: "${AM_BACKEND_SUBNET:?Set a dedicated RFC1918 IPv4 subnet containing AM_PROXY_IP}"

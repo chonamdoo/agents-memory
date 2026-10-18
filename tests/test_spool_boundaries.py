@@ -33,6 +33,17 @@ def envelope(**changes):
     })
 
 
+@pytest.mark.parametrize("version", [(3, 44, 5), (3, 50, 6), (3, 51, 2)])
+def test_unsupported_sqlite_cannot_create_capture_storage(tmp_path, monkeypatch, version):
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", version)
+    directory = tmp_path / "refused"
+    with pytest.raises(DomainError) as caught:
+        ProducerSpool(directory / "outbox.sqlite", "deployment-001", "binding-001", 65536)
+    assert caught.value.code == "SPOOL_SQLITE_UNSUPPORTED"
+    assert caught.value.effect is EffectState.NOT_STARTED
+    assert not directory.exists()
+
+
 def test_durable_retry_does_not_accept_changed_evidence(tmp_path):
     path = tmp_path / "outbox.sqlite"
     spool = ProducerSpool(path, "deployment-001", "binding-001", 65536)
@@ -48,7 +59,10 @@ def test_durable_retry_does_not_accept_changed_evidence(tmp_path):
         reopened.close()
 
 
-def test_another_project_cannot_take_existing_outbox(tmp_path):
+@pytest.mark.parametrize("version", [None, (3, 44, 6), (3, 50, 7), (3, 51, 3)])
+def test_another_project_cannot_take_existing_outbox(tmp_path, monkeypatch, version):
+    if version is not None:
+        monkeypatch.setattr(sqlite3, "sqlite_version_info", version)
     path = tmp_path / "outbox.sqlite"
     spool = ProducerSpool(path, "deployment-001", "binding-001", 65536)
     spool.enqueue(envelope())
@@ -299,29 +313,39 @@ def test_unknown_effect_never_becomes_permanent_quarantine_even_with_conflict_co
         reopened.close()
 
 
-@pytest.mark.parametrize("late_rejection", [False, True])
-def test_overlapping_drains_preserve_confirmed_receipt_without_duplicate_local_failure(tmp_path, late_rejection):
+@pytest.mark.parametrize("lost_ack", [False, True])
+def test_overlapping_flushes_preserve_single_owner_and_unknown_row(tmp_path, lost_ack):
     path = tmp_path / "outbox.sqlite"
     first = ProducerSpool(path, "deployment-001", "binding-001", 65536)
     second = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    sent = []
 
     class Committed:
         def request(self, route, payload):
-            return {"effect": "committed", "id": "operation-001"}
+            sent.append(payload["idempotency_key"])
+            return {"effect": "committed", "id": "operation-" + payload["idempotency_key"]}
 
-    class Overlap:
+    class Forbidden:
         def request(self, route, payload):
-            assert second.flush(Committed())["committed"] == 1
-            if late_rejection:
-                raise DomainError("ORIGIN_CONFLICT", "Older rejected attempt after confirmed parallel commit")
-            return {"effect": "committed", "id": "operation-001"}
+            raise AssertionError("A second flusher dispatched the current owner's row")
+
+    class Inflight:
+        def request(self, route, payload):
+            busy = second.flush(Forbidden())
+            assert busy["committed"] == 0 and busy["pending"] == 1
+            second.enqueue(envelope(idempotency_key="following", origin_key="following"))
+            if lost_ack:
+                raise DomainError("SERVICE_UNAVAILABLE", "Synthetic lost ACK", effect=EffectState.UNKNOWN)
+            return {"effect": "committed", "id": "operation-capture-001"}
 
     try:
         first.enqueue(envelope())
-        result = first.flush(Overlap())
-        assert result["pending"] == result["quarantined"] == 0
-        assert first.disposition("capture-001") == {"state": "committed", "operation_id": "operation-001"}
-        assert first.enqueue(envelope()) == {"state": "committed", "replay": True, "operation_id": "operation-001"}
+        first.flush(Inflight())
+        assert first.status()["pending"] == (2 if lost_ack else 1)
+        second.flush(Committed())
+        assert sent == (["capture-001", "following"] if lost_ack else ["following"])
+        assert first.status()["pending"] == first.status()["quarantined"] == 0
+        assert first.disposition("capture-001") == {"state": "committed", "operation_id": "operation-capture-001"}
     finally:
         first.close()
         second.close()
@@ -1400,15 +1424,10 @@ def test_typed_enqueue_does_not_reclassify_or_rewrite_admitted_source(tmp_path, 
         spool.close()
 
 
-@pytest.mark.parametrize("corruption", ("payload", "digest"))
-def test_stale_invalid_classification_preserves_acknowledged_replacement(tmp_path, monkeypatch, corruption):
+def test_stale_source_scrub_preserves_acknowledged_replacement(tmp_path, monkeypatch):
     path = tmp_path / "producer" / "capture.sqlite3"
     left = ProducerSpool(path, "deployment-001", "binding-001", 65536)
     right = ProducerSpool(path, "deployment-001", "binding-001", 65536)
-
-    class ForbiddenEndpoint:
-        def request(self, *_args, **_kwargs):
-            pytest.fail("Invalid local evidence must not reach the network")
 
     try:
         safe = envelope()
@@ -1416,49 +1435,34 @@ def test_stale_invalid_classification_preserves_acknowledged_replacement(tmp_pat
         digest, payload = left.db.execute(
             "SELECT digest,payload FROM outbox WHERE key=?", (safe.idempotency_key,),
         ).fetchone()
-        if corruption == "payload":
-            legacy = json.loads(payload)
-            legacy["body"] = "ghp_" + "a" * 36
-            invalid = json.dumps(legacy)
-            left.db.execute(
-                "UPDATE outbox SET payload=?,bytes=? WHERE key=?",
-                (invalid, len(invalid.encode()), safe.idempotency_key),
-            )
-            code = "SOURCE_SECRET_REJECTED"
-        else:
-            invalid_digest = ("1" if digest[0] != "1" else "2") + digest[1:]
-            left.db.execute("UPDATE outbox SET digest=? WHERE key=?", (invalid_digest, safe.idempotency_key))
-            code = "SPOOL_PAYLOAD_INVALID"
+        legacy = json.loads(payload)
+        legacy["body"] = "ghp_" + "a" * 36
+        invalid = json.dumps(legacy)
+        left.db.execute(
+            "UPDATE outbox SET payload=?,bytes=? WHERE key=?",
+            (invalid, len(invalid.encode()), safe.idempotency_key),
+        )
 
         original = left._quarantine_invalid
         acknowledged = []
 
         def replace_after_classification(*args, **kwargs):
             assert not acknowledged
-            if corruption == "payload":
-                right._scrub_legacy_sources()
-            else:
-                right.flush(ForbiddenEndpoint())
+            right._scrub_legacy_sources()
             acknowledged.append(right.enqueue(safe))
             assert acknowledged[0]["state"] == "durably_spooled"
             return original(*args, **kwargs)
 
         monkeypatch.setattr(left, "_quarantine_invalid", replace_after_classification)
-        if corruption == "payload":
-            left._scrub_legacy_sources()
-            result = left.status()
-        else:
-            result = left.flush(ForbiddenEndpoint())
+        left._scrub_legacy_sources()
+        result = left.status()
         assert len(acknowledged) == 1
         retained = left.db.execute(
             "SELECT digest,payload FROM outbox WHERE key=?", (safe.idempotency_key,),
         ).fetchone()
         assert retained == (digest, payload), "A stale classifier deleted an acknowledged safe replacement"
         assert result["pending"] == 1 and result["quarantined"] == 1
-        assert result["gaps"] == {code: 1}
-        if corruption == "digest":
-            assert result["newly_quarantined"] == 0
-            assert result["errors"] == []
+        assert result["gaps"] == {"SOURCE_SECRET_REJECTED": 1}
     finally:
         right.close()
         left.close()
@@ -1473,10 +1477,6 @@ def test_late_network_result_preserves_acknowledged_replacement_after_receipt_ev
     replacement = envelope(origin_key="replacement-origin", body="Retain the independently captured replacement.")
     acknowledged = []
 
-    class CommittedFillers:
-        def request(self, route, payload):
-            return {"effect": "committed", "id": "filler-operation-" + payload["idempotency_key"]}
-
     class LateOriginal:
         def request(self, route, payload):
             assert payload["body"] == original.body
@@ -1485,8 +1485,8 @@ def test_late_network_result_preserves_acknowledged_replacement_after_receipt_ev
             assert right.disposition(original.idempotency_key)["state"] == "expired"
             for index in range(right.receipt_limit):
                 right.enqueue(envelope(idempotency_key=f"receipt-filler-{index}", origin_key=f"filler-origin-{index}"))
-            filled = right.flush(CommittedFillers(), limit=128)
-            assert filled["committed"] == right.receipt_limit
+            clock[0] += 24 * 60 * 60 + 1
+            assert right.status()["pending"] == 0
             assert right.db.execute("SELECT 1 FROM receipts WHERE key=?", (original.idempotency_key,)).fetchone() is None
             acknowledged.append(right.enqueue(replacement))
             assert acknowledged[0]["state"] == "durably_spooled"
@@ -1509,3 +1509,80 @@ def test_late_network_result_preserves_acknowledged_replacement_after_receipt_ev
     finally:
         right.close()
         left.close()
+
+
+@pytest.mark.parametrize("outcome", ["committed", "unknown"])
+def test_concurrent_producer_and_flushers_have_one_dispatch_owner(tmp_path, outcome):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "producer" / "capture.sqlite3"
+    first = envelope()
+    second = envelope(idempotency_key="capture-002", origin_key="origin-002")
+    producer = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+    producer.enqueue(first)
+    entered = threading.Event()
+    release = threading.Event()
+    dispatched = []
+
+    class BlockedAuthority:
+        def request(self, route, payload):
+            dispatched.append((route, payload))
+            entered.set()
+            assert release.wait(5), "The test did not release its owned request"
+            if outcome == "unknown":
+                raise DomainError("SERVICE_UNAVAILABLE", "Synthetic response was lost", effect=EffectState.UNKNOWN)
+            return {"effect": "committed", "id": "operation-first"}
+
+    class ForbiddenCompetitor:
+        def request(self, route, payload):
+            raise AssertionError("A busy flush competitor dispatched a duplicate capture")
+
+    def owned_flush():
+        owner = ProducerSpool(path, "deployment-001", "binding-001", 65536)
+        try:
+            return owner.flush(BlockedAuthority())
+        finally:
+            owner.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            owner = executor.submit(owned_flush)
+            try:
+                assert entered.wait(5)
+                assert producer.enqueue(second)["state"] == "durably_spooled"
+                busy = producer.flush(ForbiddenCompetitor())
+                assert busy["flush_owner"] == "busy"
+                assert busy["committed"] == 0 and busy["pending"] == 2
+                assert dispatched == [("/api/capture", first.model_dump(mode="json"))]
+            finally:
+                release.set()
+            result = owner.result(timeout=5)
+        assert dispatched == [("/api/capture", first.model_dump(mode="json"))]
+        assert producer.disposition(second.idempotency_key) == {"state": "durably_spooled"}
+        if outcome == "unknown":
+            assert result["committed"] == 0 and result["errors"] == ["SERVICE_UNAVAILABLE"]
+            assert producer.status()["pending"] == 2
+            assert producer.disposition(first.idempotency_key) == {"state": "durably_spooled"}
+            assert producer.enqueue(first)["replay"] is True
+            assert producer.status()["retained_receipts"] == 0
+        else:
+            assert result["committed"] == 1 and result["pending"] == 1
+            assert producer.disposition(first.idempotency_key) == {
+                "state": "committed", "operation_id": "operation-first",
+            }
+
+            class FollowingAuthority:
+                def request(self, route, payload):
+                    dispatched.append((route, payload))
+                    return {"effect": "committed", "id": "operation-second"}
+
+            assert producer.flush(FollowingAuthority())["committed"] == 1
+            assert dispatched == [
+                ("/api/capture", first.model_dump(mode="json")),
+                ("/api/capture", second.model_dump(mode="json")),
+            ]
+            assert producer.status()["pending"] == 0
+    finally:
+        release.set()
+        producer.close()

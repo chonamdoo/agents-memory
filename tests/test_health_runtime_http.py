@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+from test_edge_boundaries import AGENT_TOKEN, request, running, tool, tool_code
+from test_store_authority import TOKEN
+from test_store_authority import authority as authority
+
+from agents_memory.domain import Role
+
+
+async def test_health_policy_is_operator_only_and_observer_is_producer_safe(authority):
+    producer_token = "health-wire-producer-" + "p" * 32
+    producer = await authority.store.issue_token(authority.actor, Role.PRODUCER, (authority.binding_id,), producer_token)
+    payload = {
+        "kind": "health_policy", "binding_id": authority.binding_id, "expected_binding_revision": 1,
+        "idempotency_key": "health-wire-policy", "expected_policy_revision": 0,
+        "enabled": True, "allow_jev_health": False,
+    }
+    async with running(authority) as edge:
+        status, body = await request(edge, payload, TOKEN, path="/api/health")
+        assert status == 200, body
+        assert json.loads(body)["state"] == "health_recorded"
+        for token in (AGENT_TOKEN, producer_token):
+            status, body = await request(edge, {**payload, "idempotency_key": "forbidden-policy"}, token, path="/api/health")
+            assert status == 403
+        workspace = {
+            "kind": "health_workspace", "binding_id": authority.binding_id, "expected_binding_revision": 1,
+            "idempotency_key": "health-wire-workspace", "workspace_id": "workspace_health_wire",
+            "expected_workspace_revision": 0, "root_fingerprint": "a" * 64,
+            "producer_credential_id": producer.credential_id,
+        }
+        status, body = await request(edge, workspace, TOKEN, path="/api/health")
+        assert status == 200, body
+        status, body = await request(edge, {"binding_id": authority.binding_id}, producer_token, path="/api/health/observer")
+        assert status == 200, body
+        observed = json.loads(body)
+        assert observed["kind"] == "health_observer"
+        assert [row["workspace_id"] for row in observed["workspaces"]] == ["workspace_health_wire"]
+        assert observed["policy"]["allow_jev_health"] is False
+        assert not {"claims", "sources", "reason", "body", "catalog"}.intersection(observed)
+        status, body = await request(edge, {"binding_id": authority.binding_id}, AGENT_TOKEN, path="/api/health/observer")
+        assert status == 403
+
+
+@pytest.mark.parametrize("kind", ["health_policy", "health_workspace", "memory_review", "feedback_resolution"])
+async def test_mcp_record_never_exposes_operator_health_commands(authority, kind):
+    async with running(authority) as edge:
+        status, body = await request(edge, tool({"kind": kind, "binding_id": authority.binding_id}, name="memory_record"))
+        assert status == 200
+        assert tool_code(body) == "INPUT_INVALID"
+
+
+async def test_health_wire_decode_failure_does_not_echo_private_extra_fields(authority):
+    marker = "synthetic_private_health_argument"
+    async with running(authority) as edge:
+        status, body = await request(edge, {
+            "kind": "health_policy", "binding_id": authority.binding_id,
+            "expected_binding_revision": "1", "idempotency_key": "invalid-health-wire", "private": marker,
+        }, TOKEN, path="/api/health")
+        assert status == 400
+        assert json.loads(body)["error"]["code"] == "INPUT_INVALID"
+        assert marker.encode() not in body

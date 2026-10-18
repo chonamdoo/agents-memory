@@ -50,9 +50,13 @@ _PRE_SELECTION_TABLES = frozenset({
 _SELECTION_TABLES = _PRE_SELECTION_TABLES | {
     "am_selection_policies", "am_source_selections", "am_selection_sources",
 }
-_TABLES = _SELECTION_TABLES | {
+_JUDGED_TABLES = _SELECTION_TABLES | {
     "am_pending_judgments", "am_retired_jobs", "am_claim_judgments",
     "am_rejection_evidence", "am_rejection_tokens",
+}
+_TABLES = _JUDGED_TABLES | {
+    "am_health_policies", "am_code_workspaces", "am_code_observations", "am_claim_health",
+    "am_code_links", "am_health_events", "am_session_observations",
 }
 _ARCHIVE_TABLES = {
     "0001_authority": _PRE_SELECTION_TABLES - {"am_origin_reservations", "am_relation_claims"},
@@ -60,7 +64,8 @@ _ARCHIVE_TABLES = {
     "0003_origin_and_vector_compat": _PRE_SELECTION_TABLES,
     "0004_operation_successors": _PRE_SELECTION_TABLES,
     "0005_company_selection": _SELECTION_TABLES,
-    "0006_agent_judged": _TABLES,
+    "0006_agent_judged": _JUDGED_TABLES,
+    "0007_memory_health": _TABLES,
 }
 _IDENTITY_SEQUENCES = {
     "am_pending_judgments_sequence_seq": "am_pending_judgments",
@@ -546,7 +551,7 @@ def _validate_toc(raw: bytes, schema: str, tables: frozenset[str] = _TABLES) -> 
     data: set[str] = set()
     sequences = (
         _IDENTITY_SEQUENCES
-        if tables == _ARCHIVE_TABLES["0006_agent_judged"]
+        if tables in (_JUDGED_TABLES, _TABLES)
         else {}
     )
     found_sequences: dict[str, str] = {}

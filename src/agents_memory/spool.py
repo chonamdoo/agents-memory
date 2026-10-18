@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sqlite3
@@ -8,8 +9,9 @@ import time
 import uuid
 from contextlib import contextmanager, suppress
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import ValidationError
+from pydantic import Field, TypeAdapter, ValidationError
 
 from .client import LocalClient
 from .domain import (
@@ -21,18 +23,23 @@ from .domain import (
     canonical_digest,
     reject_source_secrets,
 )
+from .health import CodeObservationCommand, SessionObservationCommand
 from .wire import decode_json
 
 TRANSIENT_CODES = {
     "AUTH_DENIED", "UNAUTHORIZED", "CREDENTIAL_REVOKED", "CREDENTIAL_INVALID",
     "SERVICE_UNAVAILABLE", "SERVICE_DRAINING", "AUTHORITY_UNAVAILABLE", "QUEUE_FULL",
     "DELETION_BARRIER", "RESTORE_RECOVERY_REQUIRED", "RESPONSE_INVALID",
-    "RESPONSE_TOO_LARGE", "CAPTURE_RECEIPT_INVALID",
+    "RESPONSE_TOO_LARGE", "CAPTURE_RECEIPT_INVALID", "HEALTH_RECEIPT_INVALID",
 }
 PERMANENT_CODES = {
     "ORIGIN_CONFLICT", "IDEMPOTENCY_CONFLICT", "SCOPE_DENIED", "ROLE_DENIED",
     "BODY_TOO_LARGE", "INPUT_TOO_LARGE", "INPUT_INVALID", "CAPTURE_INJECTED_REJECTED",
     "ORIGIN_RETRACTED", "SOURCE_RETRACTED", "CAPTURE_COVERAGE_INVALID",
+    "HEALTH_POLICY_DISABLED", "HEALTH_WORKSPACE_CHANGED", "HEALTH_REVISION_CONFLICT",
+    "HEALTH_SEQUENCE_CONFLICT",
+    "HEALTH_DISABLED", "HEALTH_STALE", "HEALTH_WORKSPACE_RETRACTED",
+    "OBSERVATION_OUT_OF_ORDER", "MANIFEST_TOO_LARGE", "CODE_ANCHOR_AMBIGUOUS",
 }
 LOCAL_QUARANTINE_CODES = {"SOURCE_SECRET_REJECTED", "SPOOL_PAYLOAD_INVALID"}
 
@@ -41,9 +48,40 @@ RECEIPT_RETENTION_SECONDS = 24 * 60 * 60
 RECEIPT_MAX_COUNT = 4096
 HOUSEKEEPING_ROWS = 128
 
+ProducerCommand = CaptureCommand | CodeObservationCommand | SessionObservationCommand
+_HEALTH_PRODUCER_ADAPTER = TypeAdapter(Annotated[
+    CodeObservationCommand | SessionObservationCommand, Field(discriminator="kind"),
+])
+
+
+def _decode_producer(payload: str) -> ProducerCommand:
+    value = decode_json(payload.encode("utf-8"))
+    encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
+    if value.get("kind") in {"code_observation", "session_observation"}:
+        return _HEALTH_PRODUCER_ADAPTER.validate_json(encoded, strict=True)
+    return CaptureCommand.model_validate_json(encoded, strict=True)
+
+
+def _producer_digest(command: ProducerCommand) -> str:
+    return canonical_digest(command.digest_payload() if isinstance(command, CaptureCommand) else command.model_dump(mode="json"))
+
+
+def require_supported_sqlite() -> None:
+    version = sqlite3.sqlite_version_info
+    if (version >= (3, 51, 3)
+            or (3, 50, 7) <= version < (3, 51, 0)
+            or (3, 44, 6) <= version < (3, 45, 0)):
+        return
+    raise DomainError(
+        "SPOOL_SQLITE_UNSUPPORTED",
+        "Capture requires SQLite 3.51.3+ or the patched 3.50.7/3.44.6 release line",
+        status=503, effect=EffectState.NOT_STARTED,
+    )
+
 
 class ProducerSpool:
     def __init__(self, path: Path, deployment_id: str, binding_id: str, limit_bytes: int) -> None:
+        require_supported_sqlite()
         self.path = path
         self.deployment_id = deployment_id
         self.binding_id = binding_id
@@ -85,6 +123,7 @@ class ProducerSpool:
                 "CREATE TABLE IF NOT EXISTS gaps (code TEXT PRIMARY KEY, count INTEGER NOT NULL);"
                 "CREATE TABLE IF NOT EXISTS quarantine (key TEXT PRIMARY KEY, digest TEXT NOT NULL, payload TEXT NOT NULL, bytes INTEGER NOT NULL, failure TEXT NOT NULL, created_at REAL NOT NULL DEFAULT 0, expires_at REAL NOT NULL DEFAULT 0);"
                 "CREATE TABLE IF NOT EXISTS receipts (key TEXT PRIMARY KEY, digest TEXT NOT NULL, state TEXT NOT NULL, operation_id TEXT, created_at REAL NOT NULL DEFAULT 0);"
+                "CREATE TABLE IF NOT EXISTS health_state (key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL NOT NULL);"
             )
             with self._transaction():
                 identity = self.db.execute("SELECT deployment,binding FROM identity WHERE slot=1").fetchone()
@@ -95,7 +134,7 @@ class ProducerSpool:
                 columns = {row[1] for row in self.db.execute("PRAGMA table_info(receipts)")}
                 if "created_at" not in columns:
                     self.db.execute("ALTER TABLE receipts ADD COLUMN created_at REAL NOT NULL DEFAULT 0")
-                for column in ("source_pointer", "capture_disposition"):
+                for column in ("source_pointer", "capture_disposition", "health_kind", "health_reference"):
                     if column not in columns:
                         self.db.execute(f"ALTER TABLE receipts ADD COLUMN {column} TEXT")
                 self.db.execute("CREATE INDEX IF NOT EXISTS receipt_age ON receipts(created_at,key)")
@@ -207,20 +246,31 @@ class ProducerSpool:
     def _store_receipt(
         self, key: str, digest: str, state: str, operation: str | None,
         *, pointer: SourcePointer | None = None, disposition: str | None = None,
+        health_kind: str | None = None, health_reference: str | None = None,
     ) -> None:
         encoded = pointer.model_dump_json() if pointer is not None else None
         self.db.execute(
-            "INSERT INTO receipts(key,digest,state,operation_id,created_at,source_pointer,capture_disposition) VALUES(?,?,?,?,?,?,?) "
+            "INSERT INTO receipts(key,digest,state,operation_id,created_at,source_pointer,capture_disposition,health_kind,health_reference) VALUES(?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(key) DO UPDATE SET state=excluded.state,operation_id=COALESCE(receipts.operation_id,excluded.operation_id),"
             "source_pointer=CASE WHEN excluded.capture_disposition IS NOT NULL THEN excluded.source_pointer ELSE receipts.source_pointer END,"
-            "capture_disposition=COALESCE(excluded.capture_disposition,receipts.capture_disposition) WHERE receipts.digest=excluded.digest",
-            (key, digest, state, operation, time.time(), encoded, disposition),
+            "capture_disposition=COALESCE(excluded.capture_disposition,receipts.capture_disposition),"
+            "health_kind=COALESCE(excluded.health_kind,receipts.health_kind),"
+            "health_reference=COALESCE(excluded.health_reference,receipts.health_reference) WHERE receipts.digest=excluded.digest",
+            (key, digest, state, operation, time.time(), encoded, disposition, health_kind, health_reference),
         )
         self._prune_receipts()
 
     def _receipt_result(self, row: tuple) -> dict:
-        state, operation, encoded, disposition = row
+        state, operation, encoded, disposition, health_kind, health_reference = row
         result = {"state": state, "operation_id": operation}
+        if health_kind is not None or health_reference is not None:
+            if (health_kind not in {"code_observation", "session_observation"}
+                    or not isinstance(health_reference, str) or not health_reference
+                    or len(health_reference) > 128 or encoded is not None or disposition is not None
+                    or state not in {"committed", "discarded"} or not isinstance(operation, str) or not operation):
+                raise DomainError("HEALTH_RECEIPT_INVALID", "The persisted health receipt is invalid", effect=EffectState.UNKNOWN)
+            result.update(health_kind=health_kind, health_reference=health_reference)
+            return result
         if disposition == "captured" and encoded is None:
             raise DomainError("CAPTURE_RECEIPT_INVALID", "The persisted capture pointer is missing", effect=EffectState.UNKNOWN)
         if encoded is not None:
@@ -275,23 +325,73 @@ class ProducerSpool:
             raise ValueError("Retracted source cannot supply a live capture pointer")
         return operation.id, pointer, disposition
 
+    def _health_ack(self, command: CodeObservationCommand | SessionObservationCommand, result: object) -> tuple[str, str, str]:
+        if not isinstance(result, dict):
+            raise ValueError("Unconfirmed health ACK")
+        operation = Operation.model_validate_json(json.dumps(result, allow_nan=False), strict=True)
+        if (operation.effect != EffectState.COMMITTED or operation.binding_id != self.binding_id
+                or operation.kind != command.kind or operation.state not in {"health_recorded", "retracted"}
+                or operation.artifact_id is None or operation.source_pointer is not None
+                or operation.capture_disposition is not None or operation.source_id is not None):
+            raise ValueError("Invalid committed health ACK")
+        return operation.id, operation.artifact_id, "discarded" if operation.state == "retracted" else "committed"
+
+    def read_health_state(self, key: str) -> dict:
+        with self._transaction():
+            removed = self.db.execute(
+                "DELETE FROM health_state WHERE key LIKE 'session:%' AND updated_at<?",
+                (time.time() - PAYLOAD_RETENTION_SECONDS,),
+            ).rowcount
+            if removed:
+                self._gap("HEALTH_SEGMENT_METADATA_EXPIRED", removed)
+        row = self.db.execute("SELECT payload FROM health_state WHERE key=?", (key,)).fetchone()
+        if row is None:
+            return {}
+        try:
+            value = decode_json(row[0].encode("utf-8"))
+            return value
+        except (ValueError, UnicodeError):
+            raise DomainError("HEALTH_STATE_INVALID", "The local health metadata is invalid") from None
+
+    def _write_health_state(self, key: str, value: dict) -> None:
+        payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        size = len(payload.encode("utf-8"))
+        if len(key) > 128 or size > 16384:
+            raise DomainError("HEALTH_STATE_FULL", "The bounded health metadata is full")
+        existing = self.db.execute("SELECT length(CAST(payload AS BLOB)) FROM health_state WHERE key=?", (key,)).fetchone()
+        count, total = self.db.execute("SELECT count(*),COALESCE(sum(length(CAST(payload AS BLOB))),0) FROM health_state").fetchone()
+        if (existing is None and count >= 16) or total - (existing[0] if existing else 0) + size > 32768:
+            raise DomainError("HEALTH_STATE_FULL", "The bounded health metadata is full")
+        self.db.execute(
+            "INSERT INTO health_state VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
+            (key, payload, time.time()),
+        )
+
+    def write_health_state(self, key: str, value: dict) -> None:
+        with self._transaction():
+            self._write_health_state(key, value)
+
     def close(self) -> None:
         self.db.close()
 
-    def enqueue(self, command: CaptureCommand) -> dict:
+    def enqueue(self, command: ProducerCommand, *, health_state: tuple[str, dict] | None = None) -> dict:
+        if not isinstance(command, (CaptureCommand, CodeObservationCommand, SessionObservationCommand)):
+            raise DomainError("SPOOL_PAYLOAD_INVALID", "Only fixed typed producer envelopes are accepted")
+        if health_state is not None and isinstance(command, CaptureCommand):
+            raise DomainError("SPOOL_PAYLOAD_INVALID", "Health state cannot be attached to ordinary capture")
         if command.binding_id != self.binding_id:
             raise DomainError("SPOOL_SCOPE_CONFLICT", "The envelope targets another project")
-        if command.injected or command.speaker == "memory":
+        if isinstance(command, CaptureCommand) and (command.injected or command.speaker == "memory"):
             raise DomainError("CAPTURE_INJECTED_REJECTED", "Retrieved memory cannot become new evidence")
         envelope = command.model_dump(mode="json")
-        digest = canonical_digest(command.digest_payload())
+        digest = _producer_digest(command)
         payload = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
         size = len(payload.encode("utf-8"))
         self._housekeep()
         overflow = False
         with self._transaction():
             self._prune_payloads()
-            receipt = self.db.execute("SELECT digest,state,operation_id,source_pointer,capture_disposition FROM receipts WHERE key=? AND created_at>=?", (command.idempotency_key, time.time() - RECEIPT_RETENTION_SECONDS)).fetchone()
+            receipt = self.db.execute("SELECT digest,state,operation_id,source_pointer,capture_disposition,health_kind,health_reference FROM receipts WHERE key=? AND created_at>=?", (command.idempotency_key, time.time() - RECEIPT_RETENTION_SECONDS)).fetchone()
             if receipt is not None:
                 if receipt[0] != digest:
                     raise DomainError("IDEMPOTENCY_CONFLICT", "The outbox retry key has another envelope")
@@ -305,7 +405,16 @@ class ProducerSpool:
                     raise DomainError("IDEMPOTENCY_CONFLICT", "The outbox retry key has another envelope")
                 return {"state": "durably_spooled", "replay": True}
             used = self.db.execute("SELECT COALESCE(SUM(bytes),0) FROM (SELECT bytes FROM outbox UNION ALL SELECT bytes FROM quarantine)").fetchone()[0]
-            if used + size > self.limit_bytes or self._storage_bytes() + 2 * size + 16384 > self.storage_limit_bytes:
+            health_full = False
+            if not isinstance(command, CaptureCommand):
+                health_used = self.db.execute(
+                    "SELECT COALESCE(SUM(bytes),0) FROM ("
+                    "SELECT payload,bytes FROM outbox UNION ALL SELECT payload,bytes FROM quarantine) "
+                    "WHERE CASE WHEN json_valid(payload) THEN json_extract(payload,'$.kind') END "
+                    "IN ('code_observation','session_observation')"
+                ).fetchone()[0]
+                health_full = health_used + size > self.limit_bytes // 4
+            if health_full or used + size > self.limit_bytes or self._storage_bytes() + 2 * size + 16384 > self.storage_limit_bytes:
                 self._gap("SPOOL_FULL")
                 overflow = True
             else:
@@ -314,6 +423,8 @@ class ProducerSpool:
                     "INSERT INTO outbox(key,digest,payload,bytes,failure,created_at,expires_at) VALUES(?,?,?,?,NULL,?,?)",
                     (command.idempotency_key, digest, payload, size, created_at, created_at + PAYLOAD_RETENTION_SECONDS),
                 )
+                if health_state is not None:
+                    self._write_health_state(*health_state)
         self._housekeep()
         if overflow:
             raise DomainError("SPOOL_FULL", "No envelope was accepted; the durable gap counter increased", status=429)
@@ -339,7 +450,7 @@ class ProducerSpool:
 
     def disposition(self, key: str) -> dict:
         self._housekeep()
-        receipt = self.db.execute("SELECT state,operation_id,source_pointer,capture_disposition FROM receipts WHERE key=? AND created_at>=?", (key, time.time() - RECEIPT_RETENTION_SECONDS)).fetchone()
+        receipt = self.db.execute("SELECT state,operation_id,source_pointer,capture_disposition,health_kind,health_reference FROM receipts WHERE key=? AND created_at>=?", (key, time.time() - RECEIPT_RETENTION_SECONDS)).fetchone()
         if receipt is not None:
             return self._receipt_result(receipt)
         rejected = self.db.execute("SELECT failure FROM quarantine WHERE key=?", (key,)).fetchone()
@@ -399,9 +510,7 @@ class ProducerSpool:
     def _payload_rejection(self, key: str, payload: str) -> str | None:
         try:
             reject_source_secrets(key)
-            CaptureCommand.model_validate_json(
-                json.dumps(decode_json(payload.encode("utf-8")), ensure_ascii=False, allow_nan=False), strict=True,
-            )
+            _decode_producer(payload)
         except DomainError as error:
             return error.code if error.code == "SOURCE_SECRET_REJECTED" else "SPOOL_PAYLOAD_INVALID"
         except (ValidationError, ValueError, TypeError, UnicodeError):
@@ -455,6 +564,24 @@ class ProducerSpool:
     def flush(self, client: LocalClient, limit: int = 32) -> dict:
         if not 1 <= limit <= 128:
             raise DomainError("SPOOL_LIMIT_INVALID", "Choose a bounded flush limit")
+        descriptor = os.open(
+            str(self.path) + ".flush.lock",
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600,
+        )
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise DomainError("SPOOL_PATH_DENIED", "The outbox delivery lock must be private and owned")
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {"committed": 0, "newly_quarantined": 0, "errors": [],
+                        "flush_owner": "busy", **self.status()}
+            return self._flush_owned(client, limit)
+        finally:
+            os.close(descriptor)
+
+    def _flush_owned(self, client: LocalClient, limit: int) -> dict:
         self._housekeep()
         accepted, quarantined = 0, 0
         failures = []
@@ -471,14 +598,12 @@ class ProducerSpool:
                 continue
             digest, payload = row
             try:
-                command = CaptureCommand.model_validate_json(
-                    json.dumps(decode_json(payload.encode("utf-8")), ensure_ascii=False, allow_nan=False), strict=True,
-                )
+                command = _decode_producer(payload)
                 if command.binding_id != self.binding_id or command.idempotency_key != key:
                     raise ValueError("Spool source identity mismatch")
-                if command.injected or command.speaker == "memory":
+                if isinstance(command, CaptureCommand) and (command.injected or command.speaker == "memory"):
                     raise ValueError("Injected source is not evidence")
-                if canonical_digest(command.digest_payload()) != digest:
+                if _producer_digest(command) != digest:
                     raise ValueError("Spool source digest mismatch")
             except DomainError as error:
                 code = error.code if error.code == "SOURCE_SECRET_REJECTED" else "SPOOL_PAYLOAD_INVALID"
@@ -494,7 +619,8 @@ class ProducerSpool:
                     failures.append("SPOOL_PAYLOAD_INVALID")
                 continue
             try:
-                result = client.request("/api/capture", command.model_dump(mode="json"))
+                route = "/api/capture" if isinstance(command, CaptureCommand) else "/api/health"
+                result = client.request(route, command.model_dump(mode="json"))
             except DomainError as error:
                 failures.append(error.code)
                 permanent = (
@@ -515,10 +641,17 @@ class ProducerSpool:
                         self.db.execute("DELETE FROM outbox WHERE key=? AND digest=? AND payload=?", (key, digest, payload))
                 quarantined += inserted
                 continue
+            health_kind = health_reference = None
+            terminal_state = "committed"
             try:
-                operation, pointer, disposition = self._capture_ack(result)
+                if isinstance(command, CaptureCommand):
+                    operation, pointer, disposition = self._capture_ack(result)
+                else:
+                    operation, health_reference, terminal_state = self._health_ack(command, result)
+                    pointer = disposition = None
+                    health_kind = command.kind
             except (ValidationError, ValueError, TypeError, UnicodeError):
-                failures.append("CAPTURE_RECEIPT_INVALID")
+                failures.append("CAPTURE_RECEIPT_INVALID" if isinstance(command, CaptureCommand) else "HEALTH_RECEIPT_INVALID")
                 break
             with self._transaction():
                 replacement = self.db.execute(
@@ -527,7 +660,8 @@ class ProducerSpool:
                     "WHERE digest<>? OR payload<>? LIMIT 1", (key, key, digest, payload),
                 ).fetchone()
                 if replacement is None:
-                    self._store_receipt(key, digest, "committed", operation, pointer=pointer, disposition=disposition)
+                    self._store_receipt(key, digest, terminal_state, operation, pointer=pointer, disposition=disposition,
+                                        health_kind=health_kind, health_reference=health_reference)
                     self.db.execute("DELETE FROM quarantine WHERE key=? AND digest=? AND payload=?", (key, digest, payload))
                     self.db.execute("DELETE FROM outbox WHERE key=? AND digest=? AND payload=?", (key, digest, payload))
             accepted += 1

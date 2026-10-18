@@ -1,11 +1,89 @@
-# agents-memory 업데이트 전 체크포인트 — 2026-10-12
+# agents-memory 체크포인트
+
+## 현재 수정 재개 — development/20261016-110757
+
+- 네 번째 공식12개 결과는3 approve/9 request-changes였다. 정상 fix-loop 한도 뒤 사용자가 기록 보존 후 계속을 선택해 기존 run을 정상 종료하고 같은 branch/worktree에서 재개했다. 이전 판정·guard·pin을 바꾸거나 승인을 재사용하지 않는다.
+- source/test/pyproject/lock `35d854f6…422daf0`에서 operator 철회/generation과 Jev 파일 변경 직렬화·strict scalar·명시 효과, fenced readiness, 설치 효과/upgrade code, 부모 선종료 자손 정리, remote pending-only/backoff/취소와 단일 flush 경계를 수정했다.
+- wheel `5c0c838c…31abb1b`의46 source 일치와 실제 개인/회사 PG·launchd·Jev fence/unavailable·명시 stop/start·capture replay 보존 smoke를 확인했다. 합성 vendor callback이며 새 live Jev·구독 판단·native hook 보호를 뜻하지 않는다.
+- [PR #9 P1](https://github.com/chonamdoo/agents-memory/pull/9#discussion_r4293624349)은 모든 ingress mode의 실제 loopback peer 요구로 수정했다. PG/ASGI66 pass와 개인/회사 실제 nonloopback TCP8개403·loopback200·정상 Caddy HTTPS를 확인했다. README PC service 순서와 fresh 양 모드 configure→service install→host-install→doctor도 실제 통과했다. direct Docker/합성 agent 증거이지 Compose·모델·운영 배포/침해 조사 증거가 아니다.
+- 첫 fixture/OOM 실패·중간 source 변경 실행을 보존했다. frozen 새 전체 `uv run pytest -q`는 **2311 pass/skip0/573.27초**, Ruff/build·새 설치46파일 일치가 통과했다. OS network-deny sdist→동일 wheel과 hash 필수 build9/runtime34 새 consumer 설치도 통과했다. 새 공식 독립 review/QA/handoff·추가 commit/push·thread resolve·배포 완료는 아직 주장하지 않는다.
+- 상세 실행과 한계는 [검증 기록](verification.ko.md#네-번째-리뷰-후-권한복구와-pr-보안-수정--development20261016-110757)을 따른다. 아래는 각 이전 checkpoint의 이력이며 현재 새 코드의 원격 게시나 전체 #5/trial/출시 승인으로 재사용하지 않는다.
+
+
+## 공식 리뷰 후 fix-loop 체크포인트 — development/20261015-131245
+
+### 현재 작업 checkpoint 게시 범위 — 2026-10-16
+
+사용자가 “일단 지금까지 한 것으로 커밋·푸시·PR”을 명시 요청했다. 이전의 전체 완료 뒤에만 게시한다는 사용자 조건은 **현재 snapshot의 checkpoint commit/push와 Draft PR 게시에 한해 변경**한다. 기존 `docs/local-cloud-roadmap`→`main` PR #9을 갱신하며 native 보호·탐지 UX·공식 승인 review/QA/handoff·운영/평가/trial·merge/출시 gate를 완료 처리하지 않는다. 이 아래의 미게시 문구는 해당 실행 시점의 보존 기록이다. 실제 commit/remote HEAD·Draft 상태는 PR 기록으로 확인한다.
+
+### 세 번째 리뷰 후 남은 코드 결함 수정
+
+- genuine Opus5.5/Sol6.1 공식 결과는3 approve/8 request-changes/1 timeout이었다. 정상 fix-loop에서7개 blocking finding을 수정했고 다음 독립 리뷰·공식 QA/handoff로 진행한다. 전체 #5·trial·출시 완료는 아니다.
+- 현재 source/test fingerprint `72cdb923…225cbb7`, wheel `290b2d08…31adaa8`의 noneditable46 source 일치를 확인했다. 첫 집중831개는826 pass/5 fixture fail, private state/producer credential 준비만 수정해 해당5개 pass다. 새 단일 전체 green으로 합치지 않는다.
+- 실제 설치 launchd/PG에서 stalled/slow-drip 전체15초·408/not_started·부분 source0·회수 뒤 capture202, SIGKILL 재시작·DB ready·명시 stop/start를 확인했다. 실제 PG Jev 교체 장애는 선택 유지·구 토큰 거절·명시 재선택으로 복구했다. 합성 key/서비스/schema/실행 폴더는 제거하고 PG를 중지했다.
+- Claude force-on/settings env·doctor effective provider/project 경계·과거 strict receipt의 active 거절·service 오류 효과를 수정했다. native trust·기억 본문·사용자 원본 키를 변경하지 않았다. 이미 실행 중인 old binary나 실제 native 보호를 해결했다는 뜻은 아니다.
+- age Sigsum 검증기 실행·변조 negative, 공개213 checksum·Go module h1/license, 격리 Linux canary를 확인했다. out-of-band 키 신원·전체 P3/native 격리·copyleft/법적 배포 승인은 남는다. 상세·이전 실패 이력은 [검증 기록](verification.ko.md)을 따른다.
+
+### 남은 작업 재개 — native 진단·안정 상태 확인
+
+- `native-status`·`doctor --project`와 설치 결과의 metadata-only 공존 경고를 구현했다. 새 회귀29개와 실제 Codex CLI 진단을 실행했고, 합성 project layer disabled·project hook0/user4를 관측했다. trust를 쓰지 않았고 callback/보호는 미검증이다.
+- 안정 배포를 정상 DSN/schema 해석 후 read-only transaction으로 조회했다. 현재0004·failed6/DLQ6이며 구형 실패를 retired/성공으로 바꾸지 않았다. 기존 CLI 기본 config 경로 부재와 schema 옵션을 직접 DSN에 전달한 probe 실패는 보존했다.
+- 공식 PBS Python3.13.16/SQLite3.53.1과 build9/runtime34 hash closure로 OS network-deny sdist/wheel build·새 consumer 설치/CLI·46 source 일치·누락 wheel 거절을 실행했다. PG/vector·새 app image·age 공개 archive도 반입 자료로 보존한다. whole-OS/offline 제품 운영·법적 승인은 별도다.
+- 당시 병렬 작업자들은 worktree guard 거절로 코드를 쓰지 않았다. 실제 쓰기는 bound controller가 수행했고 guard/pin/binding을 바꾸거나 worker를 공식 reviewer로 세지 않았다. 이후 정상 unprefixed status의 불가를 뜻하지 않는다.
+- 같은 source fingerprint `7aca16e0…f5543`의 전체 첫 실행은1954 pass/235 fail/1 error였다. QA 임시 경로를 Git 밖으로 옮기고 일치 `VIRTUAL_ENV`를 준 뒤 제품/테스트 bytes 변경 없이236개 실패만 전부 통과했다. lint/build도 성공했다. 이를 단일 전체2190-pass로 합치지 않는다.
+- 실제 Opus5.5 Jev-deny/agent preflight P01/P02/R04는 각각 discard·조건/예외 claim 재조회·의미 재유입 discard를 관측했다. 중간 MCP 오류4회·다른 claim의 gold 미판정·native 소비 미관측을 남겼고 전체 품질/효익/trial로 확대하지 않는다.
+- 삭제된 #3의 보존 원문에서 A1–A7/B1–B7을 재확인해 [runbook](release-runbook.ko.md#원래-계획-리뷰14건의-증거-연결)에14개를 각각 연결했다. native/OS/stable/독립 gold·고정 workload/제한 운영의 공백을 완료로 바꾸지 않는다.
+- 별도 범위인 transcript/tool-I/O capture 확장·도구 digest P2·건강관리 writer/자동 audit·임베딩 도입은 이번 patch에 넣지 않는다. 기존4도구·원문·승인·삭제 core를 유지하며 실제 데이터/허가/평가 없이 자동 승격·추가 egress를 열지 않는다.
+
+
+### 이슈 #5 후속 — 승인 없는 구현·검증
+
+- 현재 fingerprint `744b84b1d7cbd6a885a7ed494c035081d90b19d97f3fbe99d093a0e187297f15`, wheel `d16b73fe4ffe25515dd21e9fa95b3fdc96b563b2765d512936fe3155b08ed73d`. 새 Codex `--strict`를 쓰기 전 명시 거절하며 자동 advisory downgrade하지 않는다. 명시 구독 MCP는 유지하고 native 보호 구현 완료와 구분한다.
+- 새 설치 CLI의 strict 신규/기존 advisory 파일 불변·foreign MCP/hook 보존 uninstall, 실제 advisory stdio MCP→HTTP/PG의 retract/purge 두 재유입 경로를 확인했다. 옛 origin/body/claim/lineage는 부활하지 않고 새 origin은 재판단 전 비노출·판단 후 새 claim/source만 citation이다. R05 오류 계약을 보완했다.
+- 설치/업그레이드/incident runbook을 작성하고 app+runtime34 hash local 설치·pip check·isolated43파일 일치·lock SBOM/35 license-file inventory를 준비했다. 전체 OS/interpreter/PG/tools/age/build backend·다른 ABI·legal/release 승인은 별도다.
+- Ruff/build 성공. 첫476pass/7fail 계약 fixture와2113pass/48fail의 Homebrew Cellar0775 ancestry 거절을 보존했다. private regular interpreter·정상 ownership·동일 binary/prefix alias·isolated source와 실패 표면69개를 검증한 뒤 **정확한 `uv run pytest -q`:2161 passed·skip0·518.79초**를 통과했다. 공식 QA 승인은 아니다.
+- normal native approval용 cold fixture는 이전 ce8a4d99 wheel/strict 정의다. 새 candidate의 지원 strict로 취급하거나 source 일치 검사 없이 시작하지 않는다. native 승인만으로 보호 구현이 완료되지 않는다. fresh 공식 승인 review/QA/handoff·안정 cutover/OS lifecycle·frozen 평가/PMPA·native memory 탐지 UX·실제1–2주 trial·commit/push/runtime PR/merge는 여전히 미완료다.
+
+
+### 직전 source의 재개·두 번째 공식 review/fix-loop — 2026-10-16
+
+- 설치형 canonical status/continue를 보호 설정 변경 없이 복구했다. fresh confined Opus5.5/Sol6.1 wave는10완료(approve4/request-changes6)·Claude2timeout으로 request-changes였고 정상 두 번째 fix-loop에 있다.
+- 재시도별 Jev admission, deny crash의 reallow 복구, 발급 전 private intent와 PG clock commit 직렬화, 명시 invalid-state repair, effective provider 표시와 project-add committed effect를 수정했다. 익명 readiness는 단일 live journal 검증을 공유·종료 시 join한다.
+- 새 lint/build·집중 회귀와 checkout 밖43-file 일치 wheel의 실제 HTTP503/복구·합성 live Jev remember/active claim을 확인했다. 키는 프로그램만 읽고 원본을 보존했으며 사본 삭제·deny/agent·native service disabled/stopped로 종료했다.
+- QA interpreter와 MCP 자식의 project 설치 prerequisite를 정상 격리 환경에서 수정했다. 제품 guard·테스트·Homebrew 권한을 바꾸지 않고 **정확한 `uv run pytest -q`:2164 passed·skip0·518.43초**를 통과했다. 첫48실패와 다음1실패·각 원인은 검증 이력에 남겼다. copied interpreter/locked hashed dependencies/editable current project를 `UV_NO_SYNC=1`로 재사용했으며 공식 QA 승인과 구분한다.
+- 같은 새 wheel에서 실제 구독 Claude Opus5.5·Codex6.1Sol·OMP openai-codex6.1Sol도 deny/agent·키 없음으로 다시 실행했다. 원문 판단·active claim·전체 relevance·같은 claim과19시간/audit 예외 최종 context를 각각 확인했다. 이는 native strict 첫 행동 차단이나 신규 preconnect/TCP0 관측이 아니다.
+- 사용자 승인 통지 후 실제 Codex0.162.1의 정상 hooks/list/config/read를 실행했다. 당시 user source4개·project0개였고, project `.codex` layer가 exact folder의 trusted-project 미등록으로 disabled라고 명시됐다. 정상 Folder access→Trust and continue와 이어진 project exact-hook 검토가 필요하다. 이 현재 이유를 과거 patch 실패 전체 원인으로 단정하지 않으며 trust state/API write나 입력 carrier 우회는 하지 않았다. 실제 native 보호/복구·승인 재리뷰·공식 QA/handoff·전체 #5·trial·runtime 게시는 아직 아니다.
+- 이번 재개 검증의 임시 native 등록3개·credential6개·private project/trace·QA env/cache를 정리했다. owned service disabled/stopped와 PG stopped를 확인했다. 정상 native 승인 재검증용 최소 private fixture만 보존했으며 Downloads 원본·global auth/trust·user research·공식 run 증거는 유지했다.
+
+### 첫 fix-loop 당시 기록 — 후속 수정 전
+
+- 실제 공식 리뷰는 request-changes였다(11완료: approve4/request-changes7, 별도1timeout). HTTP 전체 deadline·recovery budget·spool 단일 flusher·launchd crash intent·Jev 정책/retirement/commit 경합·bootstrap/CA/Unix socket/공개 ingress 경계를 수정했다.
+- 최종 source 직접 gate는 Ruff/build 성공, **전체2,143 passed·skip0·511.34초**다. 실제 slow HTTP/TLS16경우, launchd 설치/삭제 crash intent·SIGKILL·durable stop, 새 개인/회사 cloud43개 source와 HTTPS+DB crash recovery, checkout 밖 새 wheel 소비자를 실행했다.
+- Downloads 키는 프로그램만 읽어 합성 live Jev remember·active claim을 다시 확인했다. 원본은 유지했고 검증 후 deny+agent와0600 사본 삭제를 확인했다. 안정 운영 Jev나 실제 회사 corpus 전송을 켠 것이 아니다.
+- 최종 source의 실제 구독 Claude·Codex·OMP는 모두 deny/agent에서 독립 원문 판단·claim·전체 relevance·동일 claim과 예외 최종 read를 통과했다. 이는 advisory MCP 결과이며 native strict 보호와 다르다.
+- **Codex strict는 미완료:** 유효 단일 patch가 실제 파일을 변경했다. owned 합성 파일은 기록 후 원복했고 invalid-patch 실패를 차단 성공으로 계산하지 않았다. native 활성·신뢰·실제 callback 확인이 필요하다. Claude 실제 Read의 healthy/stop/recovery 차단과 무부작용은 확인했지만 provider input 소비 보장은 아니다.
+- 당시 canonical launcher와 소유 TUI stdin 제어가 guard에 거절된 기록을 보존했다. 위 재개에서 launcher는 정상 복구했으며 TUI/trust를 우회하지 않았다. 현재 gate와 source별 실행 경계는 [최신 상세](verification.ko.md#공식-리뷰-후-fix-loop--development20261015-131245)를 따른다.
+- 검증 뒤 owned native entry5개·서비스·합성 schema/role·container7개·VM 비밀/data·private key/trace/QA 상태를 정리했다. unrelated container2개의 ID/running/start time과 Downloads 원본·global auth/trust는 보존했다. 새 실행에는 정상 fixture 재준비가 필요하다.
+- 후속 최종 정리로 재개용 private Python/venv/cache와 partial 실패 manifest까지 포함한 임시 root도 제거했다. owned root 프로세스0·runtime container0, 미사용 proof image tag2개 제거를 기록했다. 공식 run 증거·user research·shared base/cache·사용자 서비스·LSP mux는 보존했다. 재개 때 정상 런타임/fixture 준비가 필요하다.
+
+## 구현-phase 실행 기록 — development/20261015-131245
+
+- PR #9 remote는 문서·이미지8개이며 runtime은 이 managed worktree에만 있다. commit/push·merge·안정 운영 설치를 하지 않았다. 아래 “최신 전환” 등의 제목은 과거 실행 당시의 기록이다.
+- 최신 사용자 지시에 따라 cloud **개발·합성 실행**을 실제1–2주 trial 이전에 진행했다. 실제 운영 cloud provisioning·회사/개인 corpus 이동·배포·게시의 별도 승인을 없앤 것이 아니다.
+- 로컬/클라우드 × 개인/회사 × deny·allow미선택·allow명시Jev의12경우를 분리했다. 네 선택 Jev 경우는 프로그램만 읽는 비공개 키와 실제 vendor 응답으로 검증했고, 나머지8경우는 구독 Claude Opus5.5/Codex6.1Sol/OMP의 실제 원문 판단·엄격한 extraction·전체 relevance·동일 claim 최종 read로 실행했다. no-call의 내부 request counter와 원격 packet 관측 범위는 [현재 검증 절](verification.ko.md#pr-9-후속-원격-구현--development20261015-131245)을 따른다.
+- typed remote client·현재 PG 권한에 묶인 bearer/OAuth·한 binding bootstrap·검증 HTTPS·PC-only spool supervisor·safe not-started session 재초기화·offline owned cleanup을 구현했다. PC는 DB/operator 비밀을 받지 않는다.
+- 실제 migration Unix hostname 해석 실패, shared namespace app crash 뒤 Caddy HTTPS 미복구, clean launchd의 frozen Claude path 미사용으로 인한 outbox 정체, stop→즉시 start race를 재현·수정했다. 독립 proxy/app Compose·정확한 private peer·기존 SCRAM PG socket의 새 package와 원격 PC 복구를 실제 실행했다. proxy에 app 비밀/journal/socket을 mount하지 않는다.
+- SQLite 영향 WAL 버전은 spool 생성 전에 거절한다. 실제 지원 private Python3.13.16/SQLite3.53.1과 새 설치 wheel의 전체34 module·8 migration bytes, checkout 밖 설치 CLI/SDK4도구·macOS client 운영·offline cleanup을 확인했다. 세부 hash·실패 이력·한계는 검증 절에 기록했다.
+- 통합은2017 pass/1 fail/11 skip이었다. 마지막 missing-cwd 분류 수정 뒤 실패 node만1 pass/4 deselected를 확인했다. 전체 green이나 fresh 공식 QA라고 하지 않는다. build는 해당 수정 후 성공했고 설치 wheel도 그 source와 일치했다.
+- 선택 Jev의 양 local mode 실제 launchd crash/stop/outbox 결합과 양 cloud mode의 실제 HTTPS correction/retraction·encrypted archive restore·최신 삭제 floor/새 credential 다음 read도 실행했다. 개인 driver가 마지막 operator를 잘못 폐기한 cleanup 실패는 숨기지 않았고 부모가 해당 owned 합성 배포를 정상 철거했다(인증 우회/권한 재활성화 없음). 회사와 shared PG는 보존했다. 이 기록 시점 공식 runner는 `implement`이며, 이후 공식 review/QA/handoff 결과와 미완료 gate는 run report·정본 이슈를 따른다. 전체 #5 운영·평가·실제 trial·게시 완료를 대신하지 않는다.
+- OSS·DB 성장·provenance/health audit/Accept/Reject/coalesce 검토는 [2026-10-15 연구 기록](research/)과 이슈 #5의 연구 댓글에 있다. 자동 건강 관리 writer·나이 기반 삭제·추가 telemetry/egress·embedding engine을 승인 없이 넣지 않았다.
 
 ## stage-0 동시성·복구 수정 — development/20261015-043508
 
 - 사용자 승인 범위의 네 결함(MCP 세션 복구, 단일 DB 지원 계약, 창당 단일 판단 승자·응답 유실 재시도, 요청 상한·pool 기한·잠금 없는 인증)을 구현했다. 설계 근거는 `research/local-concurrency-observer-design.ko.md` P0-1..P0-4, 기록은 [이슈 #5 댓글](https://github.com/chonamdoo/agents-memory/issues/5#issuecomment-6184732526)이다.
 - 처음 추가한 회귀 37개 중 26개가 수정 전 실패했고 수정 후 모두 통과했다. 리뷰 R1–R3에서 추가한 회귀는 수정 전 코드로 실행하지 않았다(reviewer 재현에 의존). 공식 리뷰 4회(R1–R3 지적 수정, R4 Codex 6개 approve; Claude는 R2에서만 실행), 공식 QA gate 3/3, 최종 wheel `a461ac83…`의 실제 서비스 smoke를 통과했다. 상세는 [검증 기록](verification.ko.md)의 stage-0 절이다.
 
-## 최신 전환 상태 — recovery development/20261014-154435
+## 이전 전환 이력 — recovery development/20261014-154435
 
 - [이슈 #5](https://github.com/chonamdoo/agents-memory/issues/5)와 [확정 결정 댓글](https://github.com/chonamdoo/agents-memory/issues/5#issuecomment-6150124320)만 현재 작업 정본이다. 개인·회사 모두 사용 중 Claude/Codex의 MCP 판단→서버 검증으로 전환했고 Qwen 판단 경로는 제거했다. 회사 B·별도 회사 selection 승인은 없으며 lexical/entity는 후보 색인이다.
 - R4 native 지적3건(note coverage·stale-quarantine replacement 삭제·OMP IPC 소비 타입)을 수정했고 새 실패15개만 `-W error`로15 passed/3.69s, 보고된 경고0을 확인했다. 실제 current-source CLI/HTTP MCP/PG 개인 schema는 note/reason coverage0·partial=false와 미판단 document coverage1·partial=true, raw note 보존을 확인했다. 실제 두 SQLite connection과 rendered TS/Node child IPC도 실행했다. 변경 Python lint·sdist/wheel build는 통과했다. owned process/schema/비밀 state는 제거했으며 전체 suite·native 모델·stable S9 proof는 아니다. 이전 negative/timeout/rate-limit·round3를 보존해 canonical abort하고 사용자 선택의 동일 범위 recovery run을 시작했다. 새 공식 리뷰/QA/handoff·원래 failed6·publication은 미완료다. 보고서는 현재 작업 뒤 읽도록 보류했다.
@@ -24,7 +102,7 @@
 - 사용자는 #5 전체 해결 후에만 commit/push/PR, main merge 확인 후 실제 Agent Flow 폴더의 merged MCP 설치/동작 확인을 요구했다. 아직 commit/push/PR/merge/최종 Agent Flow 설치는 하지 않았다. trial 기준은 정의만 했고 실사용 trial·memory-health 측정·회사 보안 우회·native 로그인/trust 변경은 없다. 아래는 이전 시점의 누적 이력이다.
 
 
-## 결론과 상태
+## 2026-10-12 당시 결론과 상태 (이력)
 
 독립 Python 메모리 서비스가 기준이다. Agent Flow·Claude Code·Codex·omp는 소비자이며 제품의 런타임 의존성이 아니다. 회사 로컬과 향후 개인 클라우드는 같은 application handler·승인·철회·출처·publication 계약을 사용한다. 회사 corpus를 개인 클라우드로 동기화하지 않는다.
 

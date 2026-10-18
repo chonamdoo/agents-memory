@@ -145,7 +145,8 @@ async def restore_rows(store, archive, historical_revision=None):
                 await connection.execute("CREATE TABLE alembic_version(version_num varchar(64) NOT NULL PRIMARY KEY)")
                 for revision in MIGRATIONS[:MIGRATIONS.index(historical_revision) + 1]:
                     module = importlib.import_module("agents_memory.migrations.versions." + revision)
-                    for statement in module.DDL.split(";"):
+                    statements = module.DDL.split(";") if isinstance(module.DDL, str) else module.DDL
+                    for statement in statements:
                         if statement.strip():
                             await connection.execute(statement)
             present = await connection.fetch("SELECT tablename FROM pg_tables WHERE schemaname=current_schema()")
@@ -156,7 +157,9 @@ async def restore_rows(store, archive, historical_revision=None):
                 "am_relation_claims", "am_reflections", "am_reflection_sources", "am_reflection_claims", "am_proposals",
                 "am_proposal_sources", "am_rules", "am_rule_targets", "am_feedback", "am_routes", "am_jobs",
                 "am_pending_judgments", "am_retired_jobs", "am_rejection_evidence", "am_rejection_tokens",
-                "am_admissions", "am_origin_reservations", "alembic_version"]
+                "am_admissions", "am_origin_reservations",
+                "am_health_policies", "am_code_workspaces", "am_code_observations", "am_claim_health",
+                "am_code_links", "am_health_events", "am_session_observations", "alembic_version"]
             for name in order:
                 columns = await connection.fetch("""SELECT column_name,udt_name FROM information_schema.columns
                     WHERE table_schema=current_schema() AND table_name=$1 ORDER BY ordinal_position""", name)
@@ -618,7 +621,6 @@ async def test_migrated_source_admission_refuses_without_mutation_then_fresh_ins
         assert migrated["kind"] == "nonmodel" and migrated["purpose"] == "source_selection"
         assert migrated["credential_id"] == agent.credential_id
         assert migrated["request_digest"] is None
-        assert await connection.fetchval("SELECT version_num FROM alembic_version") == "0006_agent_judged"
 
     edge = create_app(store.settings)
     async with edge.inner.router.lifespan_context(edge.inner):

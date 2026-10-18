@@ -228,6 +228,7 @@ class ContextCommand(TypedModel):
     purpose: PurposeText | None = None
     host: Literal["claude", "codex", "omp", "generic", "agent-flow"] | None = None
     snapshot: SnapshotText | None = None
+    code_workspace_id: Handle | None = None
     causal_operation: Handle | None = None
     max_bytes: int = Field(default=2400, ge=256, le=6144)
     limit: int = Field(default=3, ge=1, le=5)
@@ -286,7 +287,7 @@ class Quote(TypedModel):
     byte_start: int | None = Field(default=None, ge=0)
 
 
-class ClaimDraft(TypedModel):
+class ClaimMeaning(TypedModel):
     statement: SmallText
     kind: Literal["fact", "preference", "procedure", "finding", "rule_candidate"]
     subject: str = Field(min_length=1, max_length=256)
@@ -299,7 +300,6 @@ class ClaimDraft(TypedModel):
     valid_from: datetime | None = None
     valid_until: datetime | None = None
     entities: tuple[EntityText, ...] = Field(default=(), max_length=16)
-    evidence: tuple[Quote, ...] = Field(min_length=1, max_length=8)
 
     @field_validator("valid_from", "valid_until")
     @classmethod
@@ -309,10 +309,14 @@ class ClaimDraft(TypedModel):
         return value
 
     @model_validator(mode="after")
-    def valid_interval(self) -> ClaimDraft:
+    def valid_interval(self) -> ClaimMeaning:
         if self.valid_from and self.valid_until and self.valid_from >= self.valid_until:
             raise ValueError("valid_until must follow valid_from")
         return self
+
+
+class ClaimDraft(ClaimMeaning):
+    evidence: tuple[Quote, ...] = Field(min_length=1, max_length=8)
 
 
 class EvidenceSpan(TypedModel):
@@ -398,7 +402,7 @@ class Operation(TypedModel):
     id: Handle
     binding_id: Handle
     kind: str
-    state: Literal["accepted", "semantic_ready", "captured", "selection_recorded", "candidate_ready", "pending", "blocked", "failed", "retracted"]
+    state: Literal["accepted", "semantic_ready", "captured", "selection_recorded", "health_recorded", "candidate_ready", "pending", "blocked", "failed", "retracted"]
     source_id: Handle | None = None
     artifact_id: Handle | None = None
     successor_operation_id: Handle | None = None
@@ -433,6 +437,7 @@ class NonmodelAdmission(TypedModel):
     snapshot: SnapshotText | None
     deadline: datetime
     request_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    health_manifest_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     rejection_ids: tuple[Handle, ...] = Field(default=(), max_length=8)
     pending_id: Handle | None = None
 

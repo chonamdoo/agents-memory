@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import secrets
+import socket
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -13,13 +14,20 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from .client import LocalClient
+from .client import client_from_settings
 from .config import Settings, load_settings, prepare_settings_upgrade, resolve_binding
+from .connection import (
+    RemoteClientSettings,
+    configure_remote_client,
+    load_connection_settings,
+    validate_remote_project,
+)
 from .domain import (
     BindingRelocation,
     CaptureCommand,
     ContextCommand,
     DomainError,
+    EffectState,
     FeedbackCommand,
     Role,
     RuleApproval,
@@ -38,7 +46,9 @@ from .judge import (
     read_key,
     read_supplied_key,
     read_worker_token,
+    require_jev_allowed,
     set_agent,
+    set_egress_policy,
     set_jev,
     validate_key,
     verify_key,
@@ -61,6 +71,54 @@ def json_array_file(path: Path) -> list:
     if not isinstance(value, list):
         raise DomainError("INPUT_INVALID", "The input file requires a complete JSON array")
     return value
+
+
+async def inspect_complete(client, payload: dict, max_total_bytes: int) -> dict:
+    from hashlib import sha256
+
+    if (payload["byte_start"] != 0 or payload.get("claim_ids") or payload.get("rejection_cursor")
+            or type(max_total_bytes) is not int or not 1 <= max_total_bytes <= 8388608):
+        raise DomainError("INPUT_INVALID", "Complete stored JSON inspection requires its initial cursor and bounded total")
+    cursor, chunks, identity = 0, [], None
+    while True:
+        page = await client.call("/api/inspect", {**payload, "byte_start": cursor})
+        if not isinstance(page, dict):
+            raise DomainError("INSPECTION_INCOMPLETE", "The stored JSON representation is incomplete")
+        window = page.get("draft_window")
+        if window is None and cursor == 0:
+            if page.get("partial"):
+                raise DomainError("INSPECTION_INCOMPLETE", "This partial representation is not a stored JSON continuation")
+            return page
+        if (not isinstance(window, dict) or window.get("encoding") != "utf-8-json"
+                or window.get("scope") != "stored_record" or not isinstance(window.get("body"), str)):
+            raise DomainError("INSPECTION_INCOMPLETE", "The stored JSON continuation is invalid")
+        chunk = window["body"].encode()
+        total, stop = window.get("total_bytes"), window.get("byte_end")
+        current_identity = (window.get("digest"), total)
+        if identity is None:
+            identity = current_identity
+        if (current_identity != identity or type(total) is not int or not 1 <= total <= max_total_bytes
+                or type(stop) is not int or type(window.get("byte_start")) is not int
+                or window["byte_start"] != cursor or stop != cursor + len(chunk) or not cursor < stop <= total
+                or len(chunk) > payload["max_bytes"]):
+            raise DomainError("INSPECTION_CHANGED", "The stored JSON changed or exceeded its declared bounds")
+        chunks.append(chunk)
+        next_byte = window.get("next_byte")
+        if next_byte is None:
+            if stop != total:
+                raise DomainError("INSPECTION_INCOMPLETE", "The stored JSON ended before its declared length")
+            raw = b"".join(chunks)
+            if sha256(raw).hexdigest() != identity[0]:
+                raise DomainError("INSPECTION_CHANGED", "The stored JSON digest does not match its complete bytes")
+            document = decode_json(raw)
+            if any(document.get(key) != page[key] for key in ("id", "kind", "state", "revision") if key in page):
+                raise DomainError("INSPECTION_CHANGED", "The stored JSON identity changed during inspection")
+            if "epoch" in page:
+                document["epoch"] = page["epoch"]
+            return document
+        if type(next_byte) is not int or next_byte != stop:
+            raise DomainError("INSPECTION_INCOMPLETE", "The stored JSON continuation did not advance exactly")
+        cursor = next_byte
 
 
 def text_file(path: Path | None) -> str:
@@ -149,19 +207,27 @@ def jev_key(key_file: Path | None, stored=None) -> tuple[str, list[str]]:
 
 
 async def init_judge_plan(args) -> tuple | None:
-    """Decide and verify the judge before any initialization effect; an existing choice is left alone."""
+    """Obtain separate egress consent and verify the choice before initialization effects."""
     if (args.state_dir.resolve() / "judge" / PROVIDER_FILE).exists():
         return None
-    provider = args.judge or (judge_choice() if args.mode == "personal" and sys.stdin.isatty() else "agent")
+    allowed = args.jev_policy == "allow"
+    if allowed and not args.ack_jev_egress:
+        raise DomainError("JUDGE_EGRESS_ACK_REQUIRED",
+            "Allowing Jev requires --ack-jev-egress: source windows are sent to api.typesafe.ai in the US", status=403)
+    provider = args.judge or (judge_choice() if sys.stdin.isatty() else "agent")
     if provider == "agent":
         if args.jev_key_file is not None:
             raise DomainError("INPUT_INVALID", "--jev-key-file applies only to --judge jev")
-        return ("agent", None, [], None)
-    if args.mode != "personal":
+        return ("agent", None, [], None, allowed)
+    if not allowed and args.jev_policy is None and sys.stdin.isatty():
+        print("이 배포의 원문을 api.typesafe.ai(미국)로 전송하도록 별도로 허용합니까? [yes/기본 no]: ",
+              end="", file=sys.stderr, flush=True)
+        allowed = sys.stdin.readline().strip().lower() == "yes"
+    if not allowed:
         raise DomainError("JUDGE_PROVIDER_FORBIDDEN",
-            "Jev judgment sends source text off this machine and is available only in personal deployments", status=403)
+            "Jev requires an independent egress grant: --jev-policy allow --ack-jev-egress", status=403)
     key, warnings = jev_key(args.jev_key_file)
-    return ("jev", key, warnings, await asyncio.to_thread(verify_key, key, JEV_DEFAULT_MODEL))
+    return ("jev", key, warnings, await asyncio.to_thread(verify_key, key, JEV_DEFAULT_MODEL), True)
 
 
 async def apply_init_judge(args, result: dict, plan: tuple | None) -> dict:
@@ -169,10 +235,11 @@ async def apply_init_judge(args, result: dict, plan: tuple | None) -> dict:
         settings = load_settings(args.config)
         return {**describe(settings, load_state(settings), operator=True),
                 "unchanged": "already configured; change it with agents-memory judge set"}
-    provider, key, warnings, model = plan
+    provider, key, warnings, model, allowed = plan
     operator = argparse.Namespace(**{**vars(args), "token_file": Path(result["operator_token_file"])})
     try:
         async with authority(operator) as (settings, store, actor):
+            await set_egress_policy(settings, store, actor, jev_allowed=allowed)
             if provider == "jev":
                 outcome = await set_jev(settings, store, actor, key, verify=lambda _key, _model: model)
             else:
@@ -201,12 +268,20 @@ async def execute_judge(args, settings: Settings, store, actor) -> dict:
             "projects_without_worker_grant": [item for item in projects if item not in grants] if isinstance(grants, list) else None,
             "worker": worker_snapshot(settings),
         }
+    if args.judge_action == "policy":
+        allowed = args.policy == "allow-jev"
+        if allowed and not args.ack_egress:
+            raise DomainError("JUDGE_EGRESS_ACK_REQUIRED",
+                "Pass --ack-egress only after approving this deployment's source transfer to api.typesafe.ai in the US",
+                status=403)
+        return await set_egress_policy(settings, store, actor, jev_allowed=allowed)
     if args.provider == "agent":
         if args.key_file is not None or args.prompt_key:
             raise DomainError("INPUT_INVALID", "Key options apply only to judge set jev")
         return await set_agent(settings, store, actor, forget_key=args.forget_key)
     if args.forget_key:
         raise DomainError("INPUT_INVALID", "--forget-key applies only to judge set agent")
+    require_jev_allowed(settings)
     stored = None if args.prompt_key or not has_key(settings) else (lambda: read_key(settings))
     key, warnings = jev_key(args.key_file, stored)
     result = await set_jev(settings, store, actor, key, model=args.model)
@@ -215,7 +290,7 @@ async def execute_judge(args, settings: Settings, store, actor) -> dict:
     return result
 
 
-def _execute_spool(args, settings: Settings) -> dict:
+def _execute_spool(args, settings: Settings | RemoteClientSettings) -> dict:
     from .spool import ProducerSpool
 
     spool = ProducerSpool(args.file, settings.deployment_id, args.binding, settings.spool_limit_bytes)
@@ -223,7 +298,7 @@ def _execute_spool(args, settings: Settings) -> dict:
         if args.spool_action == "enqueue":
             return spool.enqueue(validate_wire(CaptureCommand, json_file(args.envelope_file)))
         if args.spool_action == "flush":
-            return spool.flush(LocalClient(settings.base_url, token_path(args)), limit=args.limit)
+            return spool.flush(client_from_settings(settings, token_path(args)), limit=args.limit)
         if args.spool_action == "inspect":
             return spool.inspect(args.key, args.limit)
         if args.spool_action in {"retry", "discard"}:
@@ -233,7 +308,135 @@ def _execute_spool(args, settings: Settings) -> dict:
         spool.close()
 
 
+async def _install_remote_host(args, settings: RemoteClientSettings) -> dict:
+    from .hosts import install_host
+    from .ingress import ClientBootstrapRequest, ClientBootstrapResult
+
+    if not args.ack_remote_storage:
+        raise DomainError("REMOTE_STORAGE_ACK_REQUIRED", "Explicitly approve capture and memory storage at the configured remote authority", status=403)
+    project = args.project.resolve(strict=True)
+    validate_remote_project(settings, project)
+    request = ClientBootstrapRequest(binding_id=args.binding).model_dump(mode="json")
+    grants = []
+    for path, role in ((args.agent_token_file, "agent"), (args.producer_token_file, "producer")):
+        result = await client_from_settings(settings, path).call("/api/client-bootstrap", request)
+        try:
+            grant = validate_wire(ClientBootstrapResult, result)
+        except (ValueError, TypeError):
+            raise DomainError("BOOTSTRAP_INVALID", "The server did not return an exact bounded client grant", status=503) from None
+        if (grant.deployment_id != settings.deployment_id or grant.realm != settings.realm
+                or grant.mode != settings.mode or grant.capability != settings.capability
+                or grant.auth_mode != settings.auth_mode or grant.role != role
+                or grant.binding_id != args.binding or grant.bindings != (args.binding,)
+                or any(getattr(grant.bounds, key) != getattr(settings, key) for key in (
+                    "max_capture_bytes", "max_http_body_bytes", "max_mcp_response_bytes", "spool_limit_bytes",
+                ))):
+            raise DomainError("HOST_SCOPE_DENIED", "The current remote grant does not match this connection and binding", status=403)
+        grants.append(grant)
+    if grants[0].credential_id == grants[1].credential_id:
+        raise DomainError("HOST_CREDENTIAL_SEPARATION_REQUIRED", "Agent and producer must use separate remote principals", status=403)
+    if grants[0].binding_revision != grants[1].binding_revision:
+        raise DomainError("HOST_SCOPE_DENIED", "The binding changed during remote installation", status=403)
+    return await asyncio.to_thread(
+        install_host, settings, project, args.binding, args.host,
+        args.agent_token_file.resolve(), args.producer_token_file.resolve(),
+        strict=args.strict, prompt_recall=args.prompt_recall,
+    )
+
+
 async def execute(args) -> dict | None:
+    if args.command == "evaluation":
+        from . import evaluation as evaluation_engine
+
+        if args.evaluation_action == "report":
+            adjudication = None
+            if args.adjudication_file is not None:
+                from .evaluation_diagnostics import MAX_INPUT_BYTES
+
+                adjudication = await asyncio.to_thread(
+                    evaluation_engine._read, args.adjudication_file.absolute(), MAX_INPUT_BYTES, private=True)
+            report = await asyncio.to_thread(evaluation_engine.report_evaluation, args.run_dir,
+                                             adjudication=adjudication)
+            if adjudication is not None:
+                directory = args.run_dir / "adjudications"
+                evaluation_engine._mkdir(directory)
+                evaluation_engine._publish(
+                    directory, evaluation_engine.digest_bytes(adjudication) + ".json",
+                    adjudication, MAX_INPUT_BYTES)
+            return report
+        manifest = await asyncio.to_thread(evaluation_engine.load_manifest, args.manifest,
+                                           expected_sha256=args.expected_sha256)
+        if args.evaluation_action == "prepare":
+            state = await asyncio.to_thread(evaluation_engine.prepare_run, manifest, args.run_dir)
+            return {"prepared": True, "manifest_digest": state.manifest_digest,
+                    "scheduled_pairs": len(state.schedule), "scope": manifest.config["scope"],
+                    "original18_completed": 0}
+        if args.evaluation_action == "gateway":
+            gateway = evaluation_engine.build_gateway(manifest, args.invocation_id, args.run_dir)
+            phase = gateway.scope.phase
+            channel = manifest.config["preflight_gateway" if phase == "preflight" else "gateway"]
+            await gateway.run_stdio(timeout_seconds=channel["lifetime_seconds"])
+            return None
+        import signal
+        import threading
+
+        stopped = threading.Event()
+        loop = asyncio.get_running_loop()
+        handled = []
+        try:
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                previous = signal.getsignal(signum)
+                loop.add_signal_handler(signum, stopped.set)
+                handled.append((signum, previous))
+            return await asyncio.to_thread(evaluation_engine.run_evaluation, manifest, args.run_dir, stop_event=stopped)
+        finally:
+            stopped.set()
+            for signum, previous in handled:
+                loop.remove_signal_handler(signum)
+                signal.signal(signum, previous)
+    if args.command == "health" and args.health_action in {"workspace-prepare", "observe"}:
+        from pydantic import TypeAdapter
+
+        from .health import CodeObservationTarget
+        from .health_producer import (
+            load_health_preparation,
+            observe_health_workspace,
+            prepare_health_registration,
+        )
+        from .hosts import load_receipt
+
+        receipt = load_receipt(args.receipt)
+        if args.health_action == "workspace-prepare":
+            preparation = await asyncio.to_thread(
+                prepare_health_registration, receipt, args.workspace_id, args.producer_credential_id,
+                expected_binding_revision=args.binding_revision,
+                expected_workspace_revision=args.workspace_revision, idempotency_key=args.key,
+                next_agent=args.next_agent,
+                reuse=load_health_preparation(args.reuse_prepared) if args.reuse_prepared else None,
+            )
+            private_write(args.prepared_file, preparation.model_dump_json() + "\n")
+            return {"prepared_file": str(args.prepared_file), "workspace_id": preparation.config.workspace_id,
+                    "root_fingerprint": preparation.config.pin.fingerprint, "configured": False}
+        paths = None
+        if args.paths_file is not None:
+            targets = validate_wire(TypeAdapter(list[CodeObservationTarget]), json_array_file(args.paths_file))
+            if not 1 <= len(targets) <= 32 or len({target.relative_path for target in targets}) != len(targets):
+                raise DomainError("INPUT_INVALID", "Choose one to 32 distinct explicit code paths")
+            paths = tuple((target.relative_path, tuple(target.symbol_names)) for target in targets)
+        return await asyncio.to_thread(observe_health_workspace, receipt, require_committed=True, explicit_paths=paths)
+    if args.command == "native-status":
+        from .native_status import native_status
+
+        return await asyncio.to_thread(
+            native_status, args.project, args.host, codex_executable=args.codex_executable,
+        )
+    native_observation = None
+    if args.command == "doctor":
+        from .native_memory import native_memory_status
+
+        native_observation = await asyncio.to_thread(native_memory_status, args.project) if args.project is not None else {
+            "state": "project_not_selected", "next": "Use doctor --project or native-status with an explicit project; native memory is not disabled automatically",
+        }
     if args.command == "host-hook":
         from .hosts import HOST_INPUT_BYTES, handle_hook_input
 
@@ -248,7 +451,7 @@ async def execute(args) -> dict | None:
             print(result["stderr"], file=sys.stderr)
         raise SystemExit(result.get("exit_code", 0))
     if args.command == "host-stdio":
-        from .hosts import load_receipt
+        from .hosts import load_receipt, receipt_connection
         from .stdio import RelayEndpoint, run_stdio
 
         receipt = load_receipt(args.receipt)
@@ -256,13 +459,22 @@ async def execute(args) -> dict | None:
             base_url=receipt["base_url"],
             max_http_body_bytes=receipt["max_http_body_bytes"],
             max_mcp_response_bytes=receipt["max_mcp_response_bytes"],
+            state_dir=Path(receipt["runtime_dir"]).parent.parent,
+            deployment_id=receipt["deployment_id"],
+            remote_settings=receipt_connection(receipt),
+            health_receipt=args.receipt,
         )
         await run_stdio(endpoint, Path(receipt["agent_token_file"]))
         return None
     if args.command == "host-uninstall":
         from .hosts import uninstall_host
-
-        return await asyncio.to_thread(uninstall_host, load_settings(args.config), args.project, args.host, project_deleted=args.project_deleted)
+        from .service import load_control_settings
+        return await asyncio.to_thread(uninstall_host, load_control_settings(args.config), args.project, args.host, project_deleted=args.project_deleted)
+    if args.command == "client":
+        if not args.ack_remote_storage:
+            raise DomainError("REMOTE_STORAGE_ACK_REQUIRED", "Explicitly approve capture and memory storage at this remote authority", status=403)
+        profile = validate_wire(RemoteClientSettings, decode_json(private_read(args.profile_file, 262144)))
+        return await asyncio.to_thread(configure_remote_client, args.config, profile, ca_source=args.ca_file)
     if args.command == "init":
         from .initialization import initialize_deployment
 
@@ -304,8 +516,36 @@ async def execute(args) -> dict | None:
             args.confirm_deployment,
             retire_model_approval_intent=args.retire_model_approval_intent,
         )
-    settings = load_settings(args.config)
+    if args.command == "service":
+        from .service import load_control_settings
+
+        settings = load_control_settings(args.config)
+    else:
+        settings = load_connection_settings(args.config)
+    if args.command == "service":
+        from .service import (
+            install_service,
+            service_status,
+            start_service,
+            stop_service,
+            uninstall_service,
+        )
+
+        if args.service_action == "install":
+            return await asyncio.to_thread(install_service, settings, args.config)
+        action = {"start": start_service, "stop": stop_service, "status": service_status,
+                  "uninstall": uninstall_service}[args.service_action]
+        return await asyncio.to_thread(action, settings)
+    if args.command == "client-run":
+        from .recovery import run_client_recovery
+
+        if not isinstance(settings, RemoteClientSettings):
+            raise DomainError("CLIENT_PROFILE_REQUIRED", "PC recovery requires a remote client profile", status=422)
+        await run_client_recovery(settings)
+        return None
     if args.command in {"backup", "restore", "restore-recover"}:
+        if not isinstance(settings, Settings):
+            raise DomainError("REMOTE_COMMAND_UNSUPPORTED", "This operation requires a server-only authority configuration", status=403)
         from .ops import backup, recover_interrupted_restore, restore
 
         if args.command == "restore-recover":
@@ -322,21 +562,111 @@ async def execute(args) -> dict | None:
         )
     if args.command == "spool":
         return await asyncio.to_thread(_execute_spool, args, settings)
-    if args.command == "serve":
+    if args.command in {"serve", "service-run"}:
+        if not isinstance(settings, Settings):
+            raise DomainError("REMOTE_COMMAND_UNSUPPORTED", "This operation requires a server-only authority configuration", status=403)
         import uvicorn
 
         from .edge import create_app
 
-        config = uvicorn.Config(create_app(settings), host="127.0.0.1", port=settings.port, access_log=False, log_level="warning", timeout_graceful_shutdown=150)
-        await uvicorn.Server(config).serve()
-        return None
-    if args.command == "stdio":
-        from .stdio import run_stdio
+        if args.command == "service-run":
+            from .service import require_service_enabled
 
-        await run_stdio(settings, token_path(args))
+            require_service_enabled(settings)
+        app = create_app(settings)
+        bind_host = "0.0.0.0" if args.command == "serve" and app.ingress is not None and app.ingress.tls_proxy == "private" else "127.0.0.1"
+        config = uvicorn.Config(app, host=bind_host, port=settings.port, access_log=False, log_level="warning", timeout_graceful_shutdown=150, proxy_headers=False)
+        server = uvicorn.Server(config)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            try:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind((bind_host, settings.port))
+                listener.listen(config.backlog)
+                listener.setblocking(False)
+            except OSError as error:
+                raise DomainError(
+                    "SERVICE_BIND_FAILED", f"The configured service address cannot be bound (errno {error.errno})",
+                    status=503, effect=EffectState.NOT_STARTED,
+                ) from None
+            await server.serve(sockets=[listener])
+        app.raise_for_lifecycle_failure()
+        if args.command == "service-run":
+            try:
+                require_service_enabled(settings)
+            except DomainError as error:
+                if error.code != "SERVICE_STOPPED":
+                    raise
+            else:
+                raise DomainError("SERVICE_UNAVAILABLE",
+                    "The managed authority exited before an explicit service stop", status=503)
+        return None
+    if args.command == "health":
+        client = client_from_settings(settings, token_path(args))
+        if args.health_action == "apply":
+            from .health import HEALTH_ADAPTER
+
+            command = validate_wire(HEALTH_ADAPTER, json_file(args.command_file))
+            return await client.call("/api/health", command.model_dump(mode="json"))
+        if args.health_action == "apply-evaluation":
+            from .evaluation_health import (
+                compile_evaluation_health_assessment,
+                load_evaluation_health_evidence,
+            )
+            from .health import HealthAssessmentCommand
+
+            command = validate_wire(HealthAssessmentCommand, json_file(args.command_file))
+            adjudication = None
+            if args.adjudication_file is not None:
+                from . import evaluation as evaluation_engine
+                from .evaluation_diagnostics import MAX_INPUT_BYTES
+
+                adjudication = await asyncio.to_thread(
+                    evaluation_engine._read, args.adjudication_file.absolute(), MAX_INPUT_BYTES, private=True)
+            evidence = await asyncio.to_thread(
+                load_evaluation_health_evidence, args.run_dir,
+                expected_manifest_sha256=args.expected_sha256, adjudication=adjudication)
+            snapshot = evidence.manifest.config["gateway"]["required_request"].get("snapshot")
+            views = {}
+            for target in command.input_claims:
+                views[target.id] = await client.call("/api/inspect", {
+                    "ref": "health:claim:" + target.id, "binding_id": command.binding_id,
+                    "snapshot": snapshot, "byte_start": 0, "max_bytes": 4096,
+                })
+            work = await client.call("/api/inspect", {
+                "ref": "health:item:" + command.pending_id, "binding_id": command.binding_id,
+                "snapshot": snapshot, "byte_start": 0, "max_bytes": 4096,
+            })
+            compiled = await asyncio.to_thread(
+                compile_evaluation_health_assessment, evidence, command, current_health_views=views,
+                current_health_work=work, expected_manifest_sha256=args.expected_sha256)
+            operation = await client.call("/api/health", compiled.command.model_dump(mode="json"))
+            return {"operation": operation, "evaluation": compiled.provenance}
+        if args.health_action == "observer":
+            from .health import HealthObserverRequest
+
+            return await client.call("/api/health/observer", HealthObserverRequest(
+                binding_id=args.binding).model_dump(mode="json"))
+        from .health_producer import load_health_preparation, register_health_workspace
+        from .hosts import load_receipt
+
+        receipt = load_receipt(args.receipt)
+        if (settings.deployment_id != receipt["deployment_id"]
+                or settings.base_url.rstrip("/") != receipt["base_url"].rstrip("/")):
+            raise DomainError("HEALTH_WORKSPACE_SCOPE", "Registration and the explicit native receipt require one authority")
+        return await asyncio.to_thread(register_health_workspace, receipt,
+                                       load_health_preparation(args.prepared_file), client)
+    if args.command == "stdio":
+        from .stdio import RelayEndpoint, run_stdio
+
+        endpoint = RelayEndpoint(
+            base_url=settings.base_url, state_dir=settings.state_dir, deployment_id=settings.deployment_id,
+            max_http_body_bytes=settings.max_http_body_bytes,
+            max_mcp_response_bytes=settings.max_mcp_response_bytes, remote_settings=settings,
+        ) if isinstance(settings, RemoteClientSettings) else settings
+        await run_stdio(endpoint, token_path(args))
         return None
     if args.command in {"context", "record", "feedback", "capture", "inspect", "correct"}:
-        client = LocalClient(settings.base_url, token_path(args))
+        client = client_from_settings(settings, token_path(args))
         if args.command == "context":
             command = ContextCommand(
                 binding_id=args.binding,
@@ -349,6 +679,7 @@ async def execute(args) -> dict | None:
                 host=args.host,
                 snapshot=args.snapshot,
                 causal_operation=args.causal_operation,
+                code_workspace_id=args.code_workspace_id,
                 max_bytes=args.max_bytes,
                 limit=args.limit,
             )
@@ -357,17 +688,75 @@ async def execute(args) -> dict | None:
         elif args.command == "feedback":
             command = FeedbackCommand(binding_id=args.binding, idempotency_key=args.key, target_ref=args.ref, kind=args.kind, body=text_file(args.body_file) if args.body_file else None)
         elif args.command == "inspect":
-            return await client.call("/api/inspect", {
+            payload = {
                 "binding_id": args.binding, "ref": args.ref, "snapshot": args.snapshot,
                 "byte_start": args.byte_start, "max_bytes": args.max_bytes, "claim_ids": args.claim_id,
                 "rejection_cursor": args.rejection_cursor,
-            })
+            }
+            if args.complete:
+                return await inspect_complete(client, payload, args.max_total_bytes)
+            return await client.call("/api/inspect", payload)
         else:
             command = validate_wire(CaptureCommand, json_file(args.envelope_file))
             if args.command == "correct":
                 return await client.call("/api/correct", {"target_ref": args.ref, "source": command.model_dump(mode="json")})
         return await client.call("/api/" + args.command, command.model_dump(mode="json"))
+    if isinstance(settings, RemoteClientSettings):
+        if args.command == "host-install":
+            return await _install_remote_host(args, settings)
+        if args.command == "doctor":
+            from .readiness import ensure_remote_ready
+            from .service import service_status
+
+            return {
+                "connection": await asyncio.to_thread(ensure_remote_ready, settings),
+                "authentication_checked": False,
+                "client_service": await asyncio.to_thread(service_status, settings),
+                "native_memory": native_observation,
+            }
+        raise DomainError("REMOTE_COMMAND_UNSUPPORTED", "This operation requires a server-only authority configuration", status=403)
     async with authority(args) as (settings, store, actor):
+        if args.command == "cloud":
+            from .ingress import INGRESS_MAX_BYTES, CloudIngressProfile, configure_ingress
+
+            if actor.role != Role.OPERATOR:
+                raise DomainError("ROLE_DENIED", "Only the server operator can configure public ingress", status=403)
+            if not args.ack_remote_storage:
+                raise DomainError("REMOTE_STORAGE_ACK_REQUIRED", "Explicitly approve this authority serving authorized remote clients", status=403)
+            profile = validate_wire(CloudIngressProfile, decode_json(private_read(args.ingress_file, INGRESS_MAX_BYTES)))
+            if profile.oauth is not None:
+                for mapping in profile.oauth.mappings:
+                    await store.authenticate_external(
+                        mapping.credential_id, mapping.generation, roles=(Role.AGENT, Role.PRODUCER),
+                    )
+            published = False
+            try:
+                async with store.operator_authority(actor):
+                    try:
+                        path = configure_ingress(settings, profile)
+                    except OSError:
+                        raise DomainError(
+                            "INGRESS_CONFIG_INVALID",
+                            "Ingress publication completion is unconfirmed; inspect the current policy before explicitly retrying",
+                            status=503, effect=EffectState.UNKNOWN,
+                        ) from None
+                    published = True
+            except DomainError as error:
+                if published:
+                    error.effect = EffectState.COMMITTED
+                raise
+            except OSError:
+                raise DomainError(
+                    "DATABASE_UNAVAILABLE",
+                    "Authority completion is unconfirmed; inspect the published ingress policy before explicitly retrying",
+                    status=503, effect=EffectState.COMMITTED if published else EffectState.UNKNOWN,
+                ) from None
+            return {
+                "ingress_file": str(path), "public_origin": profile.public_origin,
+                "auth_mode": profile.auth_mode, "tls_proxy": profile.tls_proxy,
+                "deployment_id": settings.deployment_id, "realm": settings.realm,
+                "activation": "next_service_start",
+            }
         if args.command == "host-install":
             from .hosts import install_host
 
@@ -391,7 +780,11 @@ async def execute(args) -> dict | None:
             if args.project_action == "add":
                 binding = await store.register_binding(actor, args.label, str(args.locator.resolve()) if args.locator else None, args.key)
                 result = binding.model_dump(mode="json")
-                judge = await grant_new_binding(settings, store, actor, binding.id)
+                try:
+                    judge = await grant_new_binding(settings, store, actor, binding.id)
+                except DomainError as error:
+                    error.effect = EffectState.COMMITTED
+                    raise
                 if judge is not None:
                     result["judge"] = judge
                 return result
@@ -428,13 +821,14 @@ async def execute(args) -> dict | None:
             return await store.stats(actor, resolve_binding(actor, args.binding), args.snapshot)
         if args.command == "doctor":
             projects = await store.list_bindings(actor)
+            judge_view = describe(settings, load_state(settings), operator=True)
             return {
                 "deployment_id": settings.deployment_id,
                 "realm": settings.realm,
                 "mode": settings.mode,
                 "capability": settings.capability,
-                "memory_judgment": "current_coding_agent" if load_state(settings).provider == "agent" else "jev_background_personal_opt_in",
-                "judge": describe(settings, load_state(settings), operator=True),
+                "memory_judgment": judge_view["source_judgment"],
+                "judge": judge_view,
                 "recall": "candidate_manifest_then_explicit_relevance",
                 "projects": len(projects),
                 "journal": store.journal.verify(),
@@ -442,13 +836,14 @@ async def execute(args) -> dict | None:
                 "cleanup": "pending_work_only",
                 "host_automatic_calls": "require_opt_in_adapter",
                 "human_presence": "not_proven_by_local_bearer",
+                "native_memory": native_observation,
             }
         if args.command == "await":
             binding = resolve_binding(actor, args.binding)
             deadline = time.monotonic() + args.deadline
             while time.monotonic() < deadline:
                 operation = await store.operation(actor, binding, args.operation)
-                if operation.state in {"captured", "selection_recorded", "candidate_ready", "semantic_ready", "blocked", "failed", "retracted"}:
+                if operation.state in {"captured", "selection_recorded", "candidate_ready", "semantic_ready", "health_recorded", "blocked", "failed", "retracted"}:
                     return operation.model_dump(mode="json")
                 await asyncio.sleep(0.25)
             raise DomainError("OPERATION_PENDING", "The durable operation has not reached a terminal state")
@@ -519,19 +914,66 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--config", type=Path, default=Path.home() / ".config/agents-memory/personal.json")
     root.add_argument("--token-file", type=Path)
     commands = root.add_subparsers(dest="command", required=True)
+    evaluation = commands.add_parser("evaluation", help="Frozen actual evaluation; no native configuration or approval changes")
+    evaluation_actions = evaluation.add_subparsers(dest="evaluation_action", required=True)
+    for action in ("prepare", "run", "report", "gateway"):
+        evaluation_parser = evaluation_actions.add_parser(action)
+        evaluation_parser.add_argument("--run-dir", type=Path, required=True, help="Absolute private retained run directory")
+        if action != "report":
+            evaluation_parser.add_argument("--manifest", type=Path, required=True, help="One complete frozen execution manifest")
+            evaluation_parser.add_argument("--expected-sha256", required=True, help="SHA256 of exact original manifest file bytes")
+        else:
+            evaluation_parser.add_argument("--adjudication-file", type=Path,
+                help="Private read-only independent judgments bound to this exact manifest and actual final context")
+        if action == "gateway":
+            evaluation_parser.add_argument("--invocation-id", required=True)
+    health = commands.add_parser("health", help="Explicit bounded health control; no implicit native activation or model egress")
+    health_actions = health.add_subparsers(dest="health_action", required=True)
+    health_apply = health_actions.add_parser("apply", help="Submit one complete strict health command; retain its exact retry key")
+    health_apply.add_argument("--command-file", type=Path, required=True)
+    health_evaluation = health_actions.add_parser(
+        "apply-evaluation", help="Attach retained measured evidence to one explicit health judgment; not human approval")
+    health_evaluation.add_argument("--run-dir", type=Path, required=True)
+    health_evaluation.add_argument("--command-file", type=Path, required=True)
+    health_evaluation.add_argument("--expected-sha256", required=True, help="Expected original frozen execution manifest SHA256")
+    health_evaluation.add_argument("--adjudication-file", type=Path,
+        help="Optional exact-manifest independent judgments; never inferred from task success")
+    health_observer = health_actions.add_parser("observer", help="Read producer-safe metadata, never source or claim bodies")
+    health_observer.add_argument("--binding", required=True)
+    prepare = health_actions.add_parser("workspace-prepare", help="Persist a private frozen registration; does not activate health")
+    prepare.add_argument("--receipt", type=Path, required=True)
+    prepare.add_argument("--workspace-id", required=True, help="Reserved global identity beginning workspace_ or workspace-")
+    prepare.add_argument("--producer-credential-id", required=True)
+    prepare.add_argument("--binding-revision", type=int, required=True)
+    prepare.add_argument("--workspace-revision", type=int, required=True)
+    prepare.add_argument("--key", required=True)
+    prepare.add_argument("--next-agent", action="store_true", help="Opt into a hint for the next already-authorized native context")
+    prepare.add_argument("--reuse-prepared", type=Path, help="Retain the exact root identity for an explicitly revised registration")
+    prepare.add_argument("--prepared-file", type=Path, required=True, help="New private frozen file; never overwritten")
+    register = health_actions.add_parser("workspace-register", help="Register the frozen command and activate only after current authority confirmation")
+    register.add_argument("--receipt", type=Path, required=True)
+    register.add_argument("--prepared-file", type=Path, required=True, help="Reuse unchanged after an ambiguous response; never regenerate its root nonce")
+    observe = health_actions.add_parser("observe", help="Observe linked paths, or explicit bootstrap paths; upload metadata only")
+    observe.add_argument("--receipt", type=Path, required=True)
+    observe.add_argument("--paths-file", type=Path, help="Bounded JSON array of relative_path and symbol_names; no recursive discovery")
     hook = commands.add_parser("host-hook")
     hook.add_argument("--receipt", type=Path, required=True)
     hook.add_argument("--envelope", action="store_true")
     relay = commands.add_parser("host-stdio")
     relay.add_argument("--receipt", type=Path, required=True)
+    native = commands.add_parser("native-status", help="Read native activation and memory metadata; never change trust/settings or connect to the memory DB")
+    native.add_argument("--project", type=Path, required=True)
+    native.add_argument("--host", choices=("claude", "codex", "omp"), required=True)
+    native.add_argument("--codex-executable", type=Path, help="Opt into bounded config/read and hooks/list over this explicit Codex executable")
     install = commands.add_parser("host-install")
     install.add_argument("--project", type=Path, required=True)
     install.add_argument("--binding", required=True)
     install.add_argument("--host", choices=("claude", "codex", "omp"), required=True)
     install.add_argument("--agent-token-file", type=Path, required=True)
     install.add_argument("--producer-token-file", type=Path, required=True)
-    install.add_argument("--strict", action="store_true")
+    install.add_argument("--strict", action="store_true", help="Require supported native protection; Codex and OMP refuse installation, never downgrade")
     install.add_argument("--prompt-recall", action="store_true", help="Opt into bounded candidate retrieval before each native prompt")
+    install.add_argument("--ack-remote-storage", action="store_true", help="Approve native capture storage at the explicit remote authority; does not enable Jev")
     uninstall = commands.add_parser("host-uninstall")
     uninstall.add_argument("--project", type=Path, required=True)
     uninstall.add_argument("--host", choices=("claude", "codex", "omp"), required=True)
@@ -559,8 +1001,12 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--port", type=int, default=8768)
     init.add_argument("--resume", action="store_true", help="Resume only an authenticated matching initialization intent")
     init.add_argument("--judge", choices=("agent", "jev"),
-                      help="Source judge provider; a personal terminal asks when omitted, otherwise agent")
+                      help="Source judge provider; an interactive terminal asks when omitted, otherwise agent")
     init.add_argument("--jev-key-file", type=Path, help="Jev API key file for --judge jev; read once into private state")
+    init.add_argument("--jev-policy", choices=("allow", "deny"),
+                      help="Independent Jev egress policy; denied unless explicitly allowed")
+    init.add_argument("--ack-jev-egress", action="store_true",
+                      help="Acknowledge approved source transfer to api.typesafe.ai in the US")
     for action in ("backup", "restore", "restore-recover"):
         operation = commands.add_parser(action)
         operation.add_argument("--age-binary", type=Path, required=True)
@@ -597,8 +1043,24 @@ def parser() -> argparse.ArgumentParser:
         if action in {"retry", "discard"}:
             operation.add_argument("--key", required=True)
     commands.add_parser("serve")
+    commands.add_parser("service-run", help="Internal entrypoint for the owned login service")
+    commands.add_parser("client-run", help="Run the PC-owned remote capture recovery loop")
+    client = commands.add_parser("client").add_subparsers(dest="client_action", required=True)
+    configure = client.add_parser("configure")
+    configure.add_argument("--profile-file", type=Path, required=True)
+    configure.add_argument("--ca-file", type=Path)
+    configure.add_argument("--ack-remote-storage", action="store_true")
+    cloud = commands.add_parser("cloud").add_subparsers(dest="cloud_action", required=True)
+    ingress = cloud.add_parser("configure")
+    ingress.add_argument("--ingress-file", type=Path, required=True)
+    ingress.add_argument("--ack-remote-storage", action="store_true")
+    service = commands.add_parser("service", help="Manage the owned macOS login service without needing a live DB").add_subparsers(
+        dest="service_action", required=True)
+    for action in ("install", "start", "stop", "status", "uninstall"):
+        service.add_parser(action)
     commands.add_parser("stdio")
-    commands.add_parser("doctor")
+    doctor = commands.add_parser("doctor")
+    doctor.add_argument("--project", type=Path, help="Include read-only native memory coexistence metadata for this explicit project")
     stats = commands.add_parser("stats")
     stats.add_argument("--binding")
     stats.add_argument("--snapshot")
@@ -617,6 +1079,10 @@ def parser() -> argparse.ArgumentParser:
     judge = commands.add_parser("judge", help="Inspect or choose who judges captured sources").add_subparsers(
         dest="judge_action", required=True)
     judge.add_parser("status")
+    policy = judge.add_parser("policy", help="Grant or revoke independent Jev source-egress permission")
+    policy.add_argument("policy", choices=("allow-jev", "deny-jev"))
+    policy.add_argument("--ack-egress", action="store_true",
+                        help="Acknowledge approved source transfer to api.typesafe.ai in the US")
     choose = judge.add_parser("set")
     choose.add_argument("provider", choices=("agent", "jev"))
     choose.add_argument("--key-file", type=Path, help="Jev API key file read once; the service keeps a private 0600 copy")
@@ -643,6 +1109,7 @@ def parser() -> argparse.ArgumentParser:
     context.add_argument("--host", choices=("generic", "claude", "codex", "omp", "agent-flow"), default="generic")
     context.add_argument("--snapshot")
     context.add_argument("--causal-operation")
+    context.add_argument("--code-workspace-id", help="Explicit observed worktree identity; never inferred from the project locator")
     context.add_argument("--max-bytes", type=int, default=2400)
     context.add_argument("--limit", type=int, default=3)
     record = commands.add_parser("record")
@@ -665,6 +1132,8 @@ def parser() -> argparse.ArgumentParser:
     inspect.add_argument("--max-bytes", type=int, default=4096, help="Byte budget (1–4096); stored JSON windows must be reassembled before decoding")
     inspect.add_argument("--claim-id", action="append", help="Select claims only for ref=judgment admission, without byte-window arguments")
     inspect.add_argument("--rejection-cursor", help="Continue rejection history only for a source ref")
+    inspect.add_argument("--complete", action="store_true", help="Reassemble and digest-check stored JSON windows; not source or catalog pagination")
+    inspect.add_argument("--max-total-bytes", type=int, default=1048576, help="Complete stored JSON ceiling, up to 8388608 bytes")
     for name in ("capture", "correct"):
         capture = commands.add_parser(name)
         capture.add_argument("--envelope-file", type=Path, required=True)

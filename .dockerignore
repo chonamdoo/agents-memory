@@ -1,0 +1,15 @@
+**
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!src/
+!src/agents_memory/
+!src/agents_memory/*.py
+!src/agents_memory/migrations/
+!src/agents_memory/migrations/*.py
+!src/agents_memory/migrations/versions/
+!src/agents_memory/migrations/versions/*.py
+!src/agents_memory/host_templates/
+!src/agents_memory/host_templates/__init__.py
+!src/agents_memory/host_templates/omp.ts

@@ -16,7 +16,7 @@
 | Host | hosts/spool/client/host_templates 및 대응 회귀, 공통 source-secret guard와의 연결 |
 | Docs | README/requirements/architecture/이 구현 계약, 기존 architecture9–10절의 시나리오·trial 정의 |
 
-writer는 build/lint/tests/formatter·live service·native trust/설정·git publication을 실행하지 않는다. 통합 owner가 모든 writer 완료 후 선언된 `uv run ruff check src tests`, `uv run pytest -q`, `uv build`와 실제 isolated PG/API/SDK/native 시나리오를 실행한다. in-session worker는 공식 confined native reviewer를 대체하지 않는다. 현재 문서 갱신은 이 검증을 실행하지 않았다. 원격 push/PR/merge와 기존 research 변경은 별도 승인이다.
+협업자와 integration owner 모두 로컬 test·collection/collect-only·ruff/lint·build·syntax/format·reproduction·추가 smoke를 실행하지 않는다. 실제 검증은 GitHub Actions 병렬에서만 수행하며 exact SHA·전체 분모·원본 실패·wheel·cleanup·aggregate를 보존한다. 초기 계획의 로컬 `uv run ruff check src tests`, `uv run pytest -q`, `uv build` 절차는 최신 CI-only 지시로 대체됐다. native/운영은 허용된 실제 대상이 없으면 blocked이고 Linux fixture로 대체하지 않는다. in-session worker는 공식 confined native reviewer가 아니며 checkpoint 게시를 final 검증·merge·출시 승인으로 바꾸지 않는다.
 
 ## 설정·CLI·명시적 upgrade
 
@@ -36,7 +36,17 @@ stage-0 run `development/20261015-043508`이 추가한 설정: `max_concurrent_r
 
 ## 네 MCP 도구·strict 입력
 
-modern/legacy official SDK edge·private API·CLI는 같은 typed handler/decoder를 사용한다. `memory_context`, `memory_inspect`, `memory_record`, `memory_feedback`만 agent-plane에 노출한다. 연결 instructions/corpus/rule body는0이며 직접 만든 `CallToolResult`의 TextContent 한 plane으로 반환한다. stdio/client는 인증 HTTP relay이고 별도 DB/engine을 만들지 않는다.
+modern/legacy official SDK edge·private API·CLI는 같은 typed handler/decoder를 사용한다. `memory_context`, `memory_inspect`, `memory_record`, `memory_feedback`만 agent-plane에 노출한다. 연결 instructions/corpus/rule body는0이며 직접 만든 `CallToolResult`의 TextContent 한 plane으로 반환한다. stdio/client는 loopback HTTP 또는 explicit verified HTTPS relay이며 별도 DB/engine을 만들지 않는다.
+
+### 원격 authority·PC client
+
+- 서버 ingress profile은0600 별도 파일이다. canonical HTTPS origin·deployment/realm·bearer 또는 고정 issuer/audience/public JWKS/scope/subject/client_id→현재 PG credential generation 매핑을 검증한다. 매 요청/session의 role/grant를 재인증하며 remote operator bootstrap은 없다.
+- Compose는 독립 Caddy/app namespace와 private backend network를 사용한다. private mode의 `serve`만 backend에 bind하고 exact RFC1918 `trusted_proxy_ip`+XFPhttps를 요구한다. Caddy 외 peer의 local Host 위조도 차단한다. backend 미publish·Caddy의 app state/journal/DB socket 미mount·기존 Unix socket SCRAM 권한을 유지한다.
+- PC `RemoteClientSettings`는 `kind=remote_client,version=1`과 HTTPS origin/identity/mode/bounds/private state/auth mode/public CA digest만 가진다. DSN/operator를 금지한다. private CA·no proxy/redirect·absolute body deadline·DB/identity readiness 이후 token을 전송한다.
+- `/api/client-bootstrap`은 현재 agent/producer의 분리된 credential·role·one-binding grant/revision·bounds만 반환한다. 같은 operator가 발급한 두 credential은 `Store.issue_token` 계약상 같은 `principal_id`를 가지므로 credential 분리를 독립 principal identity로 표현하지 않는다. host-install은 두 응답을 대조하고 remote receipt에 profile을 고정한다. cloud는 PC locator를 stat하지 않는다.
+- remote `service`는 PC capture recovery만 관리한다. stop intent·unsafe SQLite·CA drift를 전송/enable 전에 검사하고 새 event 없이 bounded spool을 비운다. offline stop/uninstall은 server token/CA/network 없이 owned 설정만 제거하고 pending/foreign native entry를 보존한다.
+- `SESSION_NOT_FOUND/404/not_started`만 reinitialize+원 요청1회 재전송한다. unknown/dispatched write는 자동 재전송하지 않는다. selected Jev 실패는 pending·visible unavailable이며 coding-agent 자동 fallback이 아니다.
+
 
 ### source_selection
 
@@ -50,7 +60,7 @@ modern/legacy official SDK edge·private API·CLI는 같은 typed handler/decode
 - `rejection_comparisons` 최대16개: unique `{rejection_id,decision:"unrelated"|"reopen",reason}`. 직접 비교는 현재 inspected IDs이며 reopen 집합만 그 command의 prior_rejection_ids와 같아야 한다. 기본 필수 관련 후보는 최대8개이고 전체 history 순회는 게시 조건이 아니다. 선택적 `rejection_cursor="history"`는 raw32개/eligible8개 이내 live page이며 empty page도 next cursor가 있으면 계속한다. 같은 원문 window/snapshot의 review selection을 최대16개 rejection_review_ids로 연결할 수 있다. remember는 필수 후보+explicit prior를 직접/receipt로 덮고 receipt의 reopening ref는 최종 prior에 재나열하지 않는다. 모든 label의 metadata·fingerprint를 검증하고 무관한 신규 history로 과거 비교를 무효화하지 않는다.
 - optional `extraction: GeneratedExtraction`; remember만 extraction을 받을 수 있다. remember-only 또는 zero-claim은 selection_recorded, 유효 claim 게시만 candidate_ready다.
 
-`GeneratedExtraction`은 `claims`(최대32), `individual_qualifications`/`shared_qualifications`(각64), `validities`(32), `unused_span_ids`(128)를 갖는다. assertion은 assertion ID와 original span ID를 사용하고 condition/exception/context 및 validity의 evidence span을 명시한다. `resolve_selection()`은 exact source/binding/snapshot/contract/window digest·original UTF-8·inventory/qualification/literal grounding을 검증하고 absolute original offsets로 바꾼다. 누락/원문 없는 숫자·identifier·qualification은 거절하며 window/policy 변경은 SELECTION_STALE다. 원문 정규화/derivative rewrite·사실 entailment 보장·모델 호출은 없다.
+`GeneratedExtraction`은 `claims`(최대32), `individual_qualifications`/`shared_qualifications`(각64), `validities`(32), `unused_span_ids`(128)를 갖는다. assertion ID는 `a0000`처럼 `a`+숫자4자리다. 단일 assertion의 condition/exception은 individual qualification이고 shared는 적어도2개 assertion을 요구한다. 검색 가능한 기억은 remember와 extraction을 원자적으로 제출해야 한다. complete remember-only는 claim 없이 창을 점유하며 나중에 extraction을 덧붙이지 못한다. `resolve_selection()`은 exact source/binding/snapshot/contract/window digest·원래 UTF-8·inventory/qualification/literal grounding을 검증하고 absolute original offsets로 바꾼다. 조건·예외·validity·unused original span을 보존한다. 근거 없는 새 숫자·identifier·qualification은 거절하며 window/policy 변경은 `SELECTION_STALE`다. 원문 normalization/derivative rewrite·사실 entailment 보장·모델 호출은 없다.
 
 speaker `agent_note`는 raw log/inspection만 보존하고 새 source-selection admission·pending·독립 backlog를 만들지 않는다. note-only 기억과 memory/injected echo는 독립 grounding이 아니며 과거 note discard도 인간 근거의 필수 비교를 오염시키지 않는다. human/tool/document 역시 declared provenance이지 인간 현존·진실성·approval의 보장은 아니다.
 
@@ -65,7 +75,7 @@ speaker `agent_note`는 raw log/inspection만 보존하고 새 source-selection 
 
 `memory_inspect(ref="judgment",claim_ids=[...])`/cleanup ref의 complete claims/sources/snapshot/admission_id/manifest_digest를 사용한다. 최대20 claims·128개 현재 logical relation ref/요약8개이며 overflow를 숨기지 않는다. 각 판단은 같은 pair/manifest라도 자기 asserted edge와 전체 actual-input dependency를 독립 소유한다. 자기 edge가 사라지면 완전한 judgment로 공개하지 않고 독립 적격 derivation은 남긴다. logical read의 dedup은 eligibility 검사 뒤 bound 전에 한다. 공개 duplicate는 저장 duplicates를 정규화한 하나의 이름이다. agent는 원문·부정·조건·예외·modality·scope·valid time·독립 origin을 판단한다. 반대 polarity/qualification 손실/disjoint validity는 JUDGMENT_RELATION_INVALID이며 recorded time은 supersession 근거가 아니다. 관계 판단은 required rule 활성화·source 삭제 권한이 아니다.
 
-`RecordInput`/`RECORD_ADAPTER`는 note/rule_candidate `RecordCommand`, `SourceSelectionCommand`, `ClaimJudgmentCommand`의 strict discriminated union이다. flat MCP root schema도 variant별 required/allowed 필드를 유지한다. tools/list는 presentation-only title만 제거하고 validation constraints/refs는 유지한다. snapshot secret·범위 밖 cursor·잘못된 ref/claim_ids/rejection_cursor 조합은 admission 저장 전에 거절한다. native provider의 schema 수용은 실제 관측 대상이며 JSON Schema 정의만으로 native 호환 pass를 주장하지 않는다.
+`RecordInput`/`RECORD_ADAPTER`는 note/rule_candidate `RecordCommand`, `SourceSelectionCommand`, `ClaimJudgmentCommand`의 strict discriminated union이다. flat MCP root schema는 variant별 required/allowed/null/default 제약을 유지한다. tools/list는 presentation title 제거·동일 schema node의 이득이 있는 참조 factoring·`$defs`/ref 이름 단축으로 최대 escaped JSON-RPC ID의 전체 wire 상한을 지킨다. default/data/property 이름을 schema처럼 재작성하거나 응답 상한을 올리지 않는다. snapshot secret·범위 밖 cursor·잘못된 ref/claim_ids/rejection_cursor는 admission 저장 전에 거절한다. 실제 native provider 수용은 별도 관측이며 JSON Schema 정의로 native 호환 pass를 주장하지 않는다.
 
 ### 두 호출 memory_context
 
@@ -161,4 +171,4 @@ Claude prompt attribution, Codex child/hosted tool, OMP print/ACP·후속 provid
 
 이 결과는 이번 common agent_judged 전환의 QA·native compatibility·elapsed trial·의미 품질·회사 운영 enablement 증거가 아니다. 현재 acceptance는 architecture9절 A01–A16, PMPA P01–P04, secret/content reentry R01–R05, hostnative H01–H04와 공식 explore S1–S12다. 모든 항목은 실제 executor·입력 revision·expected/observed result·미관측 경계를 구분해 integration owner가 기록한다.
 
-1–2주 paired memory-on/off 제한 trial의 frozen task/corpus·동일 host/model/budget·required 보호·native 잔류 제외·수동 지표·즉시 중단·판정 기준은 architecture10절이 정본이다. **trial은 시작하지 않았고 measured benefit은 없다.** 건강/health metrics 기능·cloud provisioning·publication은 이번 범위 밖이다.
+1–2주 paired memory-on/off 제한 trial의 frozen task/corpus·동일 host/model/budget·required 보호·native 잔류 제외·수동 지표·즉시 중단·판정 기준은 architecture10절이 정본이다. **trial 미시작·measured benefit 없음**을 유지한다. 최신 명시 지시의 네 제한 health 경로와 평가 engineering은 별도 구현 대상이며 현재 통합 smoke·새 whole-source review/QA는 미완료다. metrics/dashboard/telemetry·물리 retention/coalesce·전면 transcript 재수집·cloud provisioning·native trust·merge/release 승인은 포함하지 않는다.

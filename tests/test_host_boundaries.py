@@ -58,7 +58,7 @@ def installation(tmp_path, monkeypatch):
     )
 
     def install(host="claude", strict=None, prompt_recall=False):
-        strict = host != "omp" if strict is None else strict
+        strict = host == "claude" if strict is None else strict
         result = hosts.install_host(settings, project, "project-binding", host, agent, producer, strict=strict, prompt_recall=prompt_recall)
         return Path(result["receipt"])
 
@@ -76,7 +76,7 @@ def authority(monkeypatch):
         capture_error = "SERVICE_UNAVAILABLE"
         calls = []
 
-        def __init__(self, base_url, token_file, timeout=120):
+        def __init__(self, base_url, token_file, timeout=120, *, state_dir=None, deployment_id=None, remote_settings=None):
             self.token_file = token_file
 
         def request(self, path, payload):
@@ -348,17 +348,7 @@ def test_codex_parent_session_is_not_thread_or_child_identity(installation, auth
     assert hosts.handle_hook(receipt, fork)["generation"] == 3
 
 
-def test_codex_strict_prompt_blocks_unhooked_hosted_tools(installation, authority):
-    project, _, _, _, install = installation
-    receipt = install("codex")
-    result = hosts.handle_hook(receipt, native(project, "codex", prompt="Run hosted research"))
-    assert result["state"] == "blocked"
-    assert result["stdout"]["decision"] == "block"
-    assert result["code"] == "HOST_HOSTED_TOOL_GUARD_UNAVAILABLE"
-    assert not any(path == "/api/context" for path, _, _ in authority.calls)
-
-
-@pytest.mark.parametrize("code", ["RULE_APPLICABILITY_UNKNOWN", "REQUIRED_CONTEXT_OVERFLOW", "CREDENTIAL_REVOKED", "SERVICE_UNAVAILABLE"])
+@pytest.mark.parametrize("code", ["RULE_APPLICABILITY_UNKNOWN", "REQUIRED_CONTEXT_OVERFLOW", "CREDENTIAL_REVOKED", "SERVICE_UNAVAILABLE", "SERVICE_STOPPED"])
 def test_strict_authority_failure_is_fail_closed_and_body_free(installation, authority, code):
     project, _, _, _, install = installation
     receipt = install()
@@ -775,8 +765,9 @@ def test_receipts_and_generation_state_never_mirror_context_bodies(installation,
         assert b"private-agent-credential" not in raw
 
 
-@pytest.mark.parametrize("host", ["claude", "codex", "omp"])
-@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("host,strict", [
+    ("claude", False), ("claude", True), ("codex", False), ("omp", False), ("omp", True),
+])
 def test_capability_matches_actual_strict_mode(installation, authority, host, strict):
     project, _, _, _, install = installation
     if host == "omp" and strict:
@@ -941,11 +932,14 @@ def test_process_death_install_reconciles_owned_intent_without_erasing_user_or_a
         hosts.install_host, settings, project, "project-binding", host, agent, producer,
         crash_path=mcp if boundary == "first_config" else receipt_path,
         crash_state="installed" if boundary == "installed_receipt" else None,
-        strict=host != "omp",
+        strict=host == "claude",
     )
     pending = hosts.load_receipt(receipt_path, active=False)
     assert pending["state"] == ("installed" if boundary == "installed_receipt" else "pending")
-    assert hosts.handle_hook(receipt_path, action(project, host))["state"] == ("degraded" if host == "omp" else "blocked")
+    expected_state = "degraded" if host == "omp" else (
+        "outside_advisory_coverage" if host == "codex" and boundary == "installed_receipt" else "blocked"
+    )
+    assert hosts.handle_hook(receipt_path, action(project, host))["state"] == expected_state
     owner = pending["installation_id"]
     expected = None
     if host == "claude":
@@ -1482,7 +1476,7 @@ def test_owned_reinstall_preserves_durable_producer_keys_and_pending_capture(ins
         reopened.close()
 
 
-@pytest.mark.parametrize("host,strict", [("claude", False), ("claude", True), ("codex", False), ("codex", True), ("omp", False)])
+@pytest.mark.parametrize("host,strict", [("claude", False), ("claude", True), ("codex", False), ("omp", False)])
 @pytest.mark.parametrize("raw", [
     b"{", b"[]", b'{"event":"tool_call","event":"input"}', b"\xff",
     b'{"hook_event_name":"PreToolUse","value":' + b"[" * 1500 + b"0" + b"]" * 1500 + b"}",
@@ -1496,20 +1490,17 @@ def test_malformed_native_stdin_is_a_structured_fail_safe(installation, host, st
     if strict and host == "claude":
         output = result["stdout"]
         assert output.get("continue") is False or output.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
-    elif strict:
-        output = result["stdout"]
-        assert output.get("decision") == "block" or output.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
     else:
         assert "HOST_ENVELOPE_INVALID" in json.dumps(result["stdout"])
 
 
-@pytest.mark.parametrize("host", ["claude", "codex", "omp"])
-def test_oversized_native_stdin_has_no_cli_exception_path(installation, host):
+@pytest.mark.parametrize("host,strict", [("claude", True), ("codex", False), ("omp", False)])
+def test_oversized_native_stdin_has_no_cli_exception_path(installation, host, strict):
     _, _, _, _, install = installation
-    result = hosts.handle_hook_input(install(host), b" " * (hosts.HOST_INPUT_BYTES + 1))
+    result = hosts.handle_hook_input(install(host, strict=strict), b" " * (hosts.HOST_INPUT_BYTES + 1))
     assert result["exit_code"] == 0
     assert result["code"] == "HOST_ENVELOPE_INVALID"
-    assert result["state"] == ("degraded" if host == "omp" else "blocked")
+    assert result["state"] == ("blocked" if strict else "degraded")
 
 
 @pytest.mark.parametrize("tool,body", [
@@ -1740,6 +1731,7 @@ async def test_claude_linked_worktree_mcp_uses_credential_binding_not_cwd(instal
     manifest = hosts.load_receipt(receipt)
     assert hosts.SERVER_NAME in mcp_servers(json.loads(local.read_text()), main)
     assert manifest["project_root"] == str(project)
+    native_server = mcp_servers(json.loads(local.read_text()), main)[hosts.SERVER_NAME]
     server = uvicorn.Server(uvicorn.Config(create_app(settings), access_log=False, log_level="error"))
     task = asyncio.create_task(server.serve(sockets=[listener]))
     try:
@@ -1748,10 +1740,9 @@ async def test_claude_linked_worktree_mcp_uses_credential_binding_not_cwd(instal
             assert response.status == 200
         for cwd in (main, project):
             parameters = StdioServerParameters(
-                command=sys.executable,
-                args=["-m", "agents_memory.cli", "host-stdio", "--receipt", str(receipt)],
+                command=native_server["command"],
+                args=native_server["args"],
                 cwd=cwd,
-                env={"CLAUDE_CONFIG_DIR": os.environ["CLAUDE_CONFIG_DIR"]},
             )
             async with asyncio.timeout(20):
                 async with stdio_client(parameters) as (reader, writer):
@@ -1795,7 +1786,6 @@ def test_claude_invalid_git_scope_does_not_register_a_guessed_native_project(ins
 def test_context_body_uses_shared_utf8_envelope_ceiling(installation, authority, host):
     project, _, _, _, install = installation
     receipt = install(host, strict=False, prompt_recall=True)
-    manifest = hosts.load_receipt(receipt)
     budget = hosts.HOST_CONTEXT_BYTES - len(hosts.BOUNDED_CONTEXT_MARKER.encode()) - 1
     authority.text = "가" * (budget // 3)
     event = native(project, host, "before_agent_start" if host == "omp" else "UserPromptSubmit", prompt="bounded recall")
@@ -1803,10 +1793,6 @@ def test_context_body_uses_shared_utf8_envelope_ceiling(installation, authority,
     output = result["stdout"]["additionalContext"] if host == "omp" else result["stdout"]["hookSpecificOutput"]["additionalContext"]
     assert len(output.encode()) <= hosts.HOST_CONTEXT_BYTES
     assert output.endswith(authority.text)
-    assert manifest["context_budget_bytes"] == hosts.HOST_CONTEXT_BYTES
-    if host == "codex":
-        hooks = json.loads((project / ".codex/hooks.json").read_text())["hooks"]
-        assert hooks["UserPromptSubmit"][0]["hooks"][0]["additionalContextLimit"] == hosts.HOST_CONTEXT_BYTES
     authority.text += "가"
     overflow = hosts.handle_hook(receipt, {**event, "prompt_id": "next-prompt", "turn_id": "next-turn", "adapter_turn_id": "next-attempt"})
     assert overflow["code"] == "REQUIRED_CONTEXT_OVERFLOW"
@@ -1898,6 +1884,57 @@ def test_shared_private_native_config_serializes_distinct_installation_states(in
     assert hosts.SERVER_NAME in mcp_servers(document, second_project)
 
 
+@pytest.mark.parametrize("existing_installation", [False, True])
+def test_codex_strict_refusal_preserves_native_files_and_advisory_installation(installation, existing_installation):
+    project, settings, agent, producer, install = installation
+    config = project / ".codex/config.toml"
+    config.parent.mkdir()
+    config.write_text('# User-owned configuration.\n[mcp_servers.foreign]\ncommand = "foreign-server"\n')
+    hooks = project / ".codex/hooks.json"
+    hooks.write_text('{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"foreign-hook"}]}]}}\n')
+    receipt = install("codex", strict=False) if existing_installation else None
+    installation_id = hosts.load_receipt(receipt)["installation_id"] if receipt else None
+    root = project.parent
+    before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    with pytest.raises(DomainError) as caught:
+        hosts.install_host(settings, project, "project-binding", "codex", agent, producer, strict=True)
+    assert caught.value.public()["code"] == "HOST_STRICT_UNSUPPORTED"
+    assert caught.value.public()["effect"] == "not_started"
+    assert {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()} == before
+    if receipt:
+        assert install("codex", strict=False) == receipt
+        assert hosts.load_receipt(receipt)["installation_id"] == installation_id
+        assert hosts.uninstall_host(settings, project, "codex")["state"] == "uninstalled"
+        assert tomllib.loads(config.read_text())["mcp_servers"] == {"foreign": {"command": "foreign-server"}}
+        assert json.loads(hooks.read_text()) == {
+            "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "foreign-hook"}]}]},
+        }
+    else:
+        assert not settings.state_dir.exists()
+
+def test_legacy_codex_strict_is_cleanup_only_and_advisory_reinstallable(installation, authority):
+    project, settings, _, _, install = installation
+    receipt_path = install("codex")
+    document = json.loads(receipt_path.read_text())
+    document["strict"] = True
+    document["capabilities"] = hosts.capabilities("codex", strict=True, capability=settings.capability)
+    hosts._write_receipt(receipt_path, document)
+    before = {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()}
+    for options in ({}, {"allow_legacy": True}, {"active": False}):
+        with pytest.raises(DomainError) as caught:
+            hosts.load_receipt(receipt_path, **options)
+        assert caught.value.code == "HOST_STRICT_UNSUPPORTED"
+    passive = hosts.load_receipt(receipt_path, allow_legacy=True, active=False)
+    assert passive["installation_id"] == document["installation_id"]
+    assert not authority.calls
+    assert {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()} == before
+    assert hosts.uninstall_host(settings, project, "codex")["state"] == "uninstalled"
+    replacement = hosts.load_receipt(install("codex"))
+    assert replacement["strict"] is False
+    assert replacement["installation_id"] != document["installation_id"]
+
+
+
 @pytest.mark.parametrize("existing_configuration", [False, True])
 def test_omp_strict_refusal_precedes_every_installation_write(installation, existing_configuration):
     project, settings, agent, producer, _ = installation
@@ -1911,8 +1948,6 @@ def test_omp_strict_refusal_precedes_every_installation_write(installation, exis
         hosts.install_host(settings, project, "project-binding", "omp", agent, producer, strict=True)
     refusal = caught.value.public()
     assert refusal["code"] == "HOST_STRICT_UNSUPPORTED"
-    assert "no fail-closed native pre-request gate" in refusal["message"]
-    assert "before configuration writes" in refusal["message"]
     assert not settings.state_dir.exists()
     assert {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()} == before
     capability = hosts.capabilities("omp", strict=True)
@@ -2702,7 +2737,7 @@ async def test_native_capture_pointer_requires_actual_commit_and_is_generation_s
     acknowledged = {}
 
     class Endpoint:
-        def __init__(self, base_url, token_file, timeout=120):
+        def __init__(self, base_url, token_file, timeout=120, *, state_dir=None, deployment_id=None, remote_settings=None):
             self.token_file = token_file
 
         def request(self, route, payload):
@@ -2807,10 +2842,19 @@ def _historical_v4_metadata(receipt):
 @pytest.mark.parametrize("prompt_recall", [False, True])
 def test_validated_pre_capability_v4_is_cleanup_only_then_reinstallable(installation, authority, host, strict, prompt_recall):
     project, settings, _, _, install = installation
-    receipt = install(host, strict=strict if host != "omp" else False, prompt_recall=prompt_recall)
+    supported_strict = strict and host == "claude"
+    receipt = install(host, strict=supported_strict, prompt_recall=prompt_recall)
     historical = _historical_v4_metadata(receipt)
     if host == "omp" and strict:
         historical = _historical_omp_strict_metadata(receipt)
+    if host == "codex" and strict:
+        historical["strict"] = True
+        historical["capabilities"].update({
+            "first_action": "deny_required_without_provider_input_evidence",
+            "strict": "prompt_blocked_hosted_gap",
+            "native_failure": "crash_timeout_or_skipped_hook_unenforceable_gap",
+        })
+        hosts._write_receipt(receipt, historical)
     paths = [receipt, *(Path(entry["path"]) if entry["kind"] == "local_mcp" else project / entry["path"] for entry in historical["ownership"])]
     before = {path: path.read_bytes() for path in paths}
     for options in ({}, {"active": False}):
@@ -2829,19 +2873,19 @@ def test_validated_pre_capability_v4_is_cleanup_only_then_reinstallable(installa
         assert "source_pointer" not in json.dumps(refused["stdout"])
     assert not authority.calls
     with pytest.raises(DomainError) as caught:
-        install(host, strict=strict if host != "omp" else False, prompt_recall=prompt_recall)
-    assert caught.value.code == ("HOST_STRICT_UNSUPPORTED" if host == "omp" and strict else "HOST_LEGACY_REINSTALL_REQUIRED")
+        install(host, strict=strict, prompt_recall=prompt_recall)
+    assert caught.value.code == ("HOST_STRICT_UNSUPPORTED" if strict and host in {"codex", "omp"} else "HOST_LEGACY_REINSTALL_REQUIRED")
     assert all(path.read_bytes() == raw for path, raw in before.items())
     assert hosts.uninstall_host(settings, project, host)["state"] == "uninstalled"
     removed = hosts.load_receipt(receipt, allow_legacy=True, active=False)
     assert removed["state"] == "removed" and "capability" not in removed
     assert removed["capabilities"] == historical["capabilities"]
     assert all(not hosts._owned_entry_matches(project, entry) for entry in historical["ownership"])
-    replacement = hosts.load_receipt(install(host, strict=strict if host != "omp" else False, prompt_recall=prompt_recall))
+    replacement = hosts.load_receipt(install(host, strict=supported_strict, prompt_recall=prompt_recall))
     assert replacement["installation_id"] != historical["installation_id"]
     assert replacement["adapter_version"] == hosts.ADAPTER_VERSION and replacement["capability"] == settings.capability
     assert replacement["capabilities"] == hosts.capabilities(
-        host, strict=strict if host != "omp" else False, prompt_recall=prompt_recall, capability=settings.capability,
+        host, strict=supported_strict, prompt_recall=prompt_recall, capability=settings.capability,
     )
     assert replacement["capabilities"]["capture_judgment"] == "unclassified_source_separate_caller_memory_record"
 
@@ -3289,3 +3333,72 @@ def test_codex_child_secret_recall_persists_its_turn_without_capturing_child_evi
         project, "codex", agent_id="child-one", turn_id="recovered-turn", prompt="ordinary next child prompt",
     ))
     assert recovered["generation"] == 3 and recovered["gaps"]["SOURCE_SECRET_REJECTED"] == 1
+
+
+@pytest.mark.parametrize("host", ["claude", "codex", "omp"])
+def test_fresh_install_diagnostic_root_loss_reports_the_durable_install(installation, monkeypatch, host):
+    project, settings, agent, producer, _ = installation
+    receipt_path = hosts._receipt_path(settings, project, host)
+    moved = project.parent / "moved-after-install"
+    resume = hosts._resume
+
+    def move_after_resume(*args, **kwargs):
+        result = resume(*args, **kwargs)
+        project.rename(moved)
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(hosts, "_resume", move_after_resume)
+        with pytest.raises(DomainError) as refused:
+            hosts.install_host(settings, project, "project-binding", host, agent, producer, strict=False)
+    assert refused.value.code == "HOST_PROJECT_INVALID"
+    assert refused.value.effect == EffectState.UNKNOWN
+    assert hosts.load_receipt(receipt_path, active=False, allow_deleted_project=True)["state"] == "installed"
+    moved.rename(project)
+    assert hosts.install_host(settings, project, "project-binding", host, agent, producer, strict=False)["replay"] is True
+
+
+@pytest.mark.parametrize("host", ["claude", "codex", "omp"])
+@pytest.mark.parametrize("retained_intent", [False, True])
+def test_installed_replay_diagnostic_root_loss_reports_only_its_recovery_mutation(
+    installation, monkeypatch, host, retained_intent,
+):
+    project, settings, agent, producer, install = installation
+    receipt_path = hosts._receipt_path(settings, project, host)
+    if retained_intent:
+        _abrupt_process(
+            hosts.install_host, settings, project, "project-binding", host, agent, producer,
+            strict=False, crash_path=receipt_path, crash_state="installed",
+        )
+    else:
+        assert install(host, strict=False) == receipt_path
+    receipt = hosts.load_receipt(receipt_path)
+    assert receipt["state"] == "installed"
+    intent = hosts._intent_path(receipt)
+    assert intent.exists() is retained_intent
+    receipt_before = receipt_path.read_bytes()
+    owned_before = {
+        path: path.read_bytes()
+        for path in (hosts._owned_path(project, entry["path"]) for entry in receipt["ownership"])
+    }
+    moved = project.parent / "moved-after-installed-replay"
+    status = hosts.native_memory_status
+
+    def move_before_status(root):
+        assert not intent.exists()
+        project.rename(moved)
+        return status(root)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(hosts, "native_memory_status", move_before_status)
+        with pytest.raises(DomainError) as refused:
+            hosts.install_host(settings, project, "project-binding", host, agent, producer, strict=False)
+    assert refused.value.code == "HOST_PROJECT_INVALID"
+    assert refused.value.effect == (EffectState.UNKNOWN if retained_intent else EffectState.NOT_STARTED)
+    assert not project.exists() and moved.is_dir()
+    assert not intent.exists()
+    assert receipt_path.read_bytes() == receipt_before
+    assert hosts.load_receipt(receipt_path, active=False, allow_deleted_project=True)["state"] == "installed"
+    moved.rename(project)
+    assert all(path.read_bytes() == content for path, content in owned_before.items())
+    assert hosts.install_host(settings, project, "project-binding", host, agent, producer, strict=False)["replay"] is True

@@ -7,7 +7,16 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
 
-from .domain import ActiveRule, Claim, ContextCommand, DomainError, Relation, valid_path_pattern
+from .domain import (
+    ActiveRule,
+    Claim,
+    ClaimDraft,
+    ContextCommand,
+    DomainError,
+    EvidenceSpan,
+    Relation,
+    valid_path_pattern,
+)
 
 
 class Match(StrEnum):
@@ -104,11 +113,13 @@ def _rule(rule: ActiveRule, applicability: Match = Match.TRUE) -> dict:
     }
 
 
-def _claim(claim: Claim) -> dict:
-    draft = claim.draft
+def render_claim(
+    ref: str, draft: ClaimDraft, evidence: Sequence[EvidenceSpan], *,
+    snapshot: str | None, interpretation_role: str,
+) -> dict:
     value = {
-        "ref": claim.id,
-        "interpretation_role": claim.interpretation_role,
+        "ref": ref,
+        "interpretation_role": interpretation_role,
         "statement": draft.statement,
         "polarity": draft.polarity,
         "modality": draft.modality,
@@ -118,7 +129,7 @@ def _claim(claim: Claim) -> dict:
             {"source": span.source_id, "revision": span.source_revision, "source_speaker": span.source_speaker,
              **span.model_dump(mode="json", include={"source_event_time", "source_recorded_at"}),
              "bytes": [span.byte_start, span.byte_end], "quote": span.quote}
-            for span in claim.evidence
+            for span in evidence
         ],
     }
     if draft.valid_from is not None or draft.valid_until is not None:
@@ -126,8 +137,8 @@ def _claim(claim: Claim) -> dict:
             draft.valid_from.isoformat() if draft.valid_from else None,
             draft.valid_until.isoformat() if draft.valid_until else None,
         ]
-    if claim.snapshot is not None:
-        value["snapshot"] = claim.snapshot
+    if snapshot is not None:
+        value["snapshot"] = snapshot
     return value
 
 
@@ -208,7 +219,10 @@ def compose(
         prospective_ids = claim_ids | {claim.id}
         candidate = {
             **value,
-            "memory_candidates": [*value["memory_candidates"], _claim(claim)],
+            "memory_candidates": [*value["memory_candidates"], render_claim(
+                claim.id, claim.draft, claim.evidence,
+                snapshot=claim.snapshot, interpretation_role=claim.interpretation_role,
+            )],
             "relations": _touching_edges(relations, prospective_ids),
         }
         if len(_encode(candidate).encode("utf-8")) <= command.max_bytes:

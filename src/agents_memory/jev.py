@@ -107,7 +107,9 @@ def parse_answers(payload: object, questions: Mapping[str, Mapping[str, Any]]) -
 
 
 class SystemOneClient(Protocol):
-    def system_one(self, state: object, questions: Mapping[str, Mapping[str, Any]]) -> JevResult: ...
+    def system_one(
+        self, state: object, questions: Mapping[str, Mapping[str, Any]], *, before_attempt: Callable[[], None],
+    ) -> JevResult: ...
 
 
 class JevClient:
@@ -153,8 +155,12 @@ class JevClient:
         except (ValueError, UnicodeError):
             raise JevFailure("response") from None
 
-    def _with_retries(self, operation: Callable[[], object]) -> object:
+    def _with_retries(
+        self, operation: Callable[[], object], *, before_attempt: Callable[[], None] | None,
+    ) -> object:
         for attempt in range(self.max_retries + 1):
+            if before_attempt is not None:
+                before_attempt()
             try:
                 return operation()
             except JevFailure as failure:
@@ -164,15 +170,18 @@ class JevClient:
                 self._sleep(min(delay, 30.0))
         raise JevFailure("transport")
 
-    def system_one(self, state: object, questions: Mapping[str, Mapping[str, Any]]) -> JevResult:
+    def system_one(
+        self, state: object, questions: Mapping[str, Mapping[str, Any]], *,
+        before_attempt: Callable[[], None] | None = None,
+    ) -> JevResult:
         if not questions:
             raise ValueError("At least one question is required")
         body = json.dumps({"model": self.model, "state": state, "questions": questions},
                           ensure_ascii=False, allow_nan=False).encode("utf-8")
-        payload = self._with_retries(lambda: self._send("POST", "/v1/systemone", body))
+        payload = self._with_retries(lambda: self._send("POST", "/v1/systemone", body), before_attempt=before_attempt)
         return parse_answers(payload, questions)
 
-    def verify(self) -> str:
+    def verify(self, *, before_attempt: Callable[[], None] | None = None) -> str:
         """Check the key and model with a synthetic question; no memory content leaves the machine."""
         questions = {"check": {"type": "noul", "instructions": "Is `state` a short connectivity check message?"}}
-        return self.system_one("agents-memory provider key check", questions).model
+        return self.system_one("agents-memory provider key check", questions, before_attempt=before_attempt).model

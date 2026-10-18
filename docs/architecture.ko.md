@@ -2,11 +2,13 @@
 
 ## 결정
 
-**Python 3.12 + 공식 MCP SDK 2.3 + PostgreSQL 18 authority + 현재 coding-agent 판단**을 사용한다. 개인·회사 모두 MCP 계약은 `agent_judged`다. Claude/Codex 등 consumer가 같은 MCP로 원문 선택·관계·relevance를 판단하고 서버는 span·revision·권한·삭제·snapshot을 검증한다. lexical/entity index는 후보 검색뿐이다. 개인 배포에 한해 operator가 원문 선택·관계 판단 provider를 TypeSafe Jev로 바꿀 수 있다(§2a). 이 경우에도 relevance는 coding agent가 하고 기록은 같은 검증을 거친다. 로컬 모델 gateway·자동 다운로드·provider 자동 fallback은 없고 회사 배포는 Jev를 쓸 수 없다. Agent Flow 없이도 같은 계약을 사용하며 이후 개인 cloud는 같은 schema·handler·규칙 의미의 독립 배포다.
+**Python 3.12 이상 + 공식 MCP SDK 2.3 + PostgreSQL 18 authority + 현재 coding-agent 판단**을 사용한다. PC spool은 별도의 patched SQLite 지원 검사를 통과해야 한다. 공통 MCP 계약은 `agent_judged`다. 기본 `agent` 경로에서는 Claude Code·Codex·OMP의 현재 구독 세션이 MCP로 원문 선택·관계·relevance를 판단한다. 별도 default-deny Jev 전송 허가·키·명시선택을 충족한 `jev` 경로는 worker가 원문 선택·관계를 판단하며 relevance는 coding agent가 판단한다. 두 경로 모두 서버가 원문 span·revision·권한·삭제·snapshot을 검증한다. lexical/entity는 후보 검색뿐이며 서버가 구독을 API 키처럼 쓰거나 로컬 모델·자동 fallback을 시작하지 않는다. Agent Flow 없이도 같은 계약이다.
 
 Hindsight를 실행 엔진으로 감싸지 않는다. 입력 eligibility와 내부 writer fencing을 외부 wrapper로 강제하지 못하고 `processing=0`도 완전한 quiescence가 아니기 때문이다. 별도 vector DB, Neo4j, Redis, 두 번째 job owner, 외부 trace 서비스는 필요하지 않다. PostgreSQL 안의 edge table로 제한된 근거 graph를 구성한다. SQLite는 host의 임시 spool에만 사용한다.
 
-이 문서는 현재 구현 계약과 아직 실행하지 않은 acceptance 정의다. 이전 Qwen/full-semantic·회사 lexical/entity·native/restore 실행 결과는 [검증 기록](verification.ko.md)의 해당 historical run에만 적용한다. 현재 전환의 실행 결과·native 소비·elapsed trial은 별도 proof가 필요하다. 설계 토론·source 조사·SDK/fixture·제품 runtime을 서로 대체하지 않는다.
+로컬 기본 구성과 클라우드 원격 경로를 현재 작업트리에 구현했다. 배포 위치·개인/회사 운영·Jev 허용과 명시선택은 독립 축이며 [12개 사례](../README.md#배포-위치--운영-주체--jev-정책)를 구분한다. 새 정책의 실제 Jev API는 양 운영 주체·양 위치의 전용 합성 배포에서 실행했고 원격 HTTPS·PG·native 소비자 증거는 해당 run 범위를 따른다. 작업트리를 PR #9의 remote runtime 코드·병합·운영 설치 완료로 표현하지 않는다. 최신 지시는 cloud 구현·합성 검증을 trial과 별도로 허용하지만 실제 계정 provisioning·실제 corpus 이동·일반 출시·publication gate는 해제하지 않는다. 실제1–2주 trial은 미시작이다.
+
+이 문서는 현재 구현 계약과 acceptance 정의를 구분한다. 실행 결과는 [검증 기록](verification.ko.md)의 해당 run과 범위에만 적용하며 이전 Qwen/full-semantic·회사 lexical/entity·native/restore 기록을 다른 실행의 증거로 재사용하지 않는다. 설계 토론·source 조사·SDK/fixture·제품 runtime·elapsed trial을 서로 대체하지 않는다.
 
 ## 1. 토론 결과와 최종 수정
 
@@ -17,7 +19,7 @@ Hindsight를 실행 엔진으로 감싸지 않는다. 입력 eligibility와 내�
 | Hindsight 재사용 | Opus도 2라운드에서 철회. 내부 eligibility·stale publication 제어가 검증되지 않음 |
 | 추론 중 advisory lock | Codex도 철회. DB disconnect가 provider 종료를 뜻하지 않음 |
 | 팀 공유=Git PR | 철회. PG 승인 ledger가 정본. Git export는 필요할 때 projection |
-| 회사·개인 하나의 동기화 | 기각. 동일 계약의 독립 deployment, 회사→개인/cloud 이동 없음 |
+| 배포 간 자동 동기화·무승인 이전 | 기각. 승인된 개인·회사 클라우드는 각각 독립 deployment로 구성 |
 | receipt 기록=준수 | 기각. 선택·offered·후속 model-input 관측·실제 제약 집행을 분리 |
 | content+10분 중복 제거 | 기각. 명시 key+canonical digest와 영속 operation receipt |
 | NFKC quote 검증 | 기각. 검색 정규화와 실제 원문 UTF-8 byte span을 분리 |
@@ -28,7 +30,7 @@ Hindsight를 실행 엔진으로 감싸지 않는다. 입력 eligibility와 내�
 
 ## 2. 구조·권위
 
-Consumer의 네 MCP 도구와 인증 producer/API·operator CLI는 shared application handler를 호출한다. PostgreSQL transaction이 source/claim revision·credential/grant·receipt·admission·relation·rule approval·deletion authority를 소유한다. `CleanupScheduler(settings,store)`는 due pending을 만들 뿐 원문을 해석하지 않는다. 기본 provider에서는 다음 coding agent가 bounded pending/source/claim을 inspect하고 판단을 제출한다. 개인 배포가 `jev`를 고르면 `JudgeWorker`가 전용 agent credential로 같은 inspect/record를 호출한다(§2a). 결과는 bounded context composer와 final authority fence를 거쳐 돌아간다. 독립 body-free deletion journal은 restore 밖에 남는다. 로컬 model gateway·두 번째 판단 queue는 없다.
+Consumer의 네 MCP 도구와 인증 producer/API·operator CLI는 shared application handler를 호출한다. PostgreSQL transaction이 source/claim revision·credential/grant·receipt·admission·relation·rule approval·deletion authority를 소유한다. `CleanupScheduler(settings,store)`는 due pending을 만들 뿐 원문을 해석하거나 DB를 축소하지 않는다. `agent`에서는 구독 coding agent가 bounded pending/source/claim을 inspect하고 판단해 record한다. 개인·회사 모두 Jev 허용·명시선택의 `jev`에서는 `JudgeWorker`가 전용 agent credential로 같은 inspect/record를 호출한다. relevance는 coding agent가 판단하며 final authority fence를 거쳐 전달한다. 독립 body-free deletion journal은 restore 밖에 남는다. 로컬 model gateway·두 번째 판단 queue는 없다.
 
 | 경계 | 소유 |
 |---|---|
@@ -36,18 +38,47 @@ Consumer의 네 MCP 도구와 인증 producer/API·operator CLI는 shared applic
 | selection/semantic | original span inventory·qualification/literal·relation validation, 모델 호출 없음 |
 | store/migrations | PG authority·짧은 transaction·source/claim revision·receipt·admission·pending·audit |
 | jobs | periodic cleanup pending scheduling·start/status/stop |
-| judge | provider 설정 파일(`state_dir/judge`)·키·worker credential, 개인 전용 Jev worker의 pending 판단·fence·escalation, 조회 전용 `ref=judge` |
+| judge | provider·별도 default-deny egress 정책·키·worker credential, 개인/회사 공통 Jev pending 판단·revision fence·escalation, 조회 전용 `ref=judge` |
 | lexical | Hangul/code identifier/entity 후보 index, 기억·관련성 판단 아님 |
 | rules/context | exact rule approval·3 scopes·tri-state selector·2-call relevance·한 plane·budget |
 | edge | SDK2 MCP와 producer API의 strict decode/auth, business policy 복제 금지 |
 | hosts | typed capture provenance·agent/context generation·pending pointer·required first-action guard·capability |
-| ops/CLI | owned install·토큰·scope·spool·doctor·명시 config/schema upgrade·encrypted backup/restore |
+| ops/CLI·service·readiness·recovery | owned install·per-user launchd·durable stop·DB readiness·bounded spool 자동 전송·doctor·명시 upgrade·encrypted backup/restore |
 
 ### 2a. 판단 provider
 
+**허가와 선택의 독립 계약:** `state_dir/judge/egress-policy.json`이 없으면 개인·회사, 로컬·클라우드 모두 Jev 불가다. operator CLI의 명시 allow와 egress 확인만으로 provider를 바꾸거나 API를 호출하지 않는다. 유효 키 검증·명시 Jev 선택이 별도로 필요하다. deny는 먼저 영속화하고 agent 전환·worker credential 폐기를 수행한다. 기존 personal 설정으로 새 허가를 추론하지 않는다. 정책 파일·operator bearer는 실제 corpus 전송 승인이나 악성 same-UID agent에 대한 강한 경계가 아니다.
+
 provider는 `agent`(기본)와 `jev` 둘이다. 상태는 Settings·DB가 아니라 `state_dir/judge/provider.json`(0600)에 둔다. Settings는 frozen이며 serve가 한 번만 읽고, host receipt·init intent·migration fence가 그 digest와 capability에 묶여 있다. DB에 두면 backup/restore allowlist가 바뀌고 restore가 egress 상태를 과거로 되돌린다. operator CLI만 이 파일과 키(`jev.key`)·worker token(`jev-agent.token`)을 쓴다. MCP는 `memory_inspect(ref="judge")`로 키·fingerprint·credential 없는 view만 읽는다.
 
-`JudgeWorker`는 serve 안에서 capture 알림과 30초 주기로 깨어나 매 cycle·매 Jev 요청·매 record 직전에 provider 파일을 다시 읽는다. 전환·비활성화·company mode를 감지하면 보내기 전에 멈추고, 이미 받은 결과도 기록하지 않는다(fence). 키 거절은 revision이 바뀔 때까지 멈춘다. worker는 span별 Noul로 기억 가치를 묻고 p≥0.8 span만 원문 그대로 claim으로 쓰며, 모두 p≤0.2이면 discard한다. 불확실·주입 의심·이전 거절과 같은 내용·서버 검증 실패는 기록하지 않고 pending으로 남겨 coding agent에게 넘긴다. cleanup은 `validate_consolidation`이 받아들일 수 있는 쌍만 Choice로 묻고 p≥0.8 관계만 제출한다. 모든 기록은 single-winner·거절 비교·admission을 그대로 거치고 worker credential과 `Jev(<model>)` reason으로 출처를 남긴다. relevance는 항상 coding agent의 2-call 계약이다.
+파일 변경도 현재 operator 권한을 필요로 한다. `judge_guard` 대기 전에 얻은 principal을 재사용해 허가하지 않는다. `Store.operator_authority`가 같은 PostgreSQL clock lock 안에서 credential·role·generation을 다시 검증하고 짧은 policy/provider/fence/key/token 파일 변경까지 직렬화한다. vendor 검증과 다른 awaited Store 작업은 이 경계 밖에서 실행한다. private state의 format·revision·boolean은 정확한 JSON 타입만 허용한다.
+
+교체 전에 기존 credential을 `retiring_credential_ids`에 포함한 revision fence를 저장한다. 교체 실패는 기존 `provider=jev` 선택을 agent로 바꾸지 않는다. 현재 worker가 fenced이면 `source_judgment=jev_unavailable_explicit_reselection_required`이며 인증된 readiness도 inference unavailable을 보존한다. DB ready는 판단 경로 정상이라는 뜻이 아니다. operator의 명시 재선택·폐기/발급 reconciliation으로만 복구한다.
+
+`JudgeWorker`는 capture 알림과 30초 주기로 깨어나 매 요청·응답·record 직전에 provider와 egress 정책 revision을 재검사한다. 전환·deny·정책 손상을 감지하면 전송·게시를 멈춘다. 이미 보낸 데이터의 회수는 보장하지 않는다. 키 거절은 revision이 바뀔 때까지 멈춘다. worker는 span별 Noul로 기억 가치를 묻고 p≥0.8 span만 원문 그대로 claim으로 쓰며 모두 p≤0.2이면 discard한다. 불확실·주입 의심·이전 거절과 같은 내용·검증 실패는 기록하지 않고 pending으로 남긴다. coding agent가 이를 MCP로 판단할 수 있지만 provider 자동 전환이나 다른 모델 호출은 없다. cleanup은 `validate_consolidation`이 받아들일 쌍만 Choice로 묻고 p≥0.8 관계만 제출한다. 기록은 single-winner·거절 비교·admission을 거치며 worker credential과 `Jev(<model>)` reason으로 출처를 남긴다. relevance는 coding agent의 2-call 계약이다.
+
+### 2b. 로컬 lifecycle와 readiness
+
+macOS per-user launchd는 private deployment receipt·plist·code/config 소유권을 검사하고 로그인 시작과 비정상 종료 재시작을 등록한다. PostgreSQL/Docker의 lifecycle는 관리하지 않는다. MCP/client의 준비 확인은 DB 왕복·identity·삭제 barrier까지 포함하며 native 제어와 HTTP 대기가 하나의 monotonic deadline을 공유한다. 살아 있는 DB-unready process를 죽이지 않고 unavailable로 표시한다. healthy 조회는 shared lock, 시작/중지 변경은 exclusive lock으로 직렬화하고 recovery 전에 durable intent를 다시 읽는다.
+
+최초 설치·미완료 설치 재개·기존 enabled 설치의 재활성화도 durable intent 이후 native 실패를 `not_started`로 보고하지 않는다. intent 저장 응답이 미확정이면 unknown, 저장이 확인됐으면 committed intent와 unknown native completion을 보고한다. fresh host 설치 후 공존 진단이 실패해도 이미 수행한 설치 효과를 지우지 않는다. native inventory의 process group은 직접 자식이 먼저 종료해도 별도로 TERM/KILL·wait·pipe 정리한다.
+
+`SpoolRecovery`는 provider와 독립적으로 현재 owned host receipt의 bounded spool을 주기 전송한다. intermediate directory는 owned·비공개 상위 state 아래 non-writable 조건을, private leaf·native entry는 기존 소유권/drift 조건을 유지한다. Claude native config 경로는 설치 receipt에 고정하며 clean launchd 환경에서 `CLAUDE_CONFIG_DIR`가 없어도 같은 소유 entry를 검증한다. 설치 대상을 바꾸려면 기존 설치를 해제해야 한다. 새 host event 없이 readiness 회복 뒤 전송한다. explicit stop은 disabled intent를 먼저 저장하고 automatic recovery/client/install replay를 차단하며 native unload를 최대30초 확인한다. 확인 실패는 성공으로 반환하지 않는다. native job 제거와 외부 provider 효과 확정은 별개다. shutdown은 worker 실패 때문에 다른 worker/application drain·DB close를 생략하지 않는다.
+
+원격 recovery는 유효한 receipt와 pending spool이 있을 때만 readiness를 요청한다. 실패는 cycle 사이에도 상한·jitter가 있는 backoff를 유지하고 성공한 전송 뒤 초기화한다. 기존 cycle 절대20초 예산 안에서 DNS 결과를 재사용하되 cycle 종료/만료 뒤 버리고 TLS·identity·현재 권한은 매번 검증한다. stop은 준비 대기·DNS 자식을 중단하며, 이미 송신한 business I/O는 원래 deadline으로 drain한다. unknown mutation을 새 요청으로 자동 재시도하지 않고 기존 stable-key reconciliation과 단일 flush owner를 유지한다.
+
+### 2c. 클라우드 authority와 PC client
+
+서버 `Settings`는 DB·journal·operator authority를 유지한다. 별도 strict `RemoteClientSettings(kind="remote_client",version=1)`는 HTTPS origin·deployment/realm/mode·wire/spool bounds·private PC state·auth mode·선택 public CA/digest만 갖는다. PC에 DB DSN·operator credential·server locator를 보내지 않는다. `/api/client-bootstrap`은 현재 agent/producer의 one-binding grant·revision·identity·bounds만 반환하며 PC 경로를 cloud에서 stat하지 않는다.
+
+공개 ingress는 별도0600 profile이다. OAuth는 고정 issuer·audience=public origin·public JWKS·RS256/ES256·scope와 exact subject/client_id 매핑을 검증하고 매 요청·session에서 현재 PG credential generation/role/grant를 다시 확인한다. 자동 JWKS fetch·IdP 생성·token refresh는 없다. bearer도 현재 PG 권한을 사용한다. 원격 client는 verified TLS≥1.2·명시 public CA·no proxy/redirect·전체 body deadline을 적용하고 `/readyz`의 DB readiness·정확한 identity 이후 token을 전송한다.
+
+`deploy/cloud/`는 Caddy와 app을 독립 컨테이너/namespace로 실행한다. shared namespace 설계는 app crash 뒤 backend가200인데 외부 HTTPS가100초 넘게 복구되지 않는 실제 결함 때문에 폐기했다. 현재 private mode는 operator가 지정한 RFC1918 단일 proxy IP와 `X-Forwarded-Proto=https`만 신뢰한다. 이 mode의 `serve`만 private backend network에 bind하고 backend port는 publish하지 않는다. 다른 peer의 local Host 위조·forwarded security headers는 거절한다. Caddy는 app state·journal·DB socket을 mount하지 않는다. 기본/로컬 `serve`와 macOS `service-run`의 loopback 계약은 유지한다.
+
+DB는 같은 cloud host의 기존 PostgreSQL18·pgvector≥0.8.7 Unix socket과 SCRAM password 인증을 사용한다. app의 read-only socket mount는 DB 읽기 전용 역할이 아니다. arbitrary remote DSN을 허용하거나 DB relay로 기존 local authority 검사를 우회하지 않는다. migration URL의 percent-encoded Unix host는 실제 asyncpg 연결 인자로 decode하며 공식 `init --resume`로 기존 intent를 완료한다.
+
+remote host receipt는 typed profile과 credential role·one-binding bounds를 고정한다. PC launchd는 client recovery만 관리하며 cloud/DB를 자동 시작하지 않는다. 사용자 중지·unsafe SQLite·CA 변경은 전송/enable 전에 차단한다. 정확한 `SESSION_NOT_FOUND/404/not_started`만 재initialize 후 원 요청을1회 재전송하고 unknown write는 재전송하지 않는다. 명시 stop·offline uninstall은 원격 CA/token/network 없어도 owned 제어만 회수하며 pending spool과 foreign native entry를 보존한다.
+
 
 ## 3. identity·인증·egress
 
@@ -55,11 +86,13 @@ provider는 `agent`(기본)와 `jev` 둘이다. 상태는 Settings·DB가 아니
 
 Agent-plane과 producer/operator-plane의 credential을 분리한다. MCP token은 read/record/feedback만 가능하며 approval·publish·migration·backup·실제 철회 권한이 없다. producer는 인증된 adapter envelope를 capture할 수 있지만 declared speaker는 사실성 보장이 아니다. credential revoke는 다음 요청과 진행 중 publication에서도 재검사한다. Legacy MCP session도 각 호출의 현재 인증을 사용하며 session ID만으로 actor를 유지하지 않는다.
 
-회사의 각 고객 및 개인은 독립 deployment다. 회사→개인/cloud memory sync·backup fallback은 없다. 현재 coding-agent의 모델 처리 허가와 memory 저장 허가는 별개다. strict no-egress는 허가된 coding-agent 경로 및 OS/network 정책을 따로 요구한다. 팀 Claude/Codex 구독을 server background inference API 허가로 간주하지 않으며 서버는 모델 route·download를 제공하지 않는다. 유일한 서버 측 외부 판단은 개인 배포의 operator가 켠 Jev이고, 대상은 worker credential이 grant받은 project의 원문 window·기억 문장이다. TypeSafe는 미국에서 처리하며 zero data retention은 enterprise에만 제공한다.
+배포 위치와 별개로 회사·고객·개인 corpus는 독립 deployment로 격리한다. 다른 deployment로의 자동 동기화·무승인 이전이나 backup fallback은 없으며 승인된 회사 클라우드는 회사 배포다. 계획·코드 기능이 corpus 이동·저장·외부 전송 허가를 부여하지 않는다. 기존 `mode=personal|company`는 유지하되 Jev 정책은 독립 default-deny다. coding-agent 모델 처리·memory 저장·Jev 외부 전송 허가는 각각 별개다. strict no-egress는 허가된 coding-agent 경로 및 OS/network 정책을 요구한다. 팀 구독을 server background API 허가로 간주하지 않는다. 허가·명시선택된 Jev 대상은 worker credential이 grant받은 project의 원문 window·기억 문장이다. TypeSafe는 미국에서 처리하며 zero data retention은 enterprise에만 제공한다.
 
 기본은 loopback HTTP+bearer와 exact Host/Origin allowlist다. token·원문·raw provider trace/추론을 로그·telemetry에 남기지 않는다. capture/record/feedback의 secret-carrying field는 digest·spool 전에 공통 `reject_source_secrets` guard를 거친다. 고신뢰 prefixed credential·완전한 private-key armor는 generic `SOURCE_SECRET_REJECTED`, `effect=not_started`, status422이며 host는 safe gap metadata만 남긴다. rejected body·digest·key를 저장하거나 derivative를 redaction/rewrite하지 않는다. 일반 code example까지 모두 비밀로 취급하지 않으며 임의 모든 비밀/PII 검출은 보장하지 않는다.
 
-같은 OS UID의 unrestricted agent는 operator CLI와 파일에 접근할 수 있다. 개인 로컬 role 분리는 우발적 오용 방지(G0)이지 인간 현존·악성 agent 차단 보장이 아니다. 회사의 강한 공유 승인(G1)은 agent 밖 identity/approver key, 별도 OS 사용자·관리 VM 등 실제 운영 경계가 필요하다. 미구성된 회사 공유 승인은 unavailable로 표현한다.
+local authority Host는 ingress 미설정·`tls_proxy=none|loopback|private` 모두에서 **실제 접속 peer가 loopback인 경우에만** 허용한다. Host/Origin 일치나 forwarded 값은 local authority의 증거가 아니며 peer 누락·해석 불가도403/not_started로 거절한다. public HTTPS/OAuth와 선언한 단일 TLS proxy 경계는 별개로 유지한다. 지원 CLI는 `proxy_headers=False`로 실제 ASGI 접속 주소를 보존하며 다른 ASGI host도 이 전제를 지켜야 한다. 이것이 방화벽·TLS·배포 승인이나 운영 침해 부재의 증명은 아니다.
+
+같은 OS UID의 unrestricted agent는 operator CLI와 파일에 접근할 수 있다. 같은 UID의 로컬 role 분리는 우발적 오용 방지(G0)이지 인간 현존·악성 agent 차단 보장이 아니다. 회사의 강한 공유 승인(G1)은 agent 밖 identity/approver key, 별도 OS 사용자·관리 VM 등 실제 운영 경계가 필요하다. 미구성된 회사 공유 승인은 unavailable로 표현한다. 이 공유 승인 규칙은 로컬/클라우드 환경 구분과 별개다.
 
 ## 4. durable write·job·철회 계약
 
@@ -67,13 +100,15 @@ Mutation은 `(principal, binding, command, idempotency_key)`와 정규화한 pay
 
 `captured`는 원문 durable capture, `selection_recorded`는 원문 선택 판단 저장, `candidate_ready`는 grounded claim 또는 관계 게시다. accepted capture를 기억·관련성 판단 완료로 읽지 않는다. 지정 operation의 causal floor가 충족되지 않은 context는 `CAUSAL_NOT_READY`다. pending/held·historical blocked/failed·partial·empty를 구분한다.
 
-원문 inspect admission은 credential generation·grant·realm·binding revision·source revision·요청 snapshot·contract revision/epoch·deletion generation·deadline·exact window digest와 rejection input fingerprint를 묶는다. 원래 source snapshot은 nullable provenance로 따로 보존한다. 관계 판단은 전체 inspected claim/source revision manifest와 해당 pending ID를, recall은 실제 candidate pool과 canonical request digest를 저장한다. 게시와 최종 delivery에서 같은 authority를 재검사하므로 stale/revoked/withdrawn 입력을 게시·전달할 수 없다. 관계/규칙 snapshot도 final transaction에서 검사한다. 단순 unrelated capture의 clock 증가가 모든 판단을 무효화하는 것은 아니다.
+원문 inspect admission은 credential generation·grant·realm·binding revision·source revision·요청 snapshot·contract revision/epoch·deletion generation·deadline·exact window digest와 rejection input fingerprint를 묶는다. 원래 source snapshot은 nullable provenance로 보존한다. 관계 판단은 전체 inspected claim/source revision manifest와 pending ID를, recall은 실제 candidate pool과 canonical request digest를 저장한다. health/code observation·operator review의 현재 version/dependency도 검색·admission 재검사·게시·최종 delivery와 관계의 모든 입력에 적용한다. required rule은 ordinary claim의 stale 필터와 분리한다. unrelated capture의 clock 증가만으로 모든 판단을 무효화하지 않는다.
 
 PG clock row를 짧게 잠가 권위 변경 commit 순서를 직렬화하며 SQL sequence 할당 순서를 commit 순서로 간주하지 않는다. coding-agent 판단은 DB transaction 밖에서 수행한다. source selection·grounded claim/index·receipt, claim judgment·관계·전체 dependency는 각각 하나의 authority transaction으로 commit한다.
 
 구형 executable model work는 `0006_agent_judged`에서 retired로 표시하고 원래 row snapshot을 `am_retired_jobs`에 보존한다. 원래 pending/leased/blocked/failed 상태·오류·attempt/generation·시간을 성공으로 바꾸지 않는다. source가 남은 successor는 pending, 그렇지 않으면 held인 `legacy_revalidation`이며 next agent가 원문부터 다시 판단한다. 구형 model claim은 원래 `model_derived_candidate`·route/vector provenance·`awaiting_revalidation=true`를 유지하고 자동 injectable 기억으로 쓰지 않는다.
 
 철회는 본문 없는 journal intent fsync 후 PG source tombstone·epoch·lineage eligibility 차단을 commit한다. 이것이 logical retract ack다. 이후 선형화되는 read/admission/publication은 철회 근거를 사용할 수 없다. 먼저 admitted된 provider 작업은 계속될 수 있다. 상태를 `retracted`, `local_drain_pending/local_drained`, `provider_completion_unknown`, `physically_purged`, `backup_retention_complete`로 분리한다. deadline이나 socket close를 실제 provider erasure로 보고하지 않는다.
+
+삭제 floor는 source/origin identity와 그 파생 lineage를 보호하며 영구 content blacklist가 아니다. retract/purge 뒤 기존 origin replay는 철회된 identity를 반환하고, purged 원문을 복원하지 않는다. 동일 본문의 새 origin은 새 source로 수집·재판단할 수 있다. 새 판단 전에는 recall 후보가 아니며 옛 claim·승인·dependency를 승계하지 않는다. 현재 유효한 discard/reject 근거가 따로 있으면 기존 독립 근거·reopening guard를 계속 적용한다.
 
 각 judgment는 같은 pair·같은 manifest라도 자기 전체 claim/source dependency와 asserted relation row를 소유한다. J1의 입력 철회가 독립 J2의 적격 edge를 지우지 않는다. 자기 asserted edge가 사라진 judgment는 완전하다고 공개하지 않는다. 소비 시 현재 적격한 `(left,right,kind)` logical 관계만 접고 그 뒤128개 bound를 적용한다. 공개 kind는 `duplicate`이며 저장용 `duplicates`를 별도 alias로 노출하지 않는다. 관계0 판단도 전체 dependency 철회·purge를 따른다. agent_note·memory echo·origin만 바꾼 동일 본문은 독립 증거가 아니다.
 
@@ -89,27 +124,42 @@ PG clock row를 짧게 잠가 권위 변경 commit 순서를 직렬화하며 SQL
 6. **두 호출 relevance**: 후보가 있는 첫 `memory_context`는 `status="judgment_required"`, saved `admission_id`, 단일 `candidate_manifest`를 반환한다. 모든 `claim_id/inspection_ref`를 보존하며, wire 예산이 허용하면 UTF-8-safe 최대160-byte preview·polarity·modality·arms를 제공한다. 선택적 상세를 줄였으면 partial을 표시하고 원문 inspection으로 보완한다. 중복 `manifest`/`candidates` alias와 expansion echo를 반환하지 않는다. context에는 mandatory rules만 있고 optional claim은 없다. 후보가 없으면 relevance 없이 적용 가능한 승인 optional rule도 전달한다.
    두 번째 호출은 같은 admission과 전체 exact manifest의 `{claim_id,relevant,reason}`를 제출한다. query·query_expansions·paths·purpose·host·snapshot의 canonical request digest에 묶이며 max_bytes/limit·decision은 그 digest의 대상이 아니다. 빠진/추가/중복 ID·잘못된 request/snapshot·deadline·credential/grant·source/claim revision·binding·contract·deletion 변경은 거절한다. 빈 relevance는 빈 manifest에만 유효하다. selected claim 순서는 caller 판단 순서이며 lexical 순위로 default relevant를 만들지 않는다. final context는 관련 근거·known conflict·citation·budget을 유지한다.
 7. **Rejection·reopening**: 기본 source inspection은16 hashed lexical token·token/scope당 bounded posting·최대32 후보 검사로 관련 rejection 최대8개를 필수 비교 대상으로 준다. lexical/entity는 후보 색인일 뿐 의미 판단·전체 이력 카탈로그가 아니다. 별도 `rejection_cursor="history"`는 원문 window/snapshot을 유지하는 선택적 live 이력이다. 페이지당 raw row 최대32개를 검사해 적격 최대8개를 반환하며 빈 적격 page에도 next_cursor가 있으면 계속한다. 각 page를 `label="review"`로 저장해 최대16개 receipt를 연결할 수 있다. remember는 필수 후보와 explicit prior ref를 직접+receipt 비교로 덮고, 직접 reopen 집합만 해당 command의 prior_rejection_ids와 같아야 한다. 모든 label에서 제출 metadata·credential/scope/window/contract/deletion/fingerprint를 검사하고 충돌·stale 비교를 거절한다. 무관한 신규 이력은 기존 비교를 무효화하지 않는다. 같은 source overlap·새 origin의 완전 동일 body 차단은 lexical index와 독립이며 bounded identity 검사가 미해결이면 fail closed한다. 현재 요청 snapshot·target 전체 dependency·feedback ancestry·별도 reason source를 먼저 검사하며 cycle/과도한 graph는 공개하지 않는다. global claim의 scope는 private selection audit 요청과 구분한다. reject는 연결 원문 전체 durable 차단, query-only 무관함은 relevance다. 실제 독립 human/tool/document 근거와 prior ref·비교 이유로만 reopening하고 paraphrase의 의미 동등성은 agent가 판단한다. discard/reject는 철회·purge·floor 확장이 아니다.
-8. **Cleanup·next use**: claim의 immutable cleanup_sequence 삽입위치20개 bucket을 사용하며 삭제·만료·낮은 UUID의 새 claim으로 page를 재포장하지 않는다. clock.cleanup_progress에 cycle high-water/keyset/scope-group 진행을 보존한다. transaction당 기존 pending 최대32개·position page4개(최대80 row)·binding/snapshot group32개만 검사하고 `more`면 lock을 놓고 event loop에 양보한 뒤 재개한다. sequence를 commit 순서로 주장하지 않는다. next agent가 pending cursor와 full item/source/judgment를 inspect해 제출하며 의미 판단은 DB transaction 밖이다. empty cleanup은 해결하고 유효하게 판단 완료된 동일 manifest의 재예약을 막는다. non-deriving discard/review 철회는 extraction floor를 만들지 않고 uncovered active source work를 다시 열며 기존 legacy held는 보존한다. human뿐 아니라 일반 assistant capture도 이 재개 대상이고 독립 reopening 근거의 speaker 규칙과 다르다. agent_note/memory는 신규 판단 admission·pending·독립 backlog를 만들지 않고 raw inspection만 남긴다. correction/retraction 뒤 별도 다음 read로 revised evidence를 확인한다.
+8. **Cleanup·next use**: claim의 immutable cleanup_sequence 삽입위치20개 bucket을 사용하며 삭제·만료·낮은 UUID의 새 claim으로 page를 재포장하지 않는다. clock.cleanup_progress에 cycle high-water/keyset/scope-group 진행을 보존한다. transaction당 기존 pending 최대32개·position page4개(최대80 row)·binding/snapshot group32개만 검사하고 `more`면 lock을 놓고 event loop에 양보한 뒤 재개한다. sequence를 commit 순서로 주장하지 않는다. next agent가 pending cursor와 full item/source/judgment를 inspect해 제출하며 의미 판단은 DB transaction 밖이다. empty cleanup은 해결하고 유효하게 판단 완료된 동일 manifest의 재예약을 막는다. non-deriving discard/review 철회는 extraction floor를 만들지 않고 uncovered active source work를 다시 열며 기존 legacy held는 보존한다. human뿐 아니라 일반 assistant capture도 이 재개 대상이고 독립 reopening 근거의 speaker 규칙과 다르다. agent_note/memory는 신규 source-selection admission·독립 capture backlog를 만들지 않는다. 5b의 기존 claim/source 재검토 후보 연결과 raw inspection 보존은 독립 근거로의 승격이 아니다. correction/retraction 뒤 별도 다음 read로 revised evidence를 확인한다.
 
-판단 coverage도 같은 provenance eligibility를 사용한다. raw agent_note·feedback reason·memory source는 unclassified/incomplete 집계에서 제외하지만 원문 inspection과 audit은 보존한다. 미해결 human·일반 assistant·tool·document와 실제 capture gap은 partial 원인으로 남는다.
+판단 coverage·stats·pending 완료·health 입력 분모는 현재 source/selection뿐 아니라 request_snapshot·current policy·rejection/review 전체 dependency 적격성을 공유한다. global source를 A snapshot에서 판단했다는 이유로 B를 classified/complete로 세지 않으며 무관한 유효 coverage는 유지한다. raw agent_note·feedback reason·memory는 unclassified/incomplete에서 제외하되 원문 audit은 보존한다. 미해결 human·일반 assistant·tool·document와 실제 capture gap은 partial 원인이다.
+
+기존 feedback Reject는 미래 source 재게시에 대한 차단이며 기존 claim의 즉시 recall 제외·operator 철회가 아니다. 새 `memory_review`의 exact-revision operator Reject와 구분한다. backup 뒤 PG의 reject/discard·health disposition은 rollback될 수 있으므로 이를 restore 밖 retract/purge deletion journal과 같은 계약으로 주장하지 않는다. 원래 [건강 관리 제안 리뷰](research/2026-10-15-memory-health-adversarial.ko.md)는 역사로 보존하며, 이후 명시 승인된 제한 health writer와 미승인 retention/삭제/전면 audit/승격을 구분한다.
 
 원문 창의 `complete_window`와 capture 관측 범위는 별개다. native source의 `HOST_SESSION_WINDOW_UNOBSERVED`·`HOST_HUMAN_PRESENCE_UNATTESTED`는 source 전체를 판단해 `unclassified_sources=0`이어도 `incomplete_sources`와 `partial=true`를 유지한다. 이는 미판단 backlog가 남았다는 뜻이 아니라 전체 세션·인간 현존을 관측하지 못했다는 뜻이다. gap을 지우거나 판단 완료를 전체 capture 완료로 재해석하지 않으며 건강도 지표를 추가하지 않는다.
 
 ### 5a. 설정·영속 provenance
 
-개인·회사 Settings는 `capability="agent_judged"` 하나다. cleanup interval1–86400초(기본3600), admission timeout1–3600초(기본180)와 기존 source/response/spool/authority bounds를 유지한다. wire policy_revision은 명시 common contract digest이고 policy_epoch는 non-null strict nonnegative integer이며 현재0이 유효하다. 두 필드 모두 null을 허용하지 않는다. 파일 위치·AST/source hashing·별도 회사 selection 승인과 무관하다. 폐기한13개 model 설정은 genuine legacy config/init evidence의 strict decode에만 쓰고 runtime provider·route·모델 실행을 복원하지 않는다. 필수 규칙 exact approval은 별개다.
+runtime 설정 `mode=personal|company`의 Settings는 `capability="agent_judged"` 하나다. cleanup interval1–86400초(기본3600), admission timeout1–3600초(기본180)와 기존 source/response/spool/authority bounds를 유지한다. wire policy_revision은 명시 common contract digest이고 policy_epoch는 non-null strict nonnegative integer이며 현재0이 유효하다. 두 필드 모두 null을 허용하지 않는다. 파일 위치·AST/source hashing·별도 회사 selection 승인과 무관하다. 폐기한13개 model 설정은 genuine legacy config/init evidence의 strict decode에만 쓰고 runtime provider·route·모델 실행을 복원하지 않는다. 필수 규칙 exact approval은 별개다.
 
 미출시 `0006_agent_judged`는0005 뒤 forward-only revision이다. legacy lexical_entity claim capability만 agent_judged로 바꾸며 full_semantic provenance/awaiting_revalidation·원래 실패 audit는 유지한다. source selection·feedback·admission의 current judgment/rejection/pending metadata, `am_pending_judgments`·`am_retired_jobs`·`am_claim_judgments`와 relation judgment ownership을 추가한다. `am_rejection_evidence`는 원래 source revision/body digest/window/scope identity, `am_rejection_tokens`는 hashed 후보 posting이며 scope를 limit 전에 검사한다. 기존 active/candidate reject만 정확히 backfill하고 correct/retracted는 활성화하지 않는다. claim.cleanup_sequence와 clock.cleanup_progress가 안정적인 bounded cleanup을 소유한다. current archive는 이 revision의 두 owned identity sequence만 exact allowlist로 허용하고 구형 archive에는 새 sequence를 강요하지 않는다. 원문은 source에, claim/span은 기존 구조에 두며 stats는 현재 unresolved와 원래 historical 실패를 분리한다.
 
+현재 `0007_memory_health`는 explicit health 정책·workspace/code observation·claim code link·health event/claim state·관측 session manifest를 저장한다. pending·feedback·source·admission의 health version과 dependency를 같은 Store authority에 결합한다. archive/init의 exact table/version allowlist와 정리 순서를 함께 갱신하며 구형 archive에 새 table/sequence를 강요하지 않는다. 복원한 source와 그로부터 이후 생성한 ordinary claim은 최신 판정을 증명할 수 없어 `unknown_after_restore`다. health/Jev는 기본 비활성으로 돌리고 fresh exact operator review와 명시 정책을 요구한다. 새 health disaster journal/head/witness는 만들지 않는다.
+
 stopped-service operator가 current auth·동일 local migrator DB/schema·exclusive lock·private path·exact original config bytes를 검증해 `migrate --confirm-deployment ... --upgrade-config`를 명시 실행한다. model approval intent는 파일 전체 SHA256의 `--retire-model-approval-intent`가 추가로 필요하다. 별도 approval flock을 잡고 원본 `model-approval-retired-<sha>.json`과 route/current-authority/migration audit `model-approval-recovery-<sha>.json`을 보존한 뒤 구형 enabled route를 disable한다. migration/application auth·disabled route·원본 bytes를 다시 확인한 뒤만 exact intent를 retire하며 원래 효과는 `unknown_not_attested`다. 재개 때도 재인증하고 route를 enable하거나 승인 성공 receipt를 만들지 않는다. 앱 시작은 DDL/config 전환을 하지 않으며 archive transaction/deletion floor 경계도 유지한다. 실제 format-one init resume는 원래 signed intent/config/token/소유권을 보존하고 완료 뒤 명시 upgrade한다. completed replay는 적법한 동일 scope의 upgraded mutable config를 과거로 되돌리지 않는다. 보존 evidence는 DB credential·operator token·key 경로를 포함할 수 있는 private0600 자료다. Git/PR/평문 지원 로그에서 제외하고 필요시 실제 credential/token을 회전한다. config 편집·evidence 보존이 credential 폐기나 media erasure는 아니다. 이 설계는 실제 안정 배포 cutover 실행 proof가 아니다.
 
-`0005→0006`의 보존 admission은 request_digest가 NULL일 수 있다. shared nonmodel decoder는 현재 non-null DTO를 만들기 전에 이를 `ADMISSION_STALE/not_started`로 거절한다. source selection·claim judgment·durable recheck에 같은 경계를 적용하고, 구형 audit를 삭제하거나 digest를 자동 backfill하지 않는다. 새 inspect의 현재 admission은 정상 판단에 사용할 수 있다.
+`0005→0006`의 request_digest NULL과 `0006→0007`의 health_manifest NULL admission은 현재 공통 decoder에서 `ADMISSION_STALE/not_started`다. 기존 row/audit를 삭제하거나 현재 authority를 추정해 자동 backfill하지 않는다. source selection·claim judgment·durable recheck에 같은 경계를 적용하며 새 inspect의 admission은 현재 검사를 거쳐 사용한다.
 
 동기 migration은 별도 task를 shield하고 취소가 반복돼도 실제 worker 종료를 join한다. migration·restore·restore recovery의 기존 exclusive lock이 그 전에 풀리지 않으며 timeout도 worker 종료 증거가 아니다. 취소를 성공으로 바꾸지 않고 기존 unknown/private-recovery 경계를 유지한다.
 
 명시 migrate는 current operator 인증·preflight 뒤 권한 효과 전에 `restore-barrier.json`에 `kind="migration"`인 bounded private fence를 발행한다. 배포·realm·schema·target migration·설정 digest·operator credential/generation·config 경로와 원본/목표 digest·retirement 확인을 묶는다. 재개는 재인증한 같은 요청만 허용하고 이미 발행된 exact target config는 matching retained original audit로만 복구한다. schema/application auth·route·config·retirement 검증과 exact fence 비교 뒤에만 fence를 해제한다. migration은 genuine restore marker를, current restore recovery는 migration-kind marker를 지우지 않는다.
 
 같은 filename을 검사하는 구형 shared consumer의 차단은 설치된3ad 패키지 source에서만 확인했다. 실제 runtime smoke는 current CLI다. 구형 recovery binary의 kind 구분·안전한 재개는 보장하지 않으며 maintenance/recovery는 선택한 current package로 수행한다. 같은 UID의 비협조적 writer나 다른 state_dir의 임의 DB client까지 fencing한다고 주장하지 않는다.
+
+### 5b. 명시적 건강 판정과 관측 범위
+
+workspace 등록은 원래 native receipt의 project/root·producer credential·binding revision에 묶고 파일 탐색 범위를 명시한다. 관측은 body-free digest/UTF-8 또는 Python AST anchor metadata이며 filesystem classifier나 전체 Code map 수집이 아니다. 변경 관측과 link/claim/health manifest의 version이 일치해야 ordinary claim을 재사용한다. 코드·operator Reject·철회·삭제·권한 변경을 늦게 온 agent 판단으로 되돌리지 않는다.
+
+사후 분석은 이미 허용된 source/segment/origin과 close watermark를 bounded manifest로 pending에 연결한다. full-session 관측으로 확대하거나 없는 Stop/tool-result/transcript를 수집하지 않는다. 다음 권한 있는 agent가 판단하며 background API로 구독을 깨우지 않는다. Jev는 독립 source-egress 허가·명시 provider 선택·health 허용이 모두 있어야 한다. 기존 correct/retract_request는 agent_note 후보이고 explicit accept/decline 및 승인된 correction successor와 구분한다.
+
+관련성·support/정확성 판단·freshness는 별도 값이다. 부분 관측·변경·평가 미관측은 unknown으로 남긴다. operator Accept/Reject는 exact revision·health version/manifest·이유와 현재 권한을 검사한다. 평가 compiler는 고정 manifest와 전체 attempt·실제 producer/MCP trace·artifact/oracle/cleanup을 재구성해 명시 command에 digest를 연결할 뿐 자동 사실 판정이나 인간 승인을 만들지 않는다. 매 inspect가 새 admission을 만들더라도 command의 원래 admission을 바꾸지 않고 서버가 최종 검사한다.
+
+health work는 statement만 보내지 않는다. 기존 `ClaimDraft`의 의미를 공통 `ClaimMeaning`으로 분리해 kind·subject/predicate/object·polarity·modality·조건·예외·valid time·entities를 evidence 선택과 support 판단 양쪽에 보존한다. 원래 evidence와 시간 validator는 `ClaimDraft`에 그대로 적용한다. exact claim revision과 meaning digest를 admission에 묶고 직렬화한 전체 claim을 기존 `max_audit_bytes`에 계산한다. 의미 필드 누락이나 예산 초과는 불완전 입력이며 조건을 잘라내거나 statement-only로 되돌려 판단하지 않는다. 새 판단의 근거는 허용된 source window이고 관련성·support·freshness·인간 승인은 여전히 별개다.
+
 
 
 
@@ -121,7 +171,7 @@ stopped-service operator가 current auth·동일 local migrator DB/schema·exclu
 2. **내 프로젝트들** — 승인 당시 동일 realm의 명시 project ID 집합+target-set revision. 새 프로젝트는 새 동의 필요.
 3. **팀 또는 프로젝트 공유** — 구성된 approver와 대상 audience. 팀 전체 배포를 강제하지 않으며 project 공유도 가능.
 
-Candidate body/selector/예외/required 여부/target set/authority/revision digest를 승인에 결합한다. cancel·미응답은 candidate만 남긴다. 범위나 body가 바뀌면 다시 승인한다. PG ledger가 유일 정본이고 Git/skill export가 필요하면 projection으로 만든다. root AGENTS.md/CLAUDE.md나 eager rulebook에 body/catalog를 설치하지 않는다.
+Candidate body/selector/예외/required/target set/authority/revision digest를 exact approval에 결합한다. proposal ref 하나로 bounded UTF-8 continuation의 전체 body와 exact source revision manifest·digest·현재 inspector authority를 읽는다. 페이지 사이 입력·권한이 바뀌면 계속 읽기와 옛 승인을 거절한다. 공개 승인 rule의 target-only reader는 승인된 본문/예외와 권한 있는 target/source projection만 읽고 `approval_inspection_complete=false`다. 원본 proposal/body-source ref·권한 밖 ID를 공개하지 않으며 이를 전체 승인 inspect로 취급하지 않는다. cancel·미응답은 candidate이고 변경은 새 승인 대상이다. PG가 정본이며 root AGENTS.md/CLAUDE.md나 eager rulebook에 body/catalog를 설치하지 않는다.
 
 승인자 credential 폐기는 먼저 body-free 영향 목록을 보여 주고 required rule 영향에 대한 명시 ack를 요구한다. eligible inactive proposal의 재승인은 기존 immutable 내용·frozen scope/targets를 재검증하고 새 ID/더 높은 revision을 만든다. 무관한 roster 증가가 같은 frozen target 재승인을 막지 않으며 새로운 project/범위를 자동 포함하지 않는다. 회사 공유의 fresh G1 signature 요건은 유지한다. 예전 credential·복원 전 approval receipt·철회 원문을 활성 권한으로 되살리지 않는다.
 
@@ -131,7 +181,7 @@ Selector는 true/false/unknown이다. 필수 FALSE는 제외하고 UNKNOWN을 fa
 
 Per-agent key는 principal, binding, host thread, agent lineage/path, context generation을 분리한다. compact/resume/fork/child에서 현재 입력 보존을 확인하지 못하면 generation과 delivery 상태를 갱신한다. Codex parent session ID만으로 child를 묶지 않는다. omp는 `ctx.agent`별 상태이고 재진입/cache warming/provider retry를 새 소비 증거로 세지 않는다.
 
-지원 adapter는 capture·optional on-demand context·first-action guard를 opt-in으로 제공한다. generic MCP는 manual 호출과 서버 invariant를 제공하지만 모델의 모든 prompt/tool 호출을 강제하지 못한다. 실제 후속 model-input 순서나 Bash/IDE/hosted tool footprint를 관측할 수 없는 경로는 capability gap이다. Claude/Codex의 지원 strict 보호 행동에서는 block하며 우회 허용을 full support로 보고하지 않는다. **OMP는 pre-request callback 예외/timeout이 dispatch를 계속하는 native 계약 때문에 새 strict 설치를 설정 쓰기 전에 거절한다.** Session.abort가 준비 중 prompt generation을 무효화하는 경로는 존재하므로 모든 cancellation이 불가능하다는 주장도 하지 않는다. 모든 dispatch 경로의 fail-closed gate로 검증한 것은 아니다. 현재 지원 OMP는 advisory/manual MCP이며 역사적 strict 설치는 owned 제거·advisory 재설치·host 재시작이 선행돼야 한다. managed wrapper의 보장도 등록된 지원 경로로 제한한다.
+지원 adapter는 capture·optional on-demand context·first-action guard를 opt-in으로 제공한다. generic MCP는 manual 호출과 서버 invariant를 제공하지만 모델의 모든 prompt/tool 호출을 강제하지 못한다. 실제 후속 model-input 순서나 Bash/IDE/hosted tool footprint를 관측할 수 없는 경로는 capability gap이다. Claude strict도 실제 callback·거절·무부작용을 관측한 host/tool 경로와 미관측 경로를 구분하며 우회 허용을 full support로 보고하지 않는다. **Codex는 유효 patch의 실제 변경을 막지 못했으므로 새 strict 설치를 `HOST_STRICT_UNSUPPORTED`로 설정 쓰기 전에 거절한다.** 명시 advisory/MCP 설치·기존 owned uninstall은 유지하지만 native 보호를 구현 완료로 바꾸지 않는다. **OMP도 pre-request callback 예외/timeout이 dispatch를 계속하는 native 계약 때문에 새 strict 설치를 같은 오류로 거절한다.** Session.abort가 준비 중 prompt generation을 무효화하는 경로는 존재하므로 모든 cancellation이 불가능하다는 주장도 하지 않는다. 모든 dispatch 경로의 fail-closed gate로 검증한 것은 아니다. 현재 지원 OMP는 advisory/manual MCP이며 역사적 strict 설치는 owned 제거·advisory 재설치·host 재시작이 선행돼야 한다. managed wrapper의 보장도 등록된 지원 경로로 제한한다.
 
 호스트가 `i`를 제거하거나 empty optional string을 생략하거나 `local://`를 실제 경로로 재작성할 수 있으므로 business schema는 그런 의미에 의존하지 않는다. required handle/key는 nonempty다. adapter 설치는 소유한 project entry만 변경하며 AF managed hook을 덮어쓰지 않는다. native hook trust는 별도 실제 host 승인/관측이다.
 
@@ -192,16 +242,16 @@ MCP result body는 직접 만든 TextContent 한 plane에만 넣는다. 자동 t
 | [Qwen3.5-9B](https://huggingface.co/Qwen/Qwen3.5-9B/tree/c202236235762e1c871ad0ccb60c8ee5ba337b9a), Apache-2.0 | historical full-semantic proof만. 현재 기본·fallback·background cleanup 모델 아님 |
 | Jev·BAML | typed judgment/interface 아이디어 참고. 새 framework/hosted route 미채택. Pydantic schema는 truth/authority 보장이 아님 |
 | pg_dump+age BSD-3-Clause | local encrypted backup. PG restore 밖 deletion journal 유지 |
-| pgBackRest≥2.59.3·restic·Caddy·Headscale | cloud/운영 필요 발생 후 선택. 지금 새 infra나 외부 backup을 만들지 않음 |
+| Caddy2.11.7·pgBackRest≥2.59.3·restic·Headscale | Caddy는 검증된 독립-container TLS proxy다. 나머지 overlay/외부 backup·삭제 witness는 별도 승인·구현 대상이며 이번 실행이 provision하지 않는다 |
 
 48GiB/18 logical CPU host와 Colima2CPU/4GiB/30GiB는 이전 local-model proof의 환경 기록이다. 이번 전환은 이 사양이나 모델 artifact가 전제인 설계가 아니며 memory 서버가 별도 inference를 시작하지 않는다. 기존 weight/runtime manifest·실패 proof를 지우거나 새로운 판단 경로의 품질 결과로 재사용하지 않는다.
 
 ## 9. 로컬 구현·검증 순서
 
-현재 공통 경로의 authority는 [issue #5](https://github.com/chonamdoo/agents-memory/issues/5)의 댓글6150124320과 공식 `development/20261013-234417`이다. 이전 research·original/recovery run proof는 보존한다. 아래는 **아직 실행하지 않은 acceptance 정의**이며 실제 결과는 integration owner가 검증 기록에 따로 남긴다.
+현재 계약은 통합 [이슈 #5](https://github.com/chonamdoo/agents-memory/issues/5)에서 관리한다. PR #6·#7·#8은 병합됐고 현재 작업트리는 로컬 정책/복구와 클라우드 원격 경로를 확장한다. PR #9 remote HEAD와 작업트리 차이는 검증 기록에 명시한다. branch 실행 증거를 merged/운영 설치·공식 QA·elapsed trial 완료로 바꾸지 않는다. 이전 research·실패/복구 proof는 보존한다. 아래는 **acceptance 정의**이지 실행 결과나 출시 완료 선언이 아니다.
 
-1. source/claim judgment·saved relevance·settings/schema/config/archive 계약을 같은 경로로 연결한다. 회사-only approval·서버 모델·obsolete callers를 남기지 않는다.
-2. concurrent writer는 build/lint/tests/formatter를 실행하지 않는다. 통합 후 한 owner가 선언된 gates·isolated PG/API/SDK acceptance를 실행한다.
+1. source/claim judgment·saved relevance·settings/schema/config/archive 계약을 같은 경로로 유지한다. 폐기한 company-only 기억 선택 승인·서버 모델·obsolete callers를 복원하지 않는다. 기존 회사 공유 규칙의 승인 조건은 별개로 유지한다.
+2. 협업자와 integration owner 모두 test·collection/collect-only·ruff/lint·build·syntax/format·reproduction·추가 smoke를 로컬에서 실행하지 않는다. 실제 runtime 검증은 GitHub Actions의 병렬 job과 보존한 exact-head evidence로만 수행한다. CI 준비·부분 성공·checkpoint 게시를 전체 검증이나 정상 formal gate 통과로 위조하지 않는다.
 3. native proof는 지원 host/executor·현재 protocol·permission·lifecycle·provider input 관측 범위를 따로 기록한다. SDK/fixture/source-only 결과를 actual native proof로 바꾸지 않는다. 공식 독립 native review·QA·local handoff는 runner 소유다.
 4. live 서비스/config upgrade·native trust/설정·publication/commit/push/PR/merge는 이 문서 작성으로 허가되지 않는다. health metrics/dashboard/telemetry는 범위 밖이다.
 
@@ -210,7 +260,7 @@ MCP result body는 직접 만든 TextContent 한 plane에만 넣는다. 자동 t
 | ID | 입력·행동 | 기대 결과 |
 |---|---|---|
 | A01 | 실제 PG concurrent duplicate/lost-response replay·same key changed payload | 동일 operation 하나, changed digest conflict. 미확정 write는 unknown/exact-key reconcile |
-| A02 | personal/company 각각 capture→inspect→remember/extraction→judgment→2-call recall | 같은 contract·states·provenance, server ML 호출 없음. 첫 optional context0, 둘째 exact relevance만 전달 |
+| A02 | runtime `mode=personal`·`mode=company` 각각 capture→inspect→remember/extraction→judgment→2-call recall(기본 `agent` provider) | 같은 contract·states·provenance, server ML 호출 없음. 첫 optional context0, 둘째 exact relevance만 전달 |
 | A03 | inspected 뒤 source revision/credential/grant/binding/snapshot/contract/deletion/deadline 변경 | stale submission/recall/delivery 거절, 새 admission 필요 |
 | A04 | recall admission과 retract/restore race | 현재 stamp 또는 stale refusal. 철회 body 전달0, drain/provider unknown/media purge 별도 |
 | A05 | 한·영 부정·조건·예외·valid time·exact identifier·truncated window | 원문 UTF-8/qualifications 보존, 누락/새 literal 거절, partial/continuation 표시 |
@@ -245,7 +295,7 @@ MCP result body는 직접 만든 TextContent 한 plane에만 넣는다. 자동 t
 | R02 | credential이 없는 코드 변수·placeholder·불완전 armor 같은 benign fixture | 고신뢰 패턴에 해당하지 않는 유효 입력은 원문 그대로 capture. "모든 비밀 감지" 보장은 시험 결과에서도 금지 |
 | R03 | discard/reject 이유를 저장한 뒤 같은 source overlap·문구만 바꾼 claim·새 origin의 exact 동일본문으로 remember | 다음 source input에 accepted 기억+rejection ref/이유 노출, EVIDENCE_REJECTED, 새 claim0. source는 여전히 inspectable; retraction/purge/floor 변화 없음 |
 | R04 | 같은 rejected body를 번역/재배열해 새 origin으로 입력 | agent가 prior rejection과 비교해 같은 의미의 비독립 근거로 discard/review. exact-body guard 밖의 semantic 우회를 서버 자동 검출로 보고하지 않음; 잘못 reopening하면 실패 |
-| R05 | 원래 rejection을 반박하는 별도 human/tool/document의 실제 새 관측과 source/origin/body, prior_rejection_ids·rejection_comparisons·reason 제출 | current span/revision/admission·전체 inspected rejection 비교·explicit reopen ref 검증 후 grounded candidate 가능. 비교 누락은 REJECTION_COMPARISON_REQUIRED. ID/origin만 새로 만든 복사본·같은 source·agent_note는 새 독립 근거가 아니며 invalid reopen 대응은 REJECTION_REFERENCE_INVALID |
+| R05 | 원래 rejection을 반박하는 별도 human/tool/document의 실제 새 관측과 source/origin/body, prior_rejection_ids·rejection_comparisons·reason 제출 | current span/revision/admission·전체 inspected rejection 비교·explicit reopen ref 검증 후 grounded candidate 가능. 비교 누락은 REJECTION_COMPARISON_REQUIRED. 잘못된 rejection reference 대응은 REJECTION_REFERENCE_INVALID. ID/origin만 새로 만든 동일 본문·같은 source·agent_note는 새 독립 근거가 아니며 EVIDENCE_REJECTED |
 
 ### Hostnative memory 공존·중복
 
@@ -260,7 +310,7 @@ MCP result body는 직접 만든 TextContent 한 plane에만 넣는다. 자동 t
 
 ## 10. 1–2주 trial·cloud 전환
 
-상태: **범위·판정 기준을 고정한 제한 trial 정의, 시작하지 않음.** 실제 시작/종료 시각·elapsed1–2주·paired 결과·효익 측정값은 아직 없다. 이 계획은 기존 public/synthetic corpus·같은 task/모델/예산 비교·오류/정정/비용 기록·즉시 중단 계약을 유지한다.
+상태: **로컬 기본 구성·클라우드 원격 경로 구현, 격리 합성 검증. 제한 trial은 미시작.** 실제 시작/종료 시각·elapsed1–2주·paired 효익 측정은 없다. 기능 구현, 실제 vendor/API·native proof, 공식 QA, 운영 provisioning, trial 통과, 일반 출시는 각각 다른 상태다. 이 trial은 기존 public/synthetic corpus·동일 task/모델/예산 비교·오류/정정/비용 기록·즉시 중단 계약을 유지한다.
 
 ### 고정 비교 범위
 
@@ -277,4 +327,24 @@ pair별 task ID/revision·source origin/revision·admission/거절 code·관련�
 
 통과 판정은 local acceptance 충족·실제1–2주 완료·위 안전 중단 사건0을 모두 요구한다. 기존 #5 §5의 평가 범위를 유지한다: frozen holdout 최소120개(10군별12개 이상), 후속 coding task60개를 각3회 반복한 **유효 memory-on/off180쌍**, task 단위 paired cluster bootstrap95% CI. 개인 end-to-end Recall@20·feasible coverage·agent-selected Precision@3 각각90% 이상, 후속 task의 off/on 성공률 각각80% 이상과 성공률 차이 CI 하한0 이상을 기준으로 고정한다. candidate index와 agent 질의 확장·relevance를 분리해 오차를 기록하며 서버 lexical 순위를 판단 점수로 바꾸지 않는다. 같은 pairs에서 반복 조사가 줄거나 정확한 정정 재사용이 늘어야 하고, 조건 누락·근거 오류·false promotion은 off 대비 증가하면 안 된다. 양쪽 모두 frozen token/byte/tool-call 예산을 지킨다. 왕복·p50/p95·비용·운영 시간의 paired 차이를 공개하며, 기준 미달·native 잔류·미관측 때문에 비교 불가면 “효익 미입증”으로 남긴다. 실행 후 threshold나 표본을 유리하게 바꾸지 않으며, 이 기준은 측정 결과나 cloud 전환 승인이 아니다.
 
-local acceptance와 실제 trial을 판단한 뒤 **개인 corpus만** 같은 artifact/schema/API의 별도 cloud 배포 대상으로 검토한다. TLS/OAuth audience·network/identity·backup·삭제 head witness·legacy transport scaling·cleanup stop/drain은 그 배포에서 확인한다. 회사 corpus는 대상이 아니며 cloud provisioning은 현재 수행하지 않는다. commit/push/PR/merge/publication도 별도 승인이다.
+#### 평가 기록의 무결성
+
+controller/manifest·전체 attempt ledger·native CLI driver·required-only/실제 wire gateway·immutable artifact·격리 Docker verifier·scorer/report·CLI의 engineering 실행 경로가 있다. CI protocol peer와 engineering oracle은 이 경로를 검증하기 위한 합성 입력이지 실제 Claude/Codex 구독 판단·독립 인간 검토가 아니다. human gold120개·독립60 task×3회/180 valid pairs·실제 효익 결과와 elapsed trial은 아직 없으며 assistant가 추정해서 채우지 않는다. 현재 source의 전체 통합 smoke·공식 review/QA 상태는 검증 기록을 따른다.
+
+- 실행 전에 source/wheel·harness/verifier·corpus/gold/task의 revision과 digest, host/실제 모델 버전, prompt·예산·seed·도구 권한·승인 rule 집합·provider/egress 경로·native memory 잔류 관측을 한 run identity로 고정한다. 재개 때 하나라도 다르면 같은 run에 결과를 섞지 않는다. 비교 가능한 새 run으로 분리하고 이유와 이전 실패를 보존한다.
+- 초기 설정의 model 이름만으로 matched-model을 주장하지 않는다. driver·controller의 frozen identity·health replay는 원래 bounded native record의 같은 `observed_model_identity` 검사를 공유한다. Claude assistant의 실제 model 불일치·다른 `modelUsage` model 집합 또는 Codex의 관측된 `model/rerouted`는 비교 불가이며 A→B→A도 마지막 A로 덮지 않는다. `modelUsage`는 subagent도 포함하므로 혼합 pipeline을 확정된 main-model fallback으로 단정하지 않는다. 원래 identity·모든 관측·completed attempt·immutable 제출·usage/비용 미관측·cleanup은 남기고 frozen identity digest나 유효 쌍으로 승격하지 않는다. 이 사후 관측 경계는 native 설정 변경이나 in-flight 자원 소비0의 보장이 아니다.
+- candidate와 final context dispatch 전에 정규화한 `limit`·`max_bytes`·`code_workspace_id`를 frozen request와 대조한다. 원래 workspace가 null일 때만 생략/null을 같은 값으로 취급한다. candidate↔final 상관관계도 같은 정규화한 identity를 사용하므로 동등한 default 생략/명시 전환으로 완전 전송을 잃지 않는다. 원래 native/wire arguments는 바꾸지 않으며 다른 의미의 selector·예산·workspace를 같은 scope로 받아들이지 않는다.
+- measured corpus/rules는 `schema=2`다. applicable optional rule의 완전한 의미·revision/digest, 전체 eligible 관계, claim의 원문 span·source provenance와 health dependency 및 실제 context renderer를 함께 고정한다. 관계 미리보기나 bounded rule prefix를 완전한 집합으로 추정하지 않는다. controller만 사용하는 judgment manifest 권한을 native의 approved refs에 추가하지 않으며 무관한 global operation epoch 변화를 corpus drift로 사용하지 않는다.
+- 매 arm의 전후와 실제 context 전달을 고정 집합과 대조한다. 자기 packing 입력의 hash를 다시 맞춰도 claim의 조건·예외·시점·출처나 optional rule·관계를 바꿀 수 없다. 불완전한 독립 packing의 feasible maximum은 unknown이다. arm 사이 변경으로 비교 불가인 pair도 두 arm과 원래 시도·실패 이유를 유지한다.
+- native context credit은 upstream tool 반환이나 다른 MCP client의 성공만으로 주지 않는다. frozen `native_tool_mapping`의 server/tool과 같은 invocation·generation의 실제 native tool start/result를 원래 gateway 요청·완전한 downstream response write에 연결한다. Codex의 native `callId`/`threadId` metadata는 JSON-RPC ID와 별개다. Claude의 동일 요청·결과가 반복되면 양쪽 관측 stream의 비중첩 순서까지 확인하며 모호한 병렬 호출은 비교 불가다. 별도 immutable `native-tool-link`와 MCP metadata stamp·wire bytes를 health replay에서도 재검증한다. 부분 write·취소·deadline·중복 ID·응답 교체·관측 실패를 완료로 승격하지 않으며 provider input/의미 소비는 여전히 unknown이다.
+- 원래180쌍과 arm별 모든 시도를 분모에 남긴다. timeout·busy·abort·답 생성/판정 오류·fallback·비교 불가·미관측을 결과에서 지워 성공률을 높이지 않는다. 유효 쌍만의 수치는 별도 진단이며 전체180개의 유효성 조건을 대체하지 않는다. native 잔류 때문에 비교 불가인 쌍은 이익으로 세지 않고 원래 시도와 원인을 보존한다. 재실행 허용 조건·상한은 실행 전에 고정하며, 미지정이면0회다. 유리한 remediation 결과로 이전 arm/행을 교체하지 않는다.
+- verifier는 독립 검토된 합성 oracle의 만점, no-op의0점, 그럴듯하지만 틀린 답의 거절을 먼저 확인한다. 같은 stop event가 실행 중인 control까지 전달되고, 취소 후 다음 control을 시작하지 않으며 부분 receipt·intent·정확한 cleanup을 남긴다. 중단된 선검증은 eligible이 아니다. gold의 원문 anchor가 실제 corpus의 source/revision/byte span에 있어야 한다. 모호한 gold→claim 매핑은 fuzzy 성공이 아니라 누락/판정 불가로 기록한다. 인간 holdout이나 oracle을 임의로 만들어 채우지 않는다.
+- helper 생성자의 post-spawn interruption이나 selector 생성/닫기 실패도 소유권을 잃는 경로가 아니다. 아직 reap하지 않은 owned process group만 종료하고 기존 deadline 안에서 final wait·각 pipe close를 시도하며 원래 실패와 cleanup 실패를 함께 보존한다. 회수가 미관측이면 성공으로 바꾸지 않고 grace/timeout 증가로 덮지 않는다.
+- native 실행 전에 승인 task root의 descriptor를 고정한다. 제출 handoff는 root의 현재 device/inode를 전후 재확인하고 모든 ancestor·중간 directory·최종 leaf를 symlink 없이 연다. `..`·root 교체·여러 hardlink·관측된 파일 변경은 수입하지 않는다. 이는 한 bounded 제출 파일의 immutable byte handoff이며 살아 있는 workspace 전체의 coherence나 native host 격리·권한 보호를 증명하지 않는다.
+- 후보 retrieval의 required/forbidden claim ID와 agent의 relevance·abstention, 후속 coding task 성공을 분리한다. 후보가 모두 무관할 때 agent가 답을 보류하는지 확인한다. 빈 후보 반환이나 정정 전·후 claim을 함께 반환하는 것만으로 성공 처리하지 않는다.
+- 후속 task는 정답 문자열·호출 수·citation뿐 아니라 허용된 diff와 유지되어야 할 파일/행·작동 결과를 검사한다. 새 값이 있지만 파일을 잘라냈거나 무관한 코드를 바꿨으면 실패다. native 보호는 같은 tool-use ID의 실제 시도·deny와 금지 부작용0을 연결하고 미시도·결과 없는 호출을 통과로 세지 않는다.
+- 전체 threshold와 task 단위 paired cluster bootstrap 기준은 위 값을 유지한다. 군별 최소12개 결과는 표본 수·불확실성을 함께 보고하며 군별90% 충족 같은 추가 통과 주장을 만들지 않는다. 비용 미관측을0원으로 넣거나 성공한 terminal 요청만으로 전체 시도 latency를 대체하지 않는다.
+
+근거와 적용/보류 범위는 [OSS 후속 검토](research/2026-10-16-oss-followup.ko.md)에 연결한다. 이 조건을 문서에 추가한 것은 실제 trial·native 보호·효익의 검증이 아니다.
+
+클라우드 **구현·격리 합성 검증**은 최신 사용자 지시로 trial 완료와 별도로 진행한다. 실제 cloud account·public DNS/ACME·IdP·private overlay·외부 backup/최신 삭제 head witness provisioning, 실제 corpus 저장·이동·egress 허가는 별도다. 개인·회사 모두 동일 core/API/schema/rule을 사용하고 Jev 허용·명시선택만 원격 worker, 나머지는 구독 coding-agent의 원격 MCP 판단이다. relevance는 agent, 불확실/실패는 pending, provider 자동 fallback은 없다. 원격 native 및 deployment 증거와 관측 한계는 검증 기록을 따른다. 실제1–2주 paired trial·전체 #5 acceptance·fresh 공식 review/QA/handoff·publication gate를 합성 실행으로 대체하지 않는다. trial도 실제 corpus 이동·일반 출시·merge 승인이 아니다.

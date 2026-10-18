@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import io
 import json
+import select
+import subprocess
+import sys
 import threading
 from http.client import BadStatusLine, IncompleteRead
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -10,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from agents_memory import stdio
+from agents_memory.config import Settings
 from agents_memory.stdio import RelayEndpoint, StdioRelay
 
 
@@ -45,7 +49,9 @@ class Opener:
 
 
 @pytest.fixture
-def relay(tmp_path):
+def relay(tmp_path, monkeypatch):
+    # These tests exercise the protocol transport after the separate readiness gate.
+    monkeypatch.setattr(stdio, "ensure_local_ready", lambda *args, **kwargs: {"ready": True})
     token = tmp_path / "synthetic-token"
     token.write_text("synthetic-local-relay-token-" + "a" * 40)
     token.chmod(0o600)
@@ -622,3 +628,115 @@ def test_recovery_refuses_a_server_that_negotiates_another_protocol_version(rela
     assert result["error"]["data"] == {"effect": "not_started"}
     assert [item["request"]["method"] for item in scripted.requests] == ["initialize", "tools/call", "initialize"]
     assert (relay.session_id, relay.protocol_version, relay.recovery_pending) == (None, "2025-11-25", True)
+
+
+@pytest.fixture
+def production_relay_pipe(tmp_path):
+    """A real CLI process and HTTP peer; the parent deliberately leaves stdout unread."""
+    text = "한글🚀" * 5000
+    received = []
+    responded = threading.Event()
+
+    def envelope(identifier):
+        return {"jsonrpc": "2.0", "id": identifier, "result": {
+            "content": [{"type": "text", "text": f"{identifier}:{text}"}],
+        }}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.reply({"ready": True, "db_ready": True, "deployment_id": "pipe-deployment"})
+
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            received.append(request["id"])
+            self.reply(envelope(request["id"]))
+            responded.set()
+
+        def reply(self, value):
+            raw = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            self.wfile.flush()
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+    thread.start()
+    config = tmp_path / "deployment.json"
+    config.write_text(Settings(
+        deployment_id="pipe-deployment", realm="pipe-realm", mode="company",
+        database_dsn="postgresql://unused", state_dir=tmp_path / "state",
+        journal_dir=tmp_path / "journal", port=server.server_port,
+        max_mcp_response_bytes=65536,
+    ).model_dump_json())
+    config.chmod(0o600)
+    credential = "synthetic-pipe-credential-never-in-output"
+    token = tmp_path / "agent.token"
+    token.write_text(credential + "\n")
+    token.chmod(0o600)
+    command = [sys.executable, "-m", "agents_memory.cli", "--config", str(config),
+               "--token-file", str(token), "stdio"]
+    try:
+        yield command, responded, received, envelope, credential
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+
+def _pipe_requests(count):
+    return b"".join(json.dumps({
+        "jsonrpc": "2.0", "id": identifier, "method": "tools/call",
+        "params": {"name": "memory_inspect", "arguments": {"ref": "source-pipe"}},
+    }).encode() + b"\n" for identifier in range(count))
+
+
+def test_production_stdio_preserves_complete_utf8_responses_through_a_paused_pipe(production_relay_pipe):
+    command, responded, received, envelope, credential = production_relay_pipe
+    count = 40  # More than a pipe's capacity; each individual response remains within its wire bound.
+    child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        child.stdin.write(_pipe_requests(count))
+        child.stdin.close()
+        child.stdin = None
+        assert responded.wait(10)
+        assert select.select([child.stdout], [], [], 10)[0]
+        output, errors = child.communicate(timeout=30)
+        expected = b"".join(
+            json.dumps(envelope(identifier), ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
+            for identifier in range(count)
+        )
+        assert child.returncode == 0 and errors == b""
+        assert output == expected
+        assert received == list(range(count))
+        assert credential.encode() not in output
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.communicate(timeout=5)
+
+
+def test_production_stdio_reports_delivery_failure_for_a_closed_pipe_without_replaying(production_relay_pipe):
+    command, responded, received, _, credential = production_relay_pipe
+    child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        child.stdout.close()
+        child.stdout = None
+        child.stdin.write(_pipe_requests(1))
+        child.stdin.close()
+        child.stdin = None
+        assert responded.wait(10)
+        _, errors = child.communicate(timeout=15)
+        assert child.returncode != 0
+        assert credential.encode() not in errors and "한글".encode() not in errors
+        assert received == [0]
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.communicate(timeout=5)

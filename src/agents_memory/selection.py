@@ -23,6 +23,7 @@ from .domain import (
     canonical_digest,
     reject_source_secrets,
 )
+from .health import CodeLinkCommand, HealthAssessmentCommand
 from .representation import serialized_json_bytes
 from .semantic import original_spans, resolve_extraction, validate_extraction
 from .semantic_contract import GeneratedExtraction
@@ -124,13 +125,17 @@ class ClaimJudgmentCommand(TypedModel):
 
 def _record_tag(value: object) -> str:
     kind = value.get("kind") if isinstance(value, dict) else getattr(value, "kind", None)
-    return kind if isinstance(kind, str) and kind in {"source_selection", "claim_judgment"} else "record"
+    return kind if isinstance(kind, str) and kind in {
+        "source_selection", "claim_judgment", "code_link", "health_assessment",
+    } else "record"
 
 
 RecordInput = Annotated[
     Annotated[RecordCommand, Tag("record")]
     | Annotated[SourceSelectionCommand, Tag("source_selection")]
-    | Annotated[ClaimJudgmentCommand, Tag("claim_judgment")],
+    | Annotated[ClaimJudgmentCommand, Tag("claim_judgment")]
+    | Annotated[CodeLinkCommand, Tag("code_link")]
+    | Annotated[HealthAssessmentCommand, Tag("health_assessment")],
     Discriminator(_record_tag),
 ]
 RECORD_ADAPTER = TypeAdapter(RecordInput)
