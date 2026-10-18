@@ -432,3 +432,69 @@ def test_native_submission_parent_backtracking_is_not_an_approved_task_path(tmp_
     spec, _ = spec_for(tmp_path)
     with pytest.raises(ValueError):
         replace(spec, submission_path=spec.cwd / ".." / "outside" / "submission.json")
+
+
+@pytest.mark.parametrize(("backend", "variant"), [
+    ("claude", "same-model"),
+    ("claude", "assistant-model"),
+    ("claude", "terminal-model"),
+    ("claude", "mixed-pipeline"),
+    ("claude", "roundtrip"),
+    ("codex", "reroute"),
+    ("codex", "roundtrip"),
+])
+def test_observed_model_changes_are_not_matched_native_attempts(tmp_path, backend, variant):
+    if backend == "claude":
+        peer = "variant = " + repr(variant) + "\n" + '''import json, pathlib, sys
+sys.stdin.read()
+path = pathlib.Path.cwd() / 'submission.json'
+path.write_bytes(b'{"model_fixture":"retained-completed"}')
+events = [
+    {'type':'system','subtype':'init','session_id':'session-one','model':'peer-model',
+     'claude_code_version':'engineering-peer','permissionMode':'default'},
+]
+models = ['peer-model']
+if variant in ('assistant-model', 'roundtrip'):
+    models.append('other-model')
+if variant == 'roundtrip':
+    models.append('peer-model')
+for index, model in enumerate(models):
+    events.append({'type':'assistant','session_id':'session-one','message':{
+        'id':'message-' + str(index),'model':model,'content':[]}})
+usage_models = ['other-model'] if variant == 'terminal-model' else ['peer-model']
+if variant == 'mixed-pipeline':
+    usage_models.append('other-model')
+events.append({'type':'result','session_id':'session-one','subtype':'success','is_error':False,
+    'modelUsage':{model:{'inputTokens':13,'outputTokens':3} for model in usage_models},
+    'structured_output':{'submission_path':str(path)}})
+for event in events:
+    print(json.dumps(event),flush=True)
+'''
+    else:
+        peer = codex_peer("variant = " + repr(variant) + "\n" + '''
+emit({'method':'model/rerouted','params':{'threadId':'thread-one','turnId':'turn-one',
+    'fromModel':'peer-model','toModel':'other-model','reason':'highRiskCyberActivity'}})
+if variant == 'roundtrip':
+    emit({'method':'model/rerouted','params':{'threadId':'thread-one','turnId':'turn-one',
+        'fromModel':'other-model','toModel':'peer-model','reason':'highRiskCyberActivity'}})
+path = pathlib.Path.cwd() / 'submission.json'
+path.write_bytes(b'{"model_fixture":"retained-completed"}')
+emit({'method':'item/completed','params':{'threadId':'thread-one','turnId':'turn-one',
+    'item':{'type':'agentMessage','id':'model-message','text':json.dumps({'submission_path':str(path)})}}})
+emit({'method':'turn/completed','params':{'threadId':'thread-one','turn':{'id':'turn-one','status':'completed'}}})
+sys.stdin.read()
+''')
+    spec, output = spec_for(tmp_path, backend=backend, peer=peer)
+    spec = replace(spec, exclusive_optional_route_observed=True, residual_memory_absence_observed=True,
+                   expected_model="peer-model")
+    result = run_native_arm(spec, "Engineering model-observation fixture, not native approval",
+                            invocation_id="invocation", artifact_output=output, trace_sink=lambda _: None)
+    assert result.status == "completed"
+    assert result.comparable is (variant == "same-model")
+    assert bool(result.incomparability_reasons) is (variant != "same-model")
+    assert result.artifact_bundle["sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
+    assert result.cleanup["leader_reaped"] is True
+    assert result.usage["cost_usd"] is None
+    if backend == "claude":
+        multiplier = 2 if variant == "mixed-pipeline" else 1
+        assert result.usage["counters"] == {"inputTokens": 13 * multiplier, "outputTokens": 3 * multiplier}
