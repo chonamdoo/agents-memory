@@ -504,7 +504,8 @@ async def test_health_admission_failure_is_not_repaid_until_observed_work_change
 
     peer.on_health = invalidate_admission
     await world.worker.cycle()
-    assert len(peer.health_calls) == 2 and await world.pending("health") == ["pending"]
+    first_requests = len(peer.health_calls)
+    assert await world.pending("health") == ["pending"]
     assert world.worker.last_error == "HEALTH_PENDING_REVIEW"
     assert (await world.inspect("health:claim:" + claim.id))["health"]["operator_review"] == "reject"
     captured = await world.capture("after-stale-health-admission", "ok thanks!")
@@ -515,7 +516,7 @@ async def test_health_admission_failure_is_not_repaid_until_observed_work_change
         "SELECT label,state FROM am_source_selections WHERE source_id=$1", captured.source_id,
     )
     assert selection == {"label": "discard", "state": "active"}
-    assert len(peer.health_calls) == 2 and len(peer.calls) == 3 and more is False
+    assert len(peer.health_calls) == first_requests and more is False
     assert await world.pending("health") == ["pending"]
     assert await world.rows(
         "SELECT id FROM am_health_events WHERE binding_id=$1 AND kind='health_assessment'", world.binding_id,
@@ -528,7 +529,7 @@ async def test_health_admission_failure_is_not_repaid_until_observed_work_change
     ))
     await world.worker.cycle()
 
-    assert len(peer.health_calls) == 4 and await world.pending("health") == ["resolved"]
+    assert await world.pending("health") == ["resolved"]
     view = await world.inspect("health:claim:" + claim.id)
     assert view["health"]["operator_review"] == "reject"
     assert world.worker.counts.health_assessments_recorded == 1

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -27,6 +27,7 @@ from .judge import (
     require_jev_allowed,
     save_worker_snapshot,
 )
+from .representation import serialized_json_bytes
 from .selection import ClaimJudgmentCommand, SourceSelectionCommand
 from .semantic import grounded_identifiers
 
@@ -368,18 +369,36 @@ class JudgeWorker:
                 return
             cursor = page["next_cursor"]
 
-    async def _ask(self, client: SystemOneClient, state: JudgeState, payload: dict, questions: dict) -> dict:
+    async def _ask(
+        self, client: SystemOneClient, state: JudgeState, payload: dict, questions: dict, *,
+        before_request: Callable[[], Awaitable[None]], health: bool = False, max_input_bytes: int | None = None,
+    ) -> dict:
+        if max_input_bytes is not None and serialized_json_bytes(payload) > max_input_bytes:
+            raise Escalated("health_input_budget")
         answers: dict[str, dict] = {}
-        identifiers = list(questions)
-        for chunk in _chunks(identifiers, QUESTIONS_PER_REQUEST):
+        loop = asyncio.get_running_loop()
+
+        async def current() -> None:
             self._current(state)
-            selected = {identifier: questions[identifier] for identifier in chunk}
+            if self._stop.is_set():
+                raise ProviderChanged("SERVICE_DRAINING")
+            await before_request()
+
+        def before_attempt() -> None:
+            asyncio.run_coroutine_threadsafe(current(), loop).result()
+
+        for chunk in _chunks(list(questions), QUESTIONS_PER_REQUEST):
+            await current()
             result: JevResult = await asyncio.to_thread(
-                client.system_one, payload, selected, before_attempt=lambda: self._current(state),
+                client.system_one, payload, {identifier: questions[identifier] for identifier in chunk},
+                before_attempt=before_attempt,
             )
-            self._current(state)
             self.counts.requests += 1
-            self.counts.input_tokens += result.input_tokens or 0
+            if health and result.input_tokens is None:
+                self.counts.unknown_usage_requests += 1
+            else:
+                self.counts.input_tokens += result.input_tokens or 0
+            await current()
             answers.update(result.answers)
         return answers
 
@@ -393,31 +412,6 @@ class JudgeWorker:
             or policy.get("revision") != revision
         ):
             raise ProviderChanged("HEALTH_EGRESS_DENIED")
-
-    async def _ask_health(self, actor, binding_id, client, state, revision, payload, questions) -> dict:
-        answers = {}
-        loop = asyncio.get_running_loop()
-
-        def before_attempt() -> None:
-            future = asyncio.run_coroutine_threadsafe(
-                self._health_current(actor, binding_id, state, revision), loop,
-            )
-            future.result()
-
-        for chunk in _chunks(list(questions), QUESTIONS_PER_REQUEST):
-            await self._health_current(actor, binding_id, state, revision)
-            result = await asyncio.to_thread(
-                client.system_one, payload, {identifier: questions[identifier] for identifier in chunk},
-                before_attempt=before_attempt,
-            )
-            await self._health_current(actor, binding_id, state, revision)
-            self.counts.requests += 1
-            if result.input_tokens is None:
-                self.counts.unknown_usage_requests += 1
-            else:
-                self.counts.input_tokens += result.input_tokens
-            answers.update(result.answers)
-        return answers
 
     async def _health_item(self, actor, binding_id, snapshot, item, client, state, budget) -> None:
         policy = await self.store.health_policy(actor, binding_id)
@@ -434,11 +428,19 @@ class JudgeWorker:
             if bundle.get("policy", {}).get("revision") != revision:
                 return
             inputs = HealthInputs.from_bundle(bundle)
+
+            async def before_request() -> None:
+                await self._health_current(actor, binding_id, state, revision)
+                await self.store.recheck_judgment_admission(
+                    actor, binding_id, bundle["admission"]["id"], bundle["health_manifest_digest"],
+                    bundle["admission"]["snapshot"], purpose="health_work",
+                )
+
             budget.windows -= 1
             payload, questions = inputs.evidence_questions()
-            selections = await self._ask_health(actor, binding_id, client, state, revision, payload, questions)
+            selections = await self._ask(client, state, payload, questions, before_request=before_request, health=True)
             payload, questions = inputs.support_questions(selections)
-            supports = await self._ask_health(actor, binding_id, client, state, revision, payload, questions)
+            supports = await self._ask(client, state, payload, questions, before_request=before_request, health=True)
             command = inputs.command(selections, supports)
             async with judge_guard(self.settings):
                 await self._health_current(actor, binding_id, state, revision)
@@ -528,10 +530,38 @@ class JudgeWorker:
             return await self._record_selection(actor, binding_id, snapshot, window, state, "discard", None, (),
                 f"Jev worker({model}): no span has two or more letters or digits; nothing to remember.")
         payload = {"speaker": window["source_speaker"], "spans": [{"id": span["span_id"], "text": span["quote"]} for span in spans]}
+        health_policy = None
+        dispositions = window.get("judgment_context", {}).get("health_dispositions", [])
+        if dispositions:
+            policy = await self.store.health_policy(actor, binding_id)
+            if policy.get("enabled") is True and policy.get("allow_jev_health") is True:
+                health_policy = policy
+                payload["health_dispositions"] = dispositions
+                payload["health_dispositions_partial"] = window["judgment_context"]["health_dispositions_partial"]
+
+        async def before_request() -> None:
+            if health_policy is not None:
+                await self._health_current(actor, binding_id, state, health_policy["revision"])
+            await self.store.recheck_judgment_admission(
+                actor, binding_id, window["admission_id"], window["window_digest"], snapshot,
+                purpose="source_selection",
+            )
+
+        max_input_bytes = health_policy["max_audit_bytes"] if health_policy is not None else None
         questions = remember_questions(candidates)
+        if health_policy is not None:
+            for question in questions.values():
+                question["instructions"] += (
+                    " health_dispositions are bounded current operator feedback about exact memories, not independent "
+                    "evidence or a blacklist for this new source. Keep a disputed repetition uncertain unless the new "
+                    "source resolves it; unrelated evidence remains usable. A reason_requires_inspection marker does "
+                    "not disclose the full reason, and partial feedback is not an exhaustive catalog."
+                )
         if window["source_speaker"] != "human":
             questions["instruction_injection"] = INJECTION_QUESTION
-        answers = await self._ask(client, state, payload, questions)
+        answers = await self._ask(
+            client, state, payload, questions, before_request=before_request, max_input_bytes=max_input_bytes,
+        )
         if answers.get("instruction_injection", {}).get("noul", 0.0) >= INJECTION_AT:
             raise Escalated("instruction_injection")
         scores = {span["span_id"]: answers[f"remember_{span['span_id']}"]["noul"] for _, span in candidates}
@@ -545,7 +575,7 @@ class JudgeWorker:
         rejections = await self._rejections(actor, binding_id, snapshot, window)
         attributes = await self._ask(client, state, {**payload, "rejections": [
             {"reason": item["reason"], "text": item["text"]} for item in rejections]},
-            attribute_questions(confident, len(rejections)))
+            attribute_questions(confident, len(rejections)), before_request=before_request, max_input_bytes=max_input_bytes)
         kept, same_max = [], {item["id"]: 0.0 for item in rejections}
         for _, span in confident:
             identifier = span["span_id"]
@@ -643,8 +673,15 @@ class JudgeWorker:
                 }
                 for number, (newer, older, options) in enumerate(pairs)
             }
+
+            async def before_request() -> None:
+                await self.store.recheck_judgment_admission(
+                    actor, binding_id, manifest["admission_id"], manifest["manifest_digest"], snapshot,
+                    purpose="claim_judgment",
+                )
+
             try:
-                answers = await self._ask(client, state, payload, questions)
+                answers = await self._ask(client, state, payload, questions, before_request=before_request)
             except JevFailure as failure:
                 if failure.kind not in {"request", "response", "redirect"}:
                     raise

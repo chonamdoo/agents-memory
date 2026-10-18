@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Any
+from typing import Any, overload
 
-from pydantic import TypeAdapter
-
-from .domain import TypedModel
+from pydantic import BaseModel, TypeAdapter
 
 RESULT_ENVELOPE_BYTES = 2048
 
@@ -54,7 +52,15 @@ def decode_json(raw: bytes) -> dict:
     return value
 
 
-def validate_wire[Model: TypedModel](model: type[Model] | TypeAdapter[Model], value: object) -> Model:
+@overload
+def validate_wire[Model: BaseModel](model: type[Model], value: object) -> Model: ...
+
+
+@overload
+def validate_wire[Value](model: TypeAdapter[Value], value: object) -> Value: ...
+
+
+def validate_wire(model: type[BaseModel] | TypeAdapter[Any], value: object) -> Any:
     raw = json.dumps(value, ensure_ascii=False, allow_nan=False)
     if isinstance(model, TypeAdapter):
         return model.validate_json(raw, strict=True)

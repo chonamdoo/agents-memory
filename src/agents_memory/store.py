@@ -2578,6 +2578,21 @@ class Store:
             await self._recheck_rejection_inputs(connection, row)
         return row
 
+    async def recheck_judgment_admission(
+        self, actor: Principal, binding_id: str, admission_id: str, request_digest: str,
+        snapshot: str | None, *, purpose: str,
+    ) -> None:
+        """Recheck the original durable inputs without refreshing or consuming their authority."""
+        async with self._tx() as (connection, clock):
+            current = await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR))
+            row = await connection.fetchrow("""SELECT * FROM am_admissions
+                WHERE id=$1 AND binding_id=$2 AND kind='nonmodel' AND purpose=$3
+                AND purpose IN ('source_selection','claim_judgment','health_work')""",
+                admission_id, binding_id, purpose)
+            if row is None or row["request_digest"] != request_digest or row["snapshot"] != snapshot:
+                raise DomainError("ADMISSION_STALE", "The original judgment input admission changed")
+            await self._recheck_nonmodel(connection, clock, current, self._nonmodel_admission(row))
+
     async def recall_admission(self, actor: Principal, binding_id: str, admission_id: str, request_digest: str, snapshot: str | None) -> tuple[NonmodelAdmission, list[Claim]]:
         async with self._tx() as (connection, clock):
             current = await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR))
