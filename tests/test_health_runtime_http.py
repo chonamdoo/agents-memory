@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 from test_edge_boundaries import AGENT_TOKEN, request, running, tool, tool_code
@@ -158,3 +159,79 @@ async def test_operator_health_observer_retains_healthy_workspaces_after_produce
         await authority.store.revoke_token(authority.actor, authority.actor.credential_id)
         status, _ = await request(edge, {"binding_id": authority.binding_id}, TOKEN, path="/api/health/observer")
         assert status == 401
+
+
+@pytest.mark.parametrize("old_workspace_state", ["active", "withdrawn"])
+async def test_healthy_code_link_commits_despite_revoked_foreign_producer(
+    authority, monkeypatch, old_workspace_state,
+):
+    from test_store_authority import ready_claim
+
+    from agents_memory.health import CodeLinkCommand, CodeObservationCommand, HealthPolicyCommand, HealthWorkspaceCommand
+
+    store, actor, binding = authority.store, authority.actor, authority.binding_id
+    mutation = {"binding_id": binding, "expected_binding_revision": 1}
+    await store.health(actor, HealthPolicyCommand(**mutation, idempotency_key="relink-policy",
+        expected_policy_revision=0, enabled=True))
+    producers, observations = {}, {}
+    for index, name in enumerate(("old", "healthy")):
+        producers[name] = await store.issue_token(actor, Role.PRODUCER, (binding,), "relink-" + name + "-" + "p" * 48)
+        await store.health(actor, HealthWorkspaceCommand(
+            **mutation, idempotency_key="relink-workspace-" + name, workspace_id="workspace_relink_" + name,
+            expected_workspace_revision=0, root_fingerprint=("a", "b")[index] * 64,
+            producer_credential_id=producers[name].credential_id))
+        await store.health(producers[name], CodeObservationCommand(
+            **mutation, idempotency_key="relink-observation-" + name, workspace_id="workspace_relink_" + name,
+            expected_workspace_revision=1, root_fingerprint=("a", "b")[index] * 64, sequence=1,
+            observed_at=datetime(2026, 10, 18, tzinfo=UTC), coverage="explicit_paths",
+            files=[{"relative_path": "src/cache.py", "status": "present", "file_digest": "c" * 64,
+                "byte_length": 27, "symbol_coverage": "complete", "symbols": []}]))
+        view = await store.inspect(actor, binding, "health:workspace:workspace_relink_" + name)
+        observations[name] = view["observations"][0]["ref"]
+    _, claim = await ready_claim(authority, key="relink-claim")
+
+    async def link_command(name, key):
+        view = await store.inspect(actor, binding, "health:claim:" + claim.id + ":observation:" + observations[name])
+        return CodeLinkCommand(**mutation, idempotency_key=key, admission_id=view["admission"]["id"],
+            claim_ref={"id": claim.id, "revision": claim.revision},
+            expected_health_version=view["health"]["version"], observation_refs=[observations[name]],
+            reason="The inspected ordinary claim depends on this exact code observation.")
+
+    await store.health(actor, await link_command("old", "relink-original-link"))
+    if old_workspace_state == "withdrawn":
+        await store.health(actor, HealthWorkspaceCommand(
+            **mutation, idempotency_key="relink-withdraw-old-workspace", workspace_id="workspace_relink_old",
+            expected_workspace_revision=1, root_fingerprint="a" * 64, state="withdrawn",
+            producer_credential_id=producers["old"].credential_id))
+    await store.revoke_token(actor, producers["old"].credential_id)
+    command = await link_command("healthy", "relink-healthy-link")
+    async with running(authority) as edge:
+        status, body = await request(edge, command.model_dump(mode="json"), TOKEN, path="/api/health")
+        assert status == 200, body
+        linked = json.loads(body)
+        assert linked["state"] == "health_recorded"
+        event = await store.inspect(actor, binding, "health:event:" + linked["artifact_id"])
+        assert event["payload"]["added_observation_refs"] == [observations["healthy"]]
+        registry = await store.health_observer(producers["healthy"], binding)
+        assert registry["workspaces"][0]["linked_paths"][0]["relative_path"] == "src/cache.py"
+        current = await store.inspect(actor, binding, "health:claim:" + claim.id)
+        assert not current["health"]["reusable"]
+        failing = await link_command("healthy", "relink-unexpected-failure")
+        credential = edge.application.store._credential
+
+        async def unavailable_foreign_authority(connection, credential_id):
+            if credential_id == producers["old"].credential_id:
+                raise DomainError("DATABASE_BUSY", "The foreign authority is temporarily unavailable", status=503)
+            return await credential(connection, credential_id)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(edge.application.store, "_credential", unavailable_foreign_authority)
+            status, body = await request(edge, failing.model_dump(mode="json"), TOKEN, path="/api/health")
+        assert status == 503
+        assert json.loads(body)["error"]["code"] == "DATABASE_BUSY"
+        after = await store.inspect(actor, binding, "health:claim:" + claim.id)
+        assert after["health"]["version"] == current["health"]["version"]
+        await store.revoke_token(actor, actor.credential_id)
+        status, body = await request(edge, failing.model_dump(mode="json"), TOKEN, path="/api/health")
+        assert status == 401
+        assert json.loads(body)["error"]["code"] == "AUTH_DENIED"

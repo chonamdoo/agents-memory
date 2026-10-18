@@ -5,6 +5,7 @@ import base64
 import copy
 import json
 import os
+import subprocess
 import sys
 import threading
 from dataclasses import asdict
@@ -1023,3 +1024,58 @@ emit({'type':'result','session_id':session_id,'subtype':'success','is_error':Fal
         assert observed.returned_claim_ids == () and observed.grounding_refs == ()
         assert observed.manifest_complete is True and observed.final_context_digest
         assert observed.comparable is not missing_model
+
+
+@pytest.mark.parametrize(("action", "fault", "code"), [
+    ("prepare", "source_digest", "FROZEN_FILE_DIGEST_MISMATCH"),
+    ("run", "prepared_conflict", "PUBLICATION_UNCERTAIN"),
+    ("report", "frozen_digest", "RUN_INPUT_IDENTITY_DRIFT"),
+])
+def test_real_cli_preserves_bounded_evaluation_failure_code(tmp_path, action, fault, code):
+    path, config, _ = fixture_inputs(tmp_path, repeats=1)
+    run_dir = tmp_path / "run"
+    marker = b"synthetic_private_evaluation_input"
+    retained_manifest = None
+    if fault == "source_digest":
+        prompt = next(row for row in config["files"] if row["name"] == "prompt")
+        Path(prompt["path"]).write_bytes(marker)
+    else:
+        prepare_run(load_manifest(path), run_dir)
+        retained_manifest = (run_dir / "manifest.json").read_bytes()
+        if fault == "prepared_conflict":
+            config["seed"] += 1
+            save(path, config)
+        else:
+            (run_dir / "inputs" / "prompt.frozen").write_bytes(marker)
+    arguments = ["evaluation", action, "--run-dir", str(run_dir)]
+    if action != "report":
+        arguments += ["--manifest", str(path), "--expected-sha256", digest_bytes(path.read_bytes())]
+    result = subprocess.run(
+        [sys.executable, "-I", "-m", "agents_memory.cli", *arguments],
+        cwd=tmp_path, capture_output=True, timeout=10,
+    )
+    assert result.returncode == 1
+    assert result.stdout == b""
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == code
+    assert error["effect"] == "unknown"
+    assert marker not in result.stderr and str(tmp_path).encode() not in result.stderr
+    assert b"Traceback" not in result.stderr
+    assert not list(run_dir.glob("ledger/*.intent.json"))
+    if retained_manifest is not None:
+        assert (run_dir / "manifest.json").read_bytes() == retained_manifest
+
+
+def test_real_cli_private_evaluation_os_error_remains_generic(tmp_path):
+    marker = "synthetic_private_manifest_location"
+    result = subprocess.run(
+        [sys.executable, "-I", "-m", "agents_memory.cli", "evaluation", "prepare",
+            "--run-dir", str(tmp_path / "run"), "--manifest", str(tmp_path / marker),
+            "--expected-sha256", "0" * 64],
+        cwd=tmp_path, capture_output=True, timeout=10,
+    )
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert json.loads(result.stderr)["error"]["code"] == "LOCAL_INPUT_INVALID"
+    assert marker.encode() not in result.stderr and str(tmp_path).encode() not in result.stderr
+    assert b"Traceback" not in result.stderr

@@ -1237,3 +1237,141 @@ async def test_machine_refresh_failure_does_not_acquire_operator_close_ownership
     assert 'disposition' not in row['payload'] and current['admission'] is not None
     assert extra.source_id in {item['id'] for item in current['input_sources']}
     assert (await health_view(company, claim))['health'] == health_before
+
+
+@pytest.mark.parametrize('late_input', ['end', 'capture'])
+async def test_retracted_session_work_cannot_resume_from_delayed_input(company, late_input):
+    await enabled(company)
+    producer = await workspace(company)
+    _, _, claim = await candidate(company, snapshot='snapshot_alpha')
+    captured = await company.store.capture(producer, CaptureCommand(
+        binding_id=company.binding_id, idempotency_key='withdrawn-session-source',
+        origin_key='withdrawn-session-source', snapshot='snapshot_alpha', body=claim.draft.statement,
+        speaker='human', root_run_id='run_withdrawn', agent_path='agent_withdrawn'))
+    source_refs = [{'id': captured.source_id, 'revision': 1}]
+    segment = dict(stream_id='stream_withdrawn', segment_id='segment_withdrawn',
+        root_run_id='run_withdrawn', agent_path='agent_withdrawn', source_refs=source_refs,
+        claim_refs=[{'id': claim.id, 'revision': claim.revision}], coverage='observed_segment',
+        origin_keys=['withdrawn-session-late'] if late_input == 'capture' else [])
+    await company.store.health(producer, SessionObservationCommand(
+        **mutation(company, 'withdrawn-session-start'), **segment,
+        event_id='withdrawn_start', sequence=1, event='start'))
+    if late_input == 'capture':
+        await company.store.health(producer, SessionObservationCommand(
+            **mutation(company, 'withdrawn-session-end-before-retract'), **segment,
+            event_id='withdrawn_end', sequence=2, event='end'))
+    page = await company.store.inspect(company.actor, company.binding_id, 'health', 'snapshot_alpha')
+    item = page['items'][0]
+    first = await company.store.inspect(company.actor, company.binding_id, item['ref'], 'snapshot_alpha')
+    stale_assessment = HealthAssessmentCommand(
+        **mutation(company, 'withdrawn-session-old-assessment'), admission_id=first['admission']['id'],
+        pending_id=first['pending_id'], health_manifest_digest=first['health_manifest_digest'],
+        input_sources=first['input_sources'], input_claims=first['input_claims'],
+        assessments=[{'claim_ref': {'id': claim.id, 'revision': claim.revision},
+            'support': 'unknown', 'freshness': 'unknown', 'relevance': 'related',
+            'reason': 'The bounded segment cannot establish accuracy or human approval.'}])
+    withdrawn = await company.store.retract(company.actor, company.binding_id, first['pending_id'],
+        'withdraw-session-work')
+    assert withdrawn['state'] == 'retracted'
+    assert (await terminal_work_row(company, first['pending_id']))['state'] == 'retracted'
+    if late_input == 'end':
+        await company.store.health(producer, SessionObservationCommand(
+            **mutation(company, 'withdrawn-session-delayed-end'), **segment,
+            event_id='withdrawn_end', sequence=2, event='end'))
+    else:
+        late = await company.store.capture(producer, CaptureCommand(
+            binding_id=company.binding_id, idempotency_key='withdrawn-session-late',
+            origin_key='withdrawn-session-late', snapshot='snapshot_alpha',
+            body='CacheKey has later independently captured evidence.', speaker='human',
+            root_run_id='run_withdrawn', agent_path='agent_withdrawn'))
+        assert (await company.store.source(company.actor, company.binding_id, late.source_id)).body == (
+            'CacheKey has later independently captured evidence.')
+    assert (await terminal_work_row(company, first['pending_id']))['state'] == 'retracted'
+    assert (await company.store.inspect(company.actor, company.binding_id, 'health', 'snapshot_alpha'))['items'] == []
+    with pytest.raises(DomainError) as refused:
+        await company.store.inspect(company.actor, company.binding_id, item['ref'], 'snapshot_alpha')
+    assert refused.value.code == 'ADMISSION_STALE'
+    with pytest.raises(DomainError) as stale:
+        await company.store.record(company.actor, stale_assessment)
+    assert stale.value.code in {'ADMISSION_STALE', 'HEALTH_STALE'}
+    for sequence, boundary in enumerate(('start', 'end'), 1):
+        await company.store.health(producer, SessionObservationCommand(
+            **mutation(company, 'new-segment-' + boundary), **{**segment, 'segment_id': 'segment_new'},
+            event_id='new_' + boundary, sequence=sequence, event=boundary))
+    new_page = await company.store.inspect(company.actor, company.binding_id, 'health', 'snapshot_alpha')
+    assert len(new_page['items']) == 1
+    fresh = await company.store.inspect(company.actor, company.binding_id, new_page['items'][0]['ref'], 'snapshot_alpha')
+    assert fresh['pending_id'] != first['pending_id']
+    assert fresh['admission'] is not None
+    assert fresh['input_claims'] == [{'id': claim.id, 'revision': claim.revision}]
+    assert source_refs[0] in fresh['input_sources']
+
+
+@pytest.mark.parametrize('boundary', ['admission', 'delivery'])
+async def test_revoked_workspace_producer_is_scope_change_not_caller_auth_failure(company, boundary):
+    await enabled(company)
+    producer = await workspace(company)
+    _, _, claim = await candidate(company)
+    rows, admission = await recall(company, 'before-foreign-workspace-revoke', workspace_id='workspace_test')
+    assert [row[0].id for row in rows] == [claim.id]
+    await company.store.revoke_token(company.actor, producer.credential_id)
+    with pytest.raises(DomainError) as refused:
+        if boundary == 'admission':
+            await recall(company, 'after-foreign-workspace-revoke', workspace_id='workspace_test')
+        else:
+            await deliver(company, admission, selected=(claim.id,))
+    assert refused.value.code == ('HEALTH_WORKSPACE_SCOPE' if boundary == 'admission' else 'CONTEXT_STALE')
+    assert refused.value.status != 401
+    assert (await company.store.claim(company.actor, company.binding_id, claim.id)).draft == claim.draft
+
+
+async def test_observation_of_revoked_foreign_workspace_preserves_operator_scope_refusal(company):
+    await enabled(company)
+    producer = await workspace(company)
+    await company.store.revoke_token(company.actor, producer.credential_id)
+    with pytest.raises(DomainError) as scope:
+        await observe(company, company.actor, 1)
+    assert scope.value.code == 'SCOPE_DENIED' and scope.value.status == 403
+    with pytest.raises(DomainError) as caller:
+        await observe(company, producer, 1)
+    assert caller.value.code == 'AUTH_DENIED' and caller.value.status == 401
+
+
+async def test_operator_cannot_accept_anchor_whose_producer_was_revoked(company):
+    producer, claim, _, _ = await linked_claim(company)
+    await company.store.revoke_token(company.actor, producer.credential_id)
+    current = await health_view(company, claim)
+    observation_refs = [item['ref'] for item in current['code_observations']]
+    assert len(observation_refs) == 1
+    with pytest.raises(DomainError) as invalid:
+        await review(company, claim, 'cannot-accept-revoked-anchor', 'accept',
+            view=current, observations=observation_refs)
+    assert invalid.value.code == 'CODE_ANCHOR_INVALID' and invalid.value.status != 401
+    after = await health_view(company, claim)
+    assert after['health']['operator_review'] is None
+    assert not after['health']['reusable']
+
+
+async def test_revoked_foreign_correction_owner_is_not_feedback_callers_auth_failure(company):
+    source = await capture(company, key='foreign-correction-target')
+    feedback = await company.store.feedback(company.actor, FeedbackCommand(
+        binding_id=company.binding_id, idempotency_key='foreign-correction-feedback',
+        target_ref=source.source_id, kind='correct', body='A matching authorized correction must be inspected.'))
+    successor_actor = await company.store.issue_token(company.actor, Role.OPERATOR, (company.binding_id,),
+        'foreign-correction-owner-' + 's' * 48)
+    successor = await company.store.correct(successor_actor, company.binding_id, source.source_id,
+        CaptureCommand(binding_id=company.binding_id, idempotency_key='foreign-correction-successor',
+            origin_key='foreign-correction-successor', speaker='human', body='CacheKey is not retained offline.'))
+    await company.store.revoke_token(company.actor, successor_actor.credential_id)
+    current = await company.store.inspect(company.actor, company.binding_id, 'health:feedback:' + feedback.artifact_id)
+    with pytest.raises(DomainError) as scope:
+        await company.store.health(company.actor, FeedbackResolutionCommand(
+            **mutation(company, 'accept-revoked-foreign-correction'), admission_id=current['admission']['id'],
+            feedback_ref=feedback.artifact_id, expected_feedback_version=current['candidate']['version'],
+            decision='accept', reason='The old correction receipt cannot override current authority.',
+            successor_operation_id=successor.id))
+    assert scope.value.code == 'SCOPE_DENIED' and scope.value.status == 403
+    after = await company.store.inspect(company.actor, company.binding_id, 'health:feedback:' + feedback.artifact_id)
+    assert after['candidate']['version'] == current['candidate']['version']
+    assert (await company.store.source(company.actor, company.binding_id, successor.source_id)).body == (
+        'CacheKey is not retained offline.')
