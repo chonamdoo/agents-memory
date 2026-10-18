@@ -5318,7 +5318,8 @@ class Store:
                 or claim['superseded_by'] is not None or claim['selection_id'] is None):
             return False
         selection = await connection.fetchrow('SELECT * FROM am_source_selections WHERE id=$1', claim['selection_id'])
-        return selection is not None and await self._selection_disclosure(connection, binding_id, selection, snapshot)
+        return (selection is not None and selection['policy_revision'] == selection_contract_revision()
+            and await self._selection_disclosure(connection, binding_id, selection, snapshot))
 
     async def _current_health_stats(self, connection, binding_id: str, snapshot: str | None, *,
         code_workspace_id: str | None = None, workspace_scoped: bool = False) -> dict:
