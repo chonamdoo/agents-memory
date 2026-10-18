@@ -1193,6 +1193,11 @@ async def test_machine_refresh_failure_does_not_acquire_operator_close_ownership
     assessed = await terminal_work_row(company, first['pending_id'])
     assert assessed['state'] == 'resolved' and 'disposition' not in assessed['payload']
     health_before = (await health_view(company, claim))['health']
+    extra = await company.store.capture(producer, CaptureCommand(
+        binding_id=company.binding_id, idempotency_key='machine-deferred-extra',
+        origin_key='machine-deferred-extra', snapshot='snapshot_alpha',
+        body='CacheKey has additional bounded evidence.', speaker='human',
+        root_run_id='run_terminal', agent_path='agent_terminal'))
     company.store.settings = company.store.settings.model_copy(update={'queue_limit': 1})
     await company.store.health(producer, SessionObservationCommand(
         **mutation(company, 'machine-deferred-blocker'), stream_id='stream_deferred_capacity',
@@ -1212,11 +1217,6 @@ async def test_machine_refresh_failure_does_not_acquire_operator_close_ownership
     assert deferred['state'] == 'resolved'
     assert deferred['payload']['refresh_error_code'] == 'QUEUE_FULL'
     assert deferred['payload']['disposition'] == {'decision': 'deferred_unknown', 'assessment_complete': False}
-    extra = await company.store.capture(producer, CaptureCommand(
-        binding_id=company.binding_id, idempotency_key='machine-deferred-extra',
-        origin_key='machine-deferred-extra', snapshot='snapshot_alpha',
-        body='CacheKey has additional bounded evidence.', speaker='human',
-        root_run_id='run_terminal', agent_path='agent_terminal'))
     checkpoint = SessionObservationCommand(
         **mutation(company, 'machine-deferred-checkpoint'), stream_id='stream_terminal', segment_id='segment_terminal',
         event_id='machine_deferred_checkpoint', sequence=3, event='checkpoint', root_run_id='run_terminal',
