@@ -342,8 +342,9 @@ async def exercise():
                 async def call(name, arguments):
                     action = 'native-tool-' + uuid.uuid4().hex
                     emit({'type':'assistant', 'session_id':session_id,
-                          'message':{'content':[{'type':'tool_use','id':action,
-                              'name':mapping['tools'][name],'input':arguments}]}})
+                          'message':{'model':'engineering-protocol-peer-not-a-model',
+                              'content':[{'type':'tool_use','id':action,
+                                  'name':mapping['tools'][name],'input':arguments}]}})
                     result = await client.call_tool(name, arguments)
                     assert not result.is_error and len(result.content) == 1
                     emit({'type':'user', 'session_id':session_id,
@@ -856,6 +857,39 @@ async def exercise_health_link(root: Path, run: Path, expected: str, store, acto
             require(str(error) == "EVALUATION_HEALTH_NATIVE_TOOL_LINK_UNKNOWN", "EXACT_NATIVE_LINK_REFUSAL_REQUIRED")
         else:
             raise ValueError("FOREIGN_OR_UNWRITTEN_NATIVE_LINK_ACCEPTED")
+    changed = dict(records)
+    preflight = next(item for item in evidence.manifest.workload["invocations"]
+                     if item["invocation_id"] == preflight_id)
+    native = decode_json(records[prefix + ".native.json"])
+    assistant = next(item["message"]["message"] for item in native["protocol_events"]
+                     if item["message"].get("type") == "assistant")
+    require(assistant.pop("model") == "engineering-protocol-peer-not-a-model",
+            "REAL_ASSISTANT_MODEL_OBSERVATION_REQUIRED")
+    native["stdout"] = evaluation._private_value(b"".join(
+        canonical_bytes(item["message"]) + b"\n" for item in native["protocol_events"]))
+    gateway = decode_json(records[prefix + ".gateway.json"])
+    deliveries = evaluation._validate_delivery_receipt(evidence.manifest, preflight, gateway,
+        evaluation_health._trace_events(records, evidence.manifest, preflight_id, "gateway"))
+    replacement = canonical_bytes(evaluation._native_tool_link(
+        evidence.manifest, preflight, native, gateway, deliveries))
+    changed[prefix + ".native.json"] = canonical_bytes(native)
+    changed[prefix + ".native-tool-link.json"] = replacement
+    terminal = decode_json(records[prefix + ".terminal.json"])
+    terminal["evidence_refs"]["native"] = digest_bytes(changed[prefix + ".native.json"])
+    terminal["evidence_refs"]["native_tool_link"] = digest_bytes(replacement)
+    changed[prefix + ".terminal.json"] = canonical_bytes(terminal)
+    ledger = {name: decode_json(raw) for name, raw in changed.items()
+              if name.startswith("ledger/") and name.endswith((".intent.json", ".terminal.json", ".gateway.json"))}
+    forged_report = evaluation._report_from_records(evidence.manifest, ledger,
+        adjudication=changed.get("adjudication.json"))
+    retained = replace(evidence, records=tuple(sorted(changed.items())), report_bytes=canonical_bytes(forged_report))
+    try:
+        await asyncio.to_thread(link, retained, views, work)
+    except evaluation_health.EvaluationHealthError as error:
+        require(str(error) == "EVALUATION_HEALTH_NATIVE_SCOPE_OR_UNKNOWN",
+                "EXACT_MISSING_MODEL_REFUSAL_REQUIRED")
+    else:
+        raise ValueError("MISSING_EXECUTION_MODEL_ACCEPTED_FOR_HEALTH")
     path = root / "explicit-health-command.json"
     save(path, command.model_dump(mode="json"))
     result = await cli(
@@ -874,7 +908,7 @@ async def exercise_health_link(root: Path, run: Path, expected: str, store, acto
                 "TASK_SUCCESS_MUST_NOT_INVENT_MEMORY_TRUTH_OR_HUMAN_APPROVAL")
     return {"explicit_evaluation_health_link": True, "no_automatic_health_or_human_approval": True,
             "forged_evidence_refused": len(refusals), "native_tool_event_mapping": True,
-            "native_link_forgeries_refused": len(native_refusals)}
+            "native_link_forgeries_refused": len(native_refusals), "missing_execution_model_refused": True}
 
 
 def reconcile_verifiers(run: Path, frozen: evaluation.EvaluationManifest) -> bool:

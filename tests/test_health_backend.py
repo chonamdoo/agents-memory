@@ -1135,3 +1135,90 @@ async def test_feedback_resolution_private_reason_uses_current_target_disclosure
         assert unavailable.get('body') is None
     historical = await company.store.inspect(company.actor, company.binding_id, event_ref, 'snapshot_alpha')
     assert historical['payload'] == allowed['payload']
+
+
+@pytest.mark.parametrize('scope', ['scoped', 'global'])
+async def test_nested_feedback_on_resolution_reason_rechecks_the_original_live_target(company, scope):
+    original, _, claim = await candidate(company, snapshot='snapshot_alpha' if scope == 'scoped' else None)
+    feedback = await company.store.feedback(company.actor, FeedbackCommand(
+        binding_id=company.binding_id, idempotency_key='nested-original-feedback', target_ref=claim.id,
+        kind='correct', body='An independent reviewer must decide this exact correction.'))
+    first = await company.store.inspect(company.actor, company.binding_id,
+        'health:feedback:' + feedback.artifact_id, 'snapshot_alpha')
+    resolved = await company.store.health(company.actor, FeedbackResolutionCommand(
+        **mutation(company, 'nested-original-decline'), admission_id=first['admission']['id'],
+        feedback_ref=feedback.artifact_id, expected_feedback_version=first['candidate']['version'],
+        decision='decline', reason='The original exact target does not support the proposed correction.'))
+    event_ref = 'health:event:' + resolved.artifact_id
+    event = await company.store.inspect(company.actor, company.binding_id, event_ref, 'snapshot_alpha')
+    nested_body = 'Nested private correction retains the original target disclosure boundary.'
+    nested = await company.store.feedback(company.actor, FeedbackCommand(
+        binding_id=company.binding_id, idempotency_key='nested-feedback', target_ref=event['reason_source_ref'],
+        kind='correct', body=nested_body))
+    nested_ref = 'health:feedback:' + nested.artifact_id
+    allowed = await company.store.inspect(company.actor, company.binding_id, nested_ref, 'snapshot_alpha')
+    assert allowed['candidate']['body'] == nested_body
+    other = await company.store.inspect(company.actor, company.binding_id, nested_ref, 'snapshot_beta')
+    if scope == 'scoped':
+        assert other['candidate']['body_unavailable'] and other['candidate']['body'] is None
+        assert 'target_ref' not in other['candidate']
+    else:
+        assert other['candidate']['body'] == nested_body
+        assert other['candidate']['target_ref'] == event['reason_source_ref']
+    await company.store.retract(company.actor, company.binding_id, original.source_id, 'withdraw-nested-root')
+    withheld = await company.store.inspect(company.actor, company.binding_id, nested_ref, 'snapshot_alpha')
+    assert withheld['candidate']['body_unavailable'] and withheld['candidate']['body'] is None
+    with pytest.raises(DomainError):
+        await company.store.health(company.actor, FeedbackResolutionCommand(
+            **mutation(company, 'nested-stale-decline'), admission_id=allowed['admission']['id'],
+            feedback_ref=nested.artifact_id, expected_feedback_version=allowed['candidate']['version'],
+            decision='decline', reason='A pre-withdrawal admission cannot resolve a now-ineligible nested target.'))
+    historical = await company.store.inspect(company.actor, company.binding_id, event_ref, 'snapshot_alpha')
+    assert historical['payload'] == event['payload'] and nested_body not in json.dumps(historical)
+
+
+async def test_machine_refresh_capacity_failure_does_not_acquire_operator_close_ownership(company):
+    producer, claim, _, ref, first = await terminal_session(company,
+        ['machine-deferred-one', 'machine-deferred-two'], with_source=True)
+    source = first['sources'][0]
+    await company.store.record(company.actor, HealthAssessmentCommand(
+        **mutation(company, 'machine-partial-assessment'), admission_id=first['admission']['id'],
+        pending_id=first['pending_id'], health_manifest_digest=first['health_manifest_digest'],
+        input_sources=first['input_sources'], input_claims=first['input_claims'],
+        assessments=[{'claim_ref': {'id': claim.id, 'revision': claim.revision},
+            'support': 'supported', 'freshness': 'observed_current', 'relevance': 'related',
+            'reason': 'This captured window supports the claim; missing session origins remain partial.',
+            'evidence': [{'source_ref': source['source_ref'], 'byte_start': source['byte_start'],
+                'byte_end': source['byte_end'], 'quote': source['body']}]}]))
+    assessed = await terminal_work_row(company, first['pending_id'])
+    assert assessed['state'] == 'resolved' and 'disposition' not in assessed['payload']
+    health_before = (await health_view(company, claim))['health']
+    company.store.settings = company.store.settings.model_copy(update={'queue_limit': 1})
+    await company.store.health(producer, SessionObservationCommand(
+        **mutation(company, 'machine-deferred-blocker'), stream_id='stream_deferred_capacity',
+        segment_id='segment_deferred_capacity', event_id='deferred_capacity_end', sequence=1, event='end',
+        root_run_id='run_deferred_capacity', agent_path='agent_deferred_capacity',
+        claim_refs=[{'id': claim.id, 'revision': claim.revision}], coverage='partial'))
+    captured = []
+    for index, origin in enumerate(('machine-deferred-one', 'machine-deferred-two'), 1):
+        operation = await company.store.capture(producer, CaptureCommand(
+            binding_id=company.binding_id, idempotency_key='capture-' + origin, origin_key=origin,
+            snapshot='snapshot_alpha', body='CacheKey has additional bounded evidence.', speaker='human',
+            root_run_id='run_terminal', agent_path='agent_terminal'))
+        captured.append(operation.source_id)
+        if index == 1:
+            deferred = await terminal_work_row(company, first['pending_id'])
+            assert deferred['state'] == 'resolved'
+            assert deferred['payload']['refresh_error_code'] == 'QUEUE_FULL'
+            assert deferred['payload']['disposition'] == {
+                'decision': 'deferred_unknown', 'assessment_complete': False}
+            page = await company.store.inspect(company.actor, company.binding_id, 'health', 'snapshot_alpha')
+            blocker = next(item for item in page['items'] if item['pending_id'] != first['pending_id'])
+            await dispose_work(company, 'machine-deferred-release-capacity', blocker['pending_id'],
+                blocker['health_revision'], 'close_unknown')
+    current = await company.store.inspect(company.actor, company.binding_id, ref, 'snapshot_alpha')
+    row = await terminal_work_row(company, first['pending_id'])
+    assert row['state'] == 'pending' and row['health_revision'] == deferred['health_revision'] + 1
+    assert 'disposition' not in row['payload'] and current['admission'] is not None
+    assert set(captured).issubset(item['id'] for item in current['input_sources'])
+    assert (await health_view(company, claim))['health'] == health_before

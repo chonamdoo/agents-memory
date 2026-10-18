@@ -926,3 +926,100 @@ async def test_frozen_fence_checks_complete_nonempty_relationship_closure(author
         )
         with pytest.raises(EvaluationError):
             await asyncio.to_thread(evaluation._fence, manifest, state.run_dir, invocation, "after")
+
+
+@pytest.mark.parametrize("missing_model", [False, True])
+async def test_actual_claude_controller_retains_retrieval_but_refuses_missing_execution_model(
+    authority, tmp_path, missing_model,
+):
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        coding = _actual_preflight_channel(agent, producer)
+        coding.update(route_ref="engineering-coding-route", rules_file="rules")
+        path, run_dir = tmp_path / "manifest.json", tmp_path / "run"
+        peer = ("manifest_path = " + repr(str(path)) + "\nrun_dir = " + repr(str(run_dir))
+            + "\nmissing_model = " + repr(missing_model) + "\n" + '''import asyncio, json, os, pathlib, sys
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+from agents_memory.evaluation import load_manifest
+sys.stdin.read()
+manifest = load_manifest(pathlib.Path(manifest_path))
+channel = manifest.config['gateway']
+mapping = next(item for item in manifest.document('native_tool_mapping')['routes']
+    if item['route_ref'] == channel['route_ref'])
+session_id = 'engineering-claude-retrieval'
+def emit(value):
+    print(json.dumps(value), flush=True)
+emit({'type':'system','subtype':'init','session_id':session_id,'model':'engineering-peer-model',
+    'claude_code_version':'engineering-controller-peer','permissionMode':'default',
+    'tools':sorted(mapping['tools'].values()),
+    'mcp_servers':[{'name':mapping['server'],'status':'connected'}]})
+async def exercise():
+    params = StdioServerParameters(command=sys.executable, args=[
+        '-m','agents_memory.cli','evaluation','gateway','--manifest',manifest_path,
+        '--run-dir',run_dir,'--invocation-id','retrieval-memory_on','--expected-sha256',manifest.digest],
+        env=dict(os.environ))
+    with (pathlib.Path.cwd() / 'gateway-stderr.private').open('x') as errors:
+        os.chmod(errors.name, 0o600)
+        async with stdio_client(params, errlog=errors) as streams:
+            async with ClientSession(*streams, read_timeout_seconds=5.0) as client:
+                await client.initialize()
+                for index, name in enumerate(('memory_required_context','memory_context')):
+                    action = 'claude-action-' + str(index)
+                    arguments = (channel['required_request'] if index == 0
+                        else manifest.workload['retrieval'][0]['request'])
+                    message = {'id':'message-' + str(index),'model':'engineering-peer-model',
+                        'content':[{'type':'tool_use','id':action,'name':mapping['tools'][name],
+                            'input':arguments}]}
+                    if missing_model and index == 1:
+                        message.pop('model')
+                    emit({'type':'assistant','session_id':session_id,'message':message})
+                    result = await client.call_tool(name, arguments)
+                    assert not result.is_error
+                    emit({'type':'user','session_id':session_id,'message':{'content':[{
+                        'type':'tool_result','tool_use_id':action,'is_error':False,
+                        'content':[entry.model_dump(mode='json',by_alias=True,exclude_none=True)
+                            for entry in result.content]}]}})
+asyncio.run(exercise())
+submission = pathlib.Path.cwd() / 'submission.json'
+submission.write_bytes(manifest.file('baseline').raw)
+emit({'type':'result','session_id':session_id,'subtype':'success','is_error':False,
+    'modelUsage':{'engineering-peer-model':{'inputTokens':12,'outputTokens':3}},
+    'structured_output':{'submission_path':str(submission)}})
+''')
+        path, config, documents = fixture_inputs(tmp_path, repeats=1, gateway=coding, peer=peer)
+        workload = documents["workload"]
+        for invocation in workload["invocations"]:
+            invocation["native"]["backend"] = "claude"
+        mapping = documents["native_tool_mapping"]
+        mapping["backend"] = "claude"
+        for route in mapping["routes"]:
+            route["tools"] = {name: "mcp__" + route["server"] + "__" + name for name in route["tools"]}
+        tools = mapping["routes"][0]["tools"]
+        identity = documents["native_identity"]
+        identity.update(backend="claude", fields={
+            "model": "engineering-peer-model", "claude_code_version": "engineering-controller-peer",
+            "permissionMode": "default", "mcp_servers": [{"name": mapping["routes"][0]["server"], "status": "connected"}]},
+            mode_fields={"memory_on": {"tools": sorted(tools.values())},
+                "required_only": {"tools": [tools["memory_required_context"]]}})
+        for name, value in (("workload", workload), ("native_tool_mapping", mapping), ("native_identity", identity)):
+            update_document(path, config, name, value)
+        manifest = load_manifest(path)
+        state = prepare_run(manifest, run_dir)
+        invocation = evaluation._select(manifest, "retrieval", "no-match", "memory_on")
+        result = await asyncio.to_thread(evaluation._run_one, manifest, state.run_dir, invocation, enabled=True)
+        assert result["status"] == "completed" and result["comparable"] is not missing_model
+        assert result["native_identity_observed"] is not missing_model
+        assert result["native_identity_digest"] == (None if missing_model else manifest.file("native_identity").sha256)
+        prefix = state.run_dir / "ledger" / digest_bytes(invocation["invocation_id"].encode())
+        native = json.loads(prefix.with_suffix(".native.json").read_bytes())
+        gateway = json.loads(prefix.with_suffix(".gateway.json").read_bytes())
+        assert native["status"] == "completed" and native["cleanup"]["leader_reaped"] is True
+        assert native["incomparability_reasons"] == (["MODEL_OBSERVATION_UNKNOWN"] if missing_model else [])
+        assert native["artifact_bundle"]["sha256"] == digest_bytes(manifest.file("baseline").raw)
+        assert result["input_tokens"] == 12 and result["output_tokens"] == 3 and result["cost_usd"] is None
+        assert gateway["observation_complete"] is True and gateway["final_reads"]
+        _, _, retrieval = load_report_inputs(state.run_dir)
+        observed = next(row for row in retrieval if row.mode == "memory_on")
+        assert observed.returned_claim_ids == () and observed.grounding_refs == ()
+        assert observed.manifest_complete is True and observed.final_context_digest
+        assert observed.comparable is not missing_model

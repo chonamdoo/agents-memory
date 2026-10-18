@@ -3,14 +3,16 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 import socket
 import threading
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import anyio
 import pytest
@@ -850,3 +852,104 @@ async def test_real_stdio_write_is_only_final_delivery_boundary(authority, tmp_p
                 prefix = next(row["body"] for row in traces if row["stage"] == "gateway_stdio_write_failed")
                 assert 0 < len(prefix) < len(prepared)
                 assert prepared.startswith(prefix) and not prefix.endswith(b"\n")
+
+
+@contextmanager
+def capture_framing_upstream(upstream):
+    target = urlsplit(upstream.endpoint.base_url)
+    state = {"framing": "fixed", "captures": []}
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def forward(self):
+            self.connection.settimeout(5)
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            headers = {name: self.headers[name] for name in ("Authorization", "Content-Type") if name in self.headers}
+            connection = http.client.HTTPConnection(target.hostname, target.port, timeout=5)
+            try:
+                connection.request(self.command, self.path, body=body or None, headers=headers)
+                response = connection.getresponse()
+                raw = response.read(262145)
+                status = response.status
+            finally:
+                connection.close()
+            capture = self.command == "POST" and self.path == "/api/capture"
+            framing = state["framing"] if capture else "fixed"
+            if capture:
+                state["captures"].append({"request": json.loads(body), "status": status, "response": raw})
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Connection", "close")
+            if framing == "chunked":
+                self.send_header("Transfer-Encoding", "chunked")
+            elif framing != "eof":
+                self.send_header("Content-Length", str(len(raw) + (80 if framing.startswith("short-") else 0)))
+            self.end_headers()
+            self.wfile.write((f"{len(raw):x}\r\n".encode() + raw + b"\r\n0\r\n\r\n")
+                if framing == "chunked" else raw)
+            self.wfile.flush()
+            self.close_connection = True
+
+        do_GET = forward
+        do_POST = forward
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        endpoint = replace(upstream.endpoint, base_url=f"http://127.0.0.1:{server.server_port}")
+        yield endpoint, state
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+
+
+@pytest.mark.parametrize("framing", ["short-success", "short-error", "fixed", "eof", "chunked"])
+async def test_actual_producer_capture_requires_complete_http_framing(authority, tmp_path, framing):
+    async with actual_upstream(authority, tmp_path) as (agent, producer):
+        with capture_framing_upstream(producer) as (endpoint, state):
+            agent, producer = replace(agent, endpoint=endpoint), replace(producer, endpoint=endpoint)
+            command = {"binding_id": authority.binding_id, "idempotency_key": "framing-capture",
+                "origin_key": "framing-source", "body": "CacheKey remains offline.", "speaker": "document"}
+            if framing == "short-error":
+                seed = EvaluationGateway(scope_for(agent), agent=agent, producer=producer, trace_sink=lambda _: None)
+                try:
+                    await asyncio.to_thread(seed.capture, command)
+                finally:
+                    seed.close()
+                command = {**command, "body": "A different body cannot reuse the committed command key."}
+            prior_requests = len(state["captures"])
+            state["framing"] = framing
+            traces = []
+            gateway = EvaluationGateway(scope_for(agent), agent=agent, producer=producer, trace_sink=traces.append)
+            try:
+                if framing.startswith("short-"):
+                    with pytest.raises(DomainError) as caught:
+                        await asyncio.to_thread(gateway.capture, command)
+                    assert caught.value.effect.value == "unknown"
+                    assert gateway.flow_observation()["captures"] == ()
+                    assert gateway.flow_observation()["pipeline_observed"] is False
+                    assert not any(item["stage"] == "capture_ack" for item in traces)
+                    exchanges = [item["exchange"] for item in traces if item["stage"] == "gateway_wire"
+                        and item["exchange"].path == "/api/capture"]
+                    assert exchanges[-1].stage == "failure" and exchanges[-1].response_complete is False
+                else:
+                    operation = await asyncio.to_thread(gateway.capture, command)
+                    assert gateway.flow_observation()["captures"] == (operation,)
+                    exchange = next(item["exchange"] for item in traces if item["stage"] == "gateway_wire"
+                        and item["exchange"].path == "/api/capture" and item["exchange"].stage == "response")
+                    assert exchange.response_complete and exchange.http_status == 202
+                    assert json.loads(exchange.response_body)["source_id"] == operation["source_id"]
+                assert len(state["captures"]) == prior_requests + 1
+                committed = json.loads(state["captures"][0]["response"])
+                assert (await authority.store.source(authority.actor, authority.binding_id,
+                    committed["source_id"])).body == "CacheKey remains offline."
+                assert state["captures"][-1]["status"] == (409 if framing == "short-error" else 202)
+            finally:
+                gateway.close()

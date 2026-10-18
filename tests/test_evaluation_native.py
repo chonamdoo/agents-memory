@@ -241,9 +241,9 @@ events = [
     {'type':'system','subtype':'init','session_id':'session-one','model':'peer-model',
      'claude_code_version':'engineering-peer','permissionMode':'default'},
     {'type':'assistant','session_id':'session-one','message':{
-        'id':'shared-message','content':[],'usage':{'input_tokens':1,'output_tokens':1}}},
+        'id':'shared-message','model':'peer-model','content':[],'usage':{'input_tokens':1,'output_tokens':1}}},
     {'type':'assistant','session_id':'session-one','message':{
-        'id':'shared-message','content':[],'usage':{'input_tokens':1,'output_tokens':1}}},
+        'id':'shared-message','model':'peer-model','content':[],'usage':{'input_tokens':1,'output_tokens':1}}},
     {'type':'result','session_id':'session-one','subtype':'success','is_error':False,
      'modelUsage':{'peer-model':{'inputTokens':17,'outputTokens':4,'contextWindow':100000}},
      'total_cost_usd':0.125,'structured_output':{'submission_path':str(path)}},
@@ -443,6 +443,7 @@ def test_native_submission_parent_backtracking_is_not_an_approved_task_path(tmp_
     ("claude", "helper-subagent"),
     ("claude", "helper-and-main-change"),
     ("claude", "unknown-assistant-model"),
+    ("claude", "missing-assistant-model"),
     ("codex", "same-model"),
     ("codex", "reroute"),
     ("codex", "roundtrip"),
@@ -470,6 +471,9 @@ if variant == 'unknown-assistant-model':
 for index, model in enumerate(models):
     events.append({'type':'assistant','session_id':'session-one','parent_tool_use_id':None,'message':{
         'id':'message-' + str(index),'model':model,'content':[]}})
+if variant == 'missing-assistant-model':
+    events.append({'type':'assistant','session_id':'session-one','parent_tool_use_id':None,
+        'message':{'id':'message-omitted','content':[]}})
 if variant in ('helper-subagent', 'helper-and-main-change'):
     events[1]['message']['content'] = [
         {'type':'tool_use','id':'parent-task','name':'Task','input':{'prompt':'engineering-helper'}}]
@@ -536,6 +540,7 @@ sys.stdin.read()
             "helper-subagent": ("MODEL_HELPER_USAGE_UNFROZEN",),
             "helper-and-main-change": ("MODEL_MAIN_LOOP_CHANGED", "MODEL_HELPER_USAGE_UNFROZEN"),
             "unknown-assistant-model": ("MODEL_OBSERVATION_UNKNOWN",),
+            "missing-assistant-model": ("MODEL_OBSERVATION_UNKNOWN",),
         }[variant]
     else:
         assert result.identity["resolved"]["model"] == "peer-model"
