@@ -762,3 +762,108 @@ async def test_quarantined_current_claims_are_partial_and_discoverable_without_e
     assert delivered['refs'] == [recovered_claim.id]
     assert delivered['partial'] is True and delivered['stats']['health']['withheld'] == 2
     assert delivered['stats']['coverage']['unclassified_sources'] == 0
+
+
+async def test_actual_producer_partial_segments_finish_bounded_work_without_claiming_freshness(company, tmp_path, monkeypatch):
+    import asyncio
+    from pathlib import Path
+    from urllib.parse import urlsplit
+
+    from test_evaluation_gateway import actual_upstream
+
+    from agents_memory import health_producer, hosts
+
+    await enabled(company)
+    _, _, claim = await candidate(company)
+    company.store.settings = company.store.settings.model_copy(update={'queue_limit': 1})
+    home, project = tmp_path / 'isolated-home', tmp_path / 'observed-project'
+    home.mkdir(mode=0o700)
+    project.mkdir()
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(home / '.config'))
+    async with actual_upstream(company, tmp_path) as (agent, producer):
+        principal = await company.store.authenticate(producer.token_file.read_text())
+        settings = company.store.settings.model_copy(update={'port': urlsplit(agent.endpoint.base_url).port})
+        installed = hosts.install_host(settings, project, company.binding_id, 'omp',
+            agent.token_file, producer.token_file, strict=False, prompt_recall=True)
+        receipt = hosts.load_receipt(Path(installed['receipt']))
+        config, registration = health_producer.prepare_health_workspace(receipt, 'workspace_real_segments',
+            principal.credential_id, expected_binding_revision=1, expected_workspace_revision=0,
+            idempotency_key='real-segment-workspace', next_agent=True)
+        await company.store.health(company.actor, registration)
+        health_producer.configure_health_workspace(receipt, config)
+        await asyncio.to_thread(health_producer.observe_health_workspace, receipt)
+        client = health_producer._client(receipt)
+        identity = {'key': 'a' * 64, 'root': 'run_bounded', 'path': 'b' * 64, 'limited': False}
+        async def emit(event, **kwargs):
+            result = await asyncio.to_thread(health_producer.observe_host_session, receipt, identity,
+                event, client=client, **kwargs)
+            assert result['state'] == 'durably_spooled', result
+        await emit('session_start')
+        command = CaptureCommand(binding_id=company.binding_id, idempotency_key='real-segment-capture',
+            origin_key='real-segment-origin', body='CacheKey still needs independent freshness review.',
+            root_run_id=identity['root'], agent_path=identity['path'])
+        captured = await asyncio.to_thread(client.request, '/api/capture', command.model_dump(mode='json'))
+        assert captured['effect'] == 'committed'
+        await emit('capture_origin', origin_key=command.origin_key)
+        await emit('session_shutdown')
+        pending = await company.store.inspect(company.actor, company.binding_id, 'health')
+        work = await company.store.inspect(company.actor, company.binding_id, pending['items'][0]['ref'])
+        assert not work['coverage']['complete']
+        assert 'HOST_SESSION_WINDOW_UNOBSERVED' in work['coverage']['gaps']
+        assert claim.id in {item['id'] for item in work['input_claims']}
+        operation = await company.store.record(company.actor, HealthAssessmentCommand(
+            **mutation(company, 'bounded-partial-work'), admission_id=work['admission']['id'],
+            pending_id=work['pending_id'], health_manifest_digest=work['health_manifest_digest'],
+            input_sources=work['input_sources'], input_claims=work['input_claims'],
+            assessments=[{'claim_ref': ref, 'support': 'unknown', 'freshness': 'unknown', 'relevance': 'related',
+                'reason': 'Only the explicit producer segment was observed; freshness is not established.'}
+                for ref in work['input_claims']]))
+        history = await company.store.inspect(company.actor, company.binding_id, 'health:event:' + operation.artifact_id)
+        assert history['payload']['coverage'] == work['coverage']
+        remaining = await company.store.inspect(company.actor, company.binding_id, 'health')
+        assert work['pending_id'] not in {item['pending_id'] for item in remaining['items']}
+        state = (await health_view(company, claim))['health']
+        assert state['support'] == state['freshness'] == 'unknown' and state['operator_review'] is None
+        await emit('session_start')
+        await emit('session_shutdown')
+        next_work = await company.store.inspect(company.actor, company.binding_id, 'health')
+        assert len(next_work['items']) == 1 and next_work['items'][0]['pending_id'] != work['pending_id']
+
+
+async def test_refresh_conflict_work_has_exact_operator_unknown_disposition_and_reopen(company):
+    from agents_memory.health import HEALTH_ADAPTER
+
+    await enabled(company)
+    _, _, claim = await candidate(company, snapshot='snapshot_alpha')
+    await company.store.health(company.actor, SessionObservationCommand(
+        **mutation(company, 'conflicted-session-end'), stream_id='stream_conflict', segment_id='segment_conflict',
+        event_id='end_conflict', sequence=1, event='end', root_run_id='run_conflict', agent_path='agent_conflict',
+        origin_keys=['conflicted-origin'], claim_refs=[{'id': claim.id, 'revision': claim.revision}],
+        coverage='partial', gaps=['HOST_SESSION_WINDOW_UNOBSERVED']))
+    await company.store.capture(company.actor, CaptureCommand(binding_id=company.binding_id,
+        idempotency_key='conflicted-late-capture', origin_key='conflicted-origin', snapshot='snapshot_beta',
+        body='CacheKey has incompatible snapshot evidence.', root_run_id='run_conflict', agent_path='agent_conflict'))
+    page = await company.store.inspect(company.actor, company.binding_id, 'health', 'snapshot_alpha')
+    item = page['items'][0]
+    command = {**mutation(company, 'operator-close-unknown'), 'kind': 'health_work_disposition',
+        'pending_id': item['pending_id'], 'expected_pending_revision': item['health_revision'],
+        'snapshot': 'snapshot_alpha', 'decision': 'close_unknown',
+        'reason': 'The conflicting inputs cannot establish an assessment; retain unknown, not success.'}
+    with pytest.raises(DomainError):
+        await company.store.health(company.actor, HEALTH_ADAPTER.validate_python({**command, 'snapshot': 'snapshot_beta'}))
+    await company.store.health(company.actor, HEALTH_ADAPTER.validate_python(command))
+    closed = await company.store.inspect(company.actor, company.binding_id, item['ref'], 'snapshot_alpha')
+    assert closed['state'] == 'resolved' and closed['disposition'] == 'close_unknown'
+    assert closed['assessment_complete'] is False and closed['admission'] is None
+    assert (await company.store.stats(company.actor, company.binding_id, 'snapshot_alpha'))['health']['closed_unknown_work'] == 1
+    assert (await company.store.stats(company.actor, company.binding_id, 'snapshot_beta'))['health']['closed_unknown_work'] == 0
+    with pytest.raises(DomainError):
+        await company.store.health(company.actor, HEALTH_ADAPTER.validate_python(
+            {**command, 'idempotency_key': 'stale-work-disposition'}))
+    reopen = {**command, 'idempotency_key': 'operator-reopen-unknown', 'decision': 'reopen',
+        'expected_pending_revision': closed['health_revision']}
+    await company.store.health(company.actor, HEALTH_ADAPTER.validate_python(reopen))
+    current = await company.store.inspect(company.actor, company.binding_id, item['ref'], 'snapshot_alpha')
+    assert current['coverage']['complete'] is False and 'SESSION_REFRESH_INCOMPLETE' in current['coverage']['gaps']
+    assert (await health_view(company, claim))['health']['operator_review'] is None
