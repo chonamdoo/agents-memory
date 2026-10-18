@@ -386,6 +386,15 @@ class Smoke:
         observer = await self.cli("health", "observer", "--binding", self.binding, role="producer")
         self.check(observer["workspaces"][0]["root_fingerprint"] == json.loads(self.frozen)["command"]["root_fingerprint"],
                    "LIVE_REGISTRATION_MISMATCH")
+        stale = await self.store.issue_token(self.principals["operator"], Role.PRODUCER, (self.binding,),
+                                            secrets.token_urlsafe(48))
+        await self.apply(self.mutation("health_workspace", "register-revoked-observer",
+            workspace_id="workspace_engineering_revoked", expected_workspace_revision=0, root_fingerprint="f" * 64,
+            producer_credential_id=stale.credential_id))
+        await self.store.revoke_token(self.principals["operator"], stale.credential_id)
+        operator_registry = await self.cli("health", "observer", "--binding", self.binding)
+        self.check([row["workspace_id"] for row in operator_registry["workspaces"]] == ["workspace_engineering"],
+                   "REVOKED_PRODUCER_BLOCKED_HEALTHY_REGISTRY")
         self.passed("registration_and_exact_retry")
         self.begin("explicit_initial_observation")
         paths = self.evidence("explicit-paths", [{"relative_path": "src/cache.py", "symbol_names": ["cache"]}])
