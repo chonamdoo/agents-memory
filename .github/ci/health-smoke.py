@@ -649,8 +649,32 @@ class Smoke:
         self.check(event["payload"]["health_manifest_digest"] == current["health_manifest_digest"], "ASSESSMENT_MANIFEST_NOT_PERSISTED")
         self.check(not event["payload"]["coverage"]["complete"], "ASSESSMENT_COVERAGE_OVERCLAIM")
         remaining = await self.inspect("health")
-        self.check(any(item["pending_id"] == first["pending_id"] and item["state"] == "held" for item in remaining["items"]),
-                   "INCOMPLETE_SESSION_NOT_HELD")
+        self.check(first["pending_id"] not in {item["pending_id"] for item in remaining["items"]},
+                   "BOUNDED_SESSION_WORK_NOT_COMPLETED")
+        await self.apply(self.mutation("session_observation", "unresolved-segment-end",
+            event_id="event_unresolved_end", sequence=1, event="end", origin_keys=["unavailable-origin"],
+            **{**common, "segment_id": "segment_unknown_engineering"}), role="producer")
+        unknown_page = await self.inspect("health")
+        unknown_item = next(item for item in unknown_page["items"] if item["state"] in {"pending", "held"})
+        unknown_work = await self.inspect(unknown_item["ref"])
+        self.check("SESSION_ORIGIN_PENDING" in unknown_work["coverage"]["gaps"], "UNKNOWN_INPUT_WATERMARK_LOST")
+        close_unknown = self.mutation("health_work_disposition", "close-unassessable-work",
+            pending_id=unknown_item["pending_id"], expected_pending_revision=unknown_item["health_revision"],
+            decision="close_unknown", reason="Missing observed inputs cannot establish fact freshness or full-session coverage.")
+        await self.apply({**close_unknown, "idempotency_key": "agent-cannot-close-work"}, role="agent", denied=("SCOPE_DENIED",))
+        await self.apply(close_unknown)
+        closed = await self.inspect(unknown_item["ref"])
+        self.check(closed["state"] == "resolved" and closed["disposition"] == "close_unknown"
+                   and closed["assessment_complete"] is False and closed["admission"] is None,
+                   "UNKNOWN_WORK_MISREPRESENTED_AS_ASSESSED")
+        context = await self.context()
+        self.check(context["partial"] and context["health"]["closed_unknown_work"] == 1, "UNKNOWN_WORK_HIDDEN_AS_READY")
+        await self.apply({**close_unknown, "idempotency_key": "late-close-work"}, denied=("HEALTH_STALE",))
+        await self.apply({**close_unknown, "idempotency_key": "reopen-unassessable-work",
+            "decision": "reopen", "expected_pending_revision": closed["health_revision"]})
+        reopened = await self.inspect(unknown_item["ref"])
+        self.check(reopened["admission"] is not None and "SESSION_ORIGIN_PENDING" in reopened["coverage"]["gaps"],
+                   "EXACT_UNKNOWN_WORK_REOPEN_FAILED")
         self.passed("bounded_session_assessment")
 
     async def cleanup(self):

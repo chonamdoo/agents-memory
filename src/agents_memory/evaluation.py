@@ -798,7 +798,7 @@ def _read_terminal(manifest: EvaluationManifest, run_dir: Path, invocation: dict
 
 def _checked_terminal(manifest: EvaluationManifest, invocation: dict, result: dict | None) -> dict | None:
     if result is not None:
-        _keys(result, set(_initial_result()) | {"schema", "manifest_digest", "invocation_id"}, {"delivery"})
+        _keys(result, set(_initial_result()) | {"schema", "manifest_digest", "invocation_id"}, set())
         _require(type(result["schema"]) is int and result["schema"] == 1 and result["manifest_digest"] == manifest.digest and result["invocation_id"] == invocation["invocation_id"], "TERMINAL_IDENTITY_DRIFT")
     return result
 
@@ -1522,7 +1522,6 @@ def _run_one(
             run_dir / "ledger", _key(invocation["invocation_id"]) + ".native-tool-link.json", native_link, config["record_bytes"],
         )
         result["evidence_refs"]["gateway"] = digest_bytes(canonical_bytes(delivery))
-        result["delivery"] = delivery
         _require(native.artifact_bundle is not None, "IMMUTABLE_SUBMISSION_MISSING")
         _require(native.artifact_bundle["sha256"] == digest_bytes(_read(output, config["artifact_limits"]["bundle_bytes"], private=True)), "SUBMISSION_REFERENCE_MISMATCH")
         final = load_submission(output, limits=_dc(ArtifactLimits, config["artifact_limits"]))
@@ -1831,6 +1830,16 @@ def _resolved_retrieval_context(manifest: EvaluationManifest, invocation: dict, 
     return context, known_context and delivery.get("observation_complete") is True and matched
 
 
+def _bound_gateway_record(invocation: dict, terminal: dict | None, records: dict) -> dict:
+    if terminal is None or terminal["evidence_refs"].get("gateway") is None:
+        return {}
+    receipt = records.get("ledger/" + _key(invocation["invocation_id"]) + ".gateway.json")
+    _require(isinstance(receipt, dict)
+             and digest_bytes(canonical_bytes(receipt)) == terminal["evidence_refs"]["gateway"],
+             "GATEWAY_RECEIPT_IDENTITY_DRIFT")
+    return receipt
+
+
 def _report_ledger(manifest: EvaluationManifest, run_dir: Path) -> dict:
     records = {}
     for invocation in manifest.workload["invocations"]:
@@ -1858,6 +1867,7 @@ def _report_inputs_from_records(manifest: EvaluationManifest, records: dict) -> 
         if intent is not None:
             _require(intent == {"schema": 1, "manifest_digest": manifest.digest, "invocation": invocation}, "ATTEMPT_INTENT_CONFLICT")
         _require(terminal is None or intent is not None, "TERMINAL_WITHOUT_PRIOR_INTENT")
+        delivery = _bound_gateway_record(invocation, terminal, records)
         if invocation["phase"] == "preflight" or (intent is None and invocation["phase"] == "coding" and invocation["pair_attempt"] > 0):
             continue
         row = terminal or {**_initial_result(), "status": "unknown" if intent else "not_started", "comparability_reasons": ["CRASH_INTENT_NO_TERMINAL" if intent else "NOT_STARTED"]}
@@ -1869,7 +1879,6 @@ def _report_inputs_from_records(manifest: EvaluationManifest, records: dict) -> 
             arms.append(ArmObservation(**common, pair_id=_pair_id(manifest, task["task_id"], invocation["repeat_index"]), pair_attempt=invocation["pair_attempt"], task_id=task["task_id"], task_revision=task["task_revision"], cluster_id=task["cluster_id"], repeat_index=invocation["repeat_index"], invocation_id=invocation["invocation_id"], native_identity_observed=row["native_identity_observed"], **{key: row.get(key) for key in nullable}))
         else:
             case = next(item for item in manifest.document("gold")["cases"] if item["case_id"] == invocation["target_id"])
-            delivery = row.get("delivery") or {}
             context, complete = _resolved_retrieval_context(manifest, invocation, delivery)
             ids = ([] if context == "" else [claim["ref"] for claim in context["memory_candidates"]]) if complete else None
             comparable = common["comparable"] and complete
@@ -1899,9 +1908,7 @@ def _diagnostic_observations_from_records(
         invocation = _invocation(manifest, row.attempt_id)
         prefix = "ledger/" + _key(row.attempt_id)
         terminal = _checked_terminal(manifest, invocation, records.get(prefix + ".terminal.json")) or _initial_result()
-        delivery = terminal.get("delivery")
-        if delivery is None:
-            delivery = records.get(prefix + ".gateway.json") or {}
+        delivery = _bound_gateway_record(invocation, terminal, records)
         scope = diagnostics_module.diagnostic_scope(manifest, protocol, row.case_id)
         context, complete = _resolved_retrieval_context(manifest, invocation, delivery)
         final_claims = None

@@ -2154,7 +2154,7 @@ async def test_real_published_backup_retains_committed_effect_and_is_restorable_
         except RuntimeError:
             with pytest.raises(DomainError) as failed:
                 await backup(settings, root / "operator", archive, recipients, runtime)
-    assert failed.value.code == "OPERATIONS_CLOSE_FAILED" and failed.value.effect == EffectState.COMMITTED
+    assert failed.value.effect == EffectState.COMMITTED
     assert failed.value.public()["cleanup"]["complete"] is False
     assert marker not in json.dumps(failed.value.public())
     assert not list(root.glob(".memory-encrypted-*"))

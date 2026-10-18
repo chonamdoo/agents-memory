@@ -698,6 +698,10 @@ async def test_actual_bounded_gateway_completion_preserves_terminal_and_later_at
         assert terminal["evidence_refs"]["gateway"] == digest_bytes(canonical_bytes(receipt))
         _, arms, retrieval = load_report_inputs(run_dir)
         assert [(row.status, row.comparable) for row in (*arms, *retrieval)] == [("blocked", False)] * 4
+        gateway_path = run_dir / "ledger" / (digest_bytes(invocation["invocation_id"].encode()) + ".gateway.json")
+        save(gateway_path, {**receipt, "mode": "required_only"})
+        with pytest.raises(EvaluationError, match="GATEWAY_RECEIPT_IDENTITY_DRIFT"):
+            load_report_inputs(run_dir)
 
 
 @pytest.mark.parametrize("event_mode", ["missing", "arguments", "result", "server", "duplicate", "foreign-meta", "call-id-meta"])

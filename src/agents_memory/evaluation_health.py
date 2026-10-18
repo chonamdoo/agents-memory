@@ -221,7 +221,7 @@ def _validate_native(manifest, records, invocation, terminal):
         "generation_digest": digest_bytes(generation.encode()),
     }, "EVALUATION_HEALTH_GENERATION_SCOPE")
     gateway = _json(records, prefix + ".gateway.json", terminal["evidence_refs"].get("gateway"))
-    _require(terminal["evidence_refs"].get("gateway") is not None and gateway == terminal.get("delivery"),
+    _require(terminal["evidence_refs"].get("gateway") is not None,
              "EVALUATION_HEALTH_FINAL_DELIVERY_UNKNOWN")
     deliveries = controller._validate_delivery_receipt(
         manifest, invocation, gateway,
@@ -240,7 +240,7 @@ def _validate_terminal(manifest, records, invocation):
         "schema": 1, "manifest_digest": manifest.digest, "invocation": invocation,
     }, "EVALUATION_HEALTH_INTENT_SCOPE")
     terminal = _json(records, prefix + ".terminal.json")
-    controller._keys(terminal, set(controller._initial_result()) | {"schema", "manifest_digest", "invocation_id"}, {"delivery"})
+    controller._keys(terminal, set(controller._initial_result()) | {"schema", "manifest_digest", "invocation_id"}, set())
     _require(type(terminal["schema"]) is int and terminal["schema"] == 1
              and terminal["manifest_digest"] == manifest.digest
              and terminal["invocation_id"] == invocation["invocation_id"]
@@ -425,8 +425,11 @@ def _validate_preflight_wire(records, manifest, invocation, terminal):
             _require(isinstance(pointer, dict) and pointer == capture["source_pointer"],
                      "EVALUATION_HEALTH_PRODUCER_POINTER_SCOPE")
             captures.append(pointer)
+    gateway_digest = terminal["evidence_refs"].get("gateway")
+    _require(gateway_digest is not None, "EVALUATION_HEALTH_FINAL_DELIVERY_UNKNOWN")
+    gateway = _json(records, "ledger/" + controller._key(identifier) + ".gateway.json", gateway_digest)
     _require(len(captures) == 1 and controller._preflight_link_data(
-        manifest, capture, _trace_events(records, manifest, identifier, "gateway"), terminal["delivery"]),
+        manifest, capture, _trace_events(records, manifest, identifier, "gateway"), gateway),
         "EVALUATION_HEALTH_PRODUCER_NATIVE_PIPELINE_UNKNOWN")
 
 

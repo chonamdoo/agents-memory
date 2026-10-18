@@ -893,7 +893,7 @@ async def test_global_source_judged_in_one_request_does_not_disclose_its_interpr
     elif surface == 'health_feedback':
         feedback = await company.store.feedback(company.actor, FeedbackCommand(binding_id=company.binding_id,
             idempotency_key='alpha-only-feedback', target_ref=claim_id, kind='correct',
-            reason=marker + ' The scoped caller requested a correction review.'))
+            body=marker + ' The scoped caller requested a correction review.'))
         ref = 'health:feedback:' + feedback.artifact_id
     else:
         await company.store.health(company.actor, SessionObservationCommand(

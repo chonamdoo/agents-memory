@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, StringConstraints, TypeAdapter, field_validator, model_validator
 
-from .domain import Handle, Key, ReasonText, RevisionRef, TypedModel, reject_source_secrets
+from .domain import Handle, Key, ReasonText, RevisionRef, SnapshotText, TypedModel, reject_source_secrets
 
 Digest = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 HealthVersion = Annotated[int, Field(strict=True, ge=0, le=9_223_372_036_854_775_807)]
@@ -341,6 +341,22 @@ class FeedbackResolutionCommand(HealthMutation):
         return self
 
 
+class HealthWorkDispositionCommand(HealthMutation):
+    kind: Literal["health_work_disposition"] = "health_work_disposition"
+    pending_id: Handle
+    expected_pending_revision: PositiveVersion
+    snapshot: SnapshotText | None = None
+    decision: Literal["close_unknown", "reopen"]
+    reason: ReasonText = Field(repr=False)
+
+    @field_validator("reason", "snapshot")
+    @classmethod
+    def secret_free_reason_and_snapshot(cls, value: str | None) -> str | None:
+        if value is not None:
+            reject_source_secrets(value)
+        return value
+
+
 class HealthObserverRequest(TypedModel):
     binding_id: Handle
 
@@ -353,6 +369,7 @@ HealthCommand = Annotated[
     | SessionObservationCommand
     | HealthAssessmentCommand
     | MemoryReviewCommand
+    | HealthWorkDispositionCommand
     | FeedbackResolutionCommand,
     Field(discriminator="kind"),
 ]

@@ -500,4 +500,4 @@ def health_next_agent_hint(receipt: dict) -> str:
             return ""
     finally:
         spool.close()
-    return '{"health":"pending_may_exist","next":"Call memory_inspect with ref health; inspect each authorized health:item bundle before memory_record health_assessment.","coverage":"observed_segments_not_full_session","human_presence":"unattested"}'
+    return '{"health":"pending_may_exist","next":"Call memory_inspect with ref health; assess only authorized health:item bundles with a current non-null admission. Terminal unknown work is not an assessment; exact operator reopen is required.","coverage":"observed_segments_not_full_session","human_presence":"unattested"}'

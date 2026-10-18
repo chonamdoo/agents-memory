@@ -1245,7 +1245,8 @@ class Store:
     async def _claim_row(self, connection, binding_id: str, claim_id: str, snapshot: str | None, enforce_time: bool = True):
         row = await connection.fetchrow("""SELECT c.* FROM am_claims c WHERE c.id=$1 AND c.binding_id=$2 AND c.state='active' AND c.draft IS NOT NULL
           AND (c.snapshot IS NULL OR c.snapshot=$3)
-          AND (c.selection_id IS NULL OR EXISTS(SELECT 1 FROM am_source_selections q WHERE q.id=c.selection_id AND q.state='active'))
+          AND (c.selection_id IS NULL OR EXISTS(SELECT 1 FROM am_source_selections q WHERE q.id=c.selection_id AND q.state='active'
+            AND (q.request_snapshot IS NULL OR q.request_snapshot IS NOT DISTINCT FROM $3)))
           AND (c.superseded_by IS NULL OR EXISTS(SELECT 1 FROM am_claims canonical
             WHERE canonical.id=c.superseded_by AND canonical.state='active' AND canonical.draft IS NOT NULL))
           AND (NOT $5::boolean OR ((c.valid_from IS NULL OR c.valid_from<=clock_timestamp())
@@ -1255,6 +1256,10 @@ class Store:
             WHERE d.claim_id=c.id AND (s.state<>'active' OR s.body IS NULL OR s.revision<>d.source_revision OR s.binding_id<>c.binding_id OR s.realm<>$4 OR (s.snapshot IS NOT NULL AND s.snapshot IS DISTINCT FROM $3)))""", claim_id, binding_id, snapshot, self.settings.realm, enforce_time)
         if row is None:
             raise DomainError("CLAIM_INELIGIBLE", "The claim is not currently eligible")
+        if row["selection_id"] is not None:
+            selection = await connection.fetchrow("SELECT * FROM am_source_selections WHERE id=$1", row["selection_id"])
+            if selection is None or not await self._selection_disclosure(connection, binding_id, selection, snapshot):
+                raise DomainError("CLAIM_INELIGIBLE", "The claim's complete classification ownership is unavailable")
         return row
 
     async def _claim(self, connection, row) -> Claim:
@@ -4284,14 +4289,28 @@ class Store:
             result.append(await self._claim_health_manifest(connection, claim))
         return {"claims": result, "workspace": workspace}
 
+    async def _health_input_snapshot(self, connection, binding_id, source_ids, claim_ids) -> str | None:
+        scopes = await connection.fetch('''SELECT DISTINCT snapshot FROM (
+            SELECT snapshot FROM am_sources WHERE id=ANY($1::text[]) AND binding_id=$3
+            UNION SELECT snapshot FROM am_claims WHERE id=ANY($2::text[]) AND binding_id=$3
+            UNION SELECT q.request_snapshot FROM am_claims c JOIN am_source_selections q ON q.id=c.selection_id
+                WHERE c.id=ANY($2::text[]) AND c.binding_id=$3
+            ) scopes WHERE snapshot IS NOT NULL''', list(source_ids), list(claim_ids), binding_id)
+        if len(scopes) > 1:
+            raise DomainError('SESSION_SNAPSHOT_CONFLICT', 'Split incompatible snapshot observations into separate segments')
+        return scopes[0]['snapshot'] if scopes else None
+
     async def _health_event(self, connection, actor, command, operation_id, *, target=None,
         source_ids=(), claim_ids=(), payload=None, reason=None) -> str:
         identifier = _id('health')
         reason_source = None
         if reason:
+            reason_snapshot = await self._health_input_snapshot(connection, command.binding_id, source_ids, claim_ids)
+            if command.kind == 'health_work_disposition':
+                reason_snapshot = command.snapshot
             reason_source = await self._insert_source(connection, actor, CaptureCommand(
                 binding_id=command.binding_id, idempotency_key=command.idempotency_key,
-                origin_key=f'health-reason:{identifier}', body=reason, speaker='agent_note'), operation_id)
+                origin_key=f'health-reason:{identifier}', body=reason, speaker='agent_note', snapshot=reason_snapshot), operation_id)
         await connection.execute('''INSERT INTO am_health_events(id,binding_id,operation_id,kind,
             credential_id,credential_generation,realm,role,target_ref,reason_source_id,source_ids,claim_ids,payload)
             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)''',
@@ -4299,32 +4318,31 @@ class Store:
             actor.realm, actor.role.value, target, reason_source, list(source_ids), list(claim_ids), _json(payload or {}))
         return identifier
 
+    async def _require_health_capacity(self, connection, binding_id: str) -> None:
+        count = await connection.fetchval('''SELECT count(*) FROM am_pending_judgments
+            WHERE binding_id=$1 AND kind='health' AND state IN ('pending','held')''', binding_id)
+        if count >= self.settings.queue_limit:
+            raise DomainError('QUEUE_FULL', 'The bounded health backlog is full', status=429)
+
     async def _enqueue_health(self, connection, binding_id: str, key: str, *, sources=(), claims=(), payload=None) -> str:
         existing = await connection.fetchrow('''SELECT * FROM am_pending_judgments
             WHERE binding_id=$1 AND kind='health' AND health_key=$2''', binding_id, key)
         data = payload or {}
         source_ids, claim_ids = sorted(set(sources)), sorted(set(claims))
-        scopes = await connection.fetch('''SELECT DISTINCT snapshot FROM (
-            SELECT snapshot FROM am_sources WHERE id=ANY($1::text[]) AND binding_id=$3
-            UNION SELECT snapshot FROM am_claims WHERE id=ANY($2::text[]) AND binding_id=$3
-            ) scopes WHERE snapshot IS NOT NULL''', source_ids, claim_ids, binding_id)
-        if len(scopes) > 1:
-            raise DomainError('SESSION_SNAPSHOT_CONFLICT', 'Split incompatible snapshot observations into separate segments')
-        snapshot = scopes[0]['snapshot'] if scopes else None
+        snapshot = await self._health_input_snapshot(connection, binding_id, source_ids, claim_ids)
         if len(source_ids) > 128 or len(claim_ids) > 20:
             raise DomainError('MANIFEST_TOO_LARGE', 'Split the explicit health work into bounded manifests')
         if existing is not None:
             changed = (source_ids != list(existing['source_ids']) or claim_ids != list(existing['claim_ids'])
                 or data != _decode(existing['health_payload']) or snapshot != existing['snapshot'])
             if changed:
+                if existing['state'] not in {'pending', 'held'}:
+                    await self._require_health_capacity(connection, binding_id)
                 await connection.execute('''UPDATE am_pending_judgments SET source_ids=$2,claim_ids=$3,
                     health_payload=$4::jsonb,health_revision=health_revision+1,state='pending',resolved_at=NULL,snapshot=$5 WHERE id=$1''',
                     existing['id'], source_ids, claim_ids, _json(data), snapshot)
             return existing['id']
-        count = await connection.fetchval('''SELECT count(*) FROM am_pending_judgments
-            WHERE binding_id=$1 AND kind='health' AND state IN ('pending','held')''', binding_id)
-        if count >= self.settings.queue_limit:
-            raise DomainError('QUEUE_FULL', 'The bounded health backlog is full', status=429)
+        await self._require_health_capacity(connection, binding_id)
         identifier = _id('pending')
         await connection.execute('''INSERT INTO am_pending_judgments(id,binding_id,kind,source_ids,claim_ids,
             health_key,health_revision,health_payload,snapshot) VALUES($1,$2,'health',$3,$4,$5,1,$6::jsonb,$7)''',
@@ -4345,10 +4363,12 @@ class Store:
             HealthAssessmentCommand,
             HealthPolicyCommand,
             HealthWorkspaceCommand,
+            HealthWorkDispositionCommand,
             MemoryReviewCommand,
             SessionObservationCommand,
         )
-        if isinstance(command, (HealthPolicyCommand, HealthWorkspaceCommand, MemoryReviewCommand, FeedbackResolutionCommand)):
+        if isinstance(command, (HealthPolicyCommand, HealthWorkspaceCommand, MemoryReviewCommand, FeedbackResolutionCommand,
+                HealthWorkDispositionCommand)):
             roles = (Role.OPERATOR,)
         elif isinstance(command, (CodeObservationCommand, SessionObservationCommand)):
             roles = (Role.PRODUCER, Role.OPERATOR)
@@ -4420,6 +4440,8 @@ class Store:
             artifact = await self._record_claim_health(connection, clock, current, command, operation['id'])
         elif isinstance(command, HealthAssessmentCommand):
             artifact = await self._record_health_assessment(connection, clock, current, command, operation['id'])
+        elif isinstance(command, HealthWorkDispositionCommand):
+            artifact = await self._record_health_work_disposition(connection, current, command, operation['id'])
         else:
             artifact = await self._resolve_health_feedback(connection, clock, current, command, operation['id'])
         if isinstance(command, (HealthWorkspaceCommand, CodeObservationCommand, CodeLinkCommand)):
@@ -4597,10 +4619,10 @@ class Store:
                 restore_unknown=CASE WHEN $2='accept' THEN false ELSE restore_unknown END,
                 freshness=CASE WHEN $2='accept' THEN $4 ELSE freshness END WHERE claim_id=$1''',
                 claim['id'], command.decision, event, 'observed_current' if old else 'unknown')
-            if command.decision == 'accept':
-                await connection.execute('''UPDATE am_pending_judgments SET state='resolved',resolved_at=clock_timestamp()
-                    WHERE binding_id=$1 AND kind='health' AND health_key=$2 AND state IN ('pending','held')''',
-                    command.binding_id, 'code:' + claim['id'])
+            await connection.execute('''UPDATE am_pending_judgments SET state='resolved',resolved_at=clock_timestamp(),
+                health_payload=health_payload - 'disposition',health_revision=health_revision+1
+                WHERE binding_id=$1 AND kind='health' AND health_key=$2 AND state<>'retracted' ''',
+                command.binding_id, 'code:' + claim['id'])
         await connection.execute('DELETE FROM am_admissions WHERE id=$1', command.admission_id)
         return event
 
@@ -4733,9 +4755,13 @@ class Store:
                 # Health metadata must not roll back an independently valid source capture.
                 key = 'session:' + canonical_digest({'credential_id': row['credential_id'],
                     'generation': row['credential_generation'], 'stream_id': row['stream_id'], 'segment_id': row['segment_id']})
-                await connection.execute('''UPDATE am_pending_judgments SET state='held',resolved_at=NULL,
+                await connection.execute('''UPDATE am_pending_judgments SET
+                    state=CASE WHEN state='resolved' THEN 'resolved' ELSE 'held' END,
+                    resolved_at=CASE WHEN state='resolved' THEN resolved_at ELSE NULL END,
                     reason='Observed session health refresh requires explicit review',health_revision=health_revision+1,
                     health_payload=health_payload || jsonb_build_object('refresh_error_code',$3::text)
+                        || CASE WHEN state='resolved' THEN jsonb_build_object('disposition',jsonb_build_object(
+                            'decision','deferred_unknown','assessment_complete',false)) ELSE '{}'::jsonb END
                     WHERE binding_id=$1 AND kind='health' AND health_key=$2
                     AND (state<>'held' OR health_payload->>'refresh_error_code' IS DISTINCT FROM $3)''',
                     binding_id, key, error.code)
@@ -4785,7 +4811,13 @@ class Store:
             raise DomainError('HEALTH_BUNDLE_TOO_LARGE', 'The complete target manifest exceeds current explicit policy')
         claims, manifests = [], []
         for identifier in claim_ids:
-            claim = await self._claim_row(connection, binding_id, identifier, snapshot)
+            try:
+                claim = await self._claim_row(connection, binding_id, identifier, snapshot)
+            except DomainError as error:
+                if error.code != 'CLAIM_INELIGIBLE' or pending['claim_ids']:
+                    raise
+                gaps.add('AUDIT_TARGET_DISCLOSURE_UNAVAILABLE')
+                continue
             meaning = ClaimMeaning.model_validate(_decode(claim['draft'])).model_dump(mode='json')
             manifests.append({**await self._claim_health_manifest(connection, claim),
                 'meaning_digest': canonical_digest(meaning)})
@@ -4815,9 +4847,22 @@ class Store:
             gaps.add('AUDIT_NO_TARGET_EVIDENCE')
         if not source_refs:
             gaps.add('AUDIT_NO_SOURCE_EVIDENCE')
+        observations = payload.get('session_observation_ids', [])
+        rows = await connection.fetch("""SELECT payload FROM am_session_observations
+            WHERE binding_id=$1 AND id=ANY($2::text[]) AND state='active' ORDER BY sequence""",
+            binding_id, observations) if observations else []
+        boundaries = []
+        for row in rows:
+            event = _decode(row['payload'])['event']
+            if event != 'checkpoint':
+                boundaries.append(event)
+        observed_window_closed = (payload.get('cause') == 'observed_session' and len(rows) == len(observations)
+            and bool(boundaries) and boundaries[-1] in {'end', 'interrupted'}
+            and not payload.get('unresolved_origin_keys') and not payload.get('refresh_error_code'))
         manifest = {'purpose': 'health_work', 'pending_id': pending_id, 'pending_revision': pending['health_revision'],
             'payload_digest': canonical_digest(payload), 'policy': policy, 'claims': manifests,
             'input_sources': source_refs, 'snapshot': snapshot,
+            'observed_window_closed': observed_window_closed,
             'evidence_windows': [{'ref': source['source_ref'], 'byte_start': source['byte_start'], 'byte_end': source['byte_end'],
                 'digest': hashlib.sha256(source['body'].encode('utf-8')).hexdigest()} for source in sources],
             'coverage': {'scope': 'bounded_authorized_inputs', 'complete': not gaps, 'partial': bool(gaps), 'gaps': sorted(gaps)}}
@@ -4875,17 +4920,43 @@ class Store:
                     assessment_event_id=$4 WHERE claim_id=$1''',
                     claim['id'], assessment.support if manifest['coverage']['complete'] else 'unknown',
                     assessment.freshness if manifest['coverage']['complete'] else 'unknown', assessment_event)
-        unresolved = False
-        for ref in command.input_claims:
-            claim = await self._claim_row(connection, command.binding_id, ref.id, manifest['snapshot'])
-            state = await self._health_state(connection, claim)
-            unresolved = unresolved or state['restore_unknown'] or state['needs_review'] or state['freshness'] == 'stale'
-        disposition = 'resolved' if manifest['coverage']['complete'] and command.assessments and not unresolved else 'held'
+        # Completing bounded observed work does not affirm any claim's freshness.
+        disposition = 'resolved' if manifest['observed_window_closed'] else 'held'
         await connection.execute('''UPDATE am_pending_judgments SET state=$2,
             reason=CASE WHEN $2='held' THEN 'Bounded health evidence incomplete; operator or next-agent review required' ELSE reason END,
             resolved_at=CASE WHEN $2='resolved' THEN clock_timestamp() ELSE NULL END WHERE id=$1''',
             command.pending_id, disposition)
         await connection.execute('DELETE FROM am_admissions WHERE id=$1', command.admission_id)
+        return event
+
+    async def _record_health_work_disposition(self, connection, actor, command, operation_id: str) -> str:
+        pending = await connection.fetchrow("""SELECT * FROM am_pending_judgments WHERE binding_id=$1
+            AND id=$2 AND kind='health' AND state<>'retracted'""", command.binding_id, command.pending_id)
+        if pending is None or pending['health_revision'] != command.expected_pending_revision:
+            raise DomainError('HEALTH_STALE', 'Inspect the current exact health work revision')
+        if pending['snapshot'] is not None and pending['snapshot'] != command.snapshot:
+            raise DomainError('SNAPSHOT_INELIGIBLE', 'The health work belongs to a different request snapshot')
+        payload = _decode(pending['health_payload'])
+        if payload.get('feedback_ref'):
+            raise DomainError('HEALTH_DISPOSITION_INVALID', 'Feedback candidates require their exact accept or decline workflow')
+        if command.decision == 'close_unknown':
+            if pending['state'] not in {'pending', 'held'}:
+                raise DomainError('HEALTH_STALE', 'Only outstanding work can be closed as unknown')
+        else:
+            if pending['state'] != 'resolved' or payload.get('disposition', {}).get('decision') not in {'close_unknown', 'deferred_unknown'}:
+                raise DomainError('HEALTH_STALE', 'Only terminal unknown work can be explicitly reopened')
+            await self._require_health_capacity(connection, command.binding_id)
+        event = await self._health_event(connection, actor, command, operation_id, target=pending['id'],
+            payload={'decision': command.decision, 'pending_revision': pending['health_revision'],
+                'snapshot': command.snapshot, 'assessment_complete': False}, reason=command.reason)
+        if command.decision == 'close_unknown':
+            payload['disposition'] = {'decision': 'close_unknown', 'event_ref': event, 'assessment_complete': False}
+        else:
+            payload.pop('disposition', None)
+        await connection.execute("""UPDATE am_pending_judgments SET state=$2,health_revision=health_revision+1,
+            health_payload=$3::jsonb,resolved_at=CASE WHEN $2='resolved' THEN clock_timestamp() ELSE NULL END,
+            reason='Explicit work disposition; no claim approval or completeness asserted' WHERE id=$1""",
+            pending['id'], 'resolved' if command.decision == 'close_unknown' else 'held', _json(payload))
         return event
 
     async def _feedback_health_manifest(self, connection, binding_id, feedback_ref, snapshot) -> tuple[dict, dict]:
@@ -5081,14 +5152,16 @@ class Store:
             result['coverage']['complete'] = result['next_byte'] is None
             return result
         if ref == 'health':
-            rows = await connection.fetch("""SELECT id,sequence,state,health_key FROM am_pending_judgments
-                WHERE binding_id=$1 AND kind='health' AND state IN ('pending','held') AND sequence>$2
+            rows = await connection.fetch("""SELECT id,sequence,state,health_key,health_revision,health_payload FROM am_pending_judgments
+                WHERE binding_id=$1 AND kind='health' AND (state IN ('pending','held') OR (state='resolved'
+                    AND health_payload->'disposition'->>'decision' IN ('close_unknown','deferred_unknown'))) AND sequence>$2
                 AND (snapshot IS NULL OR snapshot IS NOT DISTINCT FROM $3) ORDER BY sequence LIMIT 33""",
                 binding_id, byte_start, snapshot)
             result = {'kind': 'health_pending', 'binding_id': binding_id, 'items': [], 'next_byte': None,
                 'coverage': {'scope': 'live_health_work_pages', 'complete': False}}
             for row in rows:
-                item = {'ref': 'health:item:' + row['id'], 'pending_id': row['id'], 'state': row['state']}
+                item = {'ref': 'health:item:' + row['id'], 'pending_id': row['id'], 'state': row['state'],
+                    'health_revision': row['health_revision']}
                 candidate = {**result, 'items': result['items'] + [item]}
                 if len(result['items']) == 32 or measure_json(candidate) > min(max_bytes, representation_bytes):
                     if not result['items']:
@@ -5153,13 +5226,21 @@ class Store:
         if byte_start != 0 or max_bytes != 4096:
             raise DomainError('HEALTH_WINDOW_INVALID', 'Health work and admissions require one complete bounded response')
         if prefix == 'item':
-            pending = await connection.fetchrow('''SELECT snapshot,health_payload FROM am_pending_judgments
-                WHERE id=$1 AND binding_id=$2 AND kind='health' AND state IN ('pending','held')''', identifier, binding_id)
+            pending = await connection.fetchrow('''SELECT snapshot,health_payload,state,health_revision FROM am_pending_judgments
+                WHERE id=$1 AND binding_id=$2 AND kind='health' AND state<>'retracted' ''', identifier, binding_id)
             if pending is None:
                 raise DomainError('ADMISSION_STALE', 'This health work is no longer pending')
             if pending['snapshot'] is not None and pending['snapshot'] != snapshot:
                 raise DomainError('SNAPSHOT_INELIGIBLE', 'The health work belongs to a different request snapshot')
             pending_payload = _decode(pending['health_payload'])
+            disposition = pending_payload.get('disposition', {})
+            if pending['state'] == 'resolved':
+                if disposition.get('decision') not in {'close_unknown', 'deferred_unknown'}:
+                    raise DomainError('ADMISSION_STALE', 'This bounded health work was already processed')
+                return {'kind': 'health_work_disposition', 'pending_id': identifier, 'state': 'resolved',
+                    'health_revision': pending['health_revision'], 'disposition': disposition['decision'],
+                    'assessment_complete': False, 'admission': None,
+                    'coverage': {'complete': False, 'scope': 'terminal_unknown_not_fact_assessment'}}
             if pending_payload.get('cause') == 'feedback_candidate':
                 return await self._inspect_health(connection, clock, actor, binding_id,
                     'health:feedback:' + pending_payload['feedback_ref'], snapshot, byte_start=byte_start,
@@ -5173,6 +5254,7 @@ class Store:
                 'binding_revision': admission.binding_revision, 'health_manifest_digest': canonical_digest(manifest),
                 'admission': admission.model_dump(mode='json'), 'input_sources': manifest['input_sources'],
                 'input_claims': [item['claim'] for item in manifest['claims']], **bundle,
+                'observed_window_closed': manifest['observed_window_closed'],
                 'policy': manifest['policy'], 'coverage': manifest['coverage']}
         elif prefix == 'claim':
             claim_id, _, nominated = identifier.partition(':observation:')
@@ -5225,6 +5307,8 @@ class Store:
             if row is None or row['state'] != 'active' or not row['available']:
                 return False
         payload = _decode(event['payload'])
+        if payload.get('snapshot') is not None and payload['snapshot'] != snapshot:
+            return False
         claim_refs = list(payload.get('input_claims', []))
         if payload.get('claim_ref'):
             claim_refs.append(payload['claim_ref'])
@@ -5288,7 +5372,12 @@ class Store:
                 counts['withheld'] += state['operator_review'] != 'reject'
             else:
                 counts['reusable'] += 1
-        return {**counts, 'scope': 'current_structurally_eligible_ordinary_claims',
+        counts['closed_unknown_work'] = await connection.fetchval("""SELECT count(*) FROM am_pending_judgments
+            WHERE binding_id=$1 AND kind='health' AND state='resolved'
+            AND health_payload->'disposition'->>'decision' IN ('close_unknown','deferred_unknown')
+            AND (snapshot IS NULL OR snapshot IS NOT DISTINCT FROM $2)""", binding_id, snapshot)
+        return {**counts, 'enabled': (await self._health_policy(connection, binding_id))['enabled'],
+            'scope': 'current_structurally_eligible_ordinary_claims',
             'accuracy_is_not_relevance': True, 'snapshot': snapshot}
 
 

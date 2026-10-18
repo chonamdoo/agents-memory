@@ -158,15 +158,17 @@ class Application:
     ) -> dict[str, Any]:
         stats = delivered["stats"]
         coverage = stats.get("coverage", {})
+        health = stats.get("health", {})
+        health_partial = any(health.get(key, 0) for key in ("withheld", "unknown_assessments", "closed_unknown_work"))
         partial = bool(
             composed.omitted or composed.unknown_rule_refs
             or any(stats.get(key, 0) for key in ("pending", "blocked", "failed", "dlq", "stale_index_claims"))
             or any(coverage.get(key, 0) for key in (
                 "unclassified_sources", "incomplete_sources", "previous_policy_claims",
             ))
-            or any(stats.get("health", {}).get(key, 0) for key in ("withheld", "unknown_assessments"))
+            or health_partial
         )
-        return {
+        result = {
             "capability": self.settings.capability,
             "status": status or (
                 "partial" if partial else "ready" if composed.claim_ids or composed.rule_versions else "empty"
@@ -185,6 +187,9 @@ class Application:
             "selector_authority": "caller_hints_not_execution_authority",
             "evidence_role": "memory_candidates_not_execution_authority",
         }
+        if health.get("enabled") or health_partial or health.get("rejected"):
+            result["health"] = health
+        return result
 
     async def required_context(self, actor: Principal, command: ContextCommand) -> dict[str, Any]:
         self.require_accepting()

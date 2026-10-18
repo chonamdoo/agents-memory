@@ -9,7 +9,6 @@ import re
 import secrets
 import stat
 import struct
-import sys
 import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import ExitStack, asynccontextmanager, contextmanager
@@ -309,7 +308,7 @@ class _OperationFinalizationError(DomainError):
         result = super().public()
         result["cleanup"] = {"complete": False, "failures": [
             {"stage": stage, "code": "BACKUP_CLEANUP_FAILED" if stage == "encrypted_staging"
-                else error.code if stage == "operation_finalization" and isinstance(error, DomainError)
+                else "OPERATIONS_FINALIZATION_FAILED" if stage == "operation_finalization"
                 else "OPERATIONS_CLOSE_FAILED", "type": _cleanup_error_type(error)}
             for stage, error in self.failures]}
         return result
@@ -768,6 +767,7 @@ async def backup(settings: Settings, operator_token_file: Path, destination: Pat
     temporary: Path | None = None
     publishing = False
     committed = False
+    primary: BaseException | None = None
     try:
         with authority_lock(settings):
             async with asyncio.timeout(runtime.timeout_seconds), _processes() as processes:
@@ -822,13 +822,19 @@ async def backup(settings: Settings, operator_token_file: Path, destination: Pat
                         "journal_included": False, "plaintext_dump_persisted": False,
                         "storage_media_erasure_claimed": False}
     except DomainError as error:
-        raise _error(error.code, error.message, started=publishing) from None
+        primary = _error(error.code, error.message, started=publishing)
+        raise primary from None
     except (OSError, ValueError, TimeoutError, asyncio.IncompleteReadError, ConnectionError):
-        raise _error("BACKUP_FAILED", "The local encrypted backup did not complete", started=publishing) from None
+        primary = _error("BACKUP_FAILED", "The local encrypted backup did not complete", started=publishing)
+        raise primary from None
     except Exception:
-        raise _error("BACKUP_FAILED", "The local encrypted backup could not be completed", started=publishing) from None
+        primary = _error("BACKUP_FAILED", "The local encrypted backup could not be completed", started=publishing)
+        raise primary from None
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        await _finalize_operation(store, started=publishing, committed=committed, primary=sys.exception(), temporary=temporary)
+        await _finalize_operation(store, started=publishing, committed=committed, primary=primary, temporary=temporary)
 
 
 @contextmanager
@@ -1317,6 +1323,7 @@ async def restore(settings: Settings, operator_token_file: Path, archive: Path,
     """
     started = False
     committed = False
+    primary: BaseException | None = None
     store = Store(settings, DeletionJournal(settings.journal_dir, settings.deployment_id))
     recovery: Store | None = None
     try:
@@ -1418,19 +1425,26 @@ async def restore(settings: Settings, operator_token_file: Path, archive: Path,
                     "journal_restored": False, "storage_media_erasure_claimed": False,
                     "old_approval_receipts_active": False}
     except DomainError as error:
+        primary = _error("RESTORE_RECOVERY_REQUIRED" if started else error.code,
+            "Restore crossed the authority fencing boundary; state is unknown and remains blocked pending private recovery"
+            if started else error.message, started=started)
+        raise primary from None
+    except asyncio.CancelledError as error:
+        primary = _error("RESTORE_RECOVERY_REQUIRED",
+            "Restore was interrupted after authority fencing; private recovery is required", started=True) if started else error
         if started:
-            raise _error("RESTORE_RECOVERY_REQUIRED", "Restore crossed the authority fencing boundary; state is unknown and remains blocked pending private recovery", started=True) from None
-        raise _error(error.code, error.message) from None
-    except asyncio.CancelledError:
-        if started:
-            raise _error("RESTORE_RECOVERY_REQUIRED", "Restore was interrupted after authority fencing; private recovery is required", started=True) from None
+            raise primary from None
         raise
     except Exception:
-        raise _error("RESTORE_RECOVERY_REQUIRED" if started else "RESTORE_NOT_STARTED",
+        primary = _error("RESTORE_RECOVERY_REQUIRED" if started else "RESTORE_NOT_STARTED",
             "Restore crossed the authority fencing boundary; state is unknown and remains blocked pending private recovery" if started
-            else "The encrypted archive or local restore prerequisites could not be verified; restore did not start", started=started) from None
+            else "The encrypted archive or local restore prerequisites could not be verified; restore did not start", started=started)
+        raise primary from None
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        await _finalize_operation(store, recovery, started=started, committed=committed, primary=sys.exception())
+        await _finalize_operation(store, recovery, started=started, committed=committed, primary=primary)
 
 
 async def recover_interrupted_restore(settings: Settings, operator_token_file: Path,
@@ -1447,6 +1461,7 @@ async def recover_interrupted_restore(settings: Settings, operator_token_file: P
     recovery: Store | None = None
     started = False
     committed = False
+    primary: BaseException | None = None
     try:
         if confirm_deployment != settings.deployment_id:
             raise _error("RESTORE_CONFIRMATION_REQUIRED", "Explicit confirmation of the selected deployment is required")
@@ -1526,14 +1541,21 @@ async def recover_interrupted_restore(settings: Settings, operator_token_file: P
                     "journal_restored": False, "storage_media_erasure_claimed": False,
                     "old_approval_receipts_active": False}
     except DomainError as error:
-        raise _error(error.code if not started else "RESTORE_RECOVERY_REQUIRED",
+        primary = _error(error.code if not started else "RESTORE_RECOVERY_REQUIRED",
             error.message if not started else "Private recovery started; authority remains blocked until recovery succeeds",
-            started=started) from None
-    except asyncio.CancelledError:
+            started=started)
+        raise primary from None
+    except asyncio.CancelledError as error:
+        primary = _error("RESTORE_RECOVERY_REQUIRED",
+            "Private recovery was interrupted; authority remains fenced", started=True) if started else error
         if started:
-            raise _error("RESTORE_RECOVERY_REQUIRED", "Private recovery was interrupted; authority remains fenced", started=True) from None
+            raise primary from None
         raise
     except Exception:
-        raise _error("RESTORE_RECOVERY_REQUIRED", "Private recovery could not be completed; authority remains fenced", started=started) from None
+        primary = _error("RESTORE_RECOVERY_REQUIRED", "Private recovery could not be completed; authority remains fenced", started=started)
+        raise primary from None
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        await _finalize_operation(store, recovery, started=started, committed=committed, primary=sys.exception())
+        await _finalize_operation(store, recovery, started=started, committed=committed, primary=primary)
