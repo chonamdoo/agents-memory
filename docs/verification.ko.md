@@ -1485,3 +1485,34 @@ Source digest 전후는 `223da49b15bf2a380f5af316a7d6b66c0fac27328609f929375dee2
 
 현재 run의 `actions-1541ec4-complete-consumer-green/observed-success-summary.json`과 모든 원본 phase/API/job/artifact·checksum·same-node 비교를 보존했다. 최신 PR 전체127파일을 API pagination과 독립 changed-files count로 대조했고 production39·CI12·runtime config7파일의 실제 bytes가1541ec4의 Git blob과 일치했다. 이 direct-read manifest는 다음 정상 whole-source review의 입력 근거이지 reviewer의 실제 읽기·승인 증거는 아니다. 문서 포함 최신 head의 CI와 fresh 전체 범위 review·CI-only QA·publication은 별도이며 원래18개 완료0과 native/OS/운영/egress/human gold·실제 trial·merge/release 미승인은 유지한다.
 
+### 정상 review R18–R21: 누락 model·중첩 사유·HTTP framing·machine 소유권
+
+`4edc2c9a8ea6cf231b3989cd886e2019bcfa40aa` / [Actions39102451225](https://github.com/chonamdoo/agents-memory/actions/runs/39102451225)의 문서 포함 전체 engineering 성공은 실제 완료다. 이후 정상 native measurement `446436a5de3e4dcb9ebf8dbc0174c53b`의 실제12개 배정은8approve·3request-changes·1timeout이었다. Claude architecture-design은601.744초에 stdout/stderr0·null verdict로 끝났으며 다른 다섯 Claude와 여섯 Codex는 보고서를 전달했다. Timeout을 승인으로 세거나 이전 vote로 채우지 않았고600초 정책·guard·trust·pins·판정·counter는 바꾸지 않았다. 원본15개 artifact와 hash를 run context에 보존했다.
+
+여러 Claude angle은 R14–R17 위주 deep read와 일부 inherited spot check만 명시했다. 따라서 이 결과는 fresh whole-PR approval이 아니다. 세 request-changes와 구체적인 machine 소유권 should-fix를 정상 fix-loop로 인수했다.
+
+- **R18:** valid init 뒤 `assistant.message.model` 누락이 비교 불가 이유를 만들지 않았다. 실제 owned stdio와 실제 controller retrieval은 완료·제출·usage·cleanup을 유지한 채 unknown model을 comparable/frozen identity로 세지 않아야 한다. 전체 실제 실행 증거의 native receipt·stdout·tool link·terminal/report digest를 일관되게 다시 바인딩한 omitted-model 입력도 public health compiler가 정확히 `EVALUATION_HEALTH_NATIVE_SCOPE_OR_UNKNOWN`으로 거절한다. digest 불일치로 우연히 거절한 증거가 아니다.
+- **R19:** resolution rationale source를 다른 feedback의 target으로 삼으면 recursive disclosure가 health 소유권을 보지 않아 scoped 후보 본문이 다른 snapshot에 공개됐다. 같은 bounded manifest에서 owner·현재 target·dependency를 따라가며 정상 global과 삭제 후 body-free decision history를 보존한다.
+- **R20:** 실제 제품 HTTP 서버 앞의 owned TCP forwarding fixture가 진짜202 ACK 또는409 오류의 JSON bytes를 바꾸지 않고 `Content-Length`만80bytes 크게 선언한 뒤 닫았다. 수정 전에는202를 capture credit으로 받거나 오류 prefix의 `not_started`를 믿었다. 수정 후에는 한 번의 요청으로 unknown·incomplete를 남기고 ACK credit을 주지 않는다.202의 원래 source가 실제 DB에 존재하는 것도 확인해 unknown을 허위 not_started로 바꾸지 않았다. 정상 fixed-length·EOF-delimited·chunked control은 유지했다.
+- **R21:** machine 완료 창에 named `QUEUE_FULL` fault를 주어 실제 serialized late-refresh owner가 event 없는 `deferred_unknown`을 남기게 한 뒤, 실제 public SessionObservation으로 새 근거를 등록했다. 수정 전에는 operator 종결로 오인해 capacity 검사를 건너뛰었다. 수정 후에는 full queue에서 작업을 바꾸지 않고 거절하고, operator가 blocker를 정확히 닫은 뒤 같은 command를 재시도하면 pending/admission을 얻는다. 기계 fault injection과 다음 실제 소비자 동작의 증거이며 자연 발생 producer overflow·운영 incident·데이터 손실 관측이 아니다.
+
+#### Before 시도와 fixture 실패의 구분
+
+| source / Actions | source pass / fail | 별도 설치 pass / fail | 판정 |
+|---|---:|---:|---|
+| `82840e6` / [39105258661](https://github.com/chonamdoo/agents-memory/actions/runs/39105258661) |3131 /7|745 /7|제품 call red5개. empty retrieval의 내부 final_reads 기대와 unresolved origin의 held→resolved 가정2개는 fixture 실패 |
+| `6ba2109` / [39105761221](https://github.com/chonamdoo/agents-memory/actions/runs/39105761221) |3132 /6|746 /6|제품 red5개. R21은 immutable origin에 다른 body를 넣어 refresh 전에 ORIGIN_CONFLICT |
+| `4fd9250` / [39106195619](https://github.com/chonamdoo/agents-memory/actions/runs/39106195619) |3132 /6|746 /6|제품 red5개. R21은 낮춘 공통 queue bound 때문에 새 source 준비가 source-selection backlog에서 거절됨 |
+| `6f992cb` / [39106640254](https://github.com/chonamdoo/agents-memory/actions/runs/39106640254) |3132 /6|746 /6|같은6개 유효 consumer-visible call red. 모든 setup·teardown pass |
+| `acb131c` / [39107089779](https://github.com/chonamdoo/agents-memory/actions/runs/39107089779) |3138 /0|752 /0|같은6개 source·설치 node의 setup·call·teardown 모두 pass |
+
+모든 행은 skip·xfail·xpass·collection issue0이다. 앞선 fixture 오류를 제품 red로 재분류하지 않았고, 실패 원문·phase receipt·retry 분모를 보존했다. 유효 before는 제품 수정 없는 `6f992cbe063d144792c8b01668f9c0524772e4a4`이며, 관측 model이 정상인 controller retrieval·정상 global nested feedback·세 framing control도 통과했다. 설치 전체 smoke는 before에서 omitted execution model을 health가 받아들인 명시 거절-누락 branch에 도달했고, after에서 새 `missing_execution_model_refused=true`를 strict aggregate가 요구한다.
+
+#### acb131c 전체 소비 성공
+
+정확한 `acb131c76f887470c4b6df1b7beb906347bb12d5`의 Actions는2026-10-18T07:23:03Z에 success로 완료했다. 위 source/설치 전체 외에 실제 owned Docker14·실제 macOS CPython3.12.13 ownership36, 양쪽 실제 health HTTP/CLI25 outcome, 전체 producer HTTP→native protocol peer→MCP→controller→격리 blackbox verifier/scorer→public health compiler·health CLI/API, optional drift·attempt/unknown cost와 exact cleanup을 통과했다. 기존 rationale outcome 안에서 중첩 feedback의 scoped 거절과 global 공개까지 추가로 실행한 것이며 outcome을27개로 부풀리지 않는다.
+
+여덟 job·아홉 artifact, prerequisite·runtime/schema/process의 owned cleanup, health adapter 제거·service exit0·Store/admin close·private schema 제거와 harness private evidence 보존을 확인했다. lint/build/설치 소비·canonical comments/strict aggregate도 모두 성공했다. Source digest 전후는 `8ed4abc350494d05e934b5ff3f2ce6947f860fa0ac95744d9c28d4fd004e7ab0`이다. 실제 내려받은385588bytes wheel의 SHA256 `168ddde4eca399ccd234b274e75a5c0ebae4aee61030ace5bf74db7f272861b0`은 설치와 전체 평가 소비 receipt에 일치한다.3505349bytes sdist는 `9dd6868c736e681c217d62c64f0fe6df0114f2b8ebae257eced479dd27ec9378`이다. Canonical checker는127변경 중98eligible full old/new file·4629172inputbytes·complete coverage·finding0·CHECKED/exit0이다.
+
+`context/actions-acb131c-model-reasons-framing-green/observed-success-summary.json`에 원본 source/설치 phase·실제 소비·artifact/checksum·cleanup을 연결했다. API pagination의 전체127파일과58runtime/CI/config 파일의 Git blob·현재 bytes를 대조했으며 이는 reviewer 읽기 증거가 아니다. 현재 frozen manifest는 다른 helper model 허용을 표현하지 않아 해당 native 관측은 비교 불가이며, 실제180 valid pairs를 얻었다고 주장하지 않는다. 문서 포함 다음 head의 CI·fresh whole-source native review·CI-only QA·publication, 원래18개 완료0과 실제 native/OS/운영/egress/human gold·elapsed trial·merge/release 미승인은 별도로 유지한다. 협업자 포함 로컬 runtime 검증은 실행하지 않았다.
+
