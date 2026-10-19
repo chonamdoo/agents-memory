@@ -400,6 +400,7 @@ async def execute(args) -> dict | None:
 
         from .health import CodeObservationTarget
         from .health_producer import (
+            EXPLICIT_LOCK_WAIT_SECONDS,
             load_health_preparation,
             observe_health_workspace,
             prepare_health_registration,
@@ -424,7 +425,8 @@ async def execute(args) -> dict | None:
             if not 1 <= len(targets) <= 32 or len({target.relative_path for target in targets}) != len(targets):
                 raise DomainError("INPUT_INVALID", "Choose one to 32 distinct explicit code paths")
             paths = tuple((target.relative_path, tuple(target.symbol_names)) for target in targets)
-        return await asyncio.to_thread(observe_health_workspace, receipt, require_committed=True, explicit_paths=paths)
+        return await asyncio.to_thread(observe_health_workspace, receipt, require_committed=True, explicit_paths=paths,
+                                       lock_wait=EXPLICIT_LOCK_WAIT_SECONDS)
     if args.command == "native-status":
         from .native_status import native_status
 

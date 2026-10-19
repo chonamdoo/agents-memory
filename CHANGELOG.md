@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### 명시 health 작업과 서비스 background 관측의 잠금 경합
+
+- 로컬 서비스의 spool recovery가 등록 workspace를 주기적으로 관측하며 `health.lock`을 잡는 동안, 명시 `health workspace-register`·`health observe` CLI와 MCP `memory_context` 직전 관측이 즉시 `HEALTH_OBSERVER_BUSY`로 실패하던 경합을 고쳤다. CI health smoke가 간헐적으로 이 오류로 실패했다. 명시 작업은 최대 10초 동안 잠금을 기다리고, 자동 hook과 background recovery는 기존처럼 기다리지 않는다. 대기 한도를 넘으면 같은 `HEALTH_OBSERVER_BUSY`다.
+
 ### CI 설치 wheel consumer 시간 예산
 
 - 설치 wheel consumer 제한을 300초에서 600초로 올렸다. 약 900개 사례를 새 process로 다시 실행하는 현재 subset이 정상 runner에서도 290–305초가 걸려 main CI(`6ab6118`, run 39209425762)가 58% 지점에서 timeout으로 실패했다. lint 120초·build 300초·source shard 600초와 job 15분 제한, timeout을 실패로 집계하는 aggregate는 그대로다.

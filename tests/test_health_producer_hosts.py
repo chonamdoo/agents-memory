@@ -390,6 +390,36 @@ def test_unchanged_code_observation_reuses_committed_identity_but_changed_bytes_
     assert changed["operation_id"] != first["operation_id"]
     assert endpoint.sequence == 2
 
+def test_explicit_observation_outwaits_background_owner_while_hooks_never_block(health_installation):
+    import fcntl
+    import os
+    import threading
+
+    project, _, _, receipt, endpoint, _ = health_installation
+    (project / "module.py").write_bytes(b"def answer(): return 1\n")
+    # The service's spool recovery holds this lock during its own bounded observation.
+    held = os.open(Path(receipt["runtime_dir"]) / "health.lock", os.O_RDWR)
+    fcntl.flock(held, fcntl.LOCK_EX)
+    try:
+        with pytest.raises(DomainError) as hook:
+            health_before_context(receipt)
+        assert hook.value.code == "HEALTH_OBSERVER_BUSY"
+        with pytest.raises(DomainError) as exhausted:
+            health_before_context(receipt, lock_wait=0.2)
+        assert exhausted.value.code == "HEALTH_OBSERVER_BUSY"
+        assert endpoint.sequence == 0
+        release = threading.Timer(0.3, lambda: fcntl.flock(held, fcntl.LOCK_UN))
+        release.start()
+        try:
+            observed = health_before_context(receipt, lock_wait=health_producer.EXPLICIT_LOCK_WAIT_SECONDS)
+        finally:
+            release.join()
+    finally:
+        os.close(held)
+    assert observed["state"] == "observed"
+    assert endpoint.sequence == 1
+
+
 
 @pytest.mark.parametrize("effect", [EffectState.NOT_STARTED, EffectState.NOT_COMMITTED])
 def test_proven_uncommitted_code_quarantine_allows_a_new_current_observation(

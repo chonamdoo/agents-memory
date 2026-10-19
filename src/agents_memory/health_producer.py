@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import stat
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -27,6 +28,8 @@ from .private_io import private_read, private_write
 from .spool import ProducerSpool
 
 _HEALTH_BYTES = 65536
+# Explicit CLI/MCP operations outwait the service's bounded background observation; hooks never block.
+EXPLICIT_LOCK_WAIT_SECONDS = 10.0
 _START_EVENTS = {"SessionStart", "session_start"}
 _END_EVENTS = {"SessionEnd", "session_shutdown"}
 _INTERRUPT_EVENTS = {"PreCompact", "session_before_compact", "session_before_switch", "session_before_branch"}
@@ -135,7 +138,7 @@ def register_health_workspace(receipt: dict, preparation: HealthWorkspacePrepara
             or command.root_fingerprint != config.pin.fingerprint
             or command.producer_credential_id != config.producer_credential_id):
         raise DomainError("HEALTH_PREPARATION_INVALID", "The prepared command and root identity disagree")
-    with _owner(receipt):
+    with _owner(receipt, wait=EXPLICIT_LOCK_WAIT_SECONDS):
         if pin_root(Path(config.pin.root), config.pin.nonce) != config.pin:
             raise DomainError("HEALTH_ROOT_CHANGED", "The prepared root identity is no longer current")
         result = client.request("/api/health", command.model_dump(mode="json"))
@@ -194,17 +197,22 @@ def load_health_workspace(receipt: dict) -> HealthWorkspaceConfig | None:
 
 
 @contextmanager
-def _owner(receipt: dict):
+def _owner(receipt: dict, *, wait: float = 0.0):
     path = Path(receipt["runtime_dir"]) / "health.lock"
     descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise DomainError("HEALTH_STATE_DENIED", "Health metadata requires a private owned lock")
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise DomainError("HEALTH_OBSERVER_BUSY", "Another bounded observation owns this workspace") from None
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise DomainError("HEALTH_OBSERVER_BUSY", "Another bounded observation owns this workspace") from None
+                time.sleep(0.05)
         yield
     finally:
         os.close(descriptor)
@@ -264,6 +272,7 @@ def _observer(receipt: dict, config: HealthWorkspaceConfig, spool: ProducerSpool
 def observe_health_workspace(
     receipt: dict, *, client=None, require_committed: bool = False, flush_limit: int = 4,
     explicit_paths: tuple[tuple[str, tuple[str, ...]], ...] | None = None, defer_flush: bool = False,
+    lock_wait: float = 0.0,
 ) -> dict:
     if defer_flush and require_committed:
         raise DomainError("HEALTH_OBSERVATION_MODE_INVALID", "Deferred delivery cannot attest a committed observation")
@@ -272,7 +281,7 @@ def observe_health_workspace(
         return {"state": "disabled", "configured": False}
     if not 1 <= flush_limit <= 128:
         raise DomainError("SPOOL_LIMIT_INVALID", "Choose a bounded flush limit")
-    with _owner(receipt):
+    with _owner(receipt, wait=lock_wait):
         spool = _spool(receipt)
         try:
             client = client or _client(receipt)
@@ -384,8 +393,8 @@ def _incomplete(required: bool, code: str) -> dict:
     return {"state": "gap", "code": code, "coverage": "partial_linked_paths"}
 
 
-def health_before_context(receipt: dict) -> dict:
-    return observe_health_workspace(receipt, require_committed=True, flush_limit=4)
+def health_before_context(receipt: dict, *, lock_wait: float = 0.0) -> dict:
+    return observe_health_workspace(receipt, require_committed=True, flush_limit=4, lock_wait=lock_wait)
 
 
 def _session_state(identity: dict, previous: dict | None = None) -> dict:
