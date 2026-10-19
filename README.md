@@ -297,7 +297,8 @@ generic MCP는 자동 호출/자연어 준수를 강제하지 않는다. opt-in 
 - OMP의 advisory `read`가 `skill://`, `issue://`, `pr://`, URL 등 `scheme://` 형식의 resource를 지정하면 로컬 경로로 추정하지 않고 `outside_advisory_coverage`로 분류한다. scheme 목록으로 예외 처리하지 않으며 selector와 공백·대괄호가 있는 native 파일명도 그대로 둔다. 이는 resource 해석 성공, 로컬 backing path 승인, required rule 충족이나 provider 소비의 증거가 아니다. native 도구의 실제 해석 오류는 native 도구가 처리한다. receipt·envelope·cwd 검증은 이 분류보다 먼저 수행하며 제어 문자·잘못된 percent encoding은 정상 resource로 채택하지 않는다.
 - `HOST_SCOPE_UNRESOLVED`: 자동 hook이 등록 project 범위를 확인하지 못했거나 대상이 범위 밖이다. 다른 project에서 `Downloads` 파일을 읽는 경우 등을 현재 receipt와 대조한다. 명시 MCP의 credential/binding 권한과 자동 hook의 경로 검사는 별개다.
 - `HOST_CAPTURE_DEGRADED`: 현재 전송·대기·격리·gap 상태를 확인한다. 성공한 새 capture에 딸려 반환된 누적 spool 이력만으로 새 전송 실패를 선언하지 않지만, 그 이력과 실제 pending·quarantine·현재 실패는 삭제하거나 성공으로 바꾸지 않는다.
-- `HOST_RECEIPT_UNAVAILABLE`·`HOST_ENVELOPE_INVALID`·`HOST_LINEAGE_UNRESOLVED`·`HOST_STATE_INVALID`: 설치 receipt, 실제 전달 envelope, agent lineage 또는 저장 상태가 유효하지 않다. resource 주소나 반복 호출을 이유로 이 오류를 생략하지 않는다.
+- `HOST_RECEIPT_UNAVAILABLE`·`HOST_ENVELOPE_INVALID`: 설치 receipt 또는 실제 전달 envelope가 유효하지 않다. resource coverage 분류보다 먼저 검증하며 resource 주소나 반복 호출을 이유로 이 검사를 생략하지 않는다.
+- `HOST_LINEAGE_UNRESOLVED`·`HOST_STATE_INVALID`: 로컬 coverage 대상 행동의 agent lineage 또는 저장 상태가 유효하지 않다. `outside_advisory_coverage`인 resource read에는 lineage·저장 상태 검사를 적용하지 않으며, 그 분류를 로컬 행동의 승인이나 상태 검증 성공으로 해석하지 않는다.
 - `HOST_GENERATION_UNOBSERVED`·`HOST_CONTEXT_STALE`·`HOST_PROVIDER_INPUT_UNOBSERVABLE`: 해당 로컬 행동의 generation·context가 없거나 오래됐거나 최종 provider input을 관측하지 못했다. 앞선 resource read의 정상 coverage 분류가 후속 required-context 거절을 없애지 않는다.
 - `HOST_ADAPTER_UNAVAILABLE`·`HOST_RESPONSE_INVALID`·`HOST_RESPONSE_TOO_LARGE`: hook 실행·IPC 응답의 형식·크기를 확인한다. resource read에도 동일한 응답 검사를 적용하며 독립된 실제 거절마다 알림을 유지한다.
 
