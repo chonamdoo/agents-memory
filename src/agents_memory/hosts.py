@@ -21,7 +21,6 @@ from contextlib import ExitStack, contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
@@ -1552,14 +1551,8 @@ def _omp_resource_read(event: dict) -> bool:
     path = inputs.get("path")
     if not isinstance(path, str) or re.match(r"[A-Za-z][A-Za-z0-9+.-]*://", path) is None:
         return False
-    if re.search(r'[\s\x00-\x1f\x7f<>"{}|\\^`]|%(?![0-9A-Fa-f]{2})', path):
-        return False
-    try:
-        # Native selectors can occupy authority text; do not interpret it as a URL port.
-        urlsplit(path)
-    except ValueError:
-        return False
-    return True
+    # Native authorities may be literal filenames, not URL hosts.
+    return re.search(r"[\x00-\x1f\x7f]|%(?![0-9A-Fa-f]{2})", path) is None
 
 
 def _footprint(receipt: dict, event: dict, cwd: Path) -> tuple[str, ...]:
