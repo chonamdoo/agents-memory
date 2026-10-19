@@ -1,5 +1,51 @@
 # 실제 로컬·클라우드 검증 기록
 
+## 사용자 지시 없는 자동 회상과 리뷰 수정 — development/20261019-110433
+
+합성 claim 하나(`CacheKey is retained only offline.`)가 있는 격리 PostgreSQL schema와 새 Git fixture project에서, 기억을 언급하지 않는 같은 지시("`src/cache_key.py`에 CacheKey 보관 시점을 한 줄 docstring으로; 모르면 `Retention policy unknown.`")를 실제 host에 실행했다.
+
+| host | 관측 | 결과 |
+|---|---|---|
+| OMP 18.12.2 / GPT-6.1 Sol | read 뒤 hook handoff가 developer 메시지로 들어감 → `memory_inspect(ref=<claim ID>)` → handoff의 request·admission으로 전체 relevance 제출 → edit | `CacheKey values are retained only offline.` |
+| Claude Code 2.1.303 / Opus 5.5 | Read 뒤 1차 조회 없이 `memory_inspect` → hook이 만든 query(`cache_key.py`)·admission으로 두 번째 `memory_context` → Edit | 동일 |
+
+- Claude stream-json은 `PreToolUse` additionalContext 본문을 출력하지 않는다. agent가 hook만 아는 admission과 파일명 query를 사용한 것으로 수신을 추론했으며 본문 표시를 직접 관측한 것은 아니다.
+- 실패 이력을 보존한다. OMP 첫 실행은 agent가 `ref="claim:<id>"`로 조회해 `NOT_FOUND` 뒤 원문 없이 판단했다. handoff 안내에 정확한 ref 형식을 넣어 고쳤다. 두 번째 실행은 지시문의 "project 지식만"을 agent가 기억 제외로 해석했다. Claude 첫 실행은 fixture 설정 디렉터리에 로그인이 없어 실패했다.
+- Codex 비대화형 실행은 신뢰되지 않은 project라 hook이 로드되지 않았고 agent가 스스로 `memory_context`를 호출했다. 이는 자동 회상 증거가 아니다. 이후 사용자가 직접 폴더 신뢰와 `/hooks` 승인을 한 대화형 Codex 0.163.0 / GPT-6.1 Sol(`--prompt-recall` 설치)에서는 `UserPromptSubmit` handoff가 developer 메시지로 들어갔고, agent가 1차 조회 없이 `memory_inspect(ref=<claim ID>)` 뒤 handoff의 request·admission으로 `relevant:true`를 제출해 같은 결과를 냈다. Codex는 행동 직전 회상이 없으며 이 증거는 프롬프트 시점이다.
+- 행동 직전 hook 내용은 host 계약상 해당 도구 결과 뒤 전달된다. 이번 시나리오는 read→edit 흐름이며 바로 쓰는 write의 순서 보장은 아니다. provider 소비·판단 품질·비용 효익은 측정하지 않았다.
+
+리뷰(독립 9개, 1 approve·8 request-changes)의 수정: 작업 checkout sdist에 추적하지 않는 검증 credential·DB·trace가 들어갈 수 있던 문제(추적 항목만 포함하도록 제한, tar 목록이 추적 파일과 일치·`.recall-proof` 0), OMP code별 incident 알림, 같은 문장 대기 입력의 submission 오연결, health 응답 검증, fork 증거 파일의 project 밖 private 디렉터리, evaluation gateway lock, OMP hook의 남은 기한 내 service 요청. 추가로 OMP 행동 직전 규칙 본문이 사용자 화면에만 표시되던 문제와 감싸지 않은 hashline edit의 `HOST_FOOTPRINT_UNKNOWN` 오분류를 고쳤다.
+
+로컬 실행은 macOS arm64·Python 3.13.16/SQLite 3.53.1·PostgreSQL 18.6이다. 마지막 리뷰 수정 뒤 전체 실행은 Ruff·build 통과(sdist `.recall-proof` 0), pytest **3,497 passed / 3 failed / 19 skipped / 1 deselected**다. 실패·제외는 모두 이번 변경과 무관하다: `test_real_stdio_write_is_only_final_delivery_boundary[partial_write]`는 base에서도 같은 pipe 대기로 멈춰 제외했고, `test_timeout_retains_all_partial_protocol_and_no_fake_usage`는 base에서도 같은 stderr 미수집으로 실패한다. `test_remote_bad_first_outbox_cannot_starve_retained_healthy_batch`는 base·현재 모두 단독 3회 중 2회 실패하는 시간 의존 불안정이고, 변경하지 않은 `test_native_inventory_ends_descendants_and_closes_pipes_on_failure`는 전체 부하에서 한 번 실패했지만 단독 3회 모두 통과했다. 이 셋은 CI의 Linux 실행에서 따로 확인한다. 중간 실행에서 발견한 회귀(gateway receipt 크기 초과)는 중복 필드를 제거해 고쳤다. user 없는 PG DSN 실행의 init/ops 실패 38건은 환경 오류였다.
+
+## 실험용 fork recall — development/20261019-110433
+
+[#17](https://github.com/chonamdoo/agents-memory/issues/17)의 host-local 실험 구현이다. 기본 inline, Jev 독립, OMP fork 제외, 네 MCP 도구와 서버·DB 계약을 유지한다. 7–14일 관측이나 지원 판정은 아직 완료하지 않았다.
+
+### 실제 native 단일 합성 시나리오
+
+macOS arm64, Python 3.13.16/SQLite 3.53.1, 별도 PostgreSQL 18.6/pgvector 0.8.7과 새 UUID schema·분리 agent/producer credential을 사용했다. 사용자 corpus·원래 Jev key·기존 service/native trust는 변경하지 않았다.
+
+| host | 직접 관측 |
+|---|---|
+| Claude Code 2.1.303 / Opus 5.5 | 부모 `memory_context` 2회, `Agent(subagent_type="fork")`, `parent_tool_use_id`로 연결된 자식 `memory_inspect` 1회, 자식 완료 뒤 실제 CLI validator와 부모의 최종 호출 |
+| Codex 0.163.0 / GPT-6.1 Sol | 부모 `memory_context` 2회, native collaboration `spawn_agent(fork_turns="all")`, parent에 연결된 child session의 `forked_from_id`, 자식 `memory_inspect` 3회, 완료 결과와 실제 CLI validator·부모 최종 호출 |
+
+두 host의 최종 기억은 같은 claim과 `only offline` 조건, 원문 revision 1·bytes `[0,34]`를 보존했다. 응답의 `partial`·pending source coverage도 그대로 남겼으며 전체 corpus 처리가 끝났다고 바꾸지 않았다. 부모가 원문을 직접 inspect했다고 세지 않았다. Claude 첫 시도는 smoke runner의 variadic 옵션이 prompt를 소비해 실패했으며, `--`로 prompt 경계를 고친 뒤 성공했다. 처음 합성 HTTP startup은 state directory 0755를 거절했고 소유한 fixture를 0700으로 준비한 뒤 실행했다. 제품 guard를 완화하지 않았다.
+
+**이 native 실행은 이전 증거 배치에서 수행했다.** 당시 부모는 네 증거 파일을 fixture project 작업 디렉터리에 상대 경로로 저장했다. 리뷰 뒤 현재 skill은 project 밖 `mktemp -d` owner 전용 디렉터리를 요구하고 validator는 project 안 증거를 `PATH_DENIED`로 거절한다. 현재 배치의 fork 흐름(명령 사이 `RECALL_DIR` 유지, project 밖 쓰기 권한)은 실제 shell 실행 회귀만 있으며 native Claude·Codex 실행 증거는 아직 없다. 실험 운영 첫 실행에서 확인한다.
+
+별도 실제 CLI smoke는 완전한 자식 반환의 2차 인자 생성과 `partial` 반환의 `HOST_RECALL_INCOMPLETE` 거절을 확인했다. generated skill의 multiline command에서 발견한 이중 backslash를 고쳤고 실제 shell 실행 회귀를 추가했다. fork 전용 회귀는 수정 단계에서 **129 passed / 8.06초**였으며, 이 수치는 후속 lifecycle 변경·전체 gate의 최종 결과를 대신하지 않는다.
+
+### 측정·실행의 한계
+
+- 단일 합성 positive scenario다. gold 기반 inline/fork 짝 비교, false negative·조건/예외/상충 누락, 부모의 실제 retained-input 감소, host별 p50/p95와 실패율, 실제 7–14일 운영 완료는 아니다.
+- native usage/cache/cost는 private run evidence에 보존했다. Claude terminal pipeline total과 Codex cumulative usage를 child 사용량과 중복 합산하지 않으며 provider invoice나 부모-only 입력량이라고 하지 않는다.
+- native fork smoke에서 자식 실패 시 required 규칙 전달을 따로 실행하지 않았다. 서버 계약 검증·generated-extension bridge·native host·실험 운영 증거는 서로 구분한다.
+- 첫 focused suite는 도구 shell의 환경 export가 다음 호출에 유지되지 않아 지원되지 않는 SQLite로 실행됐고 **509 failed / 196 passed / 56 skipped**였다. 각 호출에 patched interpreter를 명시한 다음 확장 focused 실행은 **600초 timeout**으로 끝났다. green으로 합치거나 실패·timeout을 삭제하지 않는다.
+- `recall-trial-report`는 제공된 native evidence 문서와 host별 비교를 검증·집계하는 로컬 도구다. 외부 evidence를 자동 수집·인증하거나 elapsed time만으로 지원을 승격하지 않는다. 공개 release에는 corpus·token·private native 원문 trace를 올리지 않는다.
+
+
 ## 네 번째 리뷰 후 권한·복구와 PR 보안 수정 — development/20261016-110757
 
 이전 run의 네 번째 genuine Opus5.5/Sol6.1 wave는12완료·3 approve/9 request-changes였다. 정상 fix-loop 한도에서 중단한 뒤 사용자가 **기록 보존 후 수정 계속**을 선택했다. 정상 abort/run으로 같은 worktree·branch에 새 run을 시작했으며 workflow/guard/pin/기존 판정은 수정하지 않았다. 아래는 새 controller 구현·실행 기록이지 fresh 공식 review/QA/handoff 승인이나 PR 원격 코드 갱신이 아니다. 아래 과거 절의 “현재”는 각 실행 시점이다.

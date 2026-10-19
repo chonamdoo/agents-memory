@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### 사용자 지시 없는 자동 회상
+
+- advisory Claude·OMP 설치는 project 안 파일 read·write·edit 때 hook이 1차 `memory_context`를 대신 조회하고 admission·정확한 request·전체 후보 ID 목록을 모델 context에 넣는다. agent는 inspect 후 relevance만 제출한다. 판단하지 않은 후보 본문·미리보기는 넣지 않으며 전체 ID가 예산을 넘으면 일부 ID 대신 명시 gap을 넣는다. 같은 submission의 같은 경로는 다시 조회하지 않고, 실패는 기록하되 required 규칙과 행동 결과를 바꾸지 않는다. 기존 `manifest_not_delivered` 안내는 제거했다.
+- `--prompt-recall`은 같은 handoff를 프롬프트 시점에 보조로 제공한다. Codex는 native 도구가 경로 목록을 안전하게 제공하지 않아 프롬프트 시점만 지원한다. strict는 변경 없음. `--no-action-recall`로 끈다.
+- host 계약상 행동 직전 hook 내용은 그 도구 결과 뒤 모델에 전달된다. 읽지 않고 바로 쓰는 경우 후보는 쓴 뒤 도착한다.
+- fork-experimental 설치에는 자동 회상이 없고, `--prompt-recall`은 admission·후보 ID 없이 설치된 recall workflow 실행 안내만 넣는다. strict Claude의 fork 선택은 쓰기 전에 거절한다. OMP는 terminal `agent_end` 뒤 같은 문장의 새 프롬프트를 새 submission으로 본다. evaluation gateway는 검증된 fork 자식의 inspect를 부모 기록과 분리해 pipeline 연결에 반영한다.
+
+### 실험용 fork recall과 host별 평가
+
+- [#17](https://github.com/chonamdoo/agents-memory/issues/17): Claude Code·Codex에 명시적인 `fork-experimental` recall 선택을 추가한다. 부모가 1차 조회와 최종 제출·수신을 맡고, 전체 대화를 상속한 fork 자식은 원문 inspect와 전체 manifest 관련성 판단만 맡는다. 기본 inline, required 독립 전달, 서버의 최종 span·revision·권한·철회·health 재검사는 유지한다. Jev provider와 독립이며 OMP 위임은 제외한다.
+- 로컬 parent validator는 admission·전체 ID 집합·개수·완료 상태와 원래/현재 요청·작업 identity를 검증한다. 부분·취소·잘린 반환·다른 admission·맥락 변경은 최종 제출로 승격하지 않으며 자동 inline/fresh-child/Jev fallback하지 않는다. inspect-only는 실제 host 강제 제한을 확인한 경우에만 보장할 수 있다. 증거 파일은 호출별 project 밖 owner 전용 디렉터리에만 두고 끝나면 지운다. project 안·공유 디렉터리·symlink·hard link 증거는 거절한다. fork 설치는 `capabilities.recall`과 gap 경고를 receipt·설치 결과에 남긴다.
+- 7–14일 실험 운영과 host별 inline/fork 비교 보고를 분리한다. 자식 inspection을 부모의 원문 이해로 세지 않고, 실제 native 입력·cache·총비용·지연·실패·gold 품질과 required/원문 계약 증거가 없는 host는 지원 기능으로 승격하지 않는다. 개발 태그 게시나 기간 경과 자체는 실측 합격이 아니다. 짝 비교에 `provider_route` 일치, arm 순서 교차, p95 표본 하한(20)을 요구한다. evaluation gateway의 fork 등록·완료 기록은 gateway lock 아래에서 수행한다.
+- OMP의 입력·명시 capture가 실행 중 submission을 교체하거나 압축 callback이 그 submission을 지우던 lifecycle을 수정한다. preparation만 새 submission을 승격하고 capture identity·queued 입력 연결을 분리한다. 같은 문장의 입력이 대기 중이라 연결이 모호하면 submission을 바꾸지 않고 capture 연결을 남기지 않는다. session 교체·branch의 무효화, 실제 scope 실패와 strict 보호는 유지한다. preparation 없는 advisor도 부모 상태를 빌리지 않으며 가능한 required-context 조회·본문 전달은 시도한다.
+- OMP callback의 queue·subprocess 전체 기한, bounded state-lock 대기, 남은 event 기한으로 제한한 service 요청, owned process 종료를 적용한다. `/memory-status`에 agent/session별 phase incident·code별 횟수·최근 실패·회복을 남긴다. 같은 code의 반복 warning은 집계하고 새 code는 처음 한 번 알린다. health 응답 형식도 검사해 잘못된 응답을 회복으로 표시하지 않는다. required 본문·명시 capture 결과와 실제 오류는 숨기거나 성공으로 바꾸지 않는다.
+- OMP 행동 직전 required 규칙 본문이 `ctx.ui.notify`(사용자 화면 전용)로만 나가 모델 입력에 들어가지 않던 문제를 고쳤다. 이제 `tool_call` handler가 `additionalContext`를 반환하며, host 계약상 그 도구 결과 뒤 다음 모델 요청에 들어간다. 사용자 화면 표시는 유지한다.
+- OMP hashline `edit`의 감싸지 않은 native 형식(`[경로#TAG]`+연산)을 `HOST_FOOTPRINT_UNKNOWN`으로 잘못 분류하던 문제를 고쳤다. `*** Begin Patch`로 시작했지만 끝나지 않은 입력 등 실제로 불완전한 입력은 계속 unknown이다.
+- OMP 확장은 backend가 capture 가능으로 받아들인 입력에만 연결용 digest를 만든다. secret으로 거절된 입력은 확장 메모리에서도 hash·보관하지 않는다. secret으로 거절된 preparation은 진행 중 submission·generation을 바꾸지 않는다. `agent_end`는 `willContinue:true`(또는 `isTerminal:false`)면 진행 중으로 본다. 같은 세션 재시작·전환에서는 하위 agent를 포함한 모든 agent의 lifecycle을 초기화한다. 짝 비교는 frozen attempt·generation 재사용을 `DUPLICATE_EXECUTION_EVIDENCE`로, pipeline 사용량이 부모(+포함된 자식)보다 작으면 `USAGE_ACCOUNTING_INCONSISTENT`로 거절하고 고유 실행만 지연 표본으로 센다. fork 증거 디렉터리의 project 밖 검사는 대소문자·firmlink 다른 표기에도 파일 identity로 비교한다.
+- `memory_context` MCP 설명에 fork 안내를 넣으면 최대 escaped JSON-RPC ID의 `tools/list` 응답이 16KiB를 넘었다. 전역 설명은 원래대로 두고 fork 안내는 opt-in skill에만 둔다.
+- 작업 checkout에서 만든 sdist가 추적하지 않는 로컬 파일(검증용 DB·credential·trace)을 포함할 수 있었다. sdist를 추적 대상 최상위 항목으로 제한했다. 새 확장과 skill은 owned 재설치·host reload가 필요하다.
+
 ### advisory 설치의 project 밖 행동 경고 제거
 
 - non-strict(OMP·Codex·Claude advisory) 설치에서 project 밖 행동·세션에 `HOST_SCOPE_UNRESOLVED` 경고를 내지 않는다. 대상이 모두 등록 project 밖인 행동(다른 worktree·`/tmp`·시스템 설정 등)과 cwd가 project 밖인 세션의 event는 `outside_advisory_coverage`로 끝나며 capture·context 전달·상태 기록을 하지 않는다. 그 세션의 명시 OMP capture 명령은 `not_captured` info를 표시한다. 일부 대상만 project 안인 OMP hashline edit은 그 대상의 규칙만 전달하고, 대소문자·Unicode 정규화만 다른 project 경로는 안으로 판정한다. cwd가 없거나 삭제된 event와 strict(Claude)는 기존처럼 거절한다.

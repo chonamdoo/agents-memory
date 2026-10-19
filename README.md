@@ -137,7 +137,7 @@ uv run agents-memory --config "$CONFIG" --token-file "$OPERATOR_TOKEN_FILE" proj
 
 ### 판단 provider: agent 또는 Jev
 
-captured 원문을 기억할지 누가 판단할지 고른다. relevance(`memory_context` 두 번째 호출)는 provider와 무관하게 항상 그 기억을 쓰는 coding agent가 판단한다.
+captured 원문을 기억할지 누가 판단할지 고른다. relevance(`memory_context` 두 번째 호출)의 기본·지원 계약은 provider와 무관하게 그 기억을 쓰는 coding agent의 inline 판단이다. 아래의 **실험용 fork 위임**은 별도 host opt-in이며, Jev 사용·미사용 모두에 적용된다. host별 측정을 통과하기 전에는 이 실험을 일반 지원 계약으로 승격하지 않는다.
 
 | provider | 판단 주체 | 외부 전송 | 사용 조건 |
 |---|---|---|---|
@@ -238,6 +238,30 @@ expansions JSON은 최대8개, 각512 UTF-8 bytes/합계4096 bytes의 문자열 
 
 Raw note·feedback reason·memory echo는 미판단 coverage에 포함하지 않는다. 이 로그만 남았다는 이유로 recall을 계속 `partial`로 표시하지 않지만, 미해결 human·일반 assistant·tool·document 원문과 불완전 capture coverage는 그대로 `partial`에 반영한다.
 
+### 실험용 fork recall — 1–2주 운영
+
+[#17](https://github.com/chonamdoo/agents-memory/issues/17)의 개발 실험이다. 기본 `inline`은 유지한다. Claude Code·Codex에서만 `host-install --recall-mode fork-experimental --recall-trial-days 14`로 선택하며 기간은 7–14일이다. OMP는 전체 대화 상태를 상속하는 fork가 없어 제외한다. `--prompt-recall`은 별도 설정이며 이 실험 때문에 켜지지 않는다. 작업·실패 테스트가 정해진 뒤 설치된 `agents-memory-recall` skill을 호출한다. 기존 설치는 owned uninstall/reinstall 절차로 변경하며 receipt·native trust를 직접 고치지 않는다.
+
+1. 부모가 원래 요청·작업 identity를 보존하고 첫 `memory_context`를 직접 호출한다. required 규칙은 자식 성공 여부와 관계없이 부모에게 전달된다.
+2. 전체 대화 상태를 상속한 fork 자식이 전체 manifest의 원문과 continuation을 `memory_inspect`로 확인하고 관련성을 판단한다.
+3. 자식은 `{admission_id,status,relevance:[{claim_id,relevant,reason}]}`만 반환한다. 원문·발췌·요약은 반환하지 않는다.
+4. 부모는 자식의 종료를 기다리고 `host-recall-validate`로 원래 manifest와 admission·ID 집합·개수·완료 상태, 원래/현재 요청·작업 identity를 검증한다. 부모가 실제 작업 맥락이 그대로인지도 확인한다.
+5. 부모가 검증된 인자로 두 번째 `memory_context`를 직접 호출한다. 최종 본문·원문 span·revision은 서버가 compose하며 권한·철회·health·stale을 다시 검사한다.
+
+이는 **자식에게 판단을 위임**하는 방식이다. 부모의 반환 검증을 부모 자신의 원문 이해나 의미 재판단으로 계산하지 않는다. 자식이 관련 claim을 irrelevant로 잘못 판단한 false negative는 서버의 형식 검증으로 잡히지 않는다. 부분 반환·누락·중복·다른 admission·취소·만료·stale·fork/MCP 부재는 미완료다. inline·다른 판단자·fresh 자식으로 자동 fallback하지 않는다. 작업이 바뀌면 기존 admission을 제출하지 않고 새 작업 기준의 recall을 한다.
+
+부모는 호출마다 project 밖에 owner 전용(0700) 임시 디렉터리(`mktemp -d "${TMPDIR:-/tmp}/agents-memory-recall.XXXXXXXX"`)를 만들고 요청·후보·자식 반환·현재 요청 네 파일을 그 안에만 저장한다. 두 번째 호출 뒤와 조기 종료(빈 manifest, fork·검증 실패, 취소) 때 디렉터리를 지운다. validator는 project 안, 다른 사용자가 접근 가능한 디렉터리, symlink 디렉터리·파일, hard link 파일의 증거를 `PATH_DENIED`로 거절한다. 후보 미리보기가 project tree에 남거나 동시 세션이 같은 파일을 덮어쓰지 않게 하기 위한 것이다.
+
+fork 설치의 receipt와 설치 결과에는 `capabilities.recall`(mode·skill 경로·trial 기간·자동 승격 없음·증거 위치·자동 handoff 범위)과 알려진 gap(자식 inspect-only는 지시이며 강제되지 않음, 자식 MCP 가용성 미검증, 실패 시 fallback 없음)이 함께 기록된다. fork 설치에는 행동 직전 자동 회상이 없으며 명시 요청은 `HOST_ACTION_RECALL_UNSUPPORTED`다. `--prompt-recall`을 함께 켜면 admission·후보 ID 없이 "설치된 agents-memory-recall workflow를 실행하라"는 안내(`recall:"workflow_required"`, 후보 수)만 넣어 부모가 inline으로 판단하지 않게 한다. strict Claude는 fork workflow에 필요한 Agent·Bash를 거절하므로 `--strict --recall-mode fork-experimental`은 쓰기 전에 `HOST_RECALL_UNSUPPORTED`다. 이 branch의 이전 fork receipt 형식은 게시된 적이 없으며 새 계약에서 `HOST_RECEIPT_INVALID`다. inline 설치 receipt는 자동 회상 capability 외에 바뀌지 않는다.
+
+- **Claude Code:** `Agent`의 `subagent_type="fork"`가 전체 대화를 상속한다. skill의 `context: fork`는 fresh context이므로 이 용도가 아니다. interactive fork는 background로 실행되고 완료 메시지를 기다려야 한다. `-p`/SDK는 기본 off이므로 실행자가 명시적으로 `CLAUDE_CODE_FORK_SUBAGENT=1`을 설정해야 한다. fork는 부모 system prompt·tools·model을 상속한다. 이 adapter의 inspect-only 제한은 **지시**이며 강제된 sandbox/tool allowlist라고 보장하지 않는다. [공식 fork 계약](https://code.claude.com/docs/en/sub-agents#fork-the-current-conversation).
+- **Codex:** native schema가 `fork_context`를 제공하면 `spawn_agent(fork_context=true)`로 호출한다. 실제 Codex 0.163.0의 collaboration 경로에서는 `spawn_agent(fork_turns="all")`과 부모에 연결된 child session의 `forked_from_id`를 확인했다. host가 제공하는 **전체 대화 상속** 옵션만 사용하며 최신 turn만 전달하거나 fresh 자식을 쓰는 대체는 허용하지 않는다. 자식 모델·reasoning은 명시 spawn/config override가 없으면 부모를 상속하며 실제 override를 기록한다. 자식의 MCP 가용성도 확인하고, 없으면 미완료로 남긴다. inspect-only는 실제 제한을 확인하지 않은 한 지시다. [공식 subagent 설정](https://developers.openai.com/codex/multi-agent).
+
+기간은 관측 창이지 품질 합격이나 자동 정식 전환 조건이 아니다. `recall-trial-report --file "$TRIAL_JSON"`으로 host별 inline/fork 짝 비교를 집계한다. 최종 precision·recall과 false negative·조건/예외/상충 누락, 부모의 실제 native 입력 bytes/tokens, 1차/inspect/2차/자식 반환의 계층, 부모·자식·cache·총비용과 p50/p95 지연, stale·부분·취소, required·span/revision/재검사 증거를 보존한다. MCP payload bytes를 모델 입력량으로 바꾸어 세거나 부모 pipeline 총량에 자식 사용량을 중복 합산하지 않는다. 측정 불가·gold 부재는 unknown이며, 한 host의 결과로 다른 host를 통과시키지 않는다. 실제 7–14일 관측 완료와 host별 지원 판정은 개발 릴리스 게시와 별개다.
+
+각 run의 frozen identity와 host trial에는 `provider_route`(직접 provider endpoint 또는 중간 proxy의 identity)가 필수다. 한쪽 arm에만 proxy·압축 계층이 끼면 같은 조건의 짝으로 보지 않는다. 짝이 2개 이상인데 inline 먼저·fork 먼저가 모두 있지 않으면 `ARM_ORDER_NOT_COUNTERBALANCED`로 증거 미완료다. 짝마다 frozen `attempt_id`, run마다 parent·child generation이 달라야 하며 재사용하면 `DUPLICATE_EXECUTION_EVIDENCE`다. pipeline 사용량(token 4종·비용)이 부모(fork에서 포함한 자식 포함)보다 작으면 `USAGE_ACCOUNTING_INCONSISTENT`다. 지연 표본은 실제 고유 generation만 센다. p95는 단계별 표본 20개 미만이면 `null`·`insufficient_samples`로 남긴다.
+
+
 ## 기억 건강 관리
 
 네 경로와 기존 API/CLI 연결의 engineering 구현은 source·설치 wheel health smoke와 전체 평가 smoke를 통과했다. health는 기본 비활성이며 operator의 명시 정책·workspace 등록과 현재 권한이 필요하다. 평가 smoke의 native peer는 합성 engineering fixture이며 실제 host·model 검증이 아니다. 이 CI 증거는 새 whole-source 공식 review/QA의 완료 주장이 아니다. 정확한 source·실패 이력·검증 범위는 [검증 기록](docs/verification.ko.md), source별 독립 review/QA 판정은 [PR9](https://github.com/chonamdoo/agents-memory/pull/9)을 따른다.
@@ -281,7 +305,16 @@ worktree를 옮기거나 삭제할 때는 소비 프로세스를 먼저 중지�
 
 host-install에 사용한 package/venv도 삭제될 임시 checkout 밖에 유지해야 한다. executable·project·endpoint·token이 바뀌면 설치를 덮어쓰지 말고 owned uninstall/reinstall을 수행한다. root rulebook이나 전체 memory catalog를 설치에 포함하지 않는다.
 
-설치만으로 매 프롬프트마다 의미 검색하거나 기억 본문을 자동 주입하지 않는다. 필요한 순간에 네 MCP 도구 또는 workflow에서 호출한다. `--prompt-recall` opt-in도 후보를 relevance 판단 없이 optional context로 승격하지 않는다. prompt 본문이 없거나 허용 크기를 넘으면 대체 검색어로 corpus를 주입하지 않는다. capture/lifecycle와 protected-action의 required-rule 검사는 이 선택과 별개다.
+설치만으로 기억 본문을 자동 주입하지 않는다. 판단하지 않은 후보의 본문·미리보기도 자동으로 넣지 않는다.
+
+**자동 회상(advisory 기본):** Claude advisory·OMP 설치는 project 안 파일의 read·write·edit 때 hook이 1차 `memory_context` 조회를 대신 실행한다. 조회어는 대상 파일 이름에서 결정적으로 만들고, 후보가 있으면 `admission_id`, 반복해야 할 정확한 request, **전체 후보 ID 목록**을 모델이 보는 context에 넣는다. agent는 각 후보를 `memory_inspect`로 읽고 같은 request와 admission으로 모든 후보의 relevance를 두 번째 `memory_context`에 제출한다. 관련 없는 경우도 모두 irrelevant로 제출한다. 사용자가 기억 사용을 지시할 필요는 없지만 판단 계약은 그대로이며 판단 제출 자체를 강제하지는 않는다.
+
+- host 계약상 행동 직전 hook이 넣은 내용은 그 도구가 실행된 뒤의 다음 모델 요청에 들어간다. read는 파일 내용과 함께 후보를 받고, OMP hashline edit처럼 먼저 읽는 흐름은 첫 수정 전에 받는다. 읽지 않고 바로 쓰는 write는 쓴 뒤에 받는다. 행동을 막지 않는다.
+- 같은 submission에서 같은 경로 집합은 다시 조회하지 않으며 새 submission·lifecycle 경계에서 초기화한다. 조회 실패는 `recall.state="failed"`로 기록하고 required 규칙 전달과 행동 결과를 바꾸지 않는다. 전체 ID 목록이 예산을 넘으면 일부 ID 대신 `HOST_RELEVANCE_MANIFEST_OVERFLOW`와 직접 호출 안내를 넣는다.
+- 제공한 admission 수와 최근 ID는 hook 결과와 OMP `/memory-status`에 남는다. 서버는 admission별 두 번째 호출 여부를 기록하지 않고 현재 이를 측정하는 경로도 없으므로 미판정 여부는 `unobserved`로 선언한다. 제공 수를 판정 완료로 해석하지 않는다. lifecycle이 hook 실행 중 초기화되면 그 결과는 모델에 전달하지 않는다.
+- Codex native 도구는 경로 목록을 안전하게 제공하지 않아(`apply_patch`는 patch 전체, read는 shell) 행동 직전 회상이 없다. Codex는 `--prompt-recall`을 켠 경우에만 프롬프트 시점에 같은 handoff를 받는다. strict 설치와 fork-experimental 설치에는 자동 회상이 없으며 명시 요청은 `HOST_ACTION_RECALL_UNSUPPORTED`다. 그 밖의 advisory 설치는 `host-install --no-action-recall`로 끌 수 있다. receipt `capabilities.action_recall`에 trigger·전달 시점·중복 제거를 기록한다.
+- OMP는 `agent_end`로 submission 종료를 기록한다. `willContinue:true`(또는 `isTerminal:false`)면 진행 중이다. 종료 뒤 같은 문장(예: "Continue.")을 다시 보내면 새 submission으로 보고 capture 연결과 자동 회상을 다시 수행한다. 진행 중 재진입과 secret으로 거절된 preparation은 같은 submission이다. 같은 세션 재시작·전환은 하위 agent를 포함해 새 preparation을 요구한다.
+- `--prompt-recall`(보조, opt-in)은 프롬프트 문장으로 같은 handoff를 만든다. prompt 본문이 없거나 허용 크기를 넘으면 대체 검색어로 corpus를 조회하지 않는다. capture/lifecycle와 protected-action의 required-rule 검사는 이 선택과 별개다.
 
 native workspace/MCP/hook 승인은 별도다. installer는 trust를 위조하지 않는다. Claude는 native MCP 승인이 필요할 수 있고 Codex project 설정은 trusted project에서만 로드된다. Codex noninteractive `exec`의 approval=never가 MCP 호출을 차단할 수 있다. 사용자가 검토한 선택 MCP 도구에만 per-tool `approval_mode="approve"`를 적용할 수 있으며 전체 permissions/hook trust를 bypass하지 않는다. `memory_context`는 durable admission을 만들므로 단순 무상태 read로 취급하지 않는다. [Codex 공식 MCP 설정](https://developers.openai.com/codex/mcp)을 확인한다.
 
@@ -294,13 +327,14 @@ generic MCP는 자동 호출/자연어 준수를 강제하지 않는다. opt-in 
 이 코드들은 `agents-memory` 자동 hook의 진단이며 Agent Flow lifecycle의 성공·실패 판정과 별개다. 경고를 숨기거나 trust·guard·project root를 바꿔 해결하지 않는다.
 
 - `HOST_FOOTPRINT_UNKNOWN`: 도구의 전체 대상 경로를 안전하게 해석하지 못했다. 생성 OMP adapter는 hashline `edit`의 파일 header와 모든 `MV` 목적지를 최대64개 경로까지 해석하며 patch 본문은 hook에 보내지 않는다. 누락·잘못된 타입·빈 경로·잘못된 문법·초과 입력은 일부 경로만 채택하지 않고 unknown으로 남긴다.
-- OMP의 advisory `read`가 `skill://`, `issue://`, `pr://`, `xd://`, URL 등 `scheme://` 형식의 resource를 지정하거나, `write`가 `xd://` tool device를 지정하면 로컬 경로로 추정하지 않고 `outside_advisory_coverage`로 분류한다. OMP는 discoverable MCP 도구를 `write xd://<tool>`로 호출하며, agents-memory core 도구의 device(`xd://mcp__agents_memory_memory_context` 등 4개 정확 일치, scheme 대소문자 무시)는 Claude의 core MCP 호출과 같은 `delegated`다. `conflict://`·`vault://` 등 다른 scheme의 `write`는 native에서 project 파일을 바꿀 수 있으므로 계속 `HOST_FOOTPRINT_UNKNOWN`이다. read는 scheme 목록으로 예외 처리하지 않으며 selector와 공백·대괄호가 있는 native 파일명도 그대로 둔다. 이는 resource 해석 성공, 로컬 backing path 승인, required rule 충족이나 provider 소비의 증거가 아니다. native 도구의 실제 해석 오류는 native 도구가 처리한다. receipt·envelope·cwd 검증은 이 분류보다 먼저 수행하며 제어 문자·잘못된 percent encoding은 정상 resource로 채택하지 않는다. Claude non-strict의 `PreToolUse` matcher는 경로 도구만 대상으로 하고 Codex non-strict는 `PreToolUse`를 등록하지 않으므로 MCP 호출이 이 경고를 만들지 않는다. Claude strict에서는 core 도구만 `delegated`이고 다른 MCP 도구는 `HOST_FOOTPRINT_UNSUPPORTED`로 거절된다.
-- `HOST_SCOPE_UNRESOLVED`: strict(Claude) 설치에서 자동 hook이 등록 project 범위를 확인하지 못했거나 대상이 범위 밖이면 거절한다. advisory(non-strict: OMP·Codex·Claude advisory) 설치는 project 밖이라는 이유로 이 경고를 내지 않는다. 대상이 모두 project 밖인 행동(다른 worktree·`/tmp`·`Downloads` 등)과 cwd가 project 밖인 세션의 event는 `outside_advisory_coverage`로 끝나며 capture·context 전달·상태 기록을 하지 않는다. 그 세션에서 직접 실행한 OMP `/memory-finding`·`/memory-correction`은 저장되지 않았다는 info 알림(`not_captured`)을 표시한다. 일부 대상만 project 안이면 그 대상의 규칙만 전달한다. 대소문자·Unicode 정규화만 다른 경로는 같은 project 디렉터리로 판정한다. cwd가 없거나 삭제된 event는 envelope 이상이므로 계속 이 경고를 낸다. 명시 MCP의 credential/binding 권한과 자동 hook의 경로 검사는 별개다.
+- OMP의 advisory `read`가 `skill://`, `issue://`, `pr://`, `xd://`, URL 등 `scheme://` 형식의 resource를 지정하거나, `write`가 `xd://` tool device를 지정하면 로컬 경로로 추정하지 않고 `outside_advisory_coverage`로 분류한다. OMP는 discoverable MCP 도구를 `write xd://<tool>`로 호출하며, agents-memory core 도구의 device(`xd://mcp__agents_memory_memory_context` 등 4개 정확 일치, scheme 대소문자 무시)는 Claude의 core MCP 호출과 같은 `delegated`다. `conflict://`·`vault://` 등 다른 scheme의 `write`는 native에서 project 파일을 바꿀 수 있으므로 계속 `HOST_FOOTPRINT_UNKNOWN`이다. read는 scheme 목록으로 예외 처리하지 않으며 selector와 공백·대괄호가 있는 native 파일명도 그대로 둔다. 이는 resource 해석 성공, 로컬 backing path 승인, required rule 충족이나 provider 소비의 증거가 아니다. native 도구의 실제 해석 오류는 native 도구가 처리한다. receipt·envelope 검증은 이 분류보다 먼저 수행하며 제어 문자·잘못된 percent encoding은 정상 resource로 채택하지 않는다. 비로컬 resource·tool device 호출은 로컬 cwd를 사용하지 않으므로 cwd 누락·삭제만으로 `HOST_SCOPE_UNRESOLVED`를 내지 않는다. Claude non-strict의 `PreToolUse` matcher는 경로 도구만 대상으로 하고 Codex non-strict는 `PreToolUse`를 등록하지 않으므로 MCP 호출이 이 경고를 만들지 않는다. Claude strict에서는 core 도구만 `delegated`이고 다른 MCP 도구는 `HOST_FOOTPRINT_UNSUPPORTED`로 거절된다.
+- `HOST_SCOPE_UNRESOLVED`: strict(Claude) 설치에서 자동 hook이 등록 project 범위를 확인하지 못했거나 대상이 범위 밖이면 거절한다. advisory(non-strict: OMP·Codex·Claude advisory) 설치는 project 밖이라는 이유로 이 경고를 내지 않는다. 대상이 모두 project 밖인 행동(다른 worktree·`/tmp`·`Downloads` 등)과 cwd가 project 밖인 세션의 event는 `outside_advisory_coverage`로 끝나며 capture·context 전달·상태 기록을 하지 않는다. 그 세션에서 직접 실행한 OMP `/memory-finding`·`/memory-correction`은 저장되지 않았다는 info 알림(`not_captured`)을 표시한다. 일부 대상만 project 안이면 그 대상의 규칙만 전달한다. 대소문자·Unicode 정규화만 다른 경로는 같은 project 디렉터리로 판정한다. 로컬 행동·capture·lifecycle event의 cwd가 없거나 삭제됐으면 envelope 이상이므로 계속 이 경고를 낸다. 명시 MCP의 credential/binding 권한과 자동 hook의 경로 검사는 별개다.
 - `HOST_CAPTURE_DEGRADED`: 현재 전송·대기·격리·gap 상태를 확인한다. 성공한 새 capture에 딸려 반환된 누적 spool 이력만으로 새 전송 실패를 선언하지 않지만, 그 이력과 실제 pending·quarantine·현재 실패는 삭제하거나 성공으로 바꾸지 않는다.
 - `HOST_RECEIPT_UNAVAILABLE`·`HOST_ENVELOPE_INVALID`: 설치 receipt 또는 실제 전달 envelope가 유효하지 않다. resource coverage 분류보다 먼저 검증하며 resource 주소나 반복 호출을 이유로 이 검사를 생략하지 않는다.
 - `HOST_LINEAGE_UNRESOLVED`·`HOST_STATE_INVALID`: 로컬 coverage 대상 행동의 agent lineage 또는 저장 상태가 유효하지 않다. `outside_advisory_coverage`인 resource read·tool device write·project 밖 행동에는 lineage·저장 상태 검사를 적용하지 않으며, 그 분류를 로컬 행동의 승인이나 상태 검증 성공으로 해석하지 않는다.
-- `HOST_GENERATION_UNOBSERVED`·`HOST_CONTEXT_STALE`·`HOST_PROVIDER_INPUT_UNOBSERVABLE`: 해당 로컬 행동의 generation·context가 없거나 오래됐거나 최종 provider input을 관측하지 못했다. 앞선 resource read·tool device write의 정상 coverage 분류가 후속 required-context 거절을 없애지 않는다.
-- `HOST_ADAPTER_UNAVAILABLE`·`HOST_RESPONSE_INVALID`·`HOST_RESPONSE_TOO_LARGE`: hook 실행·IPC 응답의 형식·크기를 확인한다. resource read·tool device write에도 동일한 응답 검사를 적용하며 독립된 실제 거절마다 알림을 유지한다.
+- `HOST_GENERATION_UNOBSERVED`·`HOST_CONTEXT_STALE`·`HOST_PROVIDER_INPUT_UNOBSERVABLE`: 해당 로컬 행동의 submission·context가 없거나 오래됐거나 최종 provider input을 관측하지 못했다. 앞선 resource read·tool device write의 정상 coverage 분류가 후속 required-context 거절을 없애지 않는다. OMP의 입력 capture와 명시 capture는 실행 중 submission을 교체하지 않으며, 압축은 제공된 context 증거만 무효화한다. 같은 문장의 입력이 대기 중이어서 submission 연결이 모호하면 추정하지 않고 capture 연결을 남기지 않는다. session 교체·branch는 새 preparation이 필요하다. native preparation이 없는 advisor는 부모 상태를 빌리지 않고 제한된 coverage를 남기되 가능한 required-context 조회·본문 전달을 계속 시도한다.
+- `HOST_ADAPTER_UNAVAILABLE`·`HOST_RESPONSE_INVALID`·`HOST_RESPONSE_TOO_LARGE`·`HOST_EVENT_DEADLINE`: hook 실행·IPC 응답·전체 event 기한을 확인한다. resource read·tool device write에도 동일한 응답 검사를 적용한다. 일반 callback은 대기와 subprocess 실행을 합쳐 26초, shutdown은 1.5초로 제한하며 종료한 callback의 owned subprocess를 남기지 않는다. 실패를 성공이나 빈 context로 바꾸지 않는다.
+- OMP는 agent/session별 phase incident를 code별로 집계한다. 활성 incident에서 같은 code가 반복되면 다시 warning을 찍지 않고, 새 code의 독립 거절은 처음 한 번 warning을 표시한다. 정상 결과로 회복하면 info를 한 번 표시하며 이후 같은 code가 다시 발생하면 다시 알린다. `/memory-status`에서 발생 횟수·code별 횟수·최근 실패와 회복 이력을 확인한다. required-rule 본문과 명시 capture 결과는 계속 표시한다. 이 이력은 로드된 확장의 수명 동안 유지되며 provider가 규칙을 소비했다는 증거는 아니다.
 
 소스 수정만으로 이미 설치되거나 로드된 확장이 바뀌지는 않는다. 승인된 전환 대상에서 기존 owned uninstall/reinstall·서비스 전환 절차와 host 재로딩을 따라야 한다. receipt/hash 수작업 수정이나 실행 중인 공유 세션 강제 종료는 전환 절차가 아니다.
 

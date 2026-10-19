@@ -17,6 +17,11 @@ from agents_memory.domain import ActiveRule, RuleScope, Selector
 PRIVATE_BODY = "synthetic_private_edit_body_not_for_hook_ipc"
 
 
+def covered_requests(paths):
+    """Required context first, then the default action recall for the same footprint."""
+    return [{"route": "/api/required-context", "paths": paths}, {"route": "/api/context", "paths": paths}]
+
+
 def run_scoped_tools(
     tmp_path, node_binary, receipt, project, tool_input, *, events=None, registrations=1, raw_override=None,
 ):
@@ -64,6 +69,8 @@ def run_scoped_tools(
                          "stamp": {"epoch": 1, "rules": [list(rule) for rule in result.rule_versions]}}
                 if route == "/api/required-context":
                     reply["required"] = bool(result.rule_versions)
+                else:
+                    reply.update(admission_id="admission-empty", candidate_manifest=[], judgment_required=False)
                 return reply
 
         hosts.LocalClient = Authority
@@ -99,11 +106,12 @@ def run_scoped_tools(
 
         const { default: extension } = await import(pathToFileURL(process.argv[2]).href);
         const handlers = new Map();
+        const commands = new Map();
         const notifications = [];
         const scenario = JSON.parse(readFileSync(process.argv[3], "utf8"));
         const api = {
           on: (name, handler) => handlers.set(name, [...(handlers.get(name) || []), handler]),
-          registerCommand: () => {},
+          registerCommand: (name, command) => commands.set(name, command),
         };
         for (let index = 0; index < scenario.registrations; index++) extension(api);
         const emit = async (name, event, context) => {
@@ -123,7 +131,11 @@ def run_scoped_tools(
           await emit("tool_call", event, { ...context, cwd: event.cwd || context.cwd });
           actions.push({ notifications: notifications.slice(before) });
         }
-        console.log(JSON.stringify({ notifications, actions, handlers: handlers.get("tool_call").length }));
+        let status;
+        await commands.get("memory-status").handler("", {
+          ...context, ui: { notify: (message) => { status = JSON.parse(message); } },
+        });
+        console.log(JSON.stringify({ notifications, actions, status, handlers: handlers.get("tool_call").length }));
     '''))
     result = subprocess.run(
         [node_binary, str(runner), str(extension), str(input_path)], cwd=project,
@@ -179,7 +191,29 @@ def test_generated_hashline_edit_delivers_only_in_project_conventions_without_sc
     assert "HOST_SCOPE_UNRESOLVED" not in visible
     assert "Unrelated convention must not be delivered." not in visible
     hook = next(entry for entry in outcome["hooks"] if entry["envelope"]["event"] == "tool_call")
-    assert hook["requests"] == [{"route": "/api/required-context", "paths": ["src/alpha.py"]}]
+    assert hook["requests"] == covered_requests(["src/alpha.py"])
+
+
+@pytest.mark.parametrize("patch,complete", (
+    ("[src/alpha.py#ABCD]\nPUT 1.=1:\n+" + PRIVATE_BODY + "\n", True),
+    ("[src/alpha.py#ABCD]\nPUT >$:\n+" + PRIVATE_BODY, True),
+    ("*** Begin Patch\n[src/alpha.py#ABCD]\nPUT 1.=1:\n+" + PRIVATE_BODY + "\n", False),
+), ids=("bare", "bare-without-final-newline", "unterminated-wrapper"))
+def test_generated_hashline_edit_accepts_the_native_bare_form_only_when_complete(
+    tmp_path, node_binary, installation, patch, complete,
+):
+    project, _, _, _, install = installation
+    outcome, wire = run_scoped_tools(tmp_path, node_binary, install("omp"), project, {"input": patch})
+    visible = "\n".join(outcome["notifications"])
+    hook = next(entry for entry in outcome["hooks"] if entry["envelope"]["event"] == "tool_call")
+    if complete:
+        assert "Retain the alpha invariant." in visible
+        assert hook["requests"] == covered_requests(["src/alpha.py"])
+        assert hook["result"]["code"] != "HOST_FOOTPRINT_UNKNOWN"
+    else:
+        assert hook["result"]["code"] == "HOST_FOOTPRINT_UNKNOWN"
+        assert hook["requests"] == []
+    assert PRIVATE_BODY.encode() not in wire
 
 
 def test_generated_hashline_edit_never_infers_scope_from_a_malformed_patch(tmp_path, node_binary, installation):
@@ -187,8 +221,10 @@ def test_generated_hashline_edit_never_infers_scope_from_a_malformed_patch(tmp_p
     tool_input = {"input": "not a complete native patch " + PRIVATE_BODY, "path": "src/alpha.py"}
     outcome, wire = run_scoped_tools(tmp_path, node_binary, install("omp"), project, tool_input)
     visible = "\n".join(outcome["notifications"])
-    assert visible in {"HOST_FOOTPRINT_UNKNOWN", "agents-memory: HOST_FOOTPRINT_UNKNOWN"}
     assert "Retain the alpha invariant." not in visible
+    hook = next(entry for entry in outcome["hooks"] if entry["envelope"]["event"] == "tool_call")
+    assert hook["result"]["code"] == "HOST_FOOTPRINT_UNKNOWN"
+    assert hook["requests"] == []
     assert PRIVATE_BODY.encode() not in wire
 
 
@@ -206,7 +242,9 @@ def test_generated_hashline_edit_never_truncates_its_complete_path_boundary(
         assert "Retain the alpha invariant." in visible
         assert "HOST_FOOTPRINT_UNKNOWN" not in visible
     else:
-        assert visible == "HOST_FOOTPRINT_UNKNOWN"
+        hook = next(entry for entry in outcome["hooks"] if entry["envelope"]["event"] == "tool_call")
+        assert hook["result"]["code"] == "HOST_FOOTPRINT_UNKNOWN"
+        assert hook["requests"] == []
         assert "Retain the alpha invariant." not in visible
 
 
@@ -269,7 +307,9 @@ def test_malformed_resources_and_non_device_uri_writes_remain_visible_refusals(t
         assert entry["result"]["code"] == "HOST_FOOTPRINT_UNKNOWN"
         assert entry["result"]["state"] == "degraded"
         assert entry["requests"] == []
-    assert [action["notifications"] for action in outcome["actions"]] == [["HOST_FOOTPRINT_UNKNOWN"]] * len(events)
+    incident = outcome["status"]["incidents"]["action"]
+    assert incident["active"] is True
+    assert incident["codes"] == {"HOST_FOOTPRINT_UNKNOWN": len(events)}
 
 
 @pytest.mark.parametrize("failure,code", (
@@ -304,7 +344,9 @@ def test_resource_addressing_never_skips_prior_hook_validation(
         assert entry["result"]["code"] == code
         assert entry["result"]["state"] not in {"outside_advisory_coverage", "delegated"}
         assert entry["requests"] == []
-    assert [action["notifications"] for action in outcome["actions"]] == [[code]] * len(events)
+    incident = outcome["status"]["incidents"]["action"]
+    assert incident["active"] is True
+    assert incident["codes"] == {code: len(events)}
 
 
 def test_resource_reads_never_hide_local_context_or_subsequent_real_refusals(
@@ -329,12 +371,16 @@ def test_resource_reads_never_hide_local_context_or_subsequent_real_refusals(
         "ok", "degraded", "outside_advisory_coverage", "degraded", "outside_advisory_coverage",
         "outside_advisory_coverage",
     ]
-    assert hooks[0]["requests"] == [{"route": "/api/required-context", "paths": ["src/plain.py"]}]
+    assert hooks[0]["requests"] == covered_requests(["src/plain.py"])
     assert outcome["actions"][0]["notifications"] == []
     assert hooks[1]["result"]["code"] == "HOST_PROVIDER_INPUT_UNOBSERVABLE"
     assert "Retain the alpha invariant." in "\n".join(outcome["actions"][1]["notifications"])
     assert outcome["actions"][2]["notifications"] == []
-    assert outcome["actions"][3]["notifications"] == ["HOST_FOOTPRINT_UNKNOWN"]
+    assert hooks[3]["result"]["code"] == "HOST_FOOTPRINT_UNKNOWN"
+    assert "HOST_FOOTPRINT_UNKNOWN" in "\n".join(outcome["actions"][3]["notifications"])
+    incident = outcome["status"]["incidents"]["action"]
+    assert incident["codes"] == {"HOST_PROVIDER_INPUT_UNOBSERVABLE": 1, "HOST_FOOTPRINT_UNKNOWN": 1}
+    assert incident["lastFailure"]["code"] == "HOST_FOOTPRINT_UNKNOWN"
     assert outcome["actions"][4]["notifications"] == []
     assert outcome["actions"][5]["notifications"] == []
     assert hooks[5]["requests"] == []
@@ -368,7 +414,7 @@ def test_core_tool_devices_delegate_without_hiding_other_writes(tmp_path, node_b
     ]
     assert all(entry["requests"] == [] for entry in hooks[:covered])
     assert [action["notifications"] for action in outcome["actions"][:covered]] == [[]] * covered
-    assert hooks[covered]["requests"] == [{"route": "/api/required-context", "paths": ["src/alpha.py"]}]
+    assert hooks[covered]["requests"] == covered_requests(["src/alpha.py"])
     assert "Retain the alpha invariant." in "\n".join(outcome["actions"][covered]["notifications"])
     assert outcome["actions"][covered + 1]["notifications"] == []
     assert hooks[covered + 1]["requests"] == []
