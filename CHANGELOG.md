@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### CI 설치 wheel consumer 시간 예산
+
+- 설치 wheel consumer 제한을 300초에서 600초로 올렸다. 약 900개 사례를 새 process로 다시 실행하는 현재 subset이 정상 runner에서도 290–305초가 걸려 main CI(`6ab6118`, run 39209425762)가 58% 지점에서 timeout으로 실패했다. lint 120초·build 300초·source shard 600초와 job 15분 제한, timeout을 실패로 집계하는 aggregate는 그대로다.
+
 ### OMP MCP tool device 호출 경고 분류
 
 - OMP가 discoverable MCP 도구를 `write xd://<tool>`로 호출할 때마다 `HOST_FOOTPRINT_UNKNOWN` 경고가 뜨던 문제를 고쳤다([#13](https://github.com/chonamdoo/agents-memory/issues/13)). agents-memory core 도구 4개의 정확한 device 경로는 `delegated`, 그 외 `xd://` device `write`는 resource `read`와 같은 `outside_advisory_coverage`로 분류한다. `conflict://`·`vault://` 등 project 파일을 바꿀 수 있는 다른 scheme의 `write`, 로컬 경로 `write`의 footprint·required-context·범위 검사와 잘못된 경로의 `HOST_FOOTPRINT_UNKNOWN`은 유지한다. Claude·Codex non-strict는 MCP 호출을 hook으로 보내지 않아 같은 경고가 없음을 확인했다. 생성 확장(`omp.ts`)은 바뀌지 않으며 receipt가 가리키는 설치본의 패키지를 갱신하면 적용된다.

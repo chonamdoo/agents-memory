@@ -138,9 +138,10 @@ def main() -> int:
             ["uv", "run", "--no-sync", "python", ".github/ci/comment-check.py",
              "--result-dir", str(args.result_dir)], 120)
         result["checks"]["build"] = check(["uv", "build"], 300)
+        # The installed consumer re-runs ~900 cases in fresh processes; 300s left no runner headroom.
         result["checks"]["wheel-consumer"] = check(
             ["uv", "run", "--no-sync", "python", ".github/ci/wheel-consumer.py",
-             "--result-dir", str(args.result_dir), *selected_arguments], 300)
+             "--result-dir", str(args.result_dir), *selected_arguments], 600)
         result["source_after"] = helpers["source_digest"]()
         result["complete"] = before == result["source_after"] and all(
             outcome["exit_code"] == 0 and not outcome.get("timeout") and not outcome.get("error")
