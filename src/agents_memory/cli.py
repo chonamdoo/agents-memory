@@ -342,6 +342,8 @@ async def _install_remote_host(args, settings: RemoteClientSettings) -> dict:
         install_host, settings, project, args.binding, args.host,
         args.agent_token_file.resolve(), args.producer_token_file.resolve(),
         strict=args.strict, prompt_recall=args.prompt_recall,
+        recall_mode=args.recall_mode, recall_trial_days=args.recall_trial_days,
+        action_recall=args.action_recall,
     )
 
 
@@ -440,6 +442,27 @@ async def execute(args) -> dict | None:
         native_observation = await asyncio.to_thread(native_memory_status, args.project) if args.project is not None else {
             "state": "project_not_selected", "next": "Use doctor --project or native-status with an explicit project; native memory is not disabled automatically",
         }
+    if args.command == "host-recall-validate":
+        from .fork_recall import read_recall_document, validate_fork_recall
+        from .hosts import load_fork_recall_receipt
+
+        receipt = load_fork_recall_receipt(args.receipt)
+        project_root = Path(receipt["project_root"])
+        request = read_recall_document(args.request_file, project_root=project_root)
+        if request.get("binding_id") not in (None, receipt["binding_id"]) or request.get("host") not in (None, receipt["host"]):
+            raise DomainError("HOST_SCOPE_DENIED", "The frozen context request belongs to another installed binding or host", status=403)
+        current, candidates, result = (
+            read_recall_document(path, project_root=project_root)
+            for path in (args.current_request_file, args.candidate_file, args.result_file)
+        )
+        return validate_fork_recall(
+            request, current, candidates, result,
+            task_id=args.task_id, current_task_id=args.current_task_id,
+        )
+    if args.command == "recall-trial-report":
+        from .recall_evaluation import report_trial
+
+        return report_trial(json_file(args.file))
     if args.command == "host-hook":
         from .hosts import HOST_INPUT_BYTES, handle_hook_input
 
@@ -777,7 +800,8 @@ async def execute(args) -> dict | None:
             return await asyncio.to_thread(
                 install_host, settings, project_root, args.binding, args.host,
                 args.agent_token_file.resolve(), args.producer_token_file.resolve(), strict=args.strict,
-                prompt_recall=args.prompt_recall,
+                prompt_recall=args.prompt_recall, recall_mode=args.recall_mode,
+                recall_trial_days=args.recall_trial_days, action_recall=args.action_recall,
             )
         if args.command == "project":
             if args.project_action == "add":
@@ -964,6 +988,16 @@ def parser() -> argparse.ArgumentParser:
     hook.add_argument("--envelope", action="store_true")
     relay = commands.add_parser("host-stdio")
     relay.add_argument("--receipt", type=Path, required=True)
+    recall = commands.add_parser("host-recall-validate", help="Validate an opted-in native fork return locally; emit only second memory_context arguments")
+    recall.add_argument("--receipt", type=Path, required=True)
+    recall.add_argument("--request-file", type=Path, required=True)
+    recall.add_argument("--current-request-file", type=Path, required=True)
+    recall.add_argument("--candidate-file", type=Path, required=True)
+    recall.add_argument("--result-file", type=Path, required=True)
+    recall.add_argument("--task-id", required=True)
+    recall.add_argument("--current-task-id", required=True)
+    trial = commands.add_parser("recall-trial-report", help="Report collected fork recall evidence locally; never promote based on elapsed time")
+    trial.add_argument("--file", type=Path, required=True)
     native = commands.add_parser("native-status", help="Read native activation and memory metadata; never change trust/settings or connect to the memory DB")
     native.add_argument("--project", type=Path, required=True)
     native.add_argument("--host", choices=("claude", "codex", "omp"), required=True)
@@ -976,6 +1010,12 @@ def parser() -> argparse.ArgumentParser:
     install.add_argument("--producer-token-file", type=Path, required=True)
     install.add_argument("--strict", action="store_true", help="Require supported native protection; Codex and OMP refuse installation, never downgrade")
     install.add_argument("--prompt-recall", action="store_true", help="Opt into bounded candidate retrieval before each native prompt")
+    install.add_argument("--no-action-recall", dest="action_recall", action="store_const", const=False, default=None,
+                         help="Opt out of the advisory default that hands off candidates for in-project read/write/edit footprints; strict and fork-experimental installations never enable it")
+    install.add_argument("--recall-mode", choices=("inline", "fork-experimental"), default="inline",
+                         help="Opt into native conversation-fork relevance judgment for Claude/Codex only; inline remains default")
+    install.add_argument("--recall-trial-days", type=int, choices=range(7, 15), default=14,
+                         help="Experimental observation window (7–14 days); never changes recall mode or support automatically")
     install.add_argument("--ack-remote-storage", action="store_true", help="Approve native capture storage at the explicit remote authority; does not enable Jev")
     uninstall = commands.add_parser("host-uninstall")
     uninstall.add_argument("--project", type=Path, required=True)

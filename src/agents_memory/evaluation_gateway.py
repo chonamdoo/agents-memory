@@ -9,7 +9,8 @@ import sys
 import threading
 import time
 import urllib.error
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from http.client import HTTPException
 from pathlib import Path
@@ -236,6 +237,15 @@ class _ObservedRelay(StdioRelay):
             raise DomainError("RPC_RESPONSE_INVALID", "The upstream result is invalid", effect=EffectState.UNKNOWN) from None
 
 
+@contextmanager
+def _locked(*gateways: EvaluationGateway) -> Iterator[None]:
+    # Address order gives every caller the same acquisition order across gateway pairs.
+    with ExitStack() as stack:
+        for gateway in sorted(set(gateways), key=id):
+            stack.enter_context(gateway._lock)
+        yield
+
+
 class EvaluationGateway:
     def __init__(
         self, scope: GatewayScope, *, agent: GatewayUpstream,
@@ -273,6 +283,12 @@ class EvaluationGateway:
         self._selection_claims: dict[str, set[str]] = {}
         self._inspected_selections: set[str] = set()
         self._inspected_claims: set[str] = set()
+        self._delivered_inspections: set[str] = set()
+        self._delivered_admissions: set[str] = set()
+        self._admission_payloads: dict[str, dict] = {}
+        self._fork_child: dict | None = None
+        self._fork_links: dict[str, dict] = {}
+        self._fork_admissions: set[str] = set()
         self._admissions: dict[str, tuple[dict, set[str]]] = {}
         self._captures: list[dict] = []
         self._capture_http_status: int | None = None
@@ -467,6 +483,15 @@ class EvaluationGateway:
             if not item["is_error"]:
                 if item["stamp"] is not None:
                     self._required_stamps.append(item["stamp"])
+                if item["name"] == "memory_inspect" and channel == "stdio":
+                    ref = item["arguments"].get("ref")
+                    if ref in self._inspected_claims and ref not in self._record_windows:
+                        self._delivered_inspections.add(ref)
+                if (item["name"] == "memory_context" and channel == "stdio"
+                        and not item["arguments"].get("admission_id")):
+                    admission = (item["payload"] or {}).get("admission_id")
+                    if admission in self._admissions:
+                        self._delivered_admissions.add(admission)
                 if item["final_read"] is not None:
                     self._final_reads.append(item["final_read"])
             if channel == "stdio":
@@ -588,6 +613,10 @@ class EvaluationGateway:
         original_arguments = arguments
         context_identity = None
         try:
+            if self._fork_child is not None and name != "memory_inspect":
+                self._deny("FORK_CHILD_TOOL_DENIED")
+            if self._fork_child is not None and self._fork_child.get("completed"):
+                self._deny("FORK_CHILD_ALREADY_COMPLETED")
             if name not in self._schemas:
                 self._deny("OPTIONAL_TOOL_DENIED" if self.scope.mode != "memory_on" else "TOOL_SCOPE_DENIED")
             if name == "memory_required_context":
@@ -602,7 +631,7 @@ class EvaluationGateway:
                 response = {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
                 return self._result_ready(name, original_arguments, response, downstream_request_id,
                                           payload=result, stamp=stamp)
-            if not self._required_stamps:
+            if not self._required_stamps and self._fork_child is None:
                 self._deny("REQUIRED_CONTEXT_READ_REQUIRED")
             if arguments.get("binding_id", self.scope.binding_id) != self.scope.binding_id:
                 self._deny("BINDING_SCOPE_DENIED")
@@ -617,6 +646,12 @@ class EvaluationGateway:
                 context_identity = {
                     key: value for key, value in normalized.items() if key not in {"admission_id", "relevance"}
                 }
+                admission = normalized.get("admission_id")
+                if admission in self._fork_admissions:
+                    delegated = self._fork_links.get(admission)
+                    if (delegated is None or delegated["request"] != context_identity
+                            or delegated["relevance"] != normalized.get("relevance")):
+                        self._deny("FORK_PARENT_VALIDATION_REQUIRED")
             if name == "memory_inspect":
                 ref = arguments.get("ref")
                 if ref not in self._allowed_refs and not (
@@ -737,6 +772,7 @@ class EvaluationGateway:
                     ids = {item["claim_id"] for item in manifest if isinstance(item, dict) and isinstance(item.get("claim_id"), str)}
                     self._allowed_refs.update(ids)
                     self._admissions[admission] = (context_identity, ids)
+                    self._admission_payloads[admission] = json.loads(json.dumps(payload))
                     for item in manifest:
                         if isinstance(item, dict) and isinstance(item.get("inspection_ref"), str):
                             self._allowed_refs.add(item["inspection_ref"])
@@ -744,15 +780,126 @@ class EvaluationGateway:
                 original, ids = self._admissions[admission]
                 decisions = arguments.get("relevance", [])
                 selected_ids = [item.get("claim_id") for item in decisions]
+                delegated = self._fork_links.get(admission)
+                delegated_valid = (
+                    delegated is not None and delegated["request"] == context_identity
+                    and delegated["relevance"] == decisions
+                )
                 if (context_identity == original and len(selected_ids) == len(ids) and set(selected_ids) == ids
-                        and ids <= self._inspected_claims):
+                        and (delegated_valid or (
+                            admission not in self._fork_admissions and ids <= self._inspected_claims
+                        ))):
                     final_read = {"admission_id": admission, "refs": payload.get("refs"),
                                   "observed_ns": time.monotonic_ns(), "context": payload.get("context")}
+                    if delegated_valid:
+                        final_read["fork_link"] = {
+                            key: value for key, value in delegated.items()
+                            if key not in {"request", "relevance"}
+                        }
                     self._final_read_attempts.append(final_read)
         self._trace("gateway_flow", name=name, operation_id=payload.get("id"),
                     source_id=payload.get("source_id"), admission_id=payload.get("admission_id"),
                     artifact_id=payload.get("artifact_id"), refs=payload.get("refs"))
         return final_read
+
+    def observe_host_fork(
+        self, child: EvaluationGateway, *, host: str, parent_generation: str,
+        child_generation: str, task_id: str, admission_id: str,
+        native_fork_ref: str, inherited_context_ref: str,
+    ) -> None:
+        """Register a host-observed conversation fork, not a model's delegation claim.
+
+        The native evaluation harness must call this when the host itself observes the fork;
+        `flow_observation` fork links and context gating depend on it. Registration is atomic
+        with respect to both gateways, so a concurrent parent call either finishes before the
+        fork (and the fork is refused as busy) or starts after it and sees the delegation.
+        """
+        with _locked(self, child):
+            if (host not in {"claude", "codex"} or child is self
+                    or self.required_request.get("host") not in {None, "generic", "agent-flow", host}
+                    or not all(isinstance(value, str) and value for value in (
+                        parent_generation, child_generation, task_id, native_fork_ref, inherited_context_ref,
+                    ))
+                    or parent_generation == child_generation
+                    or child.scope.invocation_id == self.scope.invocation_id
+                    or child.scope.binding_id != self.scope.binding_id
+                    or child.scope.route_ref != self.scope.route_ref
+                    or child.scope.required_request != self.scope.required_request
+                    or child.scope.mode != "memory_on" or self.scope.mode != "memory_on"
+                    or admission_id not in self._delivered_admissions
+                    or admission_id in self._fork_admissions
+                    or child._calls or child._fork_child is not None
+                    or self._active or child._active or self._closed or child._closed):
+                raise ValueError("A distinct, idle child needs the delivered parent admission and native fork lineage")
+            request, ids = self._admissions[admission_id]
+            record = {
+                "host": host, "parent_invocation_id": self.scope.invocation_id,
+                "child_invocation_id": child.scope.invocation_id,
+                "parent_generation": parent_generation, "child_generation": child_generation,
+                "task_id": task_id, "admission_id": admission_id,
+                "native_fork_ref": native_fork_ref, "inherited_context_ref": inherited_context_ref,
+            }
+            child._fork_child = {**record, "parent": self, "request": request}
+            child._allowed_refs = set(ids)
+            for item in self._admission_payloads[admission_id]["candidate_manifest"]:
+                if isinstance(item.get("inspection_ref"), str):
+                    child._allowed_refs.add(item["inspection_ref"])
+            inspection_schema = child._schemas["memory_inspect"]
+            child._schemas.clear()
+            child._schemas["memory_inspect"] = inspection_schema
+            self._fork_admissions.add(admission_id)
+            # Traced under the locks so no parent call can be recorded between registration and its trace.
+            self._trace("gateway_host_fork", **record)
+
+    def observe_child_completion(
+        self, child: EvaluationGateway, *, child_return: dict, current_request: dict,
+        current_task_id: str, native_completion_ref: str, parent_validation_ref: str,
+    ) -> dict:
+        """Credit delegated inspection only after completed child delivery and exact parent validation.
+
+        The native evaluation harness must call this when the host observes the child's completion;
+        without it the parent's fork admission can never earn final-read credit. Both gateways are
+        locked so the child's delivered state and the parent link are read and written atomically.
+        """
+        from .fork_recall import validate_fork_recall
+
+        with _locked(self, child):
+            link = child._fork_child
+            if (link is None or link["parent"] is not self or link.get("completed")
+                    or not all(isinstance(value, str) and value for value in (
+                        native_completion_ref, parent_validation_ref,
+                    )) or self._active or child._active
+                    or child._observation_failed or child._pending_delivery
+                    or child._cancelled_ids or child._record_windows):
+                raise ValueError("A completed, independently linked child delivery is required")
+            admission = link["admission_id"]
+            request, ids = self._admissions[admission]
+            if not ids <= child._delivered_inspections:
+                raise ValueError("The child did not receive the complete candidate manifest inspections")
+            second = validate_fork_recall(
+                request, current_request, self._admission_payloads[admission], child_return,
+                task_id=link["task_id"], current_task_id=current_task_id,
+            )
+            if second.get("admission_id") != admission:
+                raise ValueError("The validated child return changed the parent admission")
+            record = {
+                key: value for key, value in link.items() if key not in {"parent", "request"}
+            }
+            record.update(
+                native_completion_ref=native_completion_ref, parent_validation_ref=parent_validation_ref,
+                child_inspection_complete=True, child_result_contract_valid=True,
+                parent_validation_observed=True, parent_understanding=None, provider_consumption=None,
+                child_inspected_claims=tuple(sorted(child._inspected_claims)),
+                child_return_sha256=hashlib.sha256(
+                    json.dumps(child_return, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest(),
+            )
+            self._fork_links[admission] = {
+                **record, "request": request, "relevance": json.loads(json.dumps(second["relevance"])),
+            }
+            child._fork_child["completed"] = True
+            self._trace("gateway_child_completion", **record)
+            return second
 
     def flow_observation(self) -> dict:
         with self._lock:
@@ -770,6 +917,10 @@ class EvaluationGateway:
             complete = not self._observation_failed and not self._pending_delivery
             linked_sources = []
             delivered = {ref for read in self._final_reads for ref in (read.get("refs") or []) if isinstance(ref, str)}
+            # Only links written by observe_child_completion exist here, so every entry is a completed,
+            # parent-validated child; its inspections count toward linkage without joining parent claims.
+            child_claims = {ref for link in self._fork_links.values() for ref in link["child_inspected_claims"]}
+            inspected = self._inspected_claims | child_claims
             for capture in self._captures:
                 pointer = capture["source_pointer"]
                 source = pointer["source_id"]
@@ -784,7 +935,7 @@ class EvaluationGateway:
                     continue
                 for selection in self._inspected_selections:
                     if (self._selection_sources.get(selection) == source
-                            and self._selection_claims.get(selection, set()) <= self._inspected_claims
+                            and self._selection_claims.get(selection, set()) <= inspected
                             and self._selection_claims.get(selection, set()) & delivered):
                         linked_sources.append(source)
                         break
@@ -795,6 +946,11 @@ class EvaluationGateway:
                 "inspected_selections": tuple(sorted(self._inspected_selections)),
                 "final_reads": tuple(self._final_reads), "required_stamps": tuple(self._required_stamps),
                 "final_read_attempts": tuple(self._final_read_attempts),
+                "fork_links": tuple(
+                    {key: value for key, value in link.items() if key not in {"request", "relevance"}}
+                    for link in self._fork_links.values()
+                ),
+                "parent_inspected_claims": tuple(sorted(self._inspected_claims)),
                 "observation_complete": complete,
                 "pipeline_observed": bool(linked_sources) and complete,
                 "linked_capture_source_ids": tuple(linked_sources),

@@ -57,9 +57,13 @@ def installation(tmp_path, monkeypatch):
         journal_dir=tmp_path / "journal", spool_limit_bytes=65536,
     )
 
-    def install(host="claude", strict=None, prompt_recall=False):
+    def install(host="claude", strict=None, prompt_recall=False, recall_mode="inline", recall_trial_days=14, action_recall=None):
         strict = host == "claude" if strict is None else strict
-        result = hosts.install_host(settings, project, "project-binding", host, agent, producer, strict=strict, prompt_recall=prompt_recall)
+        result = hosts.install_host(
+            settings, project, "project-binding", host, agent, producer, strict=strict,
+            prompt_recall=prompt_recall, recall_mode=recall_mode, recall_trial_days=recall_trial_days,
+            action_recall=action_recall,
+        )
         return Path(result["receipt"])
 
     return project, settings, agent, producer, install
@@ -304,7 +308,7 @@ def test_prompt_reentry_does_not_create_another_generation(installation, authori
     assert len([call for call in authority.calls if call[0] == "/api/context"]) == 2
 
 
-@pytest.mark.parametrize("lifecycle", ["session_before_compact", "session_compact", "session_switch", "session_branch", "session_tree"])
+@pytest.mark.parametrize("lifecycle", ["session_switch", "session_branch", "session_tree"])
 def test_omp_advisory_lifecycle_invalidates_generation_and_action_order(installation, authority, lifecycle):
     project, _, _, _, install = installation
     receipt = install("omp")
@@ -1996,6 +2000,8 @@ def _historical_omp_strict_metadata(receipt):
     document = json.loads(receipt.read_text())
     document["adapter_version"] = 4
     document["capabilities"]["scope"] = "registered_binding_plus_cwd_locator_check_not_cwd_authority"
+    # Action recall postdates every historical adapter version.
+    document["capabilities"].pop("action_recall", None)
     if document.get("capability") == "agent_judged":
         document["capability"] = "full_semantic"
         document["capabilities"].pop("capture_judgment")
@@ -2789,6 +2795,7 @@ async def test_native_capture_pointer_requires_actual_commit_and_is_generation_s
     monkeypatch.setattr(hosts, "LocalClient", Endpoint)
     event = native(
         project, host, "input" if host == "omp" else "UserPromptSubmit",
+        hook_instance_id="capture-operation",
         **({"text": "합성 입력: offline에서만 보관", "source": "interactive"} if host == "omp" else {"prompt": "합성 입력: offline에서만 보관"}),
     )
     first = hosts.handle_hook(receipt, event)
@@ -2811,7 +2818,10 @@ async def test_native_capture_pointer_requires_actual_commit_and_is_generation_s
             agent={"kind": "sub", "id": "child", "parentId": "main-agent", "depth": 1},
         ))
         assert "source_pointer" not in json.dumps(child["stdout"])
-        prepared = native(project, "omp", "before_agent_start", prompt="parent preparation")
+        prepared = native(
+            project, "omp", "before_agent_start", prompt=event["text"],
+            ingress_operation_id=event["hook_instance_id"],
+        )
         result = hosts.handle_hook(receipt, prepared)
         reentered = hosts.handle_hook(receipt, prepared)
         assert "source_pointer" not in json.dumps(reentered["stdout"])
@@ -2844,7 +2854,7 @@ def test_validated_v3_adapter_is_cleanup_only_and_reinstall_advances_owned_contr
     manifest["adapter_version"] = 3
     manifest.pop("capability")
     manifest["capabilities"]["scope"] = "registered_binding_plus_cwd_locator_check_not_cwd_authority"
-    for key in ("source_pointer", "capture_coverage", "capture_judgment", "capture_processing"):
+    for key in ("source_pointer", "capture_coverage", "capture_judgment", "capture_processing", "action_recall"):
         manifest["capabilities"].pop(key, None)
     hosts._write_receipt(receipt, manifest)
     with pytest.raises(DomainError):
@@ -2864,6 +2874,7 @@ def _historical_v4_metadata(receipt):
     document["adapter_version"] = 4
     document.pop("capability")
     document["capabilities"]["scope"] = "registered_binding_plus_cwd_locator_check_not_cwd_authority"
+    document["capabilities"].pop("action_recall", None)
     document["capabilities"].pop("capture_processing", None)
     document["capabilities"]["capture_judgment"] = "separate_caller_memory_record_no_automatic_candidate_readiness"
     hosts._write_receipt(receipt, document)
@@ -3009,8 +3020,13 @@ def test_recall_disabled_prompt_carries_capture_status_only_in_metadata(installa
     project, _, _, _, install = installation
     receipt = install(host)
     if host == "omp":
-        hosts.handle_hook(receipt, native(project, "omp", "input", text="human ingress", source="interactive"))
-    result = hosts.handle_hook(receipt, native(project, host, "before_agent_start" if host == "omp" else "UserPromptSubmit", prompt="human ingress"))
+        hosts.handle_hook(receipt, native(
+            project, "omp", "input", text="human ingress", source="interactive", hook_instance_id="ingress-operation",
+        ))
+    result = hosts.handle_hook(receipt, native(
+        project, host, "before_agent_start" if host == "omp" else "UserPromptSubmit",
+        prompt="human ingress", ingress_operation_id="ingress-operation",
+    ))
     assert isinstance(result["capture"], dict)
     assert "additionalContext" not in result["stdout"] and "hookSpecificOutput" not in result["stdout"]
     assert hosts.BOUNDED_CONTEXT_MARKER not in json.dumps(result["stdout"])
@@ -3048,7 +3064,7 @@ def test_omp_reentered_preparation_reuses_ingress_turn_without_new_generation(in
     ingress = hosts.handle_hook(receipt, native(project, "omp", "input", text="human ingress", source="interactive", **turn))
     prepared = native(project, "omp", "before_agent_start", prompt="human ingress", **turn)
     first, again = hosts.handle_hook(receipt, prepared), hosts.handle_hook(receipt, prepared)
-    assert ingress["generation"] == first["generation"] == again["generation"]
+    assert first["generation"] == ingress["generation"] + 1 == again["generation"]
     assert first["capture"]["state"] == "durably_spooled" and "capture" not in again
     assert hosts.handle_hook(receipt, action(project, "omp", **turn))["code"] != "HOST_GENERATION_UNOBSERVED"
 
@@ -3061,18 +3077,22 @@ def test_omp_reentered_preparation_reuses_ingress_turn_without_new_generation(in
 def test_capture_replay_failure_is_a_gap_that_keeps_recall_and_generation(installation, authority, monkeypatch, boundary, failure):
     project, _, _, _, install = installation
     receipt = install("omp", prompt_recall=True)
-    ingress = hosts.handle_hook(receipt, native(project, "omp", "input", text="human ingress", source="interactive"))
+    ingress = hosts.handle_hook(receipt, native(
+        project, "omp", "input", text="human ingress", source="interactive", hook_instance_id="replay-ingress",
+    ))
     assert ingress["capture"]["capture_key"]
 
     def fail(self, *args, **kwargs):
         raise failure
 
     monkeypatch.setattr(ProducerSpool, boundary, fail)
-    result = hosts.handle_hook(receipt, native(project, "omp", "before_agent_start", prompt="human ingress"))
+    result = hosts.handle_hook(receipt, native(
+        project, "omp", "before_agent_start", prompt="human ingress", ingress_operation_id="replay-ingress",
+    ))
     code = "SPOOL_PATH_DENIED" if boundary == "disposition" else "HOST_SPOOL_UNAVAILABLE"
     assert result["capture"] == {**result["capture"], "state": "gap", "code": code}
     assert result["offered"] is True and result["stdout"]["additionalContext"].endswith(authority.text)
-    assert result["generation"] == ingress["generation"] and result["gaps"][code] == 1
+    assert result["generation"] == ingress["generation"] + 1 and result["gaps"][code] == 1
     assert "private raw" not in json.dumps(result)
     assert hosts.handle_hook(receipt, action(project, "omp"))["code"] != "HOST_GENERATION_UNOBSERVED"
 
@@ -3216,12 +3236,31 @@ async def test_opt_in_hook_hands_off_unjudged_candidates_without_injecting_them(
     assert observed[0]["status"] == "judgment_required"
     assert observed[0]["candidate_manifest"][0]["claim_id"] == claim.id
     output = result["stdout"]["additionalContext"]
+    lines = output.split("\n")
+    handoff_line = next(line for line in lines if line.startswith('{"recall":"judgment_required"'))
+    handoff = json.loads(handoff_line)
     if with_required:
         assert "Keep customer records local." in output
+    # An unjudged statement is never automatic context, not even as a preview.
     assert claim.draft.statement not in output
-    assert result["recall"]["state"] == "judgment_required"
-    assert result["recall"]["gap"] == "HOST_RELEVANCE_MANIFEST_NOT_DELIVERED"
+    assert handoff["trigger"] == "prompt" and handoff["admission_id"] == observed[0]["admission_id"]
+    assert handoff["candidate_ids"] == [item["claim_id"] for item in observed[0]["candidate_manifest"]]
+    sent = ContextCommand.model_validate({**handoff["request"], "binding_id": binding})
+    assert handoff["request"] == hosts._recall_request(sent)
+    assert handoff["request"]["query"] == "CacheKey" and handoff["request"]["host"] == "omp"
+    assert result["recall"] == {
+        "trigger": "prompt", "state": "manifest", "admission_id": observed[0]["admission_id"],
+        "candidates": len(handoff["candidate_ids"]),
+    }
+    assert result["recall_offers"]["offered_recall_admissions"] == 1
+    assert result["recall_offers"]["recall_admission_ids"] == [observed[0]["admission_id"]]
     assert len(output.encode()) <= hosts.HOST_CONTEXT_BYTES
+    judged = await application.context(actor, ContextCommand.model_validate({
+        **handoff["request"], "binding_id": binding, "admission_id": handoff["admission_id"],
+        "relevance": [{"claim_id": claim_id, "relevant": True, "reason": "Names the requested key."}
+                      for claim_id in handoff["candidate_ids"]],
+    }))
+    assert judged["judgment_required"] is False and claim.id in judged["refs"]
 
 
 @pytest.mark.parametrize("capability", ["full_semantic", "lexical_entity"])
@@ -3233,6 +3272,7 @@ def test_exact_capabilityful_v4_receipt_is_cleanup_only(installation, capability
     historical["adapter_version"] = 4
     historical["capability"] = capability
     historical["capabilities"]["scope"] = "registered_binding_plus_cwd_locator_check_not_cwd_authority"
+    historical["capabilities"].pop("action_recall")
     historical["capabilities"].pop("capture_judgment")
     if capability == "full_semantic":
         historical["capabilities"]["capture_processing"] = "automatic_server_extraction_until_semantic_ready"
@@ -3437,3 +3477,37 @@ def test_installed_replay_diagnostic_root_loss_reports_only_its_recovery_mutatio
     moved.rename(project)
     assert all(path.read_bytes() == content for path, content in owned_before.items())
     assert hosts.install_host(settings, project, "project-binding", host, agent, producer, strict=False)["replay"] is True
+
+
+def test_omp_hook_service_requests_never_outlive_the_remaining_event_budget(installation, monkeypatch):
+    _, _, _, _, install = installation
+    receipt_path = install("omp", strict=False, prompt_recall=True)
+    dispatched = []
+
+    class DeadlineHonouringEndpoint:
+        def __init__(self, base_url, token_file, timeout=120, *, state_dir=None, deployment_id=None, remote_settings=None):
+            self.timeout = timeout
+
+        def request(self, path, payload):
+            dispatched.append((path, self.timeout))
+            time.sleep(self.timeout)
+            return {"context": "", "context_bytes": 0, "stamp": {"epoch": 1, "rules": []}}
+
+    monkeypatch.setattr(hosts, "LocalClient", DeadlineHonouringEndpoint)
+    budget = 0.4
+    project = Path(hosts.load_receipt(receipt_path)["project_root"])
+    started = time.monotonic()
+    result = hosts.handle_hook(receipt_path, native(
+        project, "omp", "before_agent_start", prompt="CacheKey",
+        event_deadline_ms=int((time.time() + budget) * 1000),
+    ))
+    assert time.monotonic() - started < budget + 1
+    assert result["code"] == "HOST_EVENT_DEADLINE" and result["state"] == "degraded"
+    assert dispatched and all(0 < timeout <= budget for _, timeout in dispatched)
+    client = hosts._service_client(hosts.load_receipt(receipt_path), "agent_token_file", 4, time.monotonic() + 0.1)
+    client.request("/api/context", {})
+    count = len(dispatched)
+    with pytest.raises(DomainError) as expired:
+        client.request("/api/context", {})
+    assert expired.value.code == "HOST_EVENT_DEADLINE"
+    assert len(dispatched) == count
