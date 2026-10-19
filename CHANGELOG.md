@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### OMP resource read 경고 분류
+
+- advisory resource read를 로컬 경로의 `HOST_FOOTPRINT_UNKNOWN`으로 오분류하지 않고 기존 `outside_advisory_coverage`로 구분한다. scheme allowlist·backing path 추정·알림 필터는 추가하지 않으며 callback·receipt/envelope/cwd·실제 로컬 경로/required-context·IPC 거절은 유지한다.
+- native selector와 공백·대괄호 파일명도 URL host 규칙으로 거절하지 않는다. 실제 생성 확장→Python hook→알림 소비와 별도 설치 wheel의 실패→성공, 독립 리뷰에서 발견한 추가 사례 및 검증 한계는 [검증 기록](docs/verification.ko.md#omp-resource-read의-host_footprint_unknown-수정)을 따른다. 이미 설치·로드된 확장의 갱신은 별도다.
+
 ### 명시적 메모리 건강 관리와 평가 engineering
 
 - 코드/worktree/root·파일/Python AST symbol anchor와 현재 health dependency를 claim의 검색·admission·게시·최종 delivery·관계 입력에 연결했다. required rule을 ordinary stale 필터로 숨기지 않는다.

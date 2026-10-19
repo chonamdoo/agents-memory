@@ -293,9 +293,13 @@ generic MCP는 자동 호출/자연어 준수를 강제하지 않는다. opt-in 
 
 이 코드들은 `agents-memory` 자동 hook의 진단이며 Agent Flow lifecycle의 성공·실패 판정과 별개다. 경고를 숨기거나 trust·guard·project root를 바꿔 해결하지 않는다.
 
-- `HOST_FOOTPRINT_UNKNOWN`: 도구의 전체 대상 경로를 안전하게 해석하지 못했다. 생성 OMP adapter는 hashline `edit`의 파일 header와 모든 `MV` 목적지를 최대64개 경로까지 해석하며 patch 본문은 hook에 보내지 않는다. 잘못된 문법·지원하지 않는 resource selector·초과 입력은 일부 경로만 채택하지 않고 unknown으로 남긴다.
+- `HOST_FOOTPRINT_UNKNOWN`: 도구의 전체 대상 경로를 안전하게 해석하지 못했다. 생성 OMP adapter는 hashline `edit`의 파일 header와 모든 `MV` 목적지를 최대64개 경로까지 해석하며 patch 본문은 hook에 보내지 않는다. 누락·잘못된 타입·빈 경로·잘못된 문법·초과 입력은 일부 경로만 채택하지 않고 unknown으로 남긴다.
+- OMP의 advisory `read`가 `skill://`, `issue://`, `pr://`, URL 등 `scheme://` 형식의 resource를 지정하면 로컬 경로로 추정하지 않고 `outside_advisory_coverage`로 분류한다. scheme 목록으로 예외 처리하지 않으며 selector와 공백·대괄호가 있는 native 파일명도 그대로 둔다. 이는 resource 해석 성공, 로컬 backing path 승인, required rule 충족이나 provider 소비의 증거가 아니다. native 도구의 실제 해석 오류는 native 도구가 처리한다. receipt·envelope·cwd 검증은 이 분류보다 먼저 수행하며 제어 문자·잘못된 percent encoding은 정상 resource로 채택하지 않는다.
 - `HOST_SCOPE_UNRESOLVED`: 자동 hook이 등록 project 범위를 확인하지 못했거나 대상이 범위 밖이다. 다른 project에서 `Downloads` 파일을 읽는 경우 등을 현재 receipt와 대조한다. 명시 MCP의 credential/binding 권한과 자동 hook의 경로 검사는 별개다.
 - `HOST_CAPTURE_DEGRADED`: 현재 전송·대기·격리·gap 상태를 확인한다. 성공한 새 capture에 딸려 반환된 누적 spool 이력만으로 새 전송 실패를 선언하지 않지만, 그 이력과 실제 pending·quarantine·현재 실패는 삭제하거나 성공으로 바꾸지 않는다.
+- `HOST_RECEIPT_UNAVAILABLE`·`HOST_ENVELOPE_INVALID`·`HOST_LINEAGE_UNRESOLVED`·`HOST_STATE_INVALID`: 설치 receipt, 실제 전달 envelope, agent lineage 또는 저장 상태가 유효하지 않다. resource 주소나 반복 호출을 이유로 이 오류를 생략하지 않는다.
+- `HOST_GENERATION_UNOBSERVED`·`HOST_CONTEXT_STALE`·`HOST_PROVIDER_INPUT_UNOBSERVABLE`: 해당 로컬 행동의 generation·context가 없거나 오래됐거나 최종 provider input을 관측하지 못했다. 앞선 resource read의 정상 coverage 분류가 후속 required-context 거절을 없애지 않는다.
+- `HOST_ADAPTER_UNAVAILABLE`·`HOST_RESPONSE_INVALID`·`HOST_RESPONSE_TOO_LARGE`: hook 실행·IPC 응답의 형식·크기를 확인한다. resource read에도 동일한 응답 검사를 적용하며 독립된 실제 거절마다 알림을 유지한다.
 
 소스 수정만으로 이미 설치되거나 로드된 확장이 바뀌지는 않는다. 승인된 전환 대상에서 기존 owned uninstall/reinstall·서비스 전환 절차와 host 재로딩을 따라야 한다. receipt/hash 수작업 수정이나 실행 중인 공유 세션 강제 종료는 전환 절차가 아니다.
 

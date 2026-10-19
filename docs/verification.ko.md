@@ -1659,3 +1659,25 @@ P028의 정확한 임시 screenshot은 현재 없고 당시에도 EPERM이었으
 원본은 현재 run의 `actions-7643719-jev-feedback-before`, `actions-0cc2473-guarded-jev-initial`, `actions-8f9b293-real-worker-http-green`에 보존했다. 최신 사용자 범위대로 직접 영향 경로만 병렬 Actions로 실행했으며 관련 없는 전체 source/installed·Mac·Docker와 전 협업자의 로컬 runtime 검증은 하지 않았다. 이 delta 성공은 fresh whole-source normal review·CI-only QA·main 병합·정확한 main commit의 개발 설치나 원래18개 외부 acceptance 완료가 아니다.
 
 후속 documented checkpoint `e542e0957daaef3eb6e84f49f875b77533781518`의 [Actions39166325019](https://github.com/chonamdoo/agents-memory/actions/runs/39166325019)는 양쪽274pass·1call fail이었다. 새1024-byte budget 회귀가 실제 worker 실행 뒤 기존 `FakeJev.calls`의 `(state, questions)` tuple을 dict로 잘못 읽어 `TypeError`가 났다. 이는 제품의 budget 실패 red나275개 성공이 아니다. 실제 기존 tuple 계약에 맞게 회귀의 관측만 고쳤고 input 상한·전송 없음·독립 source 게시의 assertion이나 제품 코드는 완화하지 않았다. 최종 정확 checkpoint의 결과는 PR9와 그 원본 receipt를 따르며 이 중간 실패도 보존한다.
+
+### OMP resource read의 HOST_FOOTPRINT_UNKNOWN 수정
+
+`hosts.py`가 지원 도구 이름만으로 로컬 경로 검사를 적용한 뒤 모든 `://` 입력을 거절했다. 실제 생성 OMP 확장은 각 callback의 이 결과를 알림으로 표시했다. 이를 scheme별 예외나 알림 필터로 숨기지 않고, 유효한 receipt·envelope·등록 cwd를 확인한 다음 non-strict OMP resource read만 기존 `outside_advisory_coverage`로 분류한다. 직접 로컬 경로와 required context의 검사는 유지한다. resource 분류는 backing file·해석 성공·보호 승인·최종 provider 소비를 증명하지 않는다.
+
+| 정확 checkpoint / Actions | source pass / fail | 별도 설치 wheel pass / fail | 관측 |
+|---|---:|---:|---|
+| `9b8572d76409854922124541d6f7821a393be38c` / [39188120131](https://github.com/chonamdoo/agents-memory/actions/runs/39188120131) |51 /10|51 /10|제품 로직 변경 전. resource 반복7개와 혼합/추가 등록2개가 실제 unknown 알림으로 실패. 나머지1개는 NUL의 우선 envelope 거절을 footprint 거절로 잘못 예상한 새 회귀 오류|
+| `8cac575ccfdd390ce214e0265338dac029605a7f` / [39188399710](https://github.com/chonamdoo/agents-memory/actions/runs/39188399710) |63 /0|63 /0|첫 수정과 selector 사례 통과. 후속 독립 리뷰가 native 파일명에 대한 URL 전용 검사의 잔여 결함을 발견했으므로 최종 완료로 세지 않음|
+| `8854cebfed49fb5ed62a6dce3a0f3cfe12243fe4` / [39188721479](https://github.com/chonamdoo/agents-memory/actions/runs/39188721479) |10 /2|10 /2|`local://report draft.md:5-9`·`local://[notes].md`가 각각3번 callback 모두 unknown 알림을 내는 것을 재현|
+| `753f55a6ee0fbe2bfece6ff5560adfe5e8414599` / [39188883464](https://github.com/chonamdoo/agents-memory/actions/runs/39188883464) |63 /0|63 /0|URL parser·host 문자 제한 제거 후 위 native 파일명과 기존 warning 경계 통과. lint·canonical comments·build·changed-path aggregate·양쪽 실제 HTTP/CLI12개 outcome·owned cleanup 성공|
+
+선택 집합이 다른 행의 숫자는 합산하지 않는다. 마지막 행은 전체 suite가 아닌 직접 영향 회귀63개이며 skip/xfail/xpass는0이다. source digest는 `6e6c49aa210f8424632eead7169e21e1388ea685679b29363eb7270b4001d6a0`, 실제 소비 wheel SHA256은 `53ffc44aefd67cb0c7430fbe8246dea4a80d8a5fce2afaf5f0c92c3b1ee255dc`이다. 원본 source·wheel phase receipt와 실패·성공 artifact는 기존 run context의 `actions-9b8572d-omp-resource-red`, `actions-8cac575-omp-resource-green`, `actions-8854ceb-native-filename-red`, `actions-753f55a-native-filename-green`에 보존했다.
+
+확장 harness는 additive handler 배열로 모든 callback을 실행한다. 같은/다른 호출 ID, 두 독립 등록, resource 전후의 실제 로컬 context·required-context·잘못된 edit·범위 밖 경로, receipt/envelope/NUL/cwd 우선 거절, malformed IPC와 독립 거절별 알림을 검사했다. 실제 generated TypeScript가 Python hook을 실행하고 알림을 소비한 증거이지 사용자 native pane의 loaded closure·trust·provider 소비 증거는 아니다.
+
+독립 standards 리뷰는 첫 수정에서 지적0개였다. spec 리뷰의 P2 한 건은 위 두 번째 red/green으로 수정했다. 근거인 OMP18.9.1 [native parser](https://github.com/can1357/oh-my-pi/blob/v18.9.1/packages/coding-agent/src/internal-urls/parse.ts#L45-L103)와 [local handler](https://github.com/can1357/oh-my-pi/blob/v18.9.1/packages/coding-agent/src/internal-urls/local-protocol.ts#L212-L241)는 표준 URL parser 실패 뒤에도 raw filename을 취급한다. 이를 URL host/port로 재검증하거나 selector를 잘라 backing path로 추정하지 않는다.
+
+유사 warning 경로도 source와 기존 회귀에서 점검했다. 추가로 확인된 오분류는 없었으며 scope·receipt·envelope·lineage/state·generation/context·IPC/transport의 실제 오류는 유지했다. 누적 capture gap 이력만으로 새 capture를 실패 처리하지 않는 기존 수정도 보존했다. 이 관측을 전체 native 오류 부재나 whole-source review 승인으로 확대하지 않는다.
+
+로컬 tests/collection/lint/build/syntax/format/repro/smoke는 실행하지 않았다. 관련 없는 전체 suite·Mac ownership·Docker 평가도 실행하지 않았다. 기존 AgentFlow run·guard·trust·profile·pins·판정·timeout을 바꾸지 않았고 source pane 종료 외 공유 자원은 유지했다. 최신 사용자 범위에 따라 이 기록은 warning source 수정과 Actions 검증에 한정한다. 현재 설치·로드된 확장 갱신, main 병합, 두 프리릴리스 게시와 원래18개 외부 acceptance를 완료 처리하지 않는다.
+
