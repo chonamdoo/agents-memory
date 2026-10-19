@@ -77,19 +77,23 @@ def test_budget_limited_record_offsets_reserve_live_epoch_width():
 
 
 
+@pytest.mark.parametrize("reason,identifier", (
+    pytest.param('거부😀"\\\n' * 220, 1, id="unicode"),
+    pytest.param("Original rejection evidence. " * 70, "\x01" * 256, id="ascii-maximum-escaped-id"),
+))
 @pytest.mark.parametrize("transport", ("modern", "legacy"))
-async def test_complete_feedback_reason_survives_bounded_mcp_continuation(authority, transport):
+async def test_complete_feedback_reason_survives_bounded_mcp_continuation(authority, transport, reason, identifier):
     from test_edge_boundaries import reconstruct_stored_inspection
 
     store, actor, binding = authority.store, authority.actor, authority.binding_id
     source = await store.capture(actor, command(authority, "feedback-original"))
-    reason = '거부😀"\\\n' * 220
+    store.settings = store.settings.model_copy(update={"max_mcp_response_bytes": 4096})
     rejected = await store.feedback(actor, FeedbackCommand(
         binding_id=binding, idempotency_key="full-rejection-reason", target_ref=source.source_id,
         kind="reject", body=reason,
     ))
     async with running(authority) as edge:
-        stored = await reconstruct_stored_inspection(edge, authority, rejected.artifact_id, transport)
+        stored = await reconstruct_stored_inspection(edge, authority, rejected.artifact_id, transport, identifier)
         assert stored["reason"] == reason and stored["body"] == reason
         assert stored["target_ref"] == source.source_id
         source_id = stored["source_id"]
@@ -104,8 +108,13 @@ async def test_complete_feedback_reason_survives_bounded_mcp_continuation(author
         assert withdrawn.value.code == "SOURCE_INELIGIBLE"
 
 
-@pytest.mark.parametrize("transport", ("modern", "legacy"))
-async def test_minimum_mcp_cap_can_inspect_a_plain_captured_source(authority, transport):
+@pytest.mark.parametrize("transport,identifier", (
+    pytest.param("modern", 1, id="modern"),
+    pytest.param("legacy", 1, id="legacy"),
+    pytest.param("modern", "\x01" * 256, id="modern-maximum-escaped-id"),
+    pytest.param("legacy", "\x01" * 256, id="legacy-maximum-escaped-id"),
+))
+async def test_minimum_mcp_cap_can_inspect_a_plain_captured_source(authority, transport, identifier):
     store = authority.store
     body = "CacheKey is retained offline."
     source = await store.capture(authority.actor, command(authority, "minimum-source", body))
@@ -113,14 +122,15 @@ async def test_minimum_mcp_cap_can_inspect_a_plain_captured_source(authority, tr
     async with running(authority) as edge:
         result = await bounded_inspection_plane(edge, authority, {
             "binding_id": authority.binding_id, "ref": source.source_id,
-        }, transport)
+        }, transport, identifier)
+        assert result.get("kind") == "source", result
         first = result
         fragments = [result["body"]]
         cursor = result["next_byte"]
         while cursor is not None:
             result = await bounded_inspection_plane(edge, authority, {
                 "binding_id": authority.binding_id, "ref": source.source_id, "byte_start": cursor,
-            }, transport)
+            }, transport, identifier)
             assert result["byte_start"] == cursor < result["byte_end"]
             fragments.append(result["body"])
             cursor = result["next_byte"]

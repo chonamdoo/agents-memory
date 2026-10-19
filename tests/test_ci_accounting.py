@@ -545,6 +545,11 @@ def changed_evidence(evidence):
         health = json.loads(path.read_text())
         health["health"]["outcomes"] = dict.fromkeys(cases, "passed")
         health["health"]["scope"] = "changed_health_consumers_not_full_acceptance"
+        health["health"]["owned_cleanup"]["worker_provider_listener"] = "stopped"
+        health["health"]["worker_transport"] = {
+            "provider": "owned_loopback_http_fixture", "real_provider_or_native_approval": False,
+            "withdrawn_source_requests": 1, "running_service_provider_unchanged": True,
+        }
         path.write_text(json.dumps(health))
     lint_paths = ["src/agents_memory/store.py"]
     checks = json.loads(evidence.checks.read_text())
@@ -609,7 +614,10 @@ def test_changed_ci_refuses_missing_failed_or_misrepresented_selected_work(chang
             selectors=data.selectors, lint_paths=data.lint_paths)
 
 
-@pytest.mark.parametrize("fault", ["missing", "wrong_scope", "failed_case", "cleanup_incomplete", "wrong_wheel"])
+@pytest.mark.parametrize("fault", [
+    "missing", "wrong_scope", "failed_case", "cleanup_incomplete", "wrong_wheel",
+    "worker_cleanup", "missing_worker_transport", "native_provider_claim", "withdrawn_retry",
+])
 def test_changed_ci_requires_actual_related_health_consumption_and_cleanup(changed_evidence, fault):
     data = changed_evidence
     evidence = data.evidence
@@ -624,6 +632,14 @@ def test_changed_ci_requires_actual_related_health_consumption_and_cleanup(chang
             health["health"]["outcomes"]["retracted_session_does_not_block_queued_capture"] = "failed"
         elif fault == "cleanup_incomplete":
             health["health"]["owned_cleanup"]["child_service"] = "unconfirmed"
+        elif fault == "worker_cleanup":
+            health["health"]["owned_cleanup"]["worker_provider_listener"] = "unconfirmed"
+        elif fault == "missing_worker_transport":
+            health["health"].pop("worker_transport")
+        elif fault == "native_provider_claim":
+            health["health"]["worker_transport"]["real_provider_or_native_approval"] = True
+        elif fault == "withdrawn_retry":
+            health["health"]["worker_transport"]["withdrawn_source_requests"] = 2
         else:
             health["wheel_sha256"] = "c" * 64
         path.write_text(json.dumps(health))

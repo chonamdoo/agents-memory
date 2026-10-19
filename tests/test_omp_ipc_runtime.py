@@ -24,7 +24,7 @@ def node_binary():
 
 
 def exercise_generated_reply(
-    tmp_path, node_binary, invalid_reply, *, malformed_event="before_agent_start", consumer="before_agent_start",
+    tmp_path, node_binary, invalid_reply, *, malformed_event="before_agent_start", consumer="before_agent_start", repeats=1,
 ):
     hook = tmp_path / "reply.py"
     hook.write_text(dedent('''\
@@ -52,7 +52,7 @@ def exercise_generated_reply(
         const commands = new Map();
         const notifications = [];
         extension({
-          on: (name, handler) => handlers.set(name, handler),
+          on: (name, handler) => handlers.set(name, [...(handlers.get(name) || []), handler]),
           registerCommand: (name, command) => commands.set(name, command),
         });
         const context = {
@@ -63,7 +63,18 @@ def exercise_generated_reply(
         let error = null;
         try {
           if (process.argv[3] === "before_agent_start") {
-            await handlers.get("before_agent_start")({ prompt: "Review the observation." }, context);
+            for (const handler of handlers.get("before_agent_start") || []) {
+              await handler({ prompt: "Review the observation." }, context);
+            }
+          } else if (process.argv[3] === "read") {
+            for (let index = 0; index < Number(process.argv[4]); index++) {
+              for (const handler of handlers.get("tool_call") || []) {
+                await handler({
+                  toolName: "read", toolCallId: "resource-" + index,
+                  input: { path: "skill://architecture" },
+                }, context);
+              }
+            }
           } else {
             await commands.get(process.argv[3]).handler("The observed finding.", context);
           }
@@ -73,21 +84,26 @@ def exercise_generated_reply(
         console.log(JSON.stringify({ error, notifications }));
     '''))
     result = subprocess.run(
-        [node_binary, str(runner), str(extension), consumer], cwd=tmp_path,
+        [node_binary, str(runner), str(extension), consumer, str(repeats)], cwd=tmp_path,
         capture_output=True, text=True, timeout=20, check=True,
     )
     return json.loads(result.stdout)
 
 
+@pytest.mark.parametrize("consumer", ("before_agent_start", "read"))
 @pytest.mark.parametrize("invalid_reply", (
     {"stdout": {"additionalContext": 42}},
     {"stdout": {"warning": True}},
     {"stdout": {"reason": [], "warning": "notice"}},
     {"stdout": []},
     {"state": "degraded", "code": 42},
-), ids=("context-type", "warning-type", "reason-type", "stdout-array", "code-type"))
-def test_generated_extension_rejects_invalid_consumed_reply_types(tmp_path, node_binary, invalid_reply):
-    outcome = exercise_generated_reply(tmp_path, node_binary, invalid_reply)
+    {"state": []},
+), ids=("context-type", "warning-type", "reason-type", "stdout-array", "code-type", "state-type"))
+def test_generated_extension_rejects_invalid_consumed_reply_types(tmp_path, node_binary, invalid_reply, consumer):
+    outcome = exercise_generated_reply(
+        tmp_path, node_binary, invalid_reply, consumer=consumer,
+        malformed_event="tool_call" if consumer == "read" else "before_agent_start",
+    )
     assert outcome["error"] == "HOST_RESPONSE_INVALID"
     assert outcome["notifications"] == []
 
@@ -108,3 +124,13 @@ def test_generated_extension_rejects_invalid_preparation_and_capture(
     )
     assert outcome["error"] == "HOST_RESPONSE_INVALID"
     assert outcome["notifications"] == []
+
+
+def test_resource_read_keeps_one_notification_for_each_independent_refusal(tmp_path, node_binary):
+    outcome = exercise_generated_reply(
+        tmp_path, node_binary,
+        {"state": "degraded", "code": "HOST_FOOTPRINT_UNKNOWN", "stdout": {"warning": "real refusal"}},
+        malformed_event="tool_call", consumer="read", repeats=2,
+    )
+    assert outcome["error"] is None
+    assert outcome["notifications"] == ["HOST_FOOTPRINT_UNKNOWN", "HOST_FOOTPRINT_UNKNOWN"]

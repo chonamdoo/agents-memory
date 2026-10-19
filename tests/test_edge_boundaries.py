@@ -934,11 +934,11 @@ async def bounded_inspection_plane(edge, deployment, arguments, transport, ident
     return json.loads(result["content"][0]["text"])
 
 
-async def reconstruct_stored_inspection(edge, deployment, ref, transport):
+async def reconstruct_stored_inspection(edge, deployment, ref, transport, identifier=1):
     import hashlib
 
     cursor, fragments, digest, total = 0, [], None, None
-    for identifier in range(1, 129):
+    for _ in range(128):
         inspected = await bounded_inspection_plane(edge, deployment, {
             "binding_id": deployment.binding_id, "ref": ref, "byte_start": cursor,
         }, transport, identifier)
