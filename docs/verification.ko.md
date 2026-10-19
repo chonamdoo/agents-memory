@@ -1679,5 +1679,22 @@ P028의 정확한 임시 screenshot은 현재 없고 당시에도 EPERM이었으
 
 유사 warning 경로도 source와 기존 회귀에서 점검했다. 추가로 확인된 오분류는 없었으며 scope·receipt·envelope·lineage/state·generation/context·IPC/transport의 실제 오류는 유지했다. 누적 capture gap 이력만으로 새 capture를 실패 처리하지 않는 기존 수정도 보존했다. 이 관측을 전체 native 오류 부재나 whole-source review 승인으로 확대하지 않는다.
 
-로컬 tests/collection/lint/build/syntax/format/repro/smoke는 실행하지 않았다. 관련 없는 전체 suite·Mac ownership·Docker 평가도 실행하지 않았다. 기존 AgentFlow run·guard·trust·profile·pins·판정·timeout을 바꾸지 않았고 source pane 종료 외 공유 자원은 유지했다. 최신 사용자 범위에 따라 이 기록은 warning source 수정과 Actions 검증에 한정한다. 현재 설치·로드된 확장 갱신, main 병합, 두 프리릴리스 게시와 원래18개 외부 acceptance를 완료 처리하지 않는다.
+위 warning 전용 Actions에서는 로컬 tests/collection/lint/build/syntax/format/repro/smoke와 관련 없는 전체 suite·Mac ownership·Docker 평가를 실행하지 않았다. 기존 AgentFlow run·guard·trust·profile·pins·판정·timeout을 바꾸지 않았고 source pane 종료 외 공유 자원은 유지했다. 이 단계의 기록은 warning source 수정과 직접 영향 Actions 검증에 한정한다. 현재 설치·로드된 확장 갱신, main 병합, 두 프리릴리스 게시와 원래18개 외부 acceptance를 완료 처리하지 않는다.
+
+### PR CI에서 드러난 MCP 응답 예산 수정
+
+사용자가 지적한 [PR 전체 CI39189741682](https://github.com/chonamdoo/agents-memory/actions/runs/39189741682)에서 두 실패를 확인했다. changed CI의 합성 영수증은 현재 필수인 worker listener 종료·전송 증거가 빠졌고, 최소4096-byte MCP 응답에서는 modern·legacy 원문 inspect가 `SOURCE_WINDOW_TOO_LARGE`를 반환했다. 합성 fixture와 독립 negative case를 보완했으며 production aggregate·owned cleanup 기준은 완화하지 않았다.
+
+`wire.py`의 고정2048-byte envelope 예약을 실제 compact JSON-RPC envelope와 최대 escaped ID로 계산하도록 바꿨다. 독립 spec 리뷰에서 최신 MCP2.3.0 SDK의 `resultType="complete"`·`serverInfo` 추가가 빠진 P2를 발견해 포함했다. 실제 server와 예산이 같은 identity를 쓰며 stamp·원문 판단 context·admission·응답 상한·ID admission·최종 physical byte 검사를 유지한다.
+
+처음 추가한 ASCII fixture가2048-character 입력 계약을 넘은 [39191638032](https://github.com/chonamdoo/agents-memory/actions/runs/39191638032)의 실패는 시험 입력 오류이며 제품 red로 세지 않는다. 입력을 계약 범위로 고친 다음 같은8개 node를 source와 별도 noneditable wheel에서 실행했다.
+
+| 정확 checkpoint / Actions | source pass / fail | 별도 설치 wheel pass / fail | 관측 |
+|---|---:|---:|---|
+| `0b76c4228144e3a33b55e664d340d40b3e5dc224` / [39192336198](https://github.com/chonamdoo/agents-memory/actions/runs/39192336198) |7 /1|7 /1|유효한 긴 ASCII feedback과 최대 escaped ID의 modern inspect가 실제HTTP502. legacy·Unicode·최소 한도 원문 사례는 통과|
+| `561542da70cf3edb1c1fa50937145ec39659b0aa` / [39192697415](https://github.com/chonamdoo/agents-memory/actions/runs/39192697415) |8 /0|8 /0|SDK metadata 포함 후 동일 node 전부 통과. 각 창의 physical cap·digest·offset·완전한 재조립과 원문의 grounded `candidate_ready` 게시 확인|
+
+두 행의 skip/xfail/xpass는0이다. green에서는 변경 Python8개 lint, canonical comments, build, strict changed-path aggregate, source·설치의 실제 HTTP/CLI 각12개 outcome과 owned cleanup도 통과했다. source digest는 `072d61ff6b88f78fdac94bfb975138733cb25805ca5ff80fd6acc9d2bbf1c41f`, 소비 wheel SHA256은 `a58ce2490931db7ff2c8873d11b785003518794b000cb67b134245bafaf433a1`이다.
+
+이 추가 수정의 독립 standards·spec 재리뷰는 지적0개였다. 정적 read-only 리뷰이며 GitHub의 formal approval·whole-source/native acceptance로 세지 않는다. 원본 artifact는 기존 run context의 `actions-f02f09d-pr-mcp-envelope-red`, `actions-0b76c42-max-id-envelope-red`, `actions-561542d-max-id-envelope-green`에 보존했다. 이 green checkpoint는 전체 suite·Mac·Docker 평가를 실행한 결과가 아니며 최종 PR 전체 CI와 구분한다. 로컬 검사는 실행하지 않았고 사용자에게 이미 설치·로드된 runtime과 원래18개 외부 acceptance는 변경하지 않았다.
 
