@@ -161,13 +161,9 @@ def test_generated_hashline_edit_delivers_only_whole_applicable_conventions(
     assert PRIVATE_BODY.encode() not in wire
 
 
-@pytest.mark.parametrize("case,code", (
-    ("outside-header", "HOST_SCOPE_UNRESOLVED"),
-    ("outside-move", "HOST_SCOPE_UNRESOLVED"),
-    ("malformed-with-misleading-path", "HOST_FOOTPRINT_UNKNOWN"),
-))
-def test_generated_hashline_edit_never_delivers_partial_or_inferred_scope(
-    tmp_path, node_binary, installation, case, code,
+@pytest.mark.parametrize("case", ("outside-header", "outside-move"))
+def test_generated_hashline_edit_delivers_only_in_project_conventions_without_scope_warning(
+    tmp_path, node_binary, installation, case,
 ):
     project, _, _, _, install = installation
     receipt = install("omp")
@@ -175,15 +171,24 @@ def test_generated_hashline_edit_never_delivers_partial_or_inferred_scope(
         tool_input = {"input": (
             "*** Begin Patch\n[src/alpha.py#ABCD]\nREM\n[../outside.py#1234]\nREM\n*** End Patch\n"
         )}
-    elif case == "outside-move":
-        tool_input = {"input": "*** Begin Patch\n[src/alpha.py#ABCD]\nMV ../outside.py\n*** End Patch\n"}
     else:
-        tool_input = {"input": "not a complete native patch " + PRIVATE_BODY, "path": "src/alpha.py"}
+        tool_input = {"input": "*** Begin Patch\n[src/alpha.py#ABCD]\nMV ../outside.py\n*** End Patch\n"}
     outcome, wire = run_scoped_tools(tmp_path, node_binary, receipt, project, tool_input)
     visible = "\n".join(outcome["notifications"])
-    assert visible == code or visible == "agents-memory: " + code
+    assert "Retain the alpha invariant." in visible
+    assert "HOST_SCOPE_UNRESOLVED" not in visible
+    assert "Unrelated convention must not be delivered." not in visible
+    hook = next(entry for entry in outcome["hooks"] if entry["envelope"]["event"] == "tool_call")
+    assert hook["requests"] == [{"route": "/api/required-context", "paths": ["src/alpha.py"]}]
+
+
+def test_generated_hashline_edit_never_infers_scope_from_a_malformed_patch(tmp_path, node_binary, installation):
+    project, _, _, _, install = installation
+    tool_input = {"input": "not a complete native patch " + PRIVATE_BODY, "path": "src/alpha.py"}
+    outcome, wire = run_scoped_tools(tmp_path, node_binary, install("omp"), project, tool_input)
+    visible = "\n".join(outcome["notifications"])
+    assert visible in {"HOST_FOOTPRINT_UNKNOWN", "agents-memory: HOST_FOOTPRINT_UNKNOWN"}
     assert "Retain the alpha invariant." not in visible
-    assert "Retain the destination invariant." not in visible
     assert PRIVATE_BODY.encode() not in wire
 
 
@@ -271,7 +276,6 @@ def test_malformed_resources_and_non_device_uri_writes_remain_visible_refusals(t
     ("receipt", "HOST_RECEIPT_UNAVAILABLE"),
     ("envelope", "HOST_ENVELOPE_INVALID"),
     ("nul", "HOST_ENVELOPE_INVALID"),
-    ("cwd", "HOST_SCOPE_UNRESOLVED"),
 ))
 def test_resource_addressing_never_skips_prior_hook_validation(
     tmp_path, node_binary, installation, failure, code,
@@ -288,8 +292,6 @@ def test_resource_addressing_never_skips_prior_hook_validation(
     for event in events:
         if failure == "nul":
             event["input"]["path"] += "\x00"
-        if failure == "cwd":
-            event["cwd"] = str(tmp_path)
     if failure == "receipt":
         receipt.write_text("{}")
     raw_override = '{"event":"tool_call","event":"input"}' if failure == "envelope" else None
@@ -324,7 +326,8 @@ def test_resource_reads_never_hide_local_context_or_subsequent_real_refusals(
     outcome, _ = run_scoped_tools(tmp_path, node_binary, install("omp"), project, {}, events=events)
     hooks = [entry for entry in outcome["hooks"] if entry["envelope"]["event"] == "tool_call"]
     assert [entry["result"]["state"] for entry in hooks] == [
-        "ok", "degraded", "outside_advisory_coverage", "degraded", "outside_advisory_coverage", "degraded",
+        "ok", "degraded", "outside_advisory_coverage", "degraded", "outside_advisory_coverage",
+        "outside_advisory_coverage",
     ]
     assert hooks[0]["requests"] == [{"route": "/api/required-context", "paths": ["src/plain.py"]}]
     assert outcome["actions"][0]["notifications"] == []
@@ -333,7 +336,8 @@ def test_resource_reads_never_hide_local_context_or_subsequent_real_refusals(
     assert outcome["actions"][2]["notifications"] == []
     assert outcome["actions"][3]["notifications"] == ["HOST_FOOTPRINT_UNKNOWN"]
     assert outcome["actions"][4]["notifications"] == []
-    assert outcome["actions"][5]["notifications"] == ["HOST_SCOPE_UNRESOLVED"]
+    assert outcome["actions"][5]["notifications"] == []
+    assert hooks[5]["requests"] == []
 
 
 def test_core_tool_devices_delegate_without_hiding_other_writes(tmp_path, node_binary, installation):
@@ -360,13 +364,14 @@ def test_core_tool_devices_delegate_without_hiding_other_writes(tmp_path, node_b
     covered = 6 + len(near_misses)
     assert [entry["result"]["state"] for entry in hooks] == [
         *["delegated"] * 5,
-        *["outside_advisory_coverage"] * (1 + len(near_misses)), "degraded", "degraded",
+        *["outside_advisory_coverage"] * (1 + len(near_misses)), "degraded", "outside_advisory_coverage",
     ]
     assert all(entry["requests"] == [] for entry in hooks[:covered])
     assert [action["notifications"] for action in outcome["actions"][:covered]] == [[]] * covered
     assert hooks[covered]["requests"] == [{"route": "/api/required-context", "paths": ["src/alpha.py"]}]
     assert "Retain the alpha invariant." in "\n".join(outcome["actions"][covered]["notifications"])
-    assert outcome["actions"][covered + 1]["notifications"] == ["HOST_SCOPE_UNRESOLVED"]
+    assert outcome["actions"][covered + 1]["notifications"] == []
+    assert hooks[covered + 1]["requests"] == []
 
 
 def test_additive_resource_handlers_do_not_overwrite_independent_registrations(

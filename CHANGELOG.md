@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### advisory 설치의 project 밖 행동 경고 제거
+
+- non-strict(OMP·Claude advisory) 설치에서 `HOST_SCOPE_UNRESOLVED` 경고를 내지 않는다. 대상이 모두 등록 project 밖인 행동(다른 worktree·`/tmp`·시스템 설정 등)과 cwd가 project 밖인 세션의 event는 `outside_advisory_coverage`로 끝나며 capture·context 전달·상태 기록을 하지 않는다. 일부 대상만 project 안인 OMP hashline edit은 그 대상의 규칙만 전달한다. strict(Claude)는 기존처럼 거절한다.
+
 ### 명시 health 작업과 서비스 background 관측의 잠금 경합
 
 - 로컬 서비스의 spool recovery가 등록 workspace를 주기적으로 관측하며 `health.lock`을 잡는 동안, 명시 `health workspace-register`·`health observe` CLI와 MCP `memory_context` 직전 관측이 즉시 `HEALTH_OBSERVER_BUSY`로 실패하던 경합을 고쳤다. CI health smoke가 간헐적으로 이 오류로 실패했다. 명시 작업은 최대 10초 동안 잠금을 기다리고, 자동 hook과 background recovery는 기존처럼 기다리지 않는다. 대기 한도를 넘으면 같은 `HEALTH_OBSERVER_BUSY`다.

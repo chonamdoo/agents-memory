@@ -1568,19 +1568,18 @@ def _omp_resource_target(event: dict) -> bool:
     return re.search(r"[\x00-\x1f\x7f]|%(?![0-9A-Fa-f]{2})", path) is None
 
 
-def _footprint(receipt: dict, event: dict, cwd: Path) -> tuple[str, ...]:
+def _footprint_targets(receipt: dict, event: dict, cwd: Path) -> tuple[Path, ...]:
     name = event.get("tool_name")
     inputs = event.get("tool_input")
     host = receipt["host"]
     allowed = {"claude": {"Write", "Edit", "NotebookEdit", "Read"}, "codex": set(), "omp": {"write", "edit", "read"}}
     if name not in allowed[host] or not isinstance(inputs, dict):
         raise DomainError("HOST_FOOTPRINT_UNSUPPORTED", "Shell, hosted and unknown action footprints are not enforceable")
-    paths = []
+    targets = []
     field = "notebook_path" if name == "NotebookEdit" else "file_path" if host == "claude" else "path"
     raw_paths = inputs["paths"] if host == "omp" and name == "edit" and "paths" in inputs else [inputs.get(field)]
     if not isinstance(raw_paths, list) or not 1 <= len(raw_paths) <= 64:
         raise DomainError("HOST_FOOTPRINT_UNKNOWN", "The action does not expose a complete bounded local footprint")
-    root = Path(receipt["project_root"])
     for raw in raw_paths:
         if not isinstance(raw, str) or not raw or "\x00" in raw or "://" in raw:
             raise DomainError("HOST_FOOTPRINT_UNKNOWN", "The action does not expose a local path")
@@ -1588,11 +1587,32 @@ def _footprint(receipt: dict, event: dict, cwd: Path) -> tuple[str, ...]:
             (cwd / raw).stat()
         except FileNotFoundError:
             pass
-        path = (cwd / raw).resolve()
+        targets.append((cwd / raw).resolve())
+    return tuple(targets)
+
+
+def _footprint(receipt: dict, event: dict, cwd: Path) -> tuple[str, ...]:
+    root = Path(receipt["project_root"])
+    paths = []
+    for path in _footprint_targets(receipt, event, cwd):
         if not path.is_relative_to(root):
-            raise DomainError("HOST_SCOPE_UNRESOLVED", "The action leaves the registered project")
+            if receipt["strict"]:
+                raise DomainError("HOST_SCOPE_UNRESOLVED", "The action leaves the registered project")
+            # Advisory delivery covers only this project's targets; others have no project conventions.
+            continue
         paths.append(path.relative_to(root).as_posix())
     return tuple(sorted(set(paths)))
+
+
+def _entirely_outside_project(receipt: dict, event: dict, cwd: Path) -> bool:
+    """A complete local footprint whose every target lies outside the registered project."""
+    try:
+        targets = _footprint_targets(receipt, event, cwd)
+    except (DomainError, OSError, RuntimeError, ValueError):
+        # Malformed or unreadable footprints keep their existing refusal later in the hook.
+        return False
+    root = Path(receipt["project_root"])
+    return all(not path.is_relative_to(root) for path in targets)
 
 
 def _context_prefix(code: str | None = None) -> str:
@@ -1984,7 +2004,15 @@ def handle_hook(receipt_path: Path, event: dict) -> dict:
     strict = receipt["strict"]
     try:
         event = _project_hook(event)
-        cwd = _scoped_cwd(receipt, event)
+        try:
+            cwd = _scoped_cwd(receipt, event)
+        except DomainError as error:
+            if strict or error.code != "HOST_SCOPE_UNRESOLVED":
+                raise
+            # An advisory session outside this project is neither captured nor attributed to it.
+            result = _native_result(host, event_name)
+            result["state"] = "outside_advisory_coverage"
+            return result
         if event_name in ACTION_EVENTS:
             tool_name = event.get("tool_name")
             core_prefix = "mcp__agents_memory_" if host == "omp" else "mcp__agents-memory__"
@@ -1999,6 +2027,7 @@ def handle_hook(receipt_path: Path, event: dict) -> dict:
             outside_coverage = not strict and (
                 tool_name not in receipt["capabilities"]["supported_path_tools"]
                 or (host == "omp" and _omp_resource_target(event))
+                or _entirely_outside_project(receipt, event, cwd)
             )
             if delegated or outside_coverage:
                 result = _native_result(host, event_name)

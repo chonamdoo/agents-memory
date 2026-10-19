@@ -415,6 +415,27 @@ def test_unknown_scope_or_footprint_never_allows_strict_action(installation, aut
     assert result["code"] == code
 
 
+@pytest.mark.parametrize("host", ["claude", "omp"])
+def test_advisory_scope_outside_project_is_silent_and_never_attributed(installation, authority, host, tmp_path):
+    project, _, _, _, install = installation
+    receipt = install(host, strict=False)
+    outside = tmp_path / "elsewhere" / "notes.md"
+    field = "file_path" if host == "claude" else "path"
+    entirely = action(project, host)
+    entirely["tool_input"] = {field: str(outside)}
+    result = hosts.handle_hook(receipt, entirely)
+    assert (result["state"], result["code"], result["stdout"]) == ("outside_advisory_coverage", None, {})
+    prompt = native(project, host, "before_agent_start" if host == "omp" else "UserPromptSubmit",
+                    prompt="session started outside the registered project")
+    for event in (dict(entirely, cwd=str(tmp_path)), dict(prompt, cwd=str(tmp_path))):
+        outside_cwd = hosts.handle_hook(receipt, event)
+        assert (outside_cwd["state"], outside_cwd["code"], outside_cwd["stdout"]) == (
+            "outside_advisory_coverage", None, {})
+        assert "capture" not in outside_cwd
+    assert not list(Path(hosts.load_receipt(receipt)["runtime_dir"]).glob("*.json"))
+
+
+
 def test_overflow_is_not_truncated_into_success(installation, authority):
     project, _, _, _, install = installation
     receipt = install(prompt_recall=True)
