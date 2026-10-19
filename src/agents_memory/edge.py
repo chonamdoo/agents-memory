@@ -49,7 +49,7 @@ from .judge_worker import JudgeWorker
 from .recovery import SpoolRecovery
 from .selection import RECORD_ADAPTER
 from .store import Store
-from .wire import decode_json, validate_wire
+from .wire import MCP_SERVER_INFO, decode_json, validate_wire
 
 HTTP_BODY_SECONDS = 15.0
 
@@ -744,8 +744,7 @@ def create_app(settings: Settings):
         return await api(request)
 
     server = Server(
-        "agents-memory",
-        version="0.1.0",
+        **MCP_SERVER_INFO,
         instructions="",
         on_list_tools=list_tools,
         on_call_tool=call_tool,

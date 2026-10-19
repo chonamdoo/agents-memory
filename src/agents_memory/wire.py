@@ -6,11 +6,13 @@ from typing import Any, overload
 
 from pydantic import BaseModel, TypeAdapter
 
-# Count the maximum escaped request ID and stamp wrapper; quoted text is measured separately.
+MCP_SERVER_INFO = {"name": "agents-memory", "version": "0.1.0"}
+
+# Count modern SDK metadata and the maximum escaped ID; quoted text is measured separately.
 RESULT_ENVELOPE_BYTES = len(json.dumps({
     "jsonrpc": "2.0", "id": "\x01" * 256,
-    "result": {"content": [{"type": "text", "text": ""}], "isError": False,
-               "_meta": {"agents-memory/stamp": {}}},
+    "result": {"resultType": "complete", "content": [{"type": "text", "text": ""}], "isError": False,
+               "_meta": {"agents-memory/stamp": {}, "io.modelcontextprotocol/serverInfo": MCP_SERVER_INFO}},
 }, separators=(",", ":")).encode("ascii")) - 2
 
 
