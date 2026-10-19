@@ -104,8 +104,13 @@ async def test_complete_feedback_reason_survives_bounded_mcp_continuation(author
         assert withdrawn.value.code == "SOURCE_INELIGIBLE"
 
 
-@pytest.mark.parametrize("transport", ("modern", "legacy"))
-async def test_minimum_mcp_cap_can_inspect_a_plain_captured_source(authority, transport):
+@pytest.mark.parametrize("transport,identifier", (
+    pytest.param("modern", 1, id="modern"),
+    pytest.param("legacy", 1, id="legacy"),
+    pytest.param("modern", "\x01" * 256, id="modern-maximum-escaped-id"),
+    pytest.param("legacy", "\x01" * 256, id="legacy-maximum-escaped-id"),
+))
+async def test_minimum_mcp_cap_can_inspect_a_plain_captured_source(authority, transport, identifier):
     store = authority.store
     body = "CacheKey is retained offline."
     source = await store.capture(authority.actor, command(authority, "minimum-source", body))
@@ -113,7 +118,7 @@ async def test_minimum_mcp_cap_can_inspect_a_plain_captured_source(authority, tr
     async with running(authority) as edge:
         result = await bounded_inspection_plane(edge, authority, {
             "binding_id": authority.binding_id, "ref": source.source_id,
-        }, transport)
+        }, transport, identifier)
         assert result.get("kind") == "source", result
         first = result
         fragments = [result["body"]]
@@ -121,7 +126,7 @@ async def test_minimum_mcp_cap_can_inspect_a_plain_captured_source(authority, tr
         while cursor is not None:
             result = await bounded_inspection_plane(edge, authority, {
                 "binding_id": authority.binding_id, "ref": source.source_id, "byte_start": cursor,
-            }, transport)
+            }, transport, identifier)
             assert result["byte_start"] == cursor < result["byte_end"]
             fragments.append(result["body"])
             cursor = result["next_byte"]

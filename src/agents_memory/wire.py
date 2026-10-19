@@ -6,7 +6,12 @@ from typing import Any, overload
 
 from pydantic import BaseModel, TypeAdapter
 
-RESULT_ENVELOPE_BYTES = 2048
+# Count the maximum escaped request ID and stamp wrapper; quoted text is measured separately.
+RESULT_ENVELOPE_BYTES = len(json.dumps({
+    "jsonrpc": "2.0", "id": "\x01" * 256,
+    "result": {"content": [{"type": "text", "text": ""}], "isError": False,
+               "_meta": {"agents-memory/stamp": {}}},
+}, separators=(",", ":")).encode("ascii")) - 2
 
 
 def _pairs(pairs: list[tuple[str, Any]]) -> dict:
