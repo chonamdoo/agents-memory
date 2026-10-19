@@ -1,0 +1,87 @@
+{
+  "purpose": "separate_adversarial_taxonomy_design_review_not_AF_approval",
+  "stdin_sha256": "9be1d5878a109ac49a228141bc93ce1402245c3a8ae8e8eff86094ca36002d56",
+  "identical_stdin": true,
+  "claude": {
+    "cli_version": "2.1.296 (Claude Code)",
+    "requested_model": "claude-opus-5-5",
+    "requested_effort": "xhigh",
+    "observed_cli_models": [
+      "claude-opus-5-5"
+    ],
+    "elapsed_seconds": 1140.1245229244232,
+    "exit_code": 0,
+    "is_error": false,
+    "stop_reason": "end_turn",
+    "permission_denials": [],
+    "usage": {
+      "input_tokens": 4,
+      "cache_creation_input_tokens": 101632,
+      "cache_read_input_tokens": 5564,
+      "output_tokens": 146593,
+      "output_tokens_details": {
+        "thinking_tokens": 7294
+      },
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 101632,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "global",
+      "iterations": [
+        {
+          "input_tokens": 2,
+          "output_tokens": 18593,
+          "cache_read_input_tokens": 5029,
+          "cache_creation_input_tokens": 97138,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 97138
+          },
+          "type": "message"
+        }
+      ],
+      "speed": "standard",
+      "fallback_credit": null
+    },
+    "client_list_price_usd_not_subscription_invoice": 3.7460448,
+    "model_attestation": "CLI metadata only; no independent server attestation",
+    "effort_attestation": "requested only"
+  },
+  "codex": {
+    "cli_version": "codex-cli 0.162.1",
+    "requested_model": "gpt-6.1-sol",
+    "requested_effort": "xhigh",
+    "observed_served_model": "unobserved",
+    "elapsed_seconds": 437.02,
+    "exit_code": 0,
+    "actual_tool_calls": {
+      "built_in_mcp_resource_listing": 2,
+      "web_search": 0,
+      "apps": 0,
+      "collab": 0,
+      "command_execution": 0,
+      "file_change": 0
+    },
+    "resource_results": [
+      {
+        "tool": "list_mcp_resources",
+        "resources": []
+      },
+      {
+        "tool": "list_mcp_resource_templates",
+        "resourceTemplates": []
+      }
+    ],
+    "initial_attempt": "isolation failed with web/apps calls; excluded from final review",
+    "final_isolation": "read-only public packet review with residual empty builtin resource listing; not zero tools or production isolation"
+  },
+  "source_corpus": "public curated source summaries; no company corpus",
+  "company_permission_proven": false,
+  "implementation_review_approval": false,
+  "raw_provider_reasoning_published": false
+}

@@ -1,0 +1,194 @@
+{
+  "observedAt": "2026-10-11T06:08:18.835Z",
+  "oldFrozenHead": "a57c0c8a67df2814324e4e197dcd82faaff1c8b3",
+  "latest": {
+    "head": "5a9b6f6bf93913bb2a8504cada18756a3bc29bf3",
+    "base": "642d1792edf0b22bda2bb879ac65df145273dc19",
+    "state": "closed",
+    "draft": false,
+    "merged": true,
+    "mergedAt": "2026-10-11T05:59:35Z",
+    "mergeCommitSha": "ccbc6cc2621256c89d25ce94f7d50d7709d379aa",
+    "changedFiles": 6,
+    "additions": 148,
+    "deletions": 36,
+    "body": "기존 Claude/Codex/Gemini 환경의 사용자 메모리를 선택적 참고로 활용하고, 유지할 가치가 있는 내용만 현재 근거를 확인해 팀 규칙 변경으로 제안하도록 공통 구현 스킬에 반영합니다. AI 요약을 사람의 교정 원문이나 승인 증거로 취급하지 않으며, 메모리와 현재 코드·지침이 충돌하면 현재 근거를 다시 확인합니다.\n\nRefs #316\n\n검토 근거:\n- [최종 범위](https://github.com/chonamdoo/agent-flow/issues/316#issuecomment-6105421905)\n- [추가 리뷰](https://github.com/chonamdoo/agent-flow/issues/316#issuecomment-6105480938)\n- [추가 리뷰의 반영 판정](https://github.com/chonamdoo/agent-flow/issues/316#issuecomment-6105568406)\n\n## 변경\n\n- `code-generation-discipline`에 메모리 재확인과 팀 규칙 승격 기준 두 항목을 추가합니다. 연결된 파일·branch·도구·팀 결정이 바뀌거나 현재 작업과 충돌하면 직접 근거를 확인합니다.\n- 승격 대상은 tracked `AGENTS.md`의 installer 관리 블록 밖 또는 tracked 프로젝트 skill입니다. 적용 범위와 현재 근거, 확인 가능한 사람의 교정 원문을 남기고 기존 리뷰와 gates를 따릅니다. 반복 조사나 코드에서 바로 읽을 수 있는 사실만으로 승격하지 않습니다.\n- installer가 생성하는 Claude 참고 포인터에서 author의 `@AGENTS.md` import가 격리 reviewer에게도 전달을 보장한다는 잘못된 설명을 정정합니다. import와 명시적 opt-in 계약은 유지합니다. 기존 테스트의 동일한 과장도 docstring만 정정합니다.\n- 영어·한국어 TEAM-ADOPTION에 새 설치의 루트 지침 보존, legacy 인덱스 소유권, 사람/AI 출처 구분, 최신성·전달 관측의 한계를 설명합니다. 사용자 메모리 격리만으로 Codex의 프로젝트 `AGENTS.md` 영향이 해결되지는 않는다고 명시합니다.\n- 최신 main의 개발 정책에 따라 누락 merged PR #333을 회귀 원장 MD에 보충합니다. 초기 JSON은 보존합니다.\n\nJev, 별도 메모리 저장소·추출 모델·자동 주입·동기화는 추가하지 않습니다. Gemini 사용 안내는 reviewer provider 지원 확대가 아닙니다. 자동 만료 감지나 TTL을 구현한 것으로 주장하지 않습니다. host memory off/on 평가도 현재 구현이나 규칙 채택 조건으로 추가하지 않습니다.\n\n변경 파일은 기능 범위 5개와 개발 전용 원장 1개입니다. 최신 `main`(`642d1792edf0b22bda2bb879ac65df145273dc19`)을 병합했고, workflow/profile/gate/sandbox 로직과 pin은 변경하지 않았습니다.\n\n## 검증\n\n- 최신 main 병합 후 pointer·사용자 편집 보존 테스트: **4 passed**(두 installer).\n- 회귀 대조의 명시적 node id 실행: **37 passed, 2 subtest failures**. 실패는 `test_cli.py::CliTest::test_node_installers_omp_hook_leaves_root_context_files_alone`의 두 installer 사례이며, 임시 경로의 설치 소유권 검사에서 exit 75로 막힙니다. 같은 환경·명령으로 base `642d179`에서도 **같은 두 subtest failures**를 재현했습니다. 이 검사의 로컬 통과를 주장하지 않고 CI 확인 대상으로 남깁니다.\n- 실제 npm 패키지 base/head 검증: **통과**. base `642d179`와 head `a57c0c8`의 깨끗한 Git 스냅샷을 동일하게 `npm pack --ignore-scripts` 후 설치했습니다. 양쪽 패키지는 같은 **356파일**, 내용이 바뀐 배포 자산은 영어/한국어 문서·installer pointer·공통 skill **4개**뿐입니다. 두 진입점 × fresh/reinstall × base/head의 **8개 관측**에서 사용자 root 바이트 보존과 installed skill/source 일치를 확인했습니다. `maintainer/`, PoC, 루트 `AGENTS.md`는 패키지에 포함되지 않았습니다. 테스트 실행으로 생긴 캐시가 있던 working tree 패키지는 동등 비교에서 제외하고 양쪽 clean snapshot으로 다시 확인했습니다.\n- `node --check lib/installer-shared.mjs`, `git diff --check origin/main...HEAD`: 통과.\n- 전체 pytest는 profile의 CI-only gate이므로 로컬에서 실행하지 않았습니다. 실제 모델의 기억 정확도·지침 준수·효과도 측정하지 않았습니다.\n\n## 전달량 변화\n\n같은 evaluator와 환경에서 base/head kit을 각각 `evals/phase_budget.py --kit <kit> --output <json> --jobs 6`으로 측정하고 현행 `phase_budget_compare.py`로 비교했습니다. 44 profile×mode 중 37조합을 측정했고, 지원하지 않는 stack 조합 7개는 양쪽에서 동일하게 제외됩니다.\n\n| 조건 | base bytes | head bytes | 증가 |\n| --- | ---: | ---: | ---: |\n| baseline | 73,627,950 | 74,247,502 | 619,552 |\n| committed | 70,855,900 | 71,475,452 | 619,552 |\n| layer | 72,452,717 | 73,072,269 | 619,552 |\n| none | 61,833,520 | 62,453,072 | 619,552 |\n| planned | 64,350,723 | 64,970,275 | 619,552 |\n\n공통 skill 본문 **608 bytes**를 추가한 의도적 비용입니다. layer 합계는 약 **0.855%**, author envelope+required reads는 약 0.8%, reviewer subprocess 입력은 약 0.9% 증가합니다. 필수 skill 누락, non-Clean envelope의 Clean roles 유입, head 측정 손실은 보고되지 않았습니다.\n\n비교기는 증가를 발견해 **exit 1**로 종료했습니다. 성공으로 처리하거나 `--accept`를 사용하지 않았고, `phase-budget-accepted` 라벨도 붙이지 않았습니다. CI에서도 증가 판단과 명시적 수용이 남습니다. 바이트 측정은 실제 소비·모델 준수·효과의 증거가 아닙니다.\n\n## 회귀 대조\n\n원장 전체의 항목과 topic을 살펴 공통 skill, root 소유권·포인터, 전달 근거, 개발 문서 배포 경계에 관련된 **23항목**을 선택했습니다:\n\n#52, #54, #83, #96, #108, #156, #168, #171, #172, #176, #179, #181, #182, #184, #209, #224, #228, #230, #258, #266, #275, #317, #331.\n\n- 기존 guard 중 이번 변경 경계에 맞는 node id만 단일 명령으로 직렬 실행했습니다: root 보존·receipt·사용자 편집·skill 업그레이드/보존·name-only index, 단일 bootstrap, invariant core, host별 reviewer skill 근거, controller 전달 증거, hook 없는 skill evidence, command evidence와의 비대칭, prompt honesty, author read plan·Clean roles·committed skill routing, empty-base 비교 거부, OMP root context, reviewer pool, workflow pin. 위 37 passed/두 subtest failures는 이 실행 결과입니다. 기존 guard나 단정을 약화하지 않았습니다.\n- #172 pointer와 사용자 편집 보존의 4사례는 별도 focused 명령으로 통과했습니다. 신규 문구를 고정하는 테스트를 추가하지 않았습니다.\n- #52 주입은 #54에서 제거됐고, #171의 양쪽 root 본문 복제는 #172 pointer로 대체됐습니다. #83/#168의 과거 관리 root 계약을 근거로 현재 사용자 root를 다시 쓰지 않습니다. #181의 skill 자기신고와 실제 command 관측의 비대칭, #224의 pinned workflow를 유지합니다.\n- #275의 reviewer 바이트 불변 조건은 그 PR의 author metadata 축소 범위였습니다. 이번 PR은 공통 본문을 추가하므로 reviewer required reads의 증가를 위 표에 별도 공개합니다.\n- guard가 없거나 부분적인 #83/#96/#168/#230/#317 등의 경계는 동일 배치의 clean Git snapshot/npm 패키지·설치 산출물과 문서 diff로 대조합니다. root tracking을 installer가 결정하거나 기존 gate를 기억 기반 명령으로 대체하는 로직은 추가하지 않습니다. maintainer 정책을 skill/템플릿에 복제하지 않습니다. 수동 판단의 정확성과 host가 실제 소비한 입력은 남은 검증 공백입니다.\n- 실행 함수 본문 변경은 없습니다. `git log -L :rootBootstrapBlock:lib/installer-shared.mjs`로 pointer 소비 함수의 계보(#172 및 import 수정)를 조사했고, 문서·skill·test docstring은 `git log -- <file>`로 확인했습니다.\n- #317 이후 merged PR을 main 계보와 대조해 유일한 누락 #333을 보충했습니다. 해당 gate 코드는 이 PR에서 변경하지 않아 새 원장 guard 실행은 CI에 맡깁니다. #333이 남긴 `cwd/src` 등 import 경계의 알려진 공백도 기록했습니다.\n- 다른 플랫폼별 skill 선택, gate 실행 로직, process cleanup, migration 장애 복구의 전체 guard 행렬은 변경하지 않은 범위여서 로컬 재실행하지 않았으며 전체 suite는 CI에 맡깁니다.\n\n이전 PR이 다루지 않은 변화는 공통 구현 skill의 메모리 근거 판단·승격 기준과 Claude 참고 포인터 설명입니다. 현재 코드/원문 재검증을 요구하는 지침이지, 자동 검증 기능이 아닙니다.\n\n## Draft 및 Agent Flow 상태\n\n사용자의 PR 게시 요청으로 commit·push·draft PR까지만 진행합니다.\n\nAgent Flow `development` run `20261011-043042`는 review에서 **blocked**입니다. Linux에서 verifier가 `no verified provider write-sandbox backend for this operating system`으로 CLI reviewer 시작 전 fail-closed했습니다. generalist 결과는 ERROR/returncode -1/verdict null이고 나머지 필수 결과도 없습니다. **독립 CLI reviewer 승인, QA/handoff 완료, workflow 완료를 주장하지 않습니다.** main 병합 후의 HEAD에도 승인 증거가 없습니다.\n\n필수 reviewer 수·safe-mode·사용자 home 격리·sandbox verifier·workflow pin을 완화하지 않았습니다. 사람의 PR 리뷰나 CI 통과는 필요한 Agent Flow review 증거를 대신하지 않습니다. 이 제약과 전달량 증가 판단, CI 결과 확인이 남아 있어 draft로 게시합니다.\n\n"
+  },
+  "comparison": {
+    "url": "https://api.github.com/repos/chonamdoo/agent-flow/compare/a57c0c8a67df2814324e4e197dcd82faaff1c8b3...5a9b6f6bf93913bb2a8504cada18756a3bc29bf3",
+    "html_url": "https://github.com/chonamdoo/agent-flow/compare/a57c0c8a67df2814324e4e197dcd82faaff1c8b3...5a9b6f6bf93913bb2a8504cada18756a3bc29bf3",
+    "permalink_url": "https://github.com/chonamdoo/agent-flow/compare/chonamdoo:a57c0c8...chonamdoo:5a9b6f6",
+    "diff_url": "https://github.com/chonamdoo/agent-flow/compare/a57c0c8a67df2814324e4e197dcd82faaff1c8b3...5a9b6f6bf93913bb2a8504cada18756a3bc29bf3.diff",
+    "patch_url": "https://github.com/chonamdoo/agent-flow/compare/a57c0c8a67df2814324e4e197dcd82faaff1c8b3...5a9b6f6bf93913bb2a8504cada18756a3bc29bf3.patch",
+    "base_commit": {
+      "sha": "a57c0c8a67df2814324e4e197dcd82faaff1c8b3",
+      "node_id": "C_kwDOR5WH5NoAKGE1N2MwYzhhNjdkZjI4MTQzMjRlNGUxOTdkY2Q4MmZhYWZmMWM4YjM",
+      "commit": {
+        "author": {
+          "name": "조남두",
+          "email": "eddie810924@gmail.com",
+          "date": "2026-10-11T05:01:18Z"
+        },
+        "committer": {
+          "name": "조남두",
+          "email": "eddie810924@gmail.com",
+          "date": "2026-10-11T05:01:18Z"
+        },
+        "message": "docs: record merged architecture-lint regression contract",
+        "tree": {
+          "sha": "aaf9cce35defffb75d3a4f0dca78c02679d0a34f",
+          "url": "https://api.github.com/repos/chonamdoo/agent-flow/git/trees/aaf9cce35defffb75d3a4f0dca78c02679d0a34f"
+        },
+        "url": "https://api.github.com/repos/chonamdoo/agent-flow/git/commits/a57c0c8a67df2814324e4e197dcd82faaff1c8b3",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/chonamdoo/agent-flow/commits/a57c0c8a67df2814324e4e197dcd82faaff1c8b3",
+      "html_url": "https://github.com/chonamdoo/agent-flow/commit/a57c0c8a67df2814324e4e197dcd82faaff1c8b3",
+      "comments_url": "https://api.github.com/repos/chonamdoo/agent-flow/commits/a57c0c8a67df2814324e4e197dcd82faaff1c8b3/comments",
+      "author": null,
+      "committer": null,
+      "parents": [
+        {
+          "sha": "34e47e5581aa9f8d61587b804ec7752fdfd96041",
+          "url": "https://api.github.com/repos/chonamdoo/agent-flow/commits/34e47e5581aa9f8d61587b804ec7752fdfd96041",
+          "html_url": "https://github.com/chonamdoo/agent-flow/commit/34e47e5581aa9f8d61587b804ec7752fdfd96041"
+        }
+      ]
+    },
+    "merge_base_commit": {
+      "sha": "a57c0c8a67df2814324e4e197dcd82faaff1c8b3",
+      "node_id": "C_kwDOR5WH5NoAKGE1N2MwYzhhNjdkZjI4MTQzMjRlNGUxOTdkY2Q4MmZhYWZmMWM4YjM",
+      "commit": {
+        "author": {
+          "name": "조남두",
+          "email": "eddie810924@gmail.com",
+          "date": "2026-10-11T05:01:18Z"
+        },
+        "committer": {
+          "name": "조남두",
+          "email": "eddie810924@gmail.com",
+          "date": "2026-10-11T05:01:18Z"
+        },
+        "message": "docs: record merged architecture-lint regression contract",
+        "tree": {
+          "sha": "aaf9cce35defffb75d3a4f0dca78c02679d0a34f",
+          "url": "https://api.github.com/repos/chonamdoo/agent-flow/git/trees/aaf9cce35defffb75d3a4f0dca78c02679d0a34f"
+        },
+        "url": "https://api.github.com/repos/chonamdoo/agent-flow/git/commits/a57c0c8a67df2814324e4e197dcd82faaff1c8b3",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/chonamdoo/agent-flow/commits/a57c0c8a67df2814324e4e197dcd82faaff1c8b3",
+      "html_url": "https://github.com/chonamdoo/agent-flow/commit/a57c0c8a67df2814324e4e197dcd82faaff1c8b3",
+      "comments_url": "https://api.github.com/repos/chonamdoo/agent-flow/commits/a57c0c8a67df2814324e4e197dcd82faaff1c8b3/comments",
+      "author": null,
+      "committer": null,
+      "parents": [
+        {
+          "sha": "34e47e5581aa9f8d61587b804ec7752fdfd96041",
+          "url": "https://api.github.com/repos/chonamdoo/agent-flow/commits/34e47e5581aa9f8d61587b804ec7752fdfd96041",
+          "html_url": "https://github.com/chonamdoo/agent-flow/commit/34e47e5581aa9f8d61587b804ec7752fdfd96041"
+        }
+      ]
+    },
+    "status": "ahead",
+    "ahead_by": 1,
+    "behind_by": 0,
+    "total_commits": 1,
+    "commits": [
+      {
+        "sha": "5a9b6f6bf93913bb2a8504cada18756a3bc29bf3",
+        "node_id": "C_kwDOR5WH5NoAKDVhOWI2ZjZiZjkzOTEzYmIyYTg1MDRjYWRhMTg3NTZhM2JjMjliZjM",
+        "commit": {
+          "author": {
+            "name": "조남두",
+            "email": "namdoo@jonamduui-MacBookPro.local",
+            "date": "2026-10-11T05:36:06Z"
+          },
+          "committer": {
+            "name": "조남두",
+            "email": "namdoo@jonamduui-MacBookPro.local",
+            "date": "2026-10-11T05:36:06Z"
+          },
+          "message": "docs(memory): scope rule promotion and correct host notes\n\nRequire team-rule promotion from host memory to be its own\nuser-approved change, not folded into unrelated work.\n\nCorrect TEAM-ADOPTION (EN/KO): name the hosted adapters\n(Claude Code, Codex, OMP; other agents only via the generic\nadapter), state that the .agent-flow/bootstrap/CLAUDE.md reference\ncopy delivers only when used as the root pointer, note that legacy\nroot CLAUDE.md keeps older pointer wording, retitle the section,\nand rewrap an overlong line.\n\nRefs #316",
+          "tree": {
+            "sha": "8d39e369236b6d5def28ef802aee342badca8120",
+            "url": "https://api.github.com/repos/chonamdoo/agent-flow/git/trees/8d39e369236b6d5def28ef802aee342badca8120"
+          },
+          "url": "https://api.github.com/repos/chonamdoo/agent-flow/git/commits/5a9b6f6bf93913bb2a8504cada18756a3bc29bf3",
+          "comment_count": 0,
+          "verification": {
+            "verified": false,
+            "reason": "unsigned",
+            "signature": null,
+            "payload": null,
+            "verified_at": null
+          }
+        },
+        "url": "https://api.github.com/repos/chonamdoo/agent-flow/commits/5a9b6f6bf93913bb2a8504cada18756a3bc29bf3",
+        "html_url": "https://github.com/chonamdoo/agent-flow/commit/5a9b6f6bf93913bb2a8504cada18756a3bc29bf3",
+        "comments_url": "https://api.github.com/repos/chonamdoo/agent-flow/commits/5a9b6f6bf93913bb2a8504cada18756a3bc29bf3/comments",
+        "author": null,
+        "committer": null,
+        "parents": [
+          {
+            "sha": "a57c0c8a67df2814324e4e197dcd82faaff1c8b3",
+            "url": "https://api.github.com/repos/chonamdoo/agent-flow/commits/a57c0c8a67df2814324e4e197dcd82faaff1c8b3",
+            "html_url": "https://github.com/chonamdoo/agent-flow/commit/a57c0c8a67df2814324e4e197dcd82faaff1c8b3"
+          }
+        ]
+      }
+    ],
+    "files": [
+      {
+        "sha": "bf2a54eb7ed40e307105d99915537007d4ba12d9",
+        "filename": "docs/TEAM-ADOPTION.md",
+        "status": "modified",
+        "additions": 28,
+        "deletions": 22,
+        "changes": 50,
+        "blob_url": "https://github.com/chonamdoo/agent-flow/blob/5a9b6f6bf93913bb2a8504cada18756a3bc29bf3/docs%2FTEAM-ADOPTION.md",
+        "raw_url": "https://github.com/chonamdoo/agent-flow/raw/5a9b6f6bf93913bb2a8504cada18756a3bc29bf3/docs%2FTEAM-ADOPTION.md",
+        "contents_url": "https://api.github.com/repos/chonamdoo/agent-flow/contents/docs%2FTEAM-ADOPTION.md?ref=5a9b6f6bf93913bb2a8504cada18756a3bc29bf3",
+        "patch": "@@ -100,17 +100,21 @@ ids. What it does not get: the environment override sits above the committed val\n deliberately lenient, so a member exporting `AGENT_FLOW_PROFILE` runs a different rule set and\n nothing reports that to the team.\n \n-### The installed `AGENTS.md` contract block\n+### The `AGENTS.md` contract and `CLAUDE.md` pointer\n \n The managed contract comes from `bootstrap/AGENTS.md.template`; its installed reference copy\n is `.agent-flow/bootstrap/AGENTS.md`. Fresh installs preserve the project's root context.\n Legacy installs retain their existing operating instructions and update eligible indexes\n inside `<!-- agent-flow:start -->` / `<!-- agent-flow:end -->` according to ownership.\n-The generated `CLAUDE.md` reference copy is a pointer. Its `@AGENTS.md` import gives the Claude\n-author session the contract and project rules without duplicating their body. The isolated Claude\n-reviewer runs with `--safe-mode` and receives explicit review input from the runner\n-(`src/agent_flow/multi_review.py`). This import is not evidence that the reviewer received\n-project prose; inspect the rendered review input to establish that delivery.\n+The generated `CLAUDE.md` reference copy, `.agent-flow/bootstrap/CLAUDE.md`, is a pointer\n+that is not loaded at session start. Used as the root `CLAUDE.md` beside root `AGENTS.md`,\n+its `@AGENTS.md` import gives the Claude author session the contract and project rules\n+without duplicating their body; Claude resolves the import relative to the file that holds it.\n+Ordinary updates do not rewrite an existing legacy root `CLAUDE.md`, so older pointer wording\n+that says the import reaches the Claude reviewer can remain there; this section supersedes it.\n+The isolated Claude reviewer runs with `--safe-mode` and receives explicit review input from\n+the runner (`src/agent_flow/multi_review.py`). This import is not evidence that the reviewer\n+received project prose; inspect the rendered review input to establish that delivery.\n \n Legacy root contract indexes use two installer-managed sub-blocks:\n \n@@ -129,23 +133,25 @@ reported as user-edited rather than overwritten.\n \n ### Host memory and shared team rules\n \n-Host memory is optional context owned by the user. Authors can use the memory provided by\n-their existing Claude, Codex, or Gemini environment when available. Agent Flow does not enable\n-that feature, manage its store, or add an extraction model or injection path. This does not\n-add Gemini to Agent Flow's Claude/Codex reviewer pool.\n+Host memory is optional context owned by the user. Authors can use the memory of the host\n+they run Agent Flow in: Claude Code, Codex, or OMP. Other agents, such as Gemini, follow phase\n+prompts only through the generic adapter, without installed host skills. Agent Flow does not\n+enable host memory, manage its store, or add an extraction model or injection path. Neither\n+Gemini nor OMP joins Agent Flow's Claude/Codex reviewer pool.\n \n `code-generation-discipline` applies the memory evidence and rule-promotion criteria during\n Agent Flow code work. It does not require enabling host memory or scanning session history.\n \n Promote a remembered item only when it supports a reusable team rule worth maintaining.\n-Repeated research or a fact readily checked in code is not sufficient by itself. Propose a\n-small change to tracked `AGENTS.md` outside installer-managed blocks or to a tracked project\n-skill. Include the original human correction when available, current code or other primary\n-evidence, and the rule's scope. An AI summary or host memory entry is an AI interpretation,\n-not the human original or proof of approval. If the original is missing, assess the claim\n-against current evidence without relabeling it as a past human correction. Use the existing\n-review and gates; a proposed rule cannot authorize its own adoption or weaken those checks.\n-Confirm the target is tracked: installation alone does not make a file shared.\n+Repeated research or a fact readily checked in code is not sufficient by itself. Propose it as\n+its own small, user-approved change to tracked `AGENTS.md` outside installer-managed blocks or\n+to a tracked project skill, not folded into unrelated work. Include the original human\n+correction when available, current code or other primary evidence, and the rule's scope. An AI\n+summary or host memory entry is an AI interpretation, not the human original or proof of\n+approval. If the original is missing, assess the claim against current evidence without\n+relabeling it as a past human correction. Use the existing review and gates; a proposed rule\n+cannot authorize its own adoption or weaken those checks. Confirm the target is tracked:\n+installation alone does not make a file shared.\n \n Agent Flow's current confined reviewer backend supports macOS only and also requires a\n verified `sandbox-exec` and the required installed Claude/Codex CLI reviewers. Linux and\n@@ -166,10 +172,10 @@ submitted input. Record only stages actually observed and leave the others `unkn\n for tracked files. This is a limit on claims in existing artifacts or reviews, not a new\n metadata schema, journal, or completion gate. A commit or file digest establishes identity,\n not consumption or model compliance. Do not share user memory/home with reviewers or remove\n-their isolation to make delivery observable. Codex may still read project `AGENTS.md` in the worktree; isolation of\n-user memory does not remove the influence of project instructions under review. That\n-reviewer independence question remains open; this memory guidance does not resolve it or\n-select a new reviewer setting.\n+their isolation to make delivery observable. Codex may still read project `AGENTS.md` in the\n+worktree, so isolating user memory does not remove the influence of project instructions\n+under review. That reviewer independence question remains open; this memory guidance does\n+not resolve it or select a new reviewer setting.\n \n Memory off/on evaluation is not part of this host-memory approach or team-rule acceptance.\n A future proposal should define the decision an evaluation will change before designing"
+      },
+      {
+        "sha": "2d97c1b96fe4aaa922d7ed4690b1083c18b0c0cb",
+        "filename": "docs/ko/TEAM-ADOPTION.md",
+        "status": "modified",
+        "additions": 22,
+        "deletions": 16,
+        "changes": 38,
+        "blob_url": "https://github.com/chonamdoo/agent-flow/blob/5a9b6f6bf93913bb2a8504cada18756a3bc29bf3/docs%2Fko%2FTEAM-ADOPTION.md",
+        "raw_url": "https://github.com/chonamdoo/agent-flow/raw/5a9b6f6bf93913bb2a8504cada18756a3bc29bf3/docs%2Fko%2FTEAM-ADOPTION.md",
+        "contents_url": "https://api.github.com/repos/chonamdoo/agent-flow/contents/docs%2Fko%2FTEAM-ADOPTION.md?ref=5a9b6f6bf93913bb2a8504cada18756a3bc29bf3",
+        "patch": "@@ -93,14 +93,18 @@\n 것: 환경 변수 override가 커밋된 값 위에 있고 의도적으로 관대하다. 그래서 `AGENT_FLOW_PROFILE`을\n export한 구성원은 다른 규칙 집합으로 돌고, 그 사실은 팀에 보고되지 않는다.\n \n-### 설치된 `AGENTS.md` 계약 블록\n+### `AGENTS.md` 계약과 `CLAUDE.md` 포인터\n \n 관리 계약의 정본은 `bootstrap/AGENTS.md.template`이고 설치된 참고 사본은\n `.agent-flow/bootstrap/AGENTS.md`다. 새 설치는 프로젝트의 루트 지침을 보존한다. 기존 legacy\n 설치는 운영 지침을 유지하고 소유권에 따라 `<!-- agent-flow:start -->` / `<!-- agent-flow:end -->`\n-안의 갱신 가능한 인덱스를 업데이트한다. 생성되는 `CLAUDE.md` 참고 사본은 포인터다.\n-`@AGENTS.md` import는 Claude author 세션에 계약과 프로젝트 규칙을 본문 중복 없이\n-전달한다. 격리된 Claude reviewer는 `--safe-mode`로 실행되고 runner가 명시적으로 구성한 리뷰 입력을\n+안의 갱신 가능한 인덱스를 업데이트한다. 생성되는 `CLAUDE.md` 참고 사본인\n+`.agent-flow/bootstrap/CLAUDE.md`는 포인터이며 세션 시작 때 로드되지 않는다. 루트 `AGENTS.md`\n+옆의 루트 `CLAUDE.md`로 쓸 때 그 `@AGENTS.md` import가 Claude author 세션에 계약과 프로젝트\n+규칙을 본문 중복 없이 전달한다. Claude는 import를 그 줄이 있는 파일 기준으로 해석한다. 일반\n+갱신은 기존 legacy 루트 `CLAUDE.md`를 다시 쓰지 않으므로, import가 Claude reviewer에 닿는다는\n+예전 포인터 문구가 남아 있을 수 있다. 이 절의 설명이 그 문구를 대체한다. 격리된 Claude\n+reviewer는 `--safe-mode`로 실행되고 runner가 명시적으로 구성한 리뷰 입력을\n 받는다(`src/agent_flow/multi_review.py`). 이 import만으로 reviewer에게 프로젝트 산문이 전달됐다고\n 판단할 수 없다. 전달 여부는 렌더링된 리뷰 입력에서 확인한다.\n \n@@ -120,21 +124,23 @@ installer가 관리하는 루트 인덱스가 활성화된 경우 팀이 `docs/`\n \n ### 호스트 메모리와 팀 공유 규칙\n \n-호스트 메모리는 사용자가 소유하는 선택적 참고 정보다. author는 기존 Claude, Codex, Gemini 환경이\n-제공하는 메모리를 사용할 수 있다. Agent Flow는 기능을 자동으로 켜거나 저장소를 관리하지 않으며,\n-별도 추출 모델이나 주입 경로를 추가하지 않는다. Gemini를 Agent Flow의 Claude/Codex reviewer\n-풀에 추가한다는 뜻도 아니다.\n+호스트 메모리는 사용자가 소유하는 선택적 참고 정보다. author는 Agent Flow를 실행하는 호스트인\n+Claude Code, Codex, OMP가 제공하는 메모리를 사용할 수 있다. Gemini 같은 다른 에이전트는 설치된\n+호스트 skill 없이 generic adapter를 통해서만 phase prompt를 따른다. Agent Flow는 호스트 메모리를\n+자동으로 켜거나 저장소를 관리하지 않으며, 별도 추출 모델이나 주입 경로를 추가하지 않는다.\n+Gemini와 OMP 모두 Agent Flow의 Claude/Codex reviewer 풀에 들어가지 않는다.\n \n `code-generation-discipline`은 Agent Flow 코드 작업에서 메모리의 근거 확인과 규칙 승격 기준을\n 적용한다. 호스트 메모리를 켜거나 세션 기록을 훑도록 요구하지 않는다.\n \n 기억한 내용은 유지할 가치가 있는 팀 공통 규칙일 때만 공유 규칙으로 제안한다. 반복 조사나 코드에서\n 바로 확인할 수 있는 사실이라는 이유만으로 승격하지 않는다. tracked `AGENTS.md`의 installer 관리\n-블록 밖이나 tracked 프로젝트 skill에 작은 변경을 제안한다. 확인할 수 있는 사람의 교정 원문, 현재\n-코드 등 직접 근거, 규칙의 적용 범위를 함께 남긴다. AI 요약이나 호스트 메모리 문장은 AI의 해석이며\n-사람의 원문이나 승인 증거가 아니다. 원문이 없으면 현재 근거로 주장을 검토하되 과거 사람의 교정으로\n-소급하지 않는다. 기존 리뷰와 gates를 거치며, 제안한 규칙이 자기 채택을 승인하거나 검증을 완화할 수\n-없다. 대상 파일이 tracked인지 확인한다. 설치만으로 팀 공유 파일이 되는 것은 아니다.\n+블록 밖이나 tracked 프로젝트 skill에 대한 작은 변경을 사용자가 승인한 별도 작업으로 제안하고,\n+관련 없는 작업에 섞지 않는다. 확인할 수 있는 사람의 교정 원문, 현재 코드 등 직접 근거, 규칙의\n+적용 범위를 함께 남긴다. AI 요약이나 호스트 메모리 문장은 AI의 해석이며 사람의 원문이나 승인\n+증거가 아니다. 원문이 없으면 현재 근거로 주장을 검토하되 과거 사람의 교정으로 소급하지 않는다.\n+기존 리뷰와 gates를 거치며, 제안한 규칙이 자기 채택을 승인하거나 검증을 완화할 수 없다. 대상\n+파일이 tracked인지 확인한다. 설치만으로 팀 공유 파일이 되는 것은 아니다.\n \n 현재 Agent Flow의 격리 reviewer backend는 macOS만 지원하며, 검증된 `sandbox-exec`와 필요한\n Claude/Codex CLI reviewer가 설치돼 있어야 한다. Linux와 Windows에서는 reviewer 실행 전에\n@@ -151,9 +157,9 @@ gates 통과는 위험을 줄이지만 메모리의 최신성이나 의미적 \n 나머지는 tracked 파일이어도 `unknown`으로 둔다. 이는 기존 artifact나 리뷰에서 주장할 때 지킬\n 한계이며 새 metadata schema, journal, 완료 gate가 아니다. commit이나 파일 digest는 파일의\n 정체성을 보여줄 뿐 실제 소비나 모델의 준수를 입증하지 않는다. 관측을 위해 사용자 메모리/home을\n-reviewer와 공유하거나 격리를 해제하지 않는다. Codex는 worktree의 프로젝트 `AGENTS.md`를 읽을 수 있으므로\n-사용자 메모리의 격리가 검토 대상 프로젝트 지침의 영향까지 없애지는 않는다. 이 reviewer 독립성\n-문제는 미해결이며 이번 메모리 지침이 이를 해결하거나 새 reviewer 설정을 선택하지 않는다.\n+reviewer와 공유하거나 격리를 해제하지 않는다. Codex는 worktree의 프로젝트 `AGENTS.md`를 읽을 수\n+있으므로 사용자 메모리의 격리가 검토 대상 프로젝트 지침의 영향까지 없애지는 않는다. 이 reviewer\n+독립성 문제는 미해결이며 이번 메모리 지침이 이를 해결하거나 새 reviewer 설정을 선택하지 않는다.\n \n 메모리 off/on 평가는 현재 호스트 메모리 방안의 구현이나 팀 규칙 채택 조건에 포함하지 않는다.\n 향후 평가가 필요하면 결과에 따라 바뀔 결정을 먼저 정하고 그 제안 범위에서 설계한다. 이 경우"
+      },
+      {
+        "sha": "ea8efdfe105c0297b60e3a6a9355c3c6550fe538",
+        "filename": "skills/code-generation-discipline/SKILL.md",
+        "status": "modified",
+        "additions": 2,
+        "deletions": 2,
+        "changes": 4,
+        "blob_url": "https://github.com/chonamdoo/agent-flow/blob/5a9b6f6bf93913bb2a8504cada18756a3bc29bf3/skills%2Fcode-generation-discipline%2FSKILL.md",
+        "raw_url": "https://github.com/chonamdoo/agent-flow/raw/5a9b6f6bf93913bb2a8504cada18756a3bc29bf3/skills%2Fcode-generation-discipline%2FSKILL.md",
+        "contents_url": "https://api.github.com/repos/chonamdoo/agent-flow/contents/skills%2Fcode-generation-discipline%2FSKILL.md?ref=5a9b6f6bf93913bb2a8504cada18756a3bc29bf3",
+        "patch": "@@ -14,8 +14,8 @@ Use this as the common implementation discipline. Do not score it. Apply it as a\n - Restate the requested behavior in one or two lines.\n - State assumptions and uncertainty. If the repo can answer a question, inspect it first.\n - Check existing patterns, helpers, APIs, and project instructions before adding a new approach.\n-- Treat user-owned host memory as optional context. When a remembered claim affects the change, check current files and primary evidence, especially after linked code, branch, tools, or team decisions change. Current project rules take precedence.\n-- Propose remembered knowledge as a team rule only when it is reusable and worth maintaining. Use a small tracked `AGENTS.md` change outside installer-managed blocks or a tracked project skill change, with current evidence and original human corrections when available. AI summaries are not human originals or approval evidence; use existing review and gates.\n+- Host memory is optional, user-owned context. Before relying on a remembered claim, recheck current files and primary evidence, especially after linked code, branch, tool, or team-decision changes. Current project rules take precedence.\n+- Propose remembered knowledge as a team rule only if reusable and worth maintaining, as its own user-approved change to tracked `AGENTS.md` outside installer-managed blocks or a tracked project skill, not folded into unrelated work. Cite current evidence and any original human correction. AI summaries are not human originals or approval; use existing review and gates.\n - Choose the smallest code path that can satisfy the request.\n - Define the authorized verification command or observable check before editing;\n   account for the active phase's execution permissions and assigned owner."
+      }
+    ]
+  }
+}
