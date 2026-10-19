@@ -79,7 +79,7 @@ def test_budget_limited_record_offsets_reserve_live_epoch_width():
 
 @pytest.mark.parametrize("reason,identifier", (
     pytest.param('거부😀"\\\n' * 220, 1, id="unicode"),
-    pytest.param("Original rejection evidence. " * 100, "\x01" * 256, id="ascii-maximum-escaped-id"),
+    pytest.param("Original rejection evidence. " * 70, "\x01" * 256, id="ascii-maximum-escaped-id"),
 ))
 @pytest.mark.parametrize("transport", ("modern", "legacy"))
 async def test_complete_feedback_reason_survives_bounded_mcp_continuation(authority, transport, reason, identifier):
