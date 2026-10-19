@@ -77,19 +77,23 @@ def test_budget_limited_record_offsets_reserve_live_epoch_width():
 
 
 
+@pytest.mark.parametrize("reason,identifier", (
+    pytest.param('거부😀"\\\n' * 220, 1, id="unicode"),
+    pytest.param("Original rejection evidence. " * 100, "\x01" * 256, id="ascii-maximum-escaped-id"),
+))
 @pytest.mark.parametrize("transport", ("modern", "legacy"))
-async def test_complete_feedback_reason_survives_bounded_mcp_continuation(authority, transport):
+async def test_complete_feedback_reason_survives_bounded_mcp_continuation(authority, transport, reason, identifier):
     from test_edge_boundaries import reconstruct_stored_inspection
 
     store, actor, binding = authority.store, authority.actor, authority.binding_id
     source = await store.capture(actor, command(authority, "feedback-original"))
-    reason = '거부😀"\\\n' * 220
+    store.settings = store.settings.model_copy(update={"max_mcp_response_bytes": 4096})
     rejected = await store.feedback(actor, FeedbackCommand(
         binding_id=binding, idempotency_key="full-rejection-reason", target_ref=source.source_id,
         kind="reject", body=reason,
     ))
     async with running(authority) as edge:
-        stored = await reconstruct_stored_inspection(edge, authority, rejected.artifact_id, transport)
+        stored = await reconstruct_stored_inspection(edge, authority, rejected.artifact_id, transport, identifier)
         assert stored["reason"] == reason and stored["body"] == reason
         assert stored["target_ref"] == source.source_id
         source_id = stored["source_id"]
