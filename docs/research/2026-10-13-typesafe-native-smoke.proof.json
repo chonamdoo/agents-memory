@@ -1,0 +1,159 @@
+{
+  "exit_code": 0,
+  "elapsed_seconds": 5.018074,
+  "requested_model": "claude-haiku-5-5",
+  "requested_effort": "low",
+  "isolation_arguments": [
+    "--tools",
+    "",
+    "--mcp-config",
+    "{\"mcpServers\":{}}",
+    "--strict-mcp-config",
+    "--safe-mode",
+    "--disable-slash-commands",
+    "--no-session-persistence",
+    "--max-turns",
+    "2"
+  ],
+  "input_transport": "stdin",
+  "fixture": "public synthetic only",
+  "is_error": false,
+  "subtype": "success",
+  "num_turns": 3,
+  "usage": {
+    "input_tokens": 4,
+    "cache_creation_input_tokens": 689,
+    "cache_read_input_tokens": 5640,
+    "output_tokens": 595,
+    "output_tokens_details": {
+      "thinking_tokens": 151
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 689,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 221,
+        "cache_read_input_tokens": 2820,
+        "cache_creation_input_tokens": 689,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 689
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "modelUsage": {
+    "claude-haiku-5-5": {
+      "inputTokens": 4,
+      "outputTokens": 595,
+      "cacheReadInputTokens": 5640,
+      "cacheCreationInputTokens": 689,
+      "webSearchRequests": 0,
+      "costUSD": 0.0004921000000000001,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "thinkingTokens": 151,
+      "canonicalModel": "claude-haiku-5-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  },
+  "total_cost_usd": 0.0004921000000000001,
+  "adapter_source": "git e1d4cc938204b22fc5a3c3aca7044072fe3f712d",
+  "question_ids": [
+    "s1",
+    "s2",
+    "s3",
+    "explicit_korean_personal",
+    "s2_durability"
+  ],
+  "response": {
+    "model": "claude-haiku-5-5",
+    "usage": {
+      "input_tokens": 4,
+      "output_tokens": 595,
+      "input_tokens_total": 4,
+      "output_tokens_total": 595,
+      "n_retries": 0,
+      "n_retries_malformed_structure": 0,
+      "latency": 5.019495457876474
+    },
+    "answers": {
+      "s1": {
+        "type": "choice",
+        "choice": "memory_candidate",
+        "confidence": 0.9249999999999999,
+        "probabilities": {
+          "memory_candidate": 0.95,
+          "exclude": 0.02,
+          "review_needed": 0.03
+        }
+      },
+      "s2": {
+        "type": "choice",
+        "choice": "exclude",
+        "confidence": 0.9249999999999999,
+        "probabilities": {
+          "memory_candidate": 0.02,
+          "exclude": 0.95,
+          "review_needed": 0.03
+        }
+      },
+      "s3": {
+        "type": "choice",
+        "choice": "review_needed",
+        "confidence": 0.47500000000000003,
+        "probabilities": {
+          "memory_candidate": 0.1,
+          "exclude": 0.25,
+          "review_needed": 0.65
+        }
+      },
+      "explicit_korean_personal": {
+        "type": "noul",
+        "noul": 0.95
+      },
+      "s2_durability": {
+        "type": "score",
+        "score": 0.06,
+        "confidence": 0.91,
+        "legend": {
+          "0": "Only transient progress.",
+          "1": "Possibly useful task note.",
+          "2": "Explicit durable knowledge."
+        },
+        "probabilities": {
+          "0": 0.95,
+          "1": 0.04,
+          "2": 0.01
+        }
+      }
+    }
+  },
+  "debug_attempts": 1,
+  "debug_contains_prompt": true,
+  "source_span_contract": false,
+  "company_approval_proven": false,
+  "calibration_proven": false,
+  "memory_mutation_performed": false,
+  "usage_note": "native cached input and thinking metadata retained; SDK totals are narrower; list-price cost is not a subscription invoice",
+  "served_identity_note": "CLI modelUsage observation only, effort requested; no independent server attestation",
+  "initial_attempt": "subprocess failed before stdout/stderr preservation; root cause unobserved; subsequent instrumented attempt succeeded",
+  "company_runtime_verified": false,
+  "calibrated_quality_verified": false,
+  "canonical_source_evidence_verified": false,
+  "application_feature_implemented": false,
+  "raw_reasoning_published": false
+}

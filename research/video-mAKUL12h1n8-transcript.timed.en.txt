@@ -1,0 +1,1515 @@
+# Why AI Coding Agents Need a Memory Pipeline
+# Source: https://www.youtube.com/watch?v=mAKUL12h1n8
+# YouTube automatic English en-orig JSON3; cue starts, not manually aligned word timings.
+
+[00:00:00.160] How do we make it such that we can
+[00:00:01.839] create a product that also helps people
+[00:00:04.240] iterate and build these uh these tools
+[00:00:06.799] quickly? Right? What was also funny is
+[00:00:09.280] that as I'm working on this project, Jev
+[00:00:11.440] came out,
+[00:00:12.480] >> right?
+[00:00:13.759] >> So that was also like a really cool
+[00:00:16.880] moment of like having an immediate use
+[00:00:19.920] case for it. And I think a lot of people
+[00:00:22.080] can relate to this that like you can
+[00:00:23.920] literally just give uh the agent keys to
+[00:00:26.240] the database and be like, "Oh yeah, this
+[00:00:28.800] you can just run this."
+[00:00:30.000] >> Dude, this is insanely cool. This is so
+[00:00:32.880] sick. What's up, y'all? Uh on today's AI
+[00:00:35.120] that works, we talked about a system for
+[00:00:36.719] generating memories from AI8 coding
+[00:00:39.120] agent sessions and generating a uh
+[00:00:41.600] proposed changes to your cloud MD or
+[00:00:44.000] your agents MD, a report on what to fix,
+[00:00:46.719] what agents get stuck on, what humans
+[00:00:48.559] keep correcting them on, and how you
+[00:00:50.399] would basically go from a very naive
+[00:00:52.239] pipeline of uh user and assistant
+[00:00:54.320] messages and uh basically taking key
+[00:00:56.960] content from what the user said and
+[00:00:58.559] turning it into memories and then
+[00:01:00.399] building that out and evaling it and
+[00:01:02.160] making a really sophisticated system of
+[00:01:04.320] every single thing that the agent may
+[00:01:06.000] have learned while running through
+[00:01:07.280] stuff. So, um, super fun episode. Aaron
+[00:01:09.520] did a really really good job. We dig
+[00:01:10.799] into the individual prompts, the
+[00:01:12.000] workflow steps, and, uh, it's it's a lot
+[00:01:14.720] of fun. You're going to learn a lot. I
+[00:01:15.920] learned a lot. I'm very excited to ship
+[00:01:17.439] this. Uh, hopefully we'll be able to
+[00:01:18.799] open source parts of this, too, and get
+[00:01:20.080] you all the code. But, uh, yeah, this is
+[00:01:22.159] great. Let's get into it. What's up,
+[00:01:23.680] everybody? This is the AI of the Works
+[00:01:25.280] Show, where we talk about AI, uh, that
+[00:01:27.280] works, uh, how to go beyond the demo
+[00:01:29.200] and, uh, real techniques that help you
+[00:01:30.960] do the thing. I'm Dex. I'm the uh CEO
+[00:01:33.439] and co-founder of Human Layer. We build
+[00:01:35.040] a uh multiplayer coding agent workspace.
+[00:01:37.280] I'm joined by Aaron, the co-founder and
+[00:01:39.600] CTO of BAML. Do you want to do a quick I
+[00:01:41.920] don't know, tell tell them about the
+[00:01:43.200] programming language, dude.
+[00:01:44.799] >> Yeah, we're uh we're making a
+[00:01:46.240] programming language uh to build with AI
+[00:01:48.640] and build AI pipelines and uh and then
+[00:01:52.399] yeah, I can't wait to show you what what
+[00:01:54.320] we're building uh using BAML in this
+[00:01:56.479] demo as well.
+[00:01:57.520] >> Yeah, this is going to be a really fun
+[00:01:58.560] show. So today we're going to talk about
+[00:02:00.719] um uh the human layer team and the
+[00:02:03.680] boundary team kind of joined forces. Uh
+[00:02:06.000] if you remember we did an episode
+[00:02:08.319] probably two months ago about a uh
+[00:02:12.080] memory pipeline but basically we worked
+[00:02:14.080] with the boundary team to design a
+[00:02:16.000] system to learn from your agent traces.
+[00:02:18.959] Uh and it's a really interesting
+[00:02:20.319] pipeline and uh pushes the pushes the
+[00:02:22.560] boundaries of what you can do with
+[00:02:23.520] structured output and new models like
+[00:02:25.040] Jev. Uh super exciting stuff. Um I can
+[00:02:29.520] um Erin, I'm going to share the uh do
+[00:02:32.239] you have the studio chat open? I'm just
+[00:02:33.599] I'm going to share the whiteboard with
+[00:02:34.560] you in case you in case you finding
+[00:02:36.640] yourself wanting to help draw.
+[00:02:38.080] Basically, the basic idea is, you know,
+[00:02:40.239] when you're running an agent, you have
+[00:02:41.280] your system prompt, you have your tools,
+[00:02:42.480] you have a user message. Maybe the user
+[00:02:44.560] says something like, you know, make make
+[00:02:45.920] me a billion dollars, make no mistakes,
+[00:02:47.680] ultraink. Uh the agent's going to read
+[00:02:50.959] and write and edit a bunch of stuff. uh
+[00:02:53.040] and then maybe say the app is ready and
+[00:02:55.280] then the user might come in and say,
+[00:02:56.720] "Oh, you know, this sucks for reason one
+[00:02:58.640] or reason two." They they reveal some
+[00:03:00.560] preference. Agent goes and fixes it. The
+[00:03:03.360] user gives more feedback and we keep
+[00:03:05.200] going on from there. And the idea is
+[00:03:08.080] these user messages. Oh, that's not what
+[00:03:10.480] I want. Um these user messages or like
+[00:03:14.640] what the assistant is doing if it has to
+[00:03:16.560] change something and run bash and then
+[00:03:18.159] change more stuff and it's like hill
+[00:03:20.000] climbing. either the agent learns
+[00:03:21.440] something in a session or the user
+[00:03:22.800] learns something in a session and then
+[00:03:25.200] when you go start your next session uh
+[00:03:27.440] that kind of learning gets lost uh in
+[00:03:30.000] your in your fresh context window. So we
+[00:03:31.680] wanted to build a system to take all of
+[00:03:33.599] your past conversations and turn it into
+[00:03:36.560] recommendations that the model gave for
+[00:03:38.799] cloudd snippets or anything like that.
+[00:03:41.280] Um, and uh, airship.
+[00:03:43.840] >> Yeah, just, you know,
+[00:03:45.360] >> stuff that like the agent gets stuck on
+[00:03:47.360] all the time that you're like, "Oh my
+[00:03:48.959] god, please do not run that command
+[00:03:50.879] again."
+[00:03:52.000] >> And some of this is really just tribal
+[00:03:54.239] knowledge.
+[00:03:54.879] >> Yep.
+[00:03:55.280] >> Um, and some of the other information
+[00:03:58.400] takes like, you know, 500 tool calls to
+[00:04:01.280] figure out by the agent. And maybe you
+[00:04:03.760] don't want to spend 500 tool calls. You
+[00:04:06.159] could just have a little snippet or like
+[00:04:08.159] an a diagram or a a flow of the
+[00:04:11.360] architecture of your program and put
+[00:04:13.360] that in cloud MD and then next time the
+[00:04:15.040] agent won't get confused. But the
+[00:04:16.720] problem is how do you find that and how
+[00:04:18.639] do you decide what makes it into your uh
+[00:04:22.079] cloud MD per se or like what makes it
+[00:04:24.000] into into your memory bank.
+[00:04:25.840] >> Yeah. And many of these memories become
+[00:04:27.440] out of date and we can talk about kind
+[00:04:29.040] of like okay how do you actually like
+[00:04:30.720] constantly also refine this thing? Um,
+[00:04:34.560] there's some there's some approaches
+[00:04:35.759] you've probably heard of like
+[00:04:36.560] compounding engineering or Matt PCO just
+[00:04:38.639] released his retro skill, which is like
+[00:04:40.960] go figure out what went wrong in past
+[00:04:42.960] sessions and make sure it doesn't happen
+[00:04:44.400] again. Um, but uh yeah, I I I would say
+[00:04:49.360] kind of like we started this with a very
+[00:04:51.919] naive uh system which was like we would
+[00:04:54.639] take one of these context windows and we
+[00:04:56.560] would just take the user and assistant
+[00:04:58.720] messages and strip out all the tool
+[00:05:00.160] calls just for like efficiency. Uh, and
+[00:05:03.120] we would send this into a Why are these
+[00:05:06.320] all dotted? Sorry. We would send this
+[00:05:08.720] into a single like Haiku structured
+[00:05:11.280] output
+[00:05:13.120] um just as like a proof of concept. And
+[00:05:14.960] what we would get out would be these
+[00:05:16.800] blocks of like you know findings
+[00:05:20.960] and then you would have like finding
+[00:05:22.479] number one would be uh you know uh you
+[00:05:28.000] know the memory that we wanted to pull
+[00:05:29.280] out. We actually called these context
+[00:05:30.479] shards uh because memory is like too too
+[00:05:33.600] generic and these were things we wanted
+[00:05:35.039] to be like conditionally triggered.
+[00:05:37.520] >> Um but you would have you would have
+[00:05:39.199] like the shard you would have the like
+[00:05:42.639] reasoning of like why is this a thing
+[00:05:44.560] that should go in your in your memory
+[00:05:46.080] system in your cloud MD or in your
+[00:05:47.600] skills or whatever it is. We would have
+[00:05:50.320] um I don't know do you remember what
+[00:05:51.520] else was in there? There was like a
+[00:05:52.479] citation of like
+[00:05:54.080] >> Yeah, citation was the exact which
+[00:05:55.919] sessions.
+[00:05:56.720] >> Yeah, exactly. Yeah. And then it would
+[00:05:58.080] have like you know uh session ID,
+[00:06:02.720] message ID, etc. So that we could tie it
+[00:06:05.680] back to a real conversation event
+[00:06:08.319] >> and and the user ID, right? One of the
+[00:06:10.560] interesting parts about uh human layer
+[00:06:13.440] is that many people are in your org and
+[00:06:16.080] you can kind of analyze all of these
+[00:06:17.840] sessions across
+[00:06:19.840] uh your whole team. Right.
+[00:06:21.280] >> Right. Yeah. We actually have
+[00:06:22.319] >> two different people are running into
+[00:06:24.400] the same problem. It's like oh okay.
+[00:06:26.319] >> Yeah. you might have user one and then
+[00:06:28.319] user two gives like a separate message.
+[00:06:30.639] Uh and so you want to be able to track
+[00:06:32.880] who said what. Um and so this would give
+[00:06:36.319] you out like a list of things that would
+[00:06:38.160] kind of display in the UI. Um you know
+[00:06:42.720] >> and and then the user could like you
+[00:06:44.960] know shard and then they had this like
+[00:06:47.360] enable button basically which would
+[00:06:49.840] enable it for a task or for sessions or
+[00:06:52.240] whatever it is. Uh this was really
+[00:06:54.319] really bad. Like it was like
+[00:06:56.000] directionally correct and like some of
+[00:06:57.919] the things were good. Um but you know we
+[00:07:00.639] had to keep adjusting the prompt here
+[00:07:02.479] and so the BAML guys were doing some
+[00:07:04.160] work where they work with companies they
+[00:07:05.680] like to uh and by the way if you're
+[00:07:07.280] building an AI pipeline you should talk
+[00:07:08.639] to them. Um but they built uh they
+[00:07:11.199] basically are looking for use cases for
+[00:07:12.880] BML as a language for building AI
+[00:07:14.720] pipelines and for building really good
+[00:07:16.560] sort of uh tools of this shape. And so
+[00:07:19.599] Aeron's gonna I'm going to stop sharing.
+[00:07:20.800] I'm going to let Aaron kind of talk
+[00:07:21.919] through the process and and what they
+[00:07:23.759] built.
+[00:07:24.400] >> Yeah. So, uh I'll share my screen. Um I
+[00:07:26.720] have a little a few set of slides we can
+[00:07:29.199] sort of like look at and then uh the
+[00:07:31.759] actual sort of final results. So, why
+[00:07:34.319] don't we start with the final results
+[00:07:35.759] maybe?
+[00:07:36.400] >> Um yeah.
+[00:07:37.919] >> Okay. You should see this window with uh
+[00:07:40.560] kind of like this pipeline view. So,
+[00:07:43.440] this is essentially the uh I'll show you
+[00:07:45.599] what we generated first. So I run this
+[00:07:48.880] in like you know one week of sessions
+[00:07:51.199] for uh
+[00:07:51.759] >> this is for your team for the B team
+[00:07:53.599] >> for my team
+[00:07:54.800] >> and you'll see that we created like
+[00:07:56.400] three different sort of like MD files
+[00:07:58.800] and they're actually tied to specific
+[00:08:00.560] regions in the code. So if the agent is
+[00:08:03.120] working on this thing called BAML
+[00:08:05.039] compiler to uh trir
+[00:08:08.240] uh you know we we added like one thing
+[00:08:10.319] here and like you know it's just saying
+[00:08:12.560] like a very very generic like this is
+[00:08:14.319] what this thing does. It's just like a
+[00:08:15.919] oneliner. Um, not all of these are
+[00:08:18.240] amazing. We're still tweaking them. But
+[00:08:20.400] if you go into like BAML built-ins for
+[00:08:22.400] example, it gives you like some uh
+[00:08:24.800] insights that are just like kind of more
+[00:08:26.479] tribal knowledge like oh don't use at
+[00:08:28.879] add internal syntax and like here's the
+[00:08:31.120] two sessions that uh you know came up
+[00:08:33.760] with that information and uh this is
+[00:08:37.839] >> this is a this is a web app you built to
+[00:08:40.320] kind of inspect the results of the
+[00:08:42.560] pipeline so that you could iterate on it
+[00:08:44.320] faster.
+[00:08:45.600] >> Exactly. So like for example in in in
+[00:08:48.240] CloudMD
+[00:08:49.760] uh it's like it has sections of like
+[00:08:51.600] where should you look at you know like
+[00:08:53.040] if you're an agent looking at this repo
+[00:08:55.440] and you're trying to find information
+[00:08:57.440] how can you find that information like
+[00:08:59.440] what what's the general architecture of
+[00:09:01.279] this thing. Uh then there's also rules
+[00:09:04.080] and then there's also like BAML language
+[00:09:06.160] facts. So for example an explicit first
+[00:09:08.640] self parameter marks an instance method
+[00:09:10.320] and becomes its receiver. Uh methods
+[00:09:12.880] without self are static. So, you know,
+[00:09:15.200] if if you don't understand what that
+[00:09:16.640] means, that's okay. But this is a very
+[00:09:18.240] specific language thing about BAML that
+[00:09:20.720] an agent should know about. And in here,
+[00:09:23.600] there were three sessions and two people
+[00:09:26.560] that kind of like gave this feedback or
+[00:09:28.959] like that ran into this fact
+[00:09:30.880] essentially.
+[00:09:31.839] >> And then we like coalesed that using our
+[00:09:33.920] pipeline that I showed you earlier and
+[00:09:36.399] uh came up with these three categories
+[00:09:38.320] of things that you might want to put in
+[00:09:40.080] your context chart essentially.
+[00:09:42.160] >> Yeah. So,
+[00:09:43.040] >> and and what's really what's really
+[00:09:45.120] interesting here is like I kind of think
+[00:09:46.560] of this we we actually like didn't like
+[00:09:48.320] you actually have multiple different
+[00:09:49.680] classes of I guess context shards which
+[00:09:52.320] is like you have where to find things.
+[00:09:54.240] You have rules which are like
+[00:09:55.600] behavioral. This is like
+[00:09:57.600] >> a human asked the model to behave in a
+[00:09:59.760] certain way or take a certain approach
+[00:10:01.360] versus information which is like here is
+[00:10:04.240] a thing which is true which may be hard
+[00:10:06.240] to discover from the repo itself.
+[00:10:08.959] >> Exactly. Exactly. the the the rules are
+[00:10:11.200] like, you know, a human specifically
+[00:10:13.200] said, "Please don't f this up, like
+[00:10:16.079] you're doing the wrong thing to an agent
+[00:10:17.920] and we detected that and we like noticed
+[00:10:20.160] that there was a message like that and
+[00:10:21.519] then we marked it down as like, hey,
+[00:10:23.760] this this fact might be useful. Let's
+[00:10:25.839] see if it shows up in more sessions." So
+[00:10:28.640] that's the end result. We also have a
+[00:10:30.399] little report here like you know we
+[00:10:32.959] don't need to read all this but for
+[00:10:34.240] example here's a chart that just says
+[00:10:36.000] like oh what are what's the stuff that
+[00:10:38.240] agents keep asking right how are the
+[00:10:41.040] current uh built-in BML files organized
+[00:10:43.839] this is kind of like an agent asking hey
+[00:10:46.480] how do I declare something in the BAML
+[00:10:48.399] standard library and you notice notice
+[00:10:51.040] that like 11 sessions and two people
+[00:10:53.200] kind of like ran into this like this is
+[00:10:55.360] a tough question that's being asked
+[00:10:58.320] >> um And uh and it's interesting because
+[00:11:01.440] once I ran this and I also gave it the
+[00:11:03.600] repo like this information is not using
+[00:11:06.160] our repo. It's just using our sessions
+[00:11:08.160] like session data.
+[00:11:09.920] >> But once I give you the repo it like
+[00:11:11.440] realized that agents aren't reading a
+[00:11:13.760] file we a file we have called
+[00:11:15.279] architecture.md
+[00:11:17.600] and it's like yeah they don't know
+[00:11:19.200] what's going on because they're not even
+[00:11:20.480] reading that file because you're not
+[00:11:21.760] telling them to read that file.
+[00:11:24.000] >> I see. So yeah. Okay. So the the answer
+[00:11:26.160] may not necessarily be to dump a crap
+[00:11:29.440] ton of facts into the into the cloud MD.
+[00:11:33.440] It may be like, hey, give an agent this
+[00:11:36.079] report in the repo and then tell it
+[00:11:38.880] like, hey, figure out how we fix this.
+[00:11:40.800] And it might find architecture.md and
+[00:11:42.800] say, oh, actually this can all be solved
+[00:11:44.399] by just putting a a reference file in,
+[00:11:46.640] you know, a reference in claude MD to
+[00:11:48.079] tell it to read architecture.mmd.
+[00:11:50.000] >> Yeah, exactly. And like um and another
+[00:11:52.959] interesting part that um when I started
+[00:11:54.720] you know working with uh Dex on this
+[00:11:56.560] project was like the cost right so like
+[00:11:59.760] Dex's original pipeline you know you
+[00:12:01.760] prune all the tool calls you get the
+[00:12:03.360] human messages and the agent messages
+[00:12:05.200] and that gets you pretty uh what's it
+[00:12:08.079] called uh pretty lenient on the amount
+[00:12:11.040] of data that you uh analyze but it still
+[00:12:13.839] can be very expensive. Yeah, we did that
+[00:12:16.160] to keep its
+[00:12:17.360] >> we did that to keep it cheap and it
+[00:12:18.959] still wasn't that cheap because Haiku
+[00:12:20.399] 4.5 is not that cheap of a model but uh
+[00:12:23.760] but it was like okay cool like how do
+[00:12:25.839] what you know and you leave out a ton of
+[00:12:28.240] data.
+[00:12:29.600] >> Yeah. So for like one of the things that
+[00:12:32.000] I focused on is like okay yeah sure I
+[00:12:34.399] could ask an agent to always generate a
+[00:12:36.320] report for this and you know just go
+[00:12:38.399] dive into all the logs and spend a ton
+[00:12:40.560] of time doing this. Uh but we do want to
+[00:12:43.279] have a workflow that is like cheap. So
+[00:12:45.680] for example, this one analyzed a week's
+[00:12:48.000] worth of our coding data for like uh $2
+[00:12:52.639] or sorry one uh two cents, sorry, two
+[00:12:55.040] cents.
+[00:12:55.760] >> Two cents per session.
+[00:12:56.720] >> Very very cheap. Yeah. Two cents per
+[00:12:58.399] session, right? Uh so it's very very
+[00:13:00.560] cheap to do this and like think of of
+[00:13:03.120] how many tokens you can spend on one
+[00:13:05.519] session. And the fact that we were able
+[00:13:07.839] to analyze that for two cents is kind of
+[00:13:10.079] nuts. like how do we do that? Uh so
+[00:13:13.279] anyway, when I got this problem, the
+[00:13:15.600] first thing was uh here, let me skip
+[00:13:18.320] through this.
+[00:13:21.040] >> Oh, this looks cool. We're skipping all
+[00:13:22.560] of this. All right, cool.
+[00:13:23.680] >> Yeah, we're skipping. We're skipping
+[00:13:24.959] this. Um so, the first thing that I was
+[00:13:27.920] uh looking at Oh, five of house has
+[00:13:30.639] echo.
+[00:13:32.480] Yeah, the first thing that I sort of
+[00:13:35.040] started doing here is um you know like I
+[00:13:38.800] I clearly have a task and it's like
+[00:13:40.720] let's generate good context charts for
+[00:13:43.040] my repo. Like where do I start? I have
+[00:13:45.519] so much data to analyze. I can't
+[00:13:47.440] possibly read everyone's coding sessions
+[00:13:49.920] and figuring out what's what's
+[00:13:51.760] happening.
+[00:13:52.720] >> So the first thing that I had to do is
+[00:13:54.160] like build lots of tools. And I'm not
+[00:13:56.959] even kidding like this dashboard that I
+[00:14:00.000] uh I'm showing here. This is like one
+[00:14:02.000] out of 10 dashboards that I built. Uh so
+[00:14:06.000] >> version 10 of it.
+[00:14:07.519] >> Yeah, this is version 10. So like you we
+[00:14:10.560] you know there's this view like
+[00:14:11.760] sessions. This actually stayed the same
+[00:14:13.440] throughout cuz I'm just like okay I just
+[00:14:15.120] want to like go through each session and
+[00:14:17.360] like look at the messages, right? It's
+[00:14:19.040] very simple.
+[00:14:20.240] >> But then it's like okay what if I
+[00:14:22.320] >> Yeah. What if I want to filter tool
+[00:14:24.000] calls or filter only by human messages?
+[00:14:26.560] That way I can just figure out what's
+[00:14:27.920] happening here. It's like, okay, this
+[00:14:30.240] this human is saying all these things
+[00:14:32.399] and maybe they're frustrated or
+[00:14:34.480] whatever. Let's see if it if it showed
+[00:14:36.480] up in our actual context chart
+[00:14:38.560] somewhere. Um, I even had like Sanki
+[00:14:41.600] diagrams like okay from from these
+[00:14:44.560] sessions we like extracted this
+[00:14:46.480] information and then it outputed some
+[00:14:48.079] other stuff. But yeah, that's the main
+[00:14:50.240] thing. It's like you need to build lots
+[00:14:52.000] of tooling uh to understand the the data
+[00:14:55.519] that you're dealing with. Then uh and
+[00:14:58.959] then this is just kind of like what I
+[00:15:00.480] was telling you like just build so many
+[00:15:02.399] websites and then the other thing that I
+[00:15:05.040] did is okay like we clearly have cloud
+[00:15:08.480] code cloud code can do a lot of things
+[00:15:10.880] uh for me to like investigate what the
+[00:15:13.279] best approach is. So the first thing
+[00:15:16.240] that I did is like let's just um create
+[00:15:18.959] one of these reports using cloud code,
+[00:15:21.839] right? Like an agent. Just an agent
+[00:15:24.399] going through the data and figuring out
+[00:15:26.800] what actually matters and what doesn't
+[00:15:28.639] matter.
+[00:15:29.360] >> Yep.
+[00:15:30.000] >> And when you do that, you start
+[00:15:32.000] realizing, oh, like, oh, Claud's like
+[00:15:34.480] filtering these messages out or it's
+[00:15:36.160] like doing this other thing and it's
+[00:15:37.680] doing this other thing. And then you
+[00:15:39.519] start realizing what patterns it's using
+[00:15:41.680] and what data it's looking at to make
+[00:15:43.600] these decisions.
+[00:15:44.800] >> And this is a this is a thing we say on
+[00:15:46.959] the show all the time which is like
+[00:15:48.720] start with the smartest model and the
+[00:15:51.519] most like you know open open-ended
+[00:15:54.079] pipeline shaped thing and like see what
+[00:15:57.199] is possible. See what is possible with
+[00:15:58.959] maximum intelligence. And then as you
+[00:16:00.800] figure out patterns that work then you
+[00:16:02.880] distill that down and try to optimize
+[00:16:04.880] for like latency or price or whatever it
+[00:16:07.519] is. as you build a more opinionated
+[00:16:09.040] workflow.
+[00:16:10.320] >> Exactly. You kind of want to see like
+[00:16:11.920] what's possible first. And uh you know
+[00:16:14.880] if if I if I look at the cloud code bill
+[00:16:17.920] like the actual API usage, I probably
+[00:16:19.519] spend like a hundred bucks just to like
+[00:16:21.600] do the same report that cost me 50 cents
+[00:16:24.480] at the end, right?
+[00:16:25.680] >> Yep. So um so yeah like uh you know we
+[00:16:30.240] basically started in cloud code uh you
+[00:16:33.040] know watch it with watch which which
+[00:16:34.800] scripts it it it it wrote and then we
+[00:16:37.519] came up with um like we we started
+[00:16:39.759] getting a sense of like what we wanted
+[00:16:41.360] right it's like okay we need to extract
+[00:16:42.959] sessions find some memories
+[00:16:46.160] uh collect some tool calls figuring out
+[00:16:48.320] like what activity is happening in this
+[00:16:50.000] repo and then like write the insights.
+[00:16:52.160] So this is a very early very early like
+[00:16:55.040] kind of workflow of like what we were
+[00:16:56.800] having.
+[00:16:58.000] >> Um and in BAML like in BAML we just like
+[00:17:02.480] uh like added functions essentially like
+[00:17:05.120] here's an LLM function that like uh
+[00:17:07.919] scores messages for example and I can
+[00:17:10.640] just think about like inputs and outputs
+[00:17:12.480] in my workflow. Um this makes it easy.
+[00:17:15.520] You have prompt that out outputs a
+[00:17:18.480] basically a single float number which is
+[00:17:20.559] like you know from 0 to one like how
+[00:17:22.640] true is this or what is the score thing.
+[00:17:25.760] >> Exactly. It just outputs a float and
+[00:17:27.679] then it just kind of works like in BAML
+[00:17:29.840] we like make sure that this float is the
+[00:17:32.000] actual like probabilistic number like
+[00:17:33.679] the probability that it matches this
+[00:17:35.840] description.
+[00:17:36.960] >> Okay. So yeah, that's the basic JS and
+[00:17:39.280] I'll dive more into the actual prompts
+[00:17:40.880] and outputs and inputs and that kind of
+[00:17:42.880] thing.
+[00:17:43.679] >> But yeah, you can see like you know this
+[00:17:45.520] is kind of like a message. There's a
+[00:17:47.520] target message like uh the agent was
+[00:17:50.559] looking at some media and then uh Jev is
+[00:17:53.520] kind of like figuring out whether the
+[00:17:55.280] agent is trying to discover something uh
+[00:17:58.160] or not.
+[00:17:59.280] >> I see. So you you're just trying to
+[00:18:00.960] filter out which of the messages are the
+[00:18:02.880] agent looking for information or trying
+[00:18:04.960] to understand something.
+[00:18:05.760] >> Exactly. Exactly. So you can filter out
+[00:18:08.400] a lot of things.
+[00:18:10.000] >> Um and then the other part like and I
+[00:18:13.120] haven't even dove into like what we
+[00:18:14.799] actually did and I'll get that into a
+[00:18:16.240] second but I think this is more
+[00:18:17.280] important of like how do you build any
+[00:18:19.120] pipeline in general but another
+[00:18:21.840] interesting part was that if uh if you
+[00:18:23.840] can't iterate quickly you're going to
+[00:18:25.280] spend too much time building this thing.
+[00:18:27.440] >> Yeah. If you have to run the if you have
+[00:18:29.440] to run a whole workflow end to end to
+[00:18:31.679] test one change halfway through the
+[00:18:34.000] middle of it, it's going to take way too
+[00:18:35.919] long to figure out the right answer.
+[00:18:38.080] >> Exactly. Um, so the first thing that I
+[00:18:40.480] did is like can I just rerun this using
+[00:18:42.480] the previous data in my workflow. So
+[00:18:44.880] note that we have a very simple workflow
+[00:18:46.640] like can I just like cache data and um
+[00:18:50.080] yeah we did that. we'd like just cache
+[00:18:52.160] requests uh
+[00:18:55.120] and you know
+[00:18:56.080] >> so you're hashing the inputs and then
+[00:18:58.640] caching that as just a JSON file on
+[00:19:01.039] disk.
+[00:19:01.919] >> Exactly. I'm just doing it on disk. And
+[00:19:04.160] I was also thinking like why isn't this
+[00:19:06.000] kind of like more part of the language,
+[00:19:07.919] right? Like
+[00:19:09.120] >> since we're if we're building BAML like
+[00:19:10.720] how can we like make this even faster
+[00:19:12.720] and just like you don't have to think
+[00:19:14.000] about it. And it's funny like cuz I saw
+[00:19:16.640] this tweet by Jared uh Sumner um uh for
+[00:19:20.640] Bun and he's like man what if fetch made
+[00:19:23.120] it easy to cache requests and and
+[00:19:24.640] responses into a SQLite DB
+[00:19:26.960] >> right and I was like ah interesting
+[00:19:29.280] interesting um and you know you can just
+[00:19:31.840] like kind of replay messages replay a
+[00:19:33.760] whole pipeline and like not worry about
+[00:19:35.360] it. So
+[00:19:36.559] >> one of the things that you should do is
+[00:19:38.480] figure out how like you can iterate
+[00:19:40.480] quickly and what tools you can build to
+[00:19:42.880] do that. One of them is like this replay
+[00:19:45.039] capability.
+[00:19:46.160] >> Cool.
+[00:19:46.640] >> Um,
+[00:19:48.559] so and then the other thing is as I'm
+[00:19:51.760] iterating through these prompts and you
+[00:19:53.679] know like trying to figure out what's
+[00:19:55.039] happening in this pipeline and let me
+[00:19:56.559] just give you a refresher of the
+[00:19:58.000] pipeline.
+[00:20:00.160] Uh, this takes a little bit to load but
+[00:20:03.600] this is kind of like the pipeline. So
+[00:20:05.600] it's divided into three things like what
+[00:20:07.919] did the agents find out in general like
+[00:20:10.400] what are facts about the about the
+[00:20:12.799] transcript. Uh this is what the people
+[00:20:15.520] like humans actually corrected agents
+[00:20:17.919] like when did they correct agents and
+[00:20:19.520] what did they say? And then this is like
+[00:20:21.600] what agents kept researching. Um, but as
+[00:20:25.840] I'm working on these things and there's
+[00:20:28.559] like filtering steps and all kinds of
+[00:20:30.720] stuff like I I actually had some bugs
+[00:20:33.760] where like I was, for example, I pruned
+[00:20:36.480] messages that were uh human messages
+[00:20:39.280] that were too long or like agent
+[00:20:42.080] messages that were too long. And what
+[00:20:43.520] you really want to do is you want to
+[00:20:44.640] prune the middle of the message, right?
+[00:20:46.880] Cuz uh
+[00:20:47.760] >> you don't want to just truncate from the
+[00:20:49.440] end.
+[00:20:50.559] >> Exactly. You want to truncate uh the
+[00:20:52.640] middle of it. Uh, and then that way you
+[00:20:54.559] can get like a summary and you can get
+[00:20:56.159] like the beginning of the message and
+[00:20:57.679] you don't want like some like random
+[00:20:59.840] design dock that the agent came up with.
+[00:21:02.559] Um, and that saves a lot of tokens. But
+[00:21:05.440] how did I realize that? Well, I actually
+[00:21:07.840] just asked my cloud code as I'm
+[00:21:09.679] iterating on this like, hey, can you
+[00:21:11.120] just print out all the prompts at each
+[00:21:13.120] step? Like I want to know what's
+[00:21:14.720] happening.
+[00:21:15.760] >> Um, and then by doing that, I was able
+[00:21:18.000] to like figure out what this pipeline is
+[00:21:19.600] even doing.
+[00:21:20.880] >> Can you show us the prompts? Like I
+[00:21:22.960] guess you're only sharing your window.
+[00:21:24.400] Um but
+[00:21:25.280] >> yeah uh
+[00:21:26.159] >> we can get into it later too if you want
+[00:21:27.760] to if you want to keep going on this on
+[00:21:29.360] the on the slides.
+[00:21:30.880] >> Yeah. Yeah. Yeah. I can almost done
+[00:21:32.799] through the slides and then I can show
+[00:21:33.919] you more details. But uh I think I might
+[00:21:36.320] have
+[00:21:40.240] Oh yeah. I'm only showing my window. Uh
+[00:21:43.039] but yeah, here's like inputs and outputs
+[00:21:44.799] that I can show in a bit. Um
+[00:21:46.640] >> cool.
+[00:21:47.840] But yeah, and here like Jeb is just
+[00:21:49.360] classifying replies. It's like not a
+[00:21:51.360] correction. Like uh the agent did this
+[00:21:54.559] stuff, the human said do phase six and
+[00:21:57.679] then Jeff said, "Hey, this is not a
+[00:21:59.360] correction. It's just the the human
+[00:22:00.880] saying like do the next step."
+[00:22:02.480] >> Mhm.
+[00:22:02.880] >> Uh so that's like one thing. Uh but
+[00:22:05.360] yeah, so I'm going through that and
+[00:22:07.360] yeah, just read the prompts. Read like
+[00:22:08.880] what what the heck is if you're not
+[00:22:10.240] going to read the code, at least read
+[00:22:11.520] some of the prompts. I I think I think
+[00:22:13.600] actually the prompts are some of the
+[00:22:14.720] most important things to read because I
+[00:22:16.799] think in general models are bad at at
+[00:22:19.120] writing prompts. Uh I I I I think this
+[00:22:23.120] comes down to I've said this about skill
+[00:22:24.559] writing too is like when a model writes
+[00:22:26.080] a skill, it's mostly taking what you
+[00:22:28.799] said and then combining it with what's
+[00:22:31.120] already in the weights and then writing
+[00:22:32.640] that into a file. So like you often get
+[00:22:34.480] skills that say things like always run
+[00:22:36.480] the tests or like make sure you keep
+[00:22:38.640] code concise and it's like anything that
+[00:22:40.799] is in the skill or the prompt that you
+[00:22:43.039] yourself did not write is by definition
+[00:22:47.200] something that is already in the model
+[00:22:49.039] weights because the model put it there
+[00:22:50.559] out of the weights and so you are by
+[00:22:52.640] definition not adding any useful content
+[00:22:55.440] >> by by letting the model write the
+[00:22:56.880] prompts.
+[00:22:58.080] >> Yeah, it's just basic slop essentially.
+[00:23:00.480] Um, so read read the prompts. Uh, and so
+[00:23:04.159] for example, this is what I I was
+[00:23:05.600] telling you about that I like I'm like,
+[00:23:07.360] "Oh I'm truncating like viable
+[00:23:09.360] data here and I should just truncate
+[00:23:11.280] like the top and the and the bottom of
+[00:23:13.039] the message."
+[00:23:14.080] >> Nice.
+[00:23:14.480] >> Um, and uh and then yeah like uh the
+[00:23:18.720] other thing is um yeah, you can just
+[00:23:21.679] iterate faster. Like for example, I I
+[00:23:23.760] had like all these rules for Jev.
+[00:23:26.320] >> Yeah.
+[00:23:26.559] >> It's like is this tribal knowledge? Like
+[00:23:28.240] I was just asking all these questions
+[00:23:30.559] and then eventually I landed in like
+[00:23:32.159] this question like just cuz I was like
+[00:23:34.000] looking at the prompt and looking at the
+[00:23:35.360] data structures of like what Jeff was
+[00:23:37.280] trying to get
+[00:23:38.320] >> and you were you looking at the outputs
+[00:23:39.919] too you were like okay which which one
+[00:23:41.520] of these when I eyeball them this is
+[00:23:42.960] like the vibe val right like when I
+[00:23:44.480] eyeball this which ones of these are are
+[00:23:46.559] are useless and how can I change the
+[00:23:48.720] question to eliminate these
+[00:23:50.559] >> and uh even even also like since I ran
+[00:23:53.520] this thing with cloud code initially and
+[00:23:55.440] I produced like this amazing set of like
+[00:23:58.240] context charts at the start of this
+[00:24:00.799] whole project.
+[00:24:02.080] >> I always like compared I always compared
+[00:24:04.960] everything I ran to that run.
+[00:24:07.120] >> So like for example, it says key
+[00:24:08.559] messages kept and in here it's just
+[00:24:10.240] saying like um out of all the messages
+[00:24:12.720] from the golden data set like how many
+[00:24:15.120] does this prompt actually filter out?
+[00:24:17.520] >> Yeah.
+[00:24:17.760] >> And the question is like it keeps all of
+[00:24:19.520] the ones that are relevant.
+[00:24:20.720] >> So your recall is high.
+[00:24:22.880] >> Exactly. Recall is high. So literally it
+[00:24:24.559] it only kept 60% of the text, but it
+[00:24:27.360] kept 100% of the data that that was
+[00:24:30.240] valuable.
+[00:24:31.279] >> So I'm like, "Oh, hell yeah." Like,
+[00:24:32.880] "Let's do that, right?"
+[00:24:35.600] >> Um, and so yeah, like this is kind of
+[00:24:38.000] like Jeff, you know, running through
+[00:24:39.440] this prompt called score discovery, like
+[00:24:42.159] figure out which messages are just
+[00:24:43.520] trying to find things.
+[00:24:44.960] >> Yeah.
+[00:24:45.360] >> Uh, and then, you know, like pruning a
+[00:24:48.000] ton of data like just to like save
+[00:24:50.080] tokens.
+[00:24:51.039] >> Yep. Um so yeah that's the thing and
+[00:24:54.559] then uh once I did that like and I built
+[00:24:57.760] this little pipeline I showed it to my
+[00:24:59.520] team and obviously you need to get
+[00:25:01.039] feedback you need to get feedback from
+[00:25:02.960] from humans and you need to get those
+[00:25:05.760] humans to figure out if this is even
+[00:25:07.520] useful um and the key question is like
+[00:25:10.960] would you add this to your code right
+[00:25:12.720] because like people were like very very
+[00:25:14.720] very lukewarm of like h maybe this could
+[00:25:17.039] work maybe this couldn't work but I
+[00:25:19.200] think once I had like more uh precise
+[00:25:22.880] information of like uh like the
+[00:25:25.440] different contextual sort of like cloud
+[00:25:27.840] MDs of like oh yeah this is like this is
+[00:25:30.720] the one for the top repository this is
+[00:25:32.320] the one for like BML built-ins then it
+[00:25:34.880] made more sense to uh then these like
+[00:25:38.480] context charts actually were more useful
+[00:25:40.640] essentially
+[00:25:42.159] um
+[00:25:42.480] >> this is sick
+[00:25:43.919] >> so yeah initially we had like so many of
+[00:25:45.919] these like memories like 947
+[00:25:49.279] and Um
+[00:25:51.679] and then we like just split it into this
+[00:25:53.520] pipeline and I can dive into the actual
+[00:25:55.840] pipeline. Uh so essentially this is what
+[00:25:58.320] you you guys are seeing. Uh remember
+[00:26:01.120] like that we divided into three sections
+[00:26:03.279] what agents find found out the
+[00:26:05.200] corrections that people gave agents and
+[00:26:07.600] what agents kept researching.
+[00:26:09.840] >> And so in here we
+[00:26:11.279] >> what's the difference between what
+[00:26:12.320] agents found out and what agents kept
+[00:26:14.480] researching?
+[00:26:16.320] >> Yes. So um what agents found found out
+[00:26:20.480] is just like basic small little facts of
+[00:26:24.400] the codebase.
+[00:26:25.760] >> Okay.
+[00:26:26.159] >> Uh so it like includes more more data
+[00:26:28.640] than just like what agents kept
+[00:26:30.000] researching. This is more like an agent
+[00:26:32.240] got stuck
+[00:26:33.679] >> literally what what what were agents
+[00:26:36.159] like deciding they needed to figure out.
+[00:26:38.720] >> Exactly. And not only that
+[00:26:40.000] >> accidentally figure out.
+[00:26:41.600] >> Yeah. And and for this one for example,
+[00:26:43.440] what we do is we actually build a map of
+[00:26:45.440] the code like we take every single path
+[00:26:48.400] that the agents are measuring and and
+[00:26:50.559] looking through. Um and then we like
+[00:26:53.440] build a map of the code and we actually
+[00:26:55.039] like kind of create a heat map of the
+[00:26:57.360] codebase and we say okay this one fact
+[00:27:01.120] that like spans throughout the whole
+[00:27:02.880] codebase or spans like 17 files we
+[00:27:05.760] should probably like put that into some
+[00:27:07.520] sort of context shard. Uh these ones are
+[00:27:10.640] more like a simple fact like oh you know
+[00:27:13.360] BAML requires uh decorator in this
+[00:27:15.919] position that kind of thing.
+[00:27:18.000] >> I see.
+[00:27:18.480] >> And so this is more generic and and yeah
+[00:27:20.960] sure initially like a fact is like
+[00:27:22.559] whatever like you don't really care much
+[00:27:24.000] about it but once you start having more
+[00:27:26.480] sessions and more uh data then you start
+[00:27:30.320] like grouping these together. And so for
+[00:27:32.799] example in here we have a grouping step
+[00:27:35.039] and we say like hey these facts were
+[00:27:36.720] extracted from separate co coding
+[00:27:38.320] sessions find facts that are the same
+[00:27:40.559] thing as another fact right
+[00:27:43.279] >> then you start building sort of like a
+[00:27:45.520] exactly you start building sort of like
+[00:27:47.279] a a model of like okay these facts are
+[00:27:50.480] going to turn into sort of a memory
+[00:27:52.480] >> like I've seen them so often that I need
+[00:27:54.640] to remember them.
+[00:27:55.760] >> Yep.
+[00:27:56.559] >> Right. Uh and so then we can like start
+[00:27:58.720] grouping things and you know that's why
+[00:28:00.720] in in here we for each single memory our
+[00:28:04.000] context sh that we put in here we put
+[00:28:06.080] like all the sessions
+[00:28:07.919] >> and these come from all of those
+[00:28:09.440] different facts.
+[00:28:10.640] >> Okay. So the same kind of fact gets
+[00:28:12.640] extracted from 10 different sessions or
+[00:28:14.960] 11 different sessions and then you group
+[00:28:16.720] them together.
+[00:28:18.159] >> Exactly. Exactly. So uh that's the main
+[00:28:21.039] main gist and here's all the all the
+[00:28:23.279] prompts as well. So like in here we're
+[00:28:25.919] just filtering all the messages with
+[00:28:27.679] Jeff. And what was also funny is that as
+[00:28:30.640] I'm working on this project, Jev came
+[00:28:32.640] out,
+[00:28:33.440] >> right?
+[00:28:34.640] >> So that was also like a really cool
+[00:28:37.840] moment of like having an immediate use
+[00:28:40.799] case for it and I think a lot of people
+[00:28:42.960] can relate to this that like you can use
+[00:28:45.520] these classifier models to reduce how
+[00:28:47.840] much data you're processing uh very
+[00:28:50.240] easily. Uh and having such a capable
+[00:28:52.720] model is super useful. uh like
+[00:28:55.120] classification is one of like a very
+[00:28:57.520] common problem in any pipeline.
+[00:28:59.840] >> If you if you didn't have Jeb, like what
+[00:29:01.840] was what was the plan to do this without
+[00:29:04.000] Jev?
+[00:29:05.200] >> Like small model.
+[00:29:08.000] >> Yeah, exactly. Yeah. Like I would just
+[00:29:10.240] use Luna, but uh even Luna is more
+[00:29:12.320] expensive than uh than Jeff. So
+[00:29:15.679] >> cool.
+[00:29:16.000] >> Jeff was definitely clutch. Definitely
+[00:29:18.320] clutch.
+[00:29:19.120] >> Awesome.
+[00:29:19.600] >> Uh so yeah, we like filter things.
+[00:29:21.679] Here's like the prompt and in BAML like
+[00:29:23.840] I said you just put like the float and
+[00:29:26.640] we just figure out how to convert it
+[00:29:28.159] into a probability from Jev. Then we
+[00:29:31.760] like find facts. It's just like like hey
+[00:29:35.039] like uh these are all the instructions.
+[00:29:36.640] You're reading a coding session between
+[00:29:38.240] a person and AI agent. Um skip generic
+[00:29:42.559] advice, personal preferences, plans that
+[00:29:44.799] were not carried out. Fix recipes and UI
+[00:29:47.279] styling like that kind of thing. This
+[00:29:49.840] could be like very custom made, right,
+[00:29:51.679] to like each team. But in general, you
+[00:29:53.919] want to avoid personal preferences or
+[00:29:55.919] like very generic things like why do I
+[00:29:58.320] care about just super generic advice
+[00:30:00.960] that's in the weights already?
+[00:30:02.880] >> Yeah.
+[00:30:03.520] >> Um.
+[00:30:04.159] >> Yep.
+[00:30:04.799] >> So, so yeah, that's uh the basic gist.
+[00:30:09.600] Then we group things uh as I mentioned.
+[00:30:12.640] And then after grouping, we actually do
+[00:30:15.039] another filtering step. And even in the
+[00:30:18.159] filtering step for each of these
+[00:30:20.720] memories, we judge them. We're like,
+[00:30:22.320] "Hey, is this tribal knowledge?" Uh, is
+[00:30:25.600] this like readable? Would an agent see
+[00:30:27.440] this as as soon as as it opens a file or
+[00:30:29.600] function? Like what I want to know about
+[00:30:31.679] this readable thing is whether you're
+[00:30:34.559] just kind of like the documentation is
+[00:30:37.679] the code, right? So I don't need to
+[00:30:40.159] restate uh the code in some file. You
+[00:30:43.200] can just read the code and the agent can
+[00:30:44.960] just read the code. What I really want
+[00:30:46.720] to keep is stuff that is not obvious by
+[00:30:49.520] reading the code. So that's kind of like
+[00:30:53.520] there's like one that is like okay you
+[00:30:55.840] have to read 10 files to understand
+[00:30:57.679] this.
+[00:30:59.039] >> Exactly. Exactly. So that's the thing
+[00:31:01.120] that I did at the bottom here like you
+[00:31:04.320] know there's a code map and I have to
+[00:31:06.159] figure out essentially did it read 10
+[00:31:08.720] files to understand this or not. I'm
+[00:31:10.880] excited to see the output format for the
+[00:31:12.880] code map like what that actual data
+[00:31:14.559] structure looks like. But um
+[00:31:16.320] >> yes,
+[00:31:17.440] >> we'll keep going through the top
+[00:31:18.480] pipeline first.
+[00:31:19.760] >> Yeah. Yeah. Then we judge memories. So
+[00:31:23.279] we run it through like a stronger model.
+[00:31:25.600] So again, you you'll notice how there's
+[00:31:27.600] like a pre-screening and then like a
+[00:31:29.360] strong model. So it's always like you
+[00:31:31.760] know the the weak model, strong model,
+[00:31:34.480] strong model, weak model, strong model.
+[00:31:37.360] And uh we want to have like good results
+[00:31:39.279] in like judging these memories and you
+[00:31:41.679] know ddup things ddup memories that
+[00:31:44.080] don't make sense
+[00:31:45.519] >> things like that. Uh and then we just
+[00:31:48.159] like sort these memories again
+[00:31:51.360] >> uh into like these rules the thing that
+[00:31:53.279] I showed you in the report.
+[00:31:55.440] >> Mhm.
+[00:31:55.840] >> And this is just very easy to do. And
+[00:31:57.519] like we could probably join this with
+[00:31:59.279] this.
+[00:32:00.159] >> What is what are those types map to?
+[00:32:03.039] like defect or uh internals like are
+[00:32:06.240] those enum values or
+[00:32:08.159] >> yeah they're uh they're enums. So you
+[00:32:10.399] just in BAML you can just literally give
+[00:32:12.000] it an enum and we'll figure out you know
+[00:32:14.159] we'll give this to Jeff in a way that
+[00:32:15.919] makes sense.
+[00:32:17.120] >> We'll just say like hey
+[00:32:18.080] >> classify it.
+[00:32:19.600] >> Exactly. It's just like out of these
+[00:32:21.519] enums choose the best one and we'll just
+[00:32:23.519] give you the best one that Jeff said.
+[00:32:25.600] >> Cool.
+[00:32:26.159] >> Um so yeah it's just that and then
+[00:32:28.480] eventually you write the drafts and
+[00:32:30.080] write the reports. Right.
+[00:32:31.840] >> Cool. Um, and in here it's just very
+[00:32:33.919] simple like we're looking through
+[00:32:35.279] messages. Uh, and uh, let me see if I
+[00:32:39.200] have a
+[00:32:41.519] Yeah, for example, the human could say,
+[00:32:44.159] "Hey, it should be root Hispanic because
+[00:32:46.720] we don't have relative namespaces. All
+[00:32:48.399] names are local to the namespace. So
+[00:32:50.720] clearly this is like a correction by the
+[00:32:53.679] human."
+[00:32:54.480] >> Mhm.
+[00:32:54.880] >> And we want to like highlight these
+[00:32:56.480] messages and be like, let's not lose
+[00:32:58.559] this data. like we need to store this
+[00:33:00.720] data somewhere because the human is
+[00:33:02.159] literally correcting the agent. Um and
+[00:33:04.880] it's something that the other pipeline
+[00:33:06.399] might not completely get but because the
+[00:33:08.640] other pipeline is like more generic
+[00:33:10.159] approach. Um so in this pipeline uh this
+[00:33:14.000] sub pipeline we want to like classify
+[00:33:16.240] everything that is a human correction.
+[00:33:19.679] Does that make sense?
+[00:33:21.440] >> Yeah. Yeah. I like this. Okay.
+[00:33:23.840] >> Cool. Uh but yeah, we like add this, we
+[00:33:26.159] group the rules again with OPOS and then
+[00:33:28.480] we send it out to this draft writer
+[00:33:31.360] thing.
+[00:33:32.000] >> What is the test?
+[00:33:34.080] >> Oh, it's just like creates uh this um
+[00:33:37.679] I'll show you. It creates this report.
+[00:33:40.480] >> Okay,
+[00:33:41.519] >> so it's just like oh fix this first
+[00:33:43.360] built-in pipeline like uh like compiler
+[00:33:46.559] to state asked for in 677
+[00:33:50.000] tool calls. These four questions reoccur
+[00:33:52.399] in in four or five sessions each. So we
+[00:33:55.440] first generate this kind of like report
+[00:33:56.960] and then from that report we uh also
+[00:34:00.159] generate this stuff.
+[00:34:01.519] >> Okay,
+[00:34:02.240] >> it's all like tied together.
+[00:34:04.320] >> Cool.
+[00:34:04.960] >> Um and then the last one is like okay
+[00:34:07.919] how are agents you know navigating
+[00:34:09.919] through the code and and uh what's the
+[00:34:12.560] heat map of this? And I wish I had a
+[00:34:14.320] visualization for this because that
+[00:34:15.679] would be super cool but I don't have
+[00:34:17.520] one.
+[00:34:18.399] >> Not yet. But uh if if not yet but like
+[00:34:20.879] maybe soon.
+[00:34:22.159] >> Um but yeah, it's essentially like um
+[00:34:25.760] you know we group some questions uh
+[00:34:28.399] saying like hey this is a recurring
+[00:34:30.320] question uh would a developer to the
+[00:34:33.119] repository
+[00:34:34.960] um what's it called?
+[00:34:39.040] Yeah, find questions about how the
+[00:34:40.480] repository works that come up again and
+[00:34:42.240] again asked in different sessions idea
+[00:34:43.839] by different people. So in here we're
+[00:34:46.720] like grouping more sessions together and
+[00:34:48.879] then just saying like give me things
+[00:34:50.639] that people keep asking
+[00:34:52.240] >> what is the input to that
+[00:34:54.320] >> is that like input
+[00:34:55.679] >> sub agent intro prompts or
+[00:34:58.720] >> uh this one is sub aents like sub aent
+[00:35:01.280] data and uh what I did here is I don't
+[00:35:05.520] have it
+[00:35:06.079] >> okay so it's the it's like whatever the
+[00:35:07.920] the like first user message that the
+[00:35:10.560] parent model passes into the sub agent.
+[00:35:12.640] >> Yeah. Okay. And actually um I pass in
+[00:35:15.760] like uh I I basically have like a
+[00:35:17.680] gazillion reaxes on the tool calls that
+[00:35:20.240] are being made.
+[00:35:21.359] >> Okay.
+[00:35:21.680] >> And these reaxes like extract like um
+[00:35:24.560] paths, you know, like directory names,
+[00:35:27.520] things like that.
+[00:35:28.640] >> Yeah.
+[00:35:28.960] >> And then I send it to these models and
+[00:35:30.800] they can figure out like, oh, this
+[00:35:32.720] directory was visited like five times or
+[00:35:34.800] this one was visited like x amount of
+[00:35:36.640] times.
+[00:35:37.359] >> How do we find the answers?
+[00:35:39.839] >> Uh what do you mean? How do we find the
+[00:35:41.760] answers?
+[00:35:42.079] >> Yeah. So this this prompt what are the
+[00:35:43.440] inputs to this? This is the questions
+[00:35:45.440] and then the
+[00:35:46.960] >> the docs. Yeah.
+[00:35:49.520] So like in here for each question say
+[00:35:51.280] which do answers it best. So essentially
+[00:35:54.000] like I also
+[00:35:55.440] >> you get the dogs from
+[00:35:57.280] >> I I read the read tools and then I I
+[00:36:00.160] understand like what docs are being read
+[00:36:03.520] files are you just you're only looking
+[00:36:05.040] at MD files or you looking at code files
+[00:36:07.200] too?
+[00:36:07.839] >> Uh I look at all the files. It's not
+[00:36:10.720] just uh code. It's not just MD files. I
+[00:36:13.119] look at all the files.
+[00:36:14.400] >> Opus is getting contents of every file
+[00:36:17.280] that is being put in.
+[00:36:18.960] >> Exactly. So it's reading it's like doing
+[00:36:20.800] a tool call to read a file. So then the
+[00:36:22.560] output of that tool call is like the
+[00:36:24.240] actual contents of the file.
+[00:36:25.839] >> Okay. Okay, so I said it again. It's
+[00:36:27.440] >> we would take what was the initial
+[00:36:29.520] message passed into the sub aent of like
+[00:36:31.520] here's what I want you to go find
+[00:36:33.359] >> and then you take every file the sub
+[00:36:35.599] agent read during its trajectory and
+[00:36:38.079] then you take their contents and you
+[00:36:39.839] pass the question and the docs in and
+[00:36:41.839] then opus's job is to figure out
+[00:36:44.880] >> um which docs Okay, cool.
+[00:36:47.359] >> Yeah. Yeah. Yeah. Exactly. Which docs
+[00:36:49.040] were relevant to answering that sort of
+[00:36:51.040] question as well.
+[00:36:52.480] >> Cool. Um but uh yeah then we like write
+[00:36:56.000] these code maps and we tell uh we tell
+[00:37:00.720] Jev as well to like just figure out does
+[00:37:03.280] this report answer the question like
+[00:37:05.200] which components were involved where
+[00:37:06.480] they live and how they connect. So I
+[00:37:08.560] just kind of like create a a summary of
+[00:37:10.640] like what the sub agent did and then ask
+[00:37:12.800] Jeb like did it answer the question.
+[00:37:15.280] >> So the report is the sub agent's kind of
+[00:37:18.320] final answer back to the parent model.
+[00:37:20.800] >> Yeah, exactly.
+[00:37:22.800] Exactly. Uh and then yeah, from here we
+[00:37:25.680] create the drafts and then write the the
+[00:37:27.760] actual report.
+[00:37:29.680] But that's the the basic gist. And you
+[00:37:32.320] know, I wanted to basically say Jeff is
+[00:37:34.240] a lifesaver here. Uh it's like 97% of
+[00:37:37.920] the cost, 5% of the 5% of the bill,
+[00:37:40.400] which is insane. Essentially, if you're
+[00:37:42.800] spending like 50 cents on something, you
+[00:37:44.720] can just slap Jev into it and like get
+[00:37:47.040] the cost reduced by a ton.
+[00:37:49.520] >> Awesome. Uh and then yeah I had some
+[00:37:51.280] other deep dives but we can we already
+[00:37:52.960] went through this
+[00:37:55.839] it's just some animations
+[00:37:57.839] >> nice
+[00:37:58.640] >> uh observability. Oh the other thing
+[00:38:01.359] that I wanted to highlight uh that was
+[00:38:03.359] interesting is this dashboard is uh
+[00:38:07.040] actually made with a thing that we
+[00:38:08.720] called BAML query. So what is BML query?
+[00:38:13.200] So whenever we're writing like any
+[00:38:14.960] regular code
+[00:38:17.040] uh I think I have it here.
+[00:38:19.599] Whenever we're writing anyone co any
+[00:38:21.359] code like usually you have to like add
+[00:38:23.920] spans to track everything.
+[00:38:26.000] >> Yeah.
+[00:38:26.240] >> Like you you do like start active span
+[00:38:28.320] then you do the open responses you catch
+[00:38:30.640] the error you set like the error in this
+[00:38:33.520] span thing and then you like set the
+[00:38:35.200] status.
+[00:38:36.079] >> Yep.
+[00:38:36.480] >> But with BAML that that stuff comes for
+[00:38:38.800] free. So uh we just made it really
+[00:38:41.680] efficient in how we capture information
+[00:38:44.320] and we have like um we like create a
+[00:38:47.760] spans automatically for certain types of
+[00:38:49.599] functions like LLM functions in a way
+[00:38:51.839] that we detect.
+[00:38:53.280] >> Okay. So that basically means like I run
+[00:38:55.200] my program and then what I get like a
+[00:38:57.440] CLI where I can run BAML query and ask
+[00:39:00.320] things about how it ran and then the
+[00:39:02.079] model can use that to like pipe that
+[00:39:03.680] into a report.
+[00:39:05.280] >> Yeah, actually and I I'll show you
+[00:39:06.640] what's happening when I run this. Uh
+[00:39:08.480] maybe let's let me share my entire
+[00:39:10.079] screen so you can see it.
+[00:39:14.640] So here
+[00:39:20.320] >> I think I still see just your browser.
+[00:39:22.800] >> Yeah. Yeah. Yeah. I am loading this.
+[00:39:27.599] So here is this app
+[00:39:33.040] and when you can see what you can see
+[00:39:34.800] here is that it's running BL query BL
+[00:39:37.520] query like BML query literally all of
+[00:39:40.480] this data here that I'm populating in
+[00:39:42.880] this giant uh diagram comes from this
+[00:39:46.880] BML query thing and all we do is
+[00:39:50.480] >> is that like a SQL database on disk or
+[00:39:53.119] >> so remember what uh what um Jared said
+[00:39:55.920] about SQLite of like, oh, let's store
+[00:39:57.680] all these HTTP requests and store them
+[00:39:59.440] in SQLite.
+[00:40:00.480] >> Yeah,
+[00:40:00.720] >> I'm kind of like I was kind of alluding
+[00:40:02.400] to this. It's like, yeah, you could
+[00:40:04.640] literally just store all of your data,
+[00:40:06.480] not just HTTP requests, but literally
+[00:40:08.800] anything that you need when you're
+[00:40:10.480] building an AI pipeline.
+[00:40:11.920] Okay. So, instead of using like
+[00:40:13.920] the BAML playground to inspect my
+[00:40:16.400] program as it's running, I can actually
+[00:40:17.839] just like vibe my own UI on top of the
+[00:40:20.320] running program.
+[00:40:21.119] >> Yeah. So, yeah. So, in the past, you
+[00:40:23.280] know, you've used the BAML playground
+[00:40:24.800] before. Yeah,
+[00:40:25.760] >> but the balance is has been outdated by
+[00:40:28.320] like it's it's no longer tenable because
+[00:40:31.920] uh people need to build like really
+[00:40:33.920] bespoke UIs to make good decisions.
+[00:40:36.800] >> Y
+[00:40:37.200] >> and like this UI I won't find this stuff
+[00:40:40.240] in any AI observability dashboard
+[00:40:43.280] >> like that will just not happen. Like
+[00:40:45.280] who's going to build this for you?
+[00:40:46.560] >> It's really hard to build a UI that is
+[00:40:48.960] like generic enough to meet. It's like
+[00:40:51.200] even if this could be made, you'd be
+[00:40:53.359] clicking around and dragging things or
+[00:40:56.079] like it's like well I just want to write
+[00:40:57.599] code. Just let me let my model write
+[00:40:59.119] code on top of the data.
+[00:41:00.960] >> Exactly. And like um even you know
+[00:41:03.359] clicking here
+[00:41:04.800] >> like I can load each of the recordings.
+[00:41:06.960] So you know this is BLQ query running
+[00:41:08.560] again
+[00:41:09.280] >> and it's like giving me the inputs and
+[00:41:11.520] outputs
+[00:41:13.119] >> like the inputs was this stuff the
+[00:41:15.920] output was this stuff. uh I can like
+[00:41:18.480] iterate over these things.
+[00:41:20.319] >> Okay. So you have a devel you have a web
+[00:41:23.040] server running in the background that is
+[00:41:24.640] just executing BAML query like with a
+[00:41:27.200] shell command but you could have
+[00:41:29.040] >> only a yeah
+[00:41:30.400] >> you have native bindings to it if you
+[00:41:32.079] wanted to.
+[00:41:33.280] >> Exactly. The only API you need here is
+[00:41:35.440] BLM query like uh essentially we
+[00:41:38.640] converted all of your basically what we
+[00:41:41.200] built is a program database of just like
+[00:41:44.400] when you run a program we create a
+[00:41:46.000] database for you that just works and you
+[00:41:47.920] can query all sorts of stuff from it.
+[00:41:50.000] >> That's awesome. That was one of the
+[00:41:51.839] things that uh I I want wanted to
+[00:41:54.400] highlight. I was just like, okay, when
+[00:41:56.240] you have this kind of tooling, I don't
+[00:41:57.760] need to add these like spans everywhere.
+[00:42:00.160] And not only that, but I have a language
+[00:42:01.839] that agents can use, which is SQL
+[00:42:04.400] >> to build anything, right?
+[00:42:07.200] >> That's awesome.
+[00:42:08.640] >> So yeah, like the output tokens, that
+[00:42:10.400] kind of stuff, we already just store
+[00:42:11.760] this for you by like using one of these,
+[00:42:14.400] you know, LLM calls. And B is a fully
+[00:42:16.960] touring complete language now. I mean
+[00:42:18.800] you can write any sort of web app or
+[00:42:20.800] anything in it or sorry not a web app
+[00:42:22.640] but like a server.
+[00:42:23.839] >> You could do something like I know
+[00:42:25.599] Golang supports like you can just mount
+[00:42:27.839] a route on your API that like serves up
+[00:42:30.800] the profiler UI. So like your running
+[00:42:33.119] program could serve an API into its own
+[00:42:37.599] like internal state.
+[00:42:39.040] >> Yeah. Yeah. You could do that. You could
+[00:42:41.119] literally do that as well.
+[00:42:43.359] >> Uh and then yeah like these are just
+[00:42:44.880] some of the queries. uh and and you know
+[00:42:47.920] I just showed you this but yeah that's
+[00:42:50.319] basically the BML query thing of like
+[00:42:54.079] how do we make it such that we can
+[00:42:55.760] create a product that also helps people
+[00:42:58.160] iterate and build these uh these tools
+[00:43:00.720] quickly right
+[00:43:02.480] >> without having to reinvent
+[00:43:03.520] >> insanely cool this is so
+[00:43:05.520] >> the data store um yeah thanks um but but
+[00:43:11.920] uh yeah that was the main thing of like
+[00:43:14.400] okay can we just come up with a lang
+[00:43:15.599] language that every agent understands
+[00:43:17.280] and you can query your program and like
+[00:43:19.359] before it would be untenable to give
+[00:43:21.040] this to a human like imagine giving a
+[00:43:22.800] human six tables and being like here is
+[00:43:26.240] the manual on how you use these and then
+[00:43:28.079] giving them like a 100page PDF of just
+[00:43:31.359] like how to create your program.
+[00:43:33.119] >> Yeah.
+[00:43:33.520] >> Like now that you don't need to do that
+[00:43:35.440] you can literally just give uh the agent
+[00:43:37.520] keys to the database and be like oh yeah
+[00:43:40.240] this you can just run this. Um so uh
+[00:43:44.720] yeah that's how it works and you know we
+[00:43:46.240] have a cloud platform as well uh but uh
+[00:43:48.880] this is can also just run locally.
+[00:43:51.680] Um but yeah, I did want to chat about
+[00:43:53.599] like one uh remaining problem here with
+[00:43:56.480] this whole pipeline. And I think you you
+[00:43:58.960] were also alluding to this at the
+[00:44:00.720] beginning of like okay now that we have
+[00:44:02.319] a context chart and maybe we accept some
+[00:44:04.240] of them and deny some of them like how
+[00:44:06.880] do we track the health of a memory right
+[00:44:10.560] >> and the model and suddenly something we
+[00:44:13.680] needed to tell it all the time is now in
+[00:44:15.599] the way it's like how do we how do we
+[00:44:17.599] identify that and like remove it from
+[00:44:19.359] context because we may be like Tariq
+[00:44:22.400] calls it like hobbling the model by
+[00:44:24.079] giving telling it to do things that it
+[00:44:25.599] already knows how to do.
+[00:44:27.280] >> Yeah. Yeah. And so I don't know if you
+[00:44:28.720] had some ideas here. I don't have
+[00:44:30.160] anything else here by the way in these
+[00:44:31.680] slides, but if you have any ideas on how
+[00:44:34.000] we could do the health of a of a memory.
+[00:44:37.200] >> Yeah. I think I think health of a memory
+[00:44:38.480] is interesting. I also think that like
+[00:44:41.200] um there's some like problem of like how
+[00:44:44.079] do you store this and make it available
+[00:44:45.839] to the model? Obviously like the really
+[00:44:47.359] naive approach is like put it in cloud
+[00:44:50.160] MD or put it in a skill. But like what
+[00:44:53.040] you don't want to do is have, you know,
+[00:44:54.800] 200 new skills, each of which is like
+[00:44:57.280] one fact, and like rely on the model to
+[00:44:59.760] go call those as it needs to. I I don't
+[00:45:02.319] think skills stack very well since they
+[00:45:04.319] put in a bunch of like user messages and
+[00:45:06.400] like if you invoke 200 skills, like I
+[00:45:09.280] don't know how well the attention
+[00:45:10.400] following is. We should probably I I
+[00:45:12.079] don't know if there's an eval for this,
+[00:45:13.200] but that would be an interesting like
+[00:45:14.319] public benchmark of like, you know, big
+[00:45:16.480] skill eval.
+[00:45:18.079] >> Um
+[00:45:18.560] >> Yeah. Yeah. Big skill eval or like uh
+[00:45:20.560] what skills go stale. I don't think
+[00:45:22.319] anyone has worked on this stuff too in
+[00:45:25.920] too much detail. Even Cognition.
+[00:45:29.440] >> Oh yeah, we can we could talk we should
+[00:45:30.720] talk about the cognition thing too.
+[00:45:32.720] >> Uh like Cognition released this thing.
+[00:45:34.960] Uh I don't know if you have the the link
+[00:45:37.280] somewhere.
+[00:45:38.000] >> Um I think I sent it to you because
+[00:45:40.880] their thing was more about like how do
+[00:45:42.240] you like store memories and less about
+[00:45:44.400] like the pipeline for identifying what's
+[00:45:46.640] worth remembering.
+[00:45:49.040] >> Yeah, exactly. And uh what they do is
+[00:45:51.280] like yeah like you know introducing
+[00:45:53.200] dreaming across sessions Devon builds a
+[00:45:54.960] memory graph of how you like to work. So
+[00:45:57.359] then I'm like okay that's cool. It's
+[00:45:58.800] very similar to what I was working on
+[00:46:00.640] right just like how do you create
+[00:46:02.480] memories and stuff like that.
+[00:46:04.560] >> But if we click here there's nothing
+[00:46:07.440] that really tells you how something
+[00:46:09.599] makes it into a memory. Uh so that's
+[00:46:12.800] like I think that's the hardest part.
+[00:46:15.280] One of the hardest parts. there's like
+[00:46:18.000] um you know this repository layout and
+[00:46:20.720] here's how you can organize your
+[00:46:22.000] memories and entries and metadata and
+[00:46:24.720] composability and like all of that is
+[00:46:26.480] really cool like how do you store this
+[00:46:28.880] for later uh referencing by the model
+[00:46:32.079] but uh uh an interesting part is just
+[00:46:35.280] like how they decide what goes into a
+[00:46:37.839] memory file and in here it's probably
+[00:46:40.000] the agent deciding that so like the
+[00:46:42.240] agent tracks who said what and writes
+[00:46:43.760] each to the right repo Um, and this is
+[00:46:47.359] one of the interesting parts about like
+[00:46:49.599] writing memories and calculating
+[00:46:51.200] memories and do it in after the fact.
+[00:46:54.319] So, for example, our team could just
+[00:46:56.240] have a a uh what's it called? A cloud MD
+[00:47:01.200] instruction that says, hey, if you find
+[00:47:02.720] anything that should be a memory, just
+[00:47:04.240] put it in a file, right? But the problem
+[00:47:07.520] with doing that is that if you're just
+[00:47:08.880] in a single session, you're not able to
+[00:47:10.880] make correlations across many sessions.
+[00:47:13.359] for example. Um, so I don't know, that's
+[00:47:16.720] one interesting part about this is that
+[00:47:19.040] it's not a fully sort of it's not like a
+[00:47:22.160] full complete workflow on how you create
+[00:47:24.079] memories. It's just like leave it to the
+[00:47:25.599] agent and we'll see what happens.
+[00:47:30.079] Um, so yeah, that's one thing. Um, and
+[00:47:33.440] then the other part was
+[00:47:36.160] >> Yeah. Okay. Okay. And like how do you
+[00:47:37.839] share things and how do you remix them?
+[00:47:39.760] And like like I said, yeah, I think I
+[00:47:42.000] think something like uh you know when
+[00:47:43.359] when Gmail came out, they were like,
+[00:47:44.800] "Hey, we're not going to have folders.
+[00:47:46.160] We're going to have labels." Like
+[00:47:48.079] because folders enforce like a very
+[00:47:50.160] specific hierarchy and like what they
+[00:47:52.800] wanted was a thing to be able to be in
+[00:47:54.480] multiple
+[00:47:55.839] >> folders, but like basically the thing
+[00:47:57.760] can be have multiple labels uh without
+[00:48:00.560] you like committing to a place like once
+[00:48:02.400] it's in a place it can't be in any other
+[00:48:04.160] place.
+[00:48:05.440] >> Yeah. Yeah. Exactly. Uh and I think you
+[00:48:08.400] sort of need these almost like chron
+[00:48:09.920] jobs that do like u they uh do like RAM
+[00:48:13.359] sleep, right?
+[00:48:14.880] >> And then uh you go over all the memories
+[00:48:17.200] and compact them and coales them and do
+[00:48:19.760] the kind of stuff that I was doing in
+[00:48:21.200] this pipeline.
+[00:48:22.720] >> Well, you almost need to like I feel
+[00:48:24.079] like to tell if a memory is stale, you
+[00:48:26.079] almost need to like run some percentage
+[00:48:28.880] of of your sessions without the
+[00:48:30.720] memories.
+[00:48:32.319] Uh but like what user is going to be
+[00:48:34.480] like, "Oh yeah, I'm I'm fine with my
+[00:48:35.920] agents being slow or confused if it uh
+[00:48:38.720] on the off chance that maybe they don't
+[00:48:40.400] need the memories anymore." So like I
+[00:48:42.000] don't know how I guess you could back
+[00:48:43.280] test it on take the new model and back
+[00:48:45.599] test it on old like traces and see if it
+[00:48:48.480] still needs the memory. like say, "Hey,
+[00:48:50.400] same initial prompt." And then like,
+[00:48:53.359] yeah, long horizon evals are really hard
+[00:48:55.280] because it's like, okay, if something in
+[00:48:56.559] the first 100 messages changes, maybe
+[00:48:59.200] just feeding in the next user message
+[00:49:01.520] that that was that was done in the past
+[00:49:03.599] eval the trace we have doesn't make
+[00:49:05.520] sense anymore. Like it's very hard to
+[00:49:07.599] determine if you are actually using the
+[00:49:09.359] same inputs to evaluate the outputs.
+[00:49:11.920] >> Yeah. And I think my my one idea I had
+[00:49:15.520] actually to like figure out how to
+[00:49:17.359] figure out whether something is stale is
+[00:49:20.400] um is I tie each sort of memory to like
+[00:49:24.000] a place in the codebase or a or a region
+[00:49:27.280] in the codebase
+[00:49:29.200] and
+[00:49:30.880] uh and there's various ways of like
+[00:49:33.119] doing that like the code map that I
+[00:49:34.800] mentioned where like you tie each memory
+[00:49:36.319] to like a place in the codebase.
+[00:49:38.240] >> Yeah. But also you can probably ask the
+[00:49:40.000] agent also like hey if I'm here and this
+[00:49:42.000] is in your context now and you just
+[00:49:44.079] worked on these this file like is this
+[00:49:46.480] outdated or not and then you kind of
+[00:49:48.880] just let the agent decide like oh yeah
+[00:49:50.720] this thing is stale it's incorrect let
+[00:49:52.640] me fix that
+[00:49:53.839] >> or you just analyze it after the fact
+[00:49:55.760] just like we did
+[00:49:57.119] >> where we analyze the session again and
+[00:49:59.040] we find the message where an agent says
+[00:50:01.520] oh snap that was not correct let me fix
+[00:50:04.079] that.
+[00:50:05.200] >> Um and I think you could get a similar
+[00:50:07.280] sense of like the health of a of a
+[00:50:10.319] memory
+[00:50:12.079] or let let a a human do it.
+[00:50:15.440] >> Have you thought at all obviously you
+[00:50:16.800] can just run this pipeline and run it
+[00:50:18.640] once a day or once a week or whatever
+[00:50:20.160] and generate new suggestions. Have have
+[00:50:22.160] you thought at all how you would kind of
+[00:50:24.480] continuously evolve the pipeline itself
+[00:50:27.119] based on feedback? like, hey, like, hey,
+[00:50:29.520] let's say we generate all these memories
+[00:50:30.960] and, you know, we serve it to a bunch of
+[00:50:32.640] users and users be like, I want to keep
+[00:50:34.559] those four and I want to don't care
+[00:50:36.400] about these four cuz they're bad. Like,
+[00:50:38.000] how how would you think about like
+[00:50:39.520] ingesting that feedback to improve the
+[00:50:41.760] pipeline itself? What would your what
+[00:50:43.440] would your like eval climb look like?
+[00:50:46.000] >> I think there would be like another
+[00:50:48.079] fourth input. So you know how the
+[00:50:49.839] pipeline had like three different
+[00:50:50.960] inputs, there will be a fourth one that
+[00:50:52.880] just goes into like the final draft and
+[00:50:54.880] report that has either the existing uh
+[00:50:58.400] save memories from previous sessions.
+[00:51:00.880] >> Uh because otherwise it's going to
+[00:51:02.800] regenerate the same if you pass the same
+[00:51:04.640] sessions in it's going to regenerate.
+[00:51:06.400] Okay. So if you the first step is make
+[00:51:08.000] it incremental where like hey if I run
+[00:51:09.680] it again the final step will will have
+[00:51:12.640] awareness of hey what memories do we
+[00:51:14.400] already have? So it won't generate a
+[00:51:16.000] report for stuff we already have kind of
+[00:51:17.680] logged and and in circulation. Okay.
+[00:51:20.319] >> Exactly. Like there's it's almost like a
+[00:51:22.160] memory gets upgraded into like approved,
+[00:51:24.240] right? Like the the user approved it. So
+[00:51:26.960] you should just put that data in there.
+[00:51:28.720] Like if uh we run it again, we should
+[00:51:31.520] put the memories that were already
+[00:51:32.720] approved. Uh and maybe put like the
+[00:51:35.119] whole like cloud MD that someone has in
+[00:51:37.920] there. Um or the skill that someone has.
+[00:51:42.160] and these uh skills at least ideally
+[00:51:45.440] they won't they wouldn't be too many
+[00:51:46.880] tokens right so it's easier to process
+[00:51:48.880] this uh so I think that would scale for
+[00:51:52.400] quite a bit uh before you need to group
+[00:51:54.960] like ddup stuff and group again
+[00:51:57.440] >> and then and then it's fairly trivial to
+[00:51:59.680] take that fourth pipeline that is the
+[00:52:01.599] input to the final report and just
+[00:52:03.359] include by the way here's 10 memories
+[00:52:05.680] that the user dismissed and maybe they
+[00:52:07.599] even left feedback about why it's bad
+[00:52:09.760] and like incorporate that into your next
+[00:52:11.680] flow And maybe the final report has not
+[00:52:13.920] only
+[00:52:15.280] >> uh what to what to add to the report but
+[00:52:18.000] also like hey what should be removed
+[00:52:19.680] from your memory system because user
+[00:52:21.839] said hey this is not relevant or this is
+[00:52:23.920] already handled somewhere else.
+[00:52:25.920] >> Exactly. And the easiest part to modify
+[00:52:28.240] is that final like step of the pipeline
+[00:52:30.800] like that the human's going to see. Um,
+[00:52:34.319] but once you start getting more
+[00:52:35.599] information, for example, what if
+[00:52:36.960] there's memories that the human rejected
+[00:52:38.960] or uh they're like this is bad, don't do
+[00:52:41.520] this, then I think you could start
+[00:52:43.280] building a feedback loop on the rest of
+[00:52:45.359] the pipeline. So then you could start
+[00:52:47.760] using either agents or something to get
+[00:52:50.319] all this feedback and figure out like
+[00:52:52.240] okay um do I need to change earlier
+[00:52:55.119] steps here and maybe like change what
+[00:52:58.240] criteria I have for finding a fact or
+[00:53:01.359] finding a correction things like that.
+[00:53:04.160] Uh so it would be like uh yeah having
+[00:53:06.319] our own feedback sort of engine for this
+[00:53:09.839] whole system as well.
+[00:53:11.359] >> Sick. Uh dude this was super fun. I know
+[00:53:13.280] we're almost at time. I know you put in
+[00:53:14.640] a ton of work and the slides were super.
+[00:53:16.480] I really like that we could just like
+[00:53:17.760] pull up the prompts during the slides.
+[00:53:19.280] That was that was awesome.
+[00:53:20.319] >> Oh, yeah. Yeah. Yeah. Yeah. Exactly. Uh
+[00:53:22.960] but yeah, it's a quick project, but uh
+[00:53:25.200] you know, it's it's just cool using the
+[00:53:26.720] tooling and testing things out and
+[00:53:28.960] seeing what works and the lessons that
+[00:53:30.880] we learned.
+[00:53:32.240] >> Amazing, dude. This is going to be
+[00:53:33.599] awesome.

@@ -1,0 +1,1511 @@
+How do we make it such that we can
+create a product that also helps people
+iterate and build these uh these tools
+quickly? Right? What was also funny is
+that as I'm working on this project, Jev
+came out,
+>> right?
+>> So that was also like a really cool
+moment of like having an immediate use
+case for it. And I think a lot of people
+can relate to this that like you can
+literally just give uh the agent keys to
+the database and be like, "Oh yeah, this
+you can just run this."
+>> Dude, this is insanely cool. This is so
+sick. What's up, y'all? Uh on today's AI
+that works, we talked about a system for
+generating memories from AI8 coding
+agent sessions and generating a uh
+proposed changes to your cloud MD or
+your agents MD, a report on what to fix,
+what agents get stuck on, what humans
+keep correcting them on, and how you
+would basically go from a very naive
+pipeline of uh user and assistant
+messages and uh basically taking key
+content from what the user said and
+turning it into memories and then
+building that out and evaling it and
+making a really sophisticated system of
+every single thing that the agent may
+have learned while running through
+stuff. So, um, super fun episode. Aaron
+did a really really good job. We dig
+into the individual prompts, the
+workflow steps, and, uh, it's it's a lot
+of fun. You're going to learn a lot. I
+learned a lot. I'm very excited to ship
+this. Uh, hopefully we'll be able to
+open source parts of this, too, and get
+you all the code. But, uh, yeah, this is
+great. Let's get into it. What's up,
+everybody? This is the AI of the Works
+Show, where we talk about AI, uh, that
+works, uh, how to go beyond the demo
+and, uh, real techniques that help you
+do the thing. I'm Dex. I'm the uh CEO
+and co-founder of Human Layer. We build
+a uh multiplayer coding agent workspace.
+I'm joined by Aaron, the co-founder and
+CTO of BAML. Do you want to do a quick I
+don't know, tell tell them about the
+programming language, dude.
+>> Yeah, we're uh we're making a
+programming language uh to build with AI
+and build AI pipelines and uh and then
+yeah, I can't wait to show you what what
+we're building uh using BAML in this
+demo as well.
+>> Yeah, this is going to be a really fun
+show. So today we're going to talk about
+um uh the human layer team and the
+boundary team kind of joined forces. Uh
+if you remember we did an episode
+probably two months ago about a uh
+memory pipeline but basically we worked
+with the boundary team to design a
+system to learn from your agent traces.
+Uh and it's a really interesting
+pipeline and uh pushes the pushes the
+boundaries of what you can do with
+structured output and new models like
+Jev. Uh super exciting stuff. Um I can
+um Erin, I'm going to share the uh do
+you have the studio chat open? I'm just
+I'm going to share the whiteboard with
+you in case you in case you finding
+yourself wanting to help draw.
+Basically, the basic idea is, you know,
+when you're running an agent, you have
+your system prompt, you have your tools,
+you have a user message. Maybe the user
+says something like, you know, make make
+me a billion dollars, make no mistakes,
+ultraink. Uh the agent's going to read
+and write and edit a bunch of stuff. uh
+and then maybe say the app is ready and
+then the user might come in and say,
+"Oh, you know, this sucks for reason one
+or reason two." They they reveal some
+preference. Agent goes and fixes it. The
+user gives more feedback and we keep
+going on from there. And the idea is
+these user messages. Oh, that's not what
+I want. Um these user messages or like
+what the assistant is doing if it has to
+change something and run bash and then
+change more stuff and it's like hill
+climbing. either the agent learns
+something in a session or the user
+learns something in a session and then
+when you go start your next session uh
+that kind of learning gets lost uh in
+your in your fresh context window. So we
+wanted to build a system to take all of
+your past conversations and turn it into
+recommendations that the model gave for
+cloudd snippets or anything like that.
+Um, and uh, airship.
+>> Yeah, just, you know,
+>> stuff that like the agent gets stuck on
+all the time that you're like, "Oh my
+god, please do not run that command
+again."
+>> And some of this is really just tribal
+knowledge.
+>> Yep.
+>> Um, and some of the other information
+takes like, you know, 500 tool calls to
+figure out by the agent. And maybe you
+don't want to spend 500 tool calls. You
+could just have a little snippet or like
+an a diagram or a a flow of the
+architecture of your program and put
+that in cloud MD and then next time the
+agent won't get confused. But the
+problem is how do you find that and how
+do you decide what makes it into your uh
+cloud MD per se or like what makes it
+into into your memory bank.
+>> Yeah. And many of these memories become
+out of date and we can talk about kind
+of like okay how do you actually like
+constantly also refine this thing? Um,
+there's some there's some approaches
+you've probably heard of like
+compounding engineering or Matt PCO just
+released his retro skill, which is like
+go figure out what went wrong in past
+sessions and make sure it doesn't happen
+again. Um, but uh yeah, I I I would say
+kind of like we started this with a very
+naive uh system which was like we would
+take one of these context windows and we
+would just take the user and assistant
+messages and strip out all the tool
+calls just for like efficiency. Uh, and
+we would send this into a Why are these
+all dotted? Sorry. We would send this
+into a single like Haiku structured
+output
+um just as like a proof of concept. And
+what we would get out would be these
+blocks of like you know findings
+and then you would have like finding
+number one would be uh you know uh you
+know the memory that we wanted to pull
+out. We actually called these context
+shards uh because memory is like too too
+generic and these were things we wanted
+to be like conditionally triggered.
+>> Um but you would have you would have
+like the shard you would have the like
+reasoning of like why is this a thing
+that should go in your in your memory
+system in your cloud MD or in your
+skills or whatever it is. We would have
+um I don't know do you remember what
+else was in there? There was like a
+citation of like
+>> Yeah, citation was the exact which
+sessions.
+>> Yeah, exactly. Yeah. And then it would
+have like you know uh session ID,
+message ID, etc. So that we could tie it
+back to a real conversation event
+>> and and the user ID, right? One of the
+interesting parts about uh human layer
+is that many people are in your org and
+you can kind of analyze all of these
+sessions across
+uh your whole team. Right.
+>> Right. Yeah. We actually have
+>> two different people are running into
+the same problem. It's like oh okay.
+>> Yeah. you might have user one and then
+user two gives like a separate message.
+Uh and so you want to be able to track
+who said what. Um and so this would give
+you out like a list of things that would
+kind of display in the UI. Um you know
+>> and and then the user could like you
+know shard and then they had this like
+enable button basically which would
+enable it for a task or for sessions or
+whatever it is. Uh this was really
+really bad. Like it was like
+directionally correct and like some of
+the things were good. Um but you know we
+had to keep adjusting the prompt here
+and so the BAML guys were doing some
+work where they work with companies they
+like to uh and by the way if you're
+building an AI pipeline you should talk
+to them. Um but they built uh they
+basically are looking for use cases for
+BML as a language for building AI
+pipelines and for building really good
+sort of uh tools of this shape. And so
+Aeron's gonna I'm going to stop sharing.
+I'm going to let Aaron kind of talk
+through the process and and what they
+built.
+>> Yeah. So, uh I'll share my screen. Um I
+have a little a few set of slides we can
+sort of like look at and then uh the
+actual sort of final results. So, why
+don't we start with the final results
+maybe?
+>> Um yeah.
+>> Okay. You should see this window with uh
+kind of like this pipeline view. So,
+this is essentially the uh I'll show you
+what we generated first. So I run this
+in like you know one week of sessions
+for uh
+>> this is for your team for the B team
+>> for my team
+>> and you'll see that we created like
+three different sort of like MD files
+and they're actually tied to specific
+regions in the code. So if the agent is
+working on this thing called BAML
+compiler to uh trir
+uh you know we we added like one thing
+here and like you know it's just saying
+like a very very generic like this is
+what this thing does. It's just like a
+oneliner. Um, not all of these are
+amazing. We're still tweaking them. But
+if you go into like BAML built-ins for
+example, it gives you like some uh
+insights that are just like kind of more
+tribal knowledge like oh don't use at
+add internal syntax and like here's the
+two sessions that uh you know came up
+with that information and uh this is
+>> this is a this is a web app you built to
+kind of inspect the results of the
+pipeline so that you could iterate on it
+faster.
+>> Exactly. So like for example in in in
+CloudMD
+uh it's like it has sections of like
+where should you look at you know like
+if you're an agent looking at this repo
+and you're trying to find information
+how can you find that information like
+what what's the general architecture of
+this thing. Uh then there's also rules
+and then there's also like BAML language
+facts. So for example an explicit first
+self parameter marks an instance method
+and becomes its receiver. Uh methods
+without self are static. So, you know,
+if if you don't understand what that
+means, that's okay. But this is a very
+specific language thing about BAML that
+an agent should know about. And in here,
+there were three sessions and two people
+that kind of like gave this feedback or
+like that ran into this fact
+essentially.
+>> And then we like coalesed that using our
+pipeline that I showed you earlier and
+uh came up with these three categories
+of things that you might want to put in
+your context chart essentially.
+>> Yeah. So,
+>> and and what's really what's really
+interesting here is like I kind of think
+of this we we actually like didn't like
+you actually have multiple different
+classes of I guess context shards which
+is like you have where to find things.
+You have rules which are like
+behavioral. This is like
+>> a human asked the model to behave in a
+certain way or take a certain approach
+versus information which is like here is
+a thing which is true which may be hard
+to discover from the repo itself.
+>> Exactly. Exactly. the the the rules are
+like, you know, a human specifically
+said, "Please don't f this up, like
+you're doing the wrong thing to an agent
+and we detected that and we like noticed
+that there was a message like that and
+then we marked it down as like, hey,
+this this fact might be useful. Let's
+see if it shows up in more sessions." So
+that's the end result. We also have a
+little report here like you know we
+don't need to read all this but for
+example here's a chart that just says
+like oh what are what's the stuff that
+agents keep asking right how are the
+current uh built-in BML files organized
+this is kind of like an agent asking hey
+how do I declare something in the BAML
+standard library and you notice notice
+that like 11 sessions and two people
+kind of like ran into this like this is
+a tough question that's being asked
+>> um And uh and it's interesting because
+once I ran this and I also gave it the
+repo like this information is not using
+our repo. It's just using our sessions
+like session data.
+>> But once I give you the repo it like
+realized that agents aren't reading a
+file we a file we have called
+architecture.md
+and it's like yeah they don't know
+what's going on because they're not even
+reading that file because you're not
+telling them to read that file.
+>> I see. So yeah. Okay. So the the answer
+may not necessarily be to dump a crap
+ton of facts into the into the cloud MD.
+It may be like, hey, give an agent this
+report in the repo and then tell it
+like, hey, figure out how we fix this.
+And it might find architecture.md and
+say, oh, actually this can all be solved
+by just putting a a reference file in,
+you know, a reference in claude MD to
+tell it to read architecture.mmd.
+>> Yeah, exactly. And like um and another
+interesting part that um when I started
+you know working with uh Dex on this
+project was like the cost right so like
+Dex's original pipeline you know you
+prune all the tool calls you get the
+human messages and the agent messages
+and that gets you pretty uh what's it
+called uh pretty lenient on the amount
+of data that you uh analyze but it still
+can be very expensive. Yeah, we did that
+to keep its
+>> we did that to keep it cheap and it
+still wasn't that cheap because Haiku
+4.5 is not that cheap of a model but uh
+but it was like okay cool like how do
+what you know and you leave out a ton of
+data.
+>> Yeah. So for like one of the things that
+I focused on is like okay yeah sure I
+could ask an agent to always generate a
+report for this and you know just go
+dive into all the logs and spend a ton
+of time doing this. Uh but we do want to
+have a workflow that is like cheap. So
+for example, this one analyzed a week's
+worth of our coding data for like uh $2
+or sorry one uh two cents, sorry, two
+cents.
+>> Two cents per session.
+>> Very very cheap. Yeah. Two cents per
+session, right? Uh so it's very very
+cheap to do this and like think of of
+how many tokens you can spend on one
+session. And the fact that we were able
+to analyze that for two cents is kind of
+nuts. like how do we do that? Uh so
+anyway, when I got this problem, the
+first thing was uh here, let me skip
+through this.
+>> Oh, this looks cool. We're skipping all
+of this. All right, cool.
+>> Yeah, we're skipping. We're skipping
+this. Um so, the first thing that I was
+uh looking at Oh, five of house has
+echo.
+Yeah, the first thing that I sort of
+started doing here is um you know like I
+I clearly have a task and it's like
+let's generate good context charts for
+my repo. Like where do I start? I have
+so much data to analyze. I can't
+possibly read everyone's coding sessions
+and figuring out what's what's
+happening.
+>> So the first thing that I had to do is
+like build lots of tools. And I'm not
+even kidding like this dashboard that I
+uh I'm showing here. This is like one
+out of 10 dashboards that I built. Uh so
+>> version 10 of it.
+>> Yeah, this is version 10. So like you we
+you know there's this view like
+sessions. This actually stayed the same
+throughout cuz I'm just like okay I just
+want to like go through each session and
+like look at the messages, right? It's
+very simple.
+>> But then it's like okay what if I
+>> Yeah. What if I want to filter tool
+calls or filter only by human messages?
+That way I can just figure out what's
+happening here. It's like, okay, this
+this human is saying all these things
+and maybe they're frustrated or
+whatever. Let's see if it if it showed
+up in our actual context chart
+somewhere. Um, I even had like Sanki
+diagrams like okay from from these
+sessions we like extracted this
+information and then it outputed some
+other stuff. But yeah, that's the main
+thing. It's like you need to build lots
+of tooling uh to understand the the data
+that you're dealing with. Then uh and
+then this is just kind of like what I
+was telling you like just build so many
+websites and then the other thing that I
+did is okay like we clearly have cloud
+code cloud code can do a lot of things
+uh for me to like investigate what the
+best approach is. So the first thing
+that I did is like let's just um create
+one of these reports using cloud code,
+right? Like an agent. Just an agent
+going through the data and figuring out
+what actually matters and what doesn't
+matter.
+>> Yep.
+>> And when you do that, you start
+realizing, oh, like, oh, Claud's like
+filtering these messages out or it's
+like doing this other thing and it's
+doing this other thing. And then you
+start realizing what patterns it's using
+and what data it's looking at to make
+these decisions.
+>> And this is a this is a thing we say on
+the show all the time which is like
+start with the smartest model and the
+most like you know open open-ended
+pipeline shaped thing and like see what
+is possible. See what is possible with
+maximum intelligence. And then as you
+figure out patterns that work then you
+distill that down and try to optimize
+for like latency or price or whatever it
+is. as you build a more opinionated
+workflow.
+>> Exactly. You kind of want to see like
+what's possible first. And uh you know
+if if I if I look at the cloud code bill
+like the actual API usage, I probably
+spend like a hundred bucks just to like
+do the same report that cost me 50 cents
+at the end, right?
+>> Yep. So um so yeah like uh you know we
+basically started in cloud code uh you
+know watch it with watch which which
+scripts it it it it wrote and then we
+came up with um like we we started
+getting a sense of like what we wanted
+right it's like okay we need to extract
+sessions find some memories
+uh collect some tool calls figuring out
+like what activity is happening in this
+repo and then like write the insights.
+So this is a very early very early like
+kind of workflow of like what we were
+having.
+>> Um and in BAML like in BAML we just like
+uh like added functions essentially like
+here's an LLM function that like uh
+scores messages for example and I can
+just think about like inputs and outputs
+in my workflow. Um this makes it easy.
+You have prompt that out outputs a
+basically a single float number which is
+like you know from 0 to one like how
+true is this or what is the score thing.
+>> Exactly. It just outputs a float and
+then it just kind of works like in BAML
+we like make sure that this float is the
+actual like probabilistic number like
+the probability that it matches this
+description.
+>> Okay. So yeah, that's the basic JS and
+I'll dive more into the actual prompts
+and outputs and inputs and that kind of
+thing.
+>> But yeah, you can see like you know this
+is kind of like a message. There's a
+target message like uh the agent was
+looking at some media and then uh Jev is
+kind of like figuring out whether the
+agent is trying to discover something uh
+or not.
+>> I see. So you you're just trying to
+filter out which of the messages are the
+agent looking for information or trying
+to understand something.
+>> Exactly. Exactly. So you can filter out
+a lot of things.
+>> Um and then the other part like and I
+haven't even dove into like what we
+actually did and I'll get that into a
+second but I think this is more
+important of like how do you build any
+pipeline in general but another
+interesting part was that if uh if you
+can't iterate quickly you're going to
+spend too much time building this thing.
+>> Yeah. If you have to run the if you have
+to run a whole workflow end to end to
+test one change halfway through the
+middle of it, it's going to take way too
+long to figure out the right answer.
+>> Exactly. Um, so the first thing that I
+did is like can I just rerun this using
+the previous data in my workflow. So
+note that we have a very simple workflow
+like can I just like cache data and um
+yeah we did that. we'd like just cache
+requests uh
+and you know
+>> so you're hashing the inputs and then
+caching that as just a JSON file on
+disk.
+>> Exactly. I'm just doing it on disk. And
+I was also thinking like why isn't this
+kind of like more part of the language,
+right? Like
+>> since we're if we're building BAML like
+how can we like make this even faster
+and just like you don't have to think
+about it. And it's funny like cuz I saw
+this tweet by Jared uh Sumner um uh for
+Bun and he's like man what if fetch made
+it easy to cache requests and and
+responses into a SQLite DB
+>> right and I was like ah interesting
+interesting um and you know you can just
+like kind of replay messages replay a
+whole pipeline and like not worry about
+it. So
+>> one of the things that you should do is
+figure out how like you can iterate
+quickly and what tools you can build to
+do that. One of them is like this replay
+capability.
+>> Cool.
+>> Um,
+so and then the other thing is as I'm
+iterating through these prompts and you
+know like trying to figure out what's
+happening in this pipeline and let me
+just give you a refresher of the
+pipeline.
+Uh, this takes a little bit to load but
+this is kind of like the pipeline. So
+it's divided into three things like what
+did the agents find out in general like
+what are facts about the about the
+transcript. Uh this is what the people
+like humans actually corrected agents
+like when did they correct agents and
+what did they say? And then this is like
+what agents kept researching. Um, but as
+I'm working on these things and there's
+like filtering steps and all kinds of
+stuff like I I actually had some bugs
+where like I was, for example, I pruned
+messages that were uh human messages
+that were too long or like agent
+messages that were too long. And what
+you really want to do is you want to
+prune the middle of the message, right?
+Cuz uh
+>> you don't want to just truncate from the
+end.
+>> Exactly. You want to truncate uh the
+middle of it. Uh, and then that way you
+can get like a summary and you can get
+like the beginning of the message and
+you don't want like some like random
+design dock that the agent came up with.
+Um, and that saves a lot of tokens. But
+how did I realize that? Well, I actually
+just asked my cloud code as I'm
+iterating on this like, hey, can you
+just print out all the prompts at each
+step? Like I want to know what's
+happening.
+>> Um, and then by doing that, I was able
+to like figure out what this pipeline is
+even doing.
+>> Can you show us the prompts? Like I
+guess you're only sharing your window.
+Um but
+>> yeah uh
+>> we can get into it later too if you want
+to if you want to keep going on this on
+the on the slides.
+>> Yeah. Yeah. Yeah. I can almost done
+through the slides and then I can show
+you more details. But uh I think I might
+have
+Oh yeah. I'm only showing my window. Uh
+but yeah, here's like inputs and outputs
+that I can show in a bit. Um
+>> cool.
+But yeah, and here like Jeb is just
+classifying replies. It's like not a
+correction. Like uh the agent did this
+stuff, the human said do phase six and
+then Jeff said, "Hey, this is not a
+correction. It's just the the human
+saying like do the next step."
+>> Mhm.
+>> Uh so that's like one thing. Uh but
+yeah, so I'm going through that and
+yeah, just read the prompts. Read like
+what what the heck is if you're not
+going to read the code, at least read
+some of the prompts. I I think I think
+actually the prompts are some of the
+most important things to read because I
+think in general models are bad at at
+writing prompts. Uh I I I I think this
+comes down to I've said this about skill
+writing too is like when a model writes
+a skill, it's mostly taking what you
+said and then combining it with what's
+already in the weights and then writing
+that into a file. So like you often get
+skills that say things like always run
+the tests or like make sure you keep
+code concise and it's like anything that
+is in the skill or the prompt that you
+yourself did not write is by definition
+something that is already in the model
+weights because the model put it there
+out of the weights and so you are by
+definition not adding any useful content
+>> by by letting the model write the
+prompts.
+>> Yeah, it's just basic slop essentially.
+Um, so read read the prompts. Uh, and so
+for example, this is what I I was
+telling you about that I like I'm like,
+"Oh I'm truncating like viable
+data here and I should just truncate
+like the top and the and the bottom of
+the message."
+>> Nice.
+>> Um, and uh and then yeah like uh the
+other thing is um yeah, you can just
+iterate faster. Like for example, I I
+had like all these rules for Jev.
+>> Yeah.
+>> It's like is this tribal knowledge? Like
+I was just asking all these questions
+and then eventually I landed in like
+this question like just cuz I was like
+looking at the prompt and looking at the
+data structures of like what Jeff was
+trying to get
+>> and you were you looking at the outputs
+too you were like okay which which one
+of these when I eyeball them this is
+like the vibe val right like when I
+eyeball this which ones of these are are
+are useless and how can I change the
+question to eliminate these
+>> and uh even even also like since I ran
+this thing with cloud code initially and
+I produced like this amazing set of like
+context charts at the start of this
+whole project.
+>> I always like compared I always compared
+everything I ran to that run.
+>> So like for example, it says key
+messages kept and in here it's just
+saying like um out of all the messages
+from the golden data set like how many
+does this prompt actually filter out?
+>> Yeah.
+>> And the question is like it keeps all of
+the ones that are relevant.
+>> So your recall is high.
+>> Exactly. Recall is high. So literally it
+it only kept 60% of the text, but it
+kept 100% of the data that that was
+valuable.
+>> So I'm like, "Oh, hell yeah." Like,
+"Let's do that, right?"
+>> Um, and so yeah, like this is kind of
+like Jeff, you know, running through
+this prompt called score discovery, like
+figure out which messages are just
+trying to find things.
+>> Yeah.
+>> Uh, and then, you know, like pruning a
+ton of data like just to like save
+tokens.
+>> Yep. Um so yeah that's the thing and
+then uh once I did that like and I built
+this little pipeline I showed it to my
+team and obviously you need to get
+feedback you need to get feedback from
+from humans and you need to get those
+humans to figure out if this is even
+useful um and the key question is like
+would you add this to your code right
+because like people were like very very
+very lukewarm of like h maybe this could
+work maybe this couldn't work but I
+think once I had like more uh precise
+information of like uh like the
+different contextual sort of like cloud
+MDs of like oh yeah this is like this is
+the one for the top repository this is
+the one for like BML built-ins then it
+made more sense to uh then these like
+context charts actually were more useful
+essentially
+um
+>> this is sick
+>> so yeah initially we had like so many of
+these like memories like 947
+and Um
+and then we like just split it into this
+pipeline and I can dive into the actual
+pipeline. Uh so essentially this is what
+you you guys are seeing. Uh remember
+like that we divided into three sections
+what agents find found out the
+corrections that people gave agents and
+what agents kept researching.
+>> And so in here we
+>> what's the difference between what
+agents found out and what agents kept
+researching?
+>> Yes. So um what agents found found out
+is just like basic small little facts of
+the codebase.
+>> Okay.
+>> Uh so it like includes more more data
+than just like what agents kept
+researching. This is more like an agent
+got stuck
+>> literally what what what were agents
+like deciding they needed to figure out.
+>> Exactly. And not only that
+>> accidentally figure out.
+>> Yeah. And and for this one for example,
+what we do is we actually build a map of
+the code like we take every single path
+that the agents are measuring and and
+looking through. Um and then we like
+build a map of the code and we actually
+like kind of create a heat map of the
+codebase and we say okay this one fact
+that like spans throughout the whole
+codebase or spans like 17 files we
+should probably like put that into some
+sort of context shard. Uh these ones are
+more like a simple fact like oh you know
+BAML requires uh decorator in this
+position that kind of thing.
+>> I see.
+>> And so this is more generic and and yeah
+sure initially like a fact is like
+whatever like you don't really care much
+about it but once you start having more
+sessions and more uh data then you start
+like grouping these together. And so for
+example in here we have a grouping step
+and we say like hey these facts were
+extracted from separate co coding
+sessions find facts that are the same
+thing as another fact right
+>> then you start building sort of like a
+exactly you start building sort of like
+a a model of like okay these facts are
+going to turn into sort of a memory
+>> like I've seen them so often that I need
+to remember them.
+>> Yep.
+>> Right. Uh and so then we can like start
+grouping things and you know that's why
+in in here we for each single memory our
+context sh that we put in here we put
+like all the sessions
+>> and these come from all of those
+different facts.
+>> Okay. So the same kind of fact gets
+extracted from 10 different sessions or
+11 different sessions and then you group
+them together.
+>> Exactly. Exactly. So uh that's the main
+main gist and here's all the all the
+prompts as well. So like in here we're
+just filtering all the messages with
+Jeff. And what was also funny is that as
+I'm working on this project, Jev came
+out,
+>> right?
+>> So that was also like a really cool
+moment of like having an immediate use
+case for it and I think a lot of people
+can relate to this that like you can use
+these classifier models to reduce how
+much data you're processing uh very
+easily. Uh and having such a capable
+model is super useful. uh like
+classification is one of like a very
+common problem in any pipeline.
+>> If you if you didn't have Jeb, like what
+was what was the plan to do this without
+Jev?
+>> Like small model.
+>> Yeah, exactly. Yeah. Like I would just
+use Luna, but uh even Luna is more
+expensive than uh than Jeff. So
+>> cool.
+>> Jeff was definitely clutch. Definitely
+clutch.
+>> Awesome.
+>> Uh so yeah, we like filter things.
+Here's like the prompt and in BAML like
+I said you just put like the float and
+we just figure out how to convert it
+into a probability from Jev. Then we
+like find facts. It's just like like hey
+like uh these are all the instructions.
+You're reading a coding session between
+a person and AI agent. Um skip generic
+advice, personal preferences, plans that
+were not carried out. Fix recipes and UI
+styling like that kind of thing. This
+could be like very custom made, right,
+to like each team. But in general, you
+want to avoid personal preferences or
+like very generic things like why do I
+care about just super generic advice
+that's in the weights already?
+>> Yeah.
+>> Um.
+>> Yep.
+>> So, so yeah, that's uh the basic gist.
+Then we group things uh as I mentioned.
+And then after grouping, we actually do
+another filtering step. And even in the
+filtering step for each of these
+memories, we judge them. We're like,
+"Hey, is this tribal knowledge?" Uh, is
+this like readable? Would an agent see
+this as as soon as as it opens a file or
+function? Like what I want to know about
+this readable thing is whether you're
+just kind of like the documentation is
+the code, right? So I don't need to
+restate uh the code in some file. You
+can just read the code and the agent can
+just read the code. What I really want
+to keep is stuff that is not obvious by
+reading the code. So that's kind of like
+there's like one that is like okay you
+have to read 10 files to understand
+this.
+>> Exactly. Exactly. So that's the thing
+that I did at the bottom here like you
+know there's a code map and I have to
+figure out essentially did it read 10
+files to understand this or not. I'm
+excited to see the output format for the
+code map like what that actual data
+structure looks like. But um
+>> yes,
+>> we'll keep going through the top
+pipeline first.
+>> Yeah. Yeah. Then we judge memories. So
+we run it through like a stronger model.
+So again, you you'll notice how there's
+like a pre-screening and then like a
+strong model. So it's always like you
+know the the weak model, strong model,
+strong model, weak model, strong model.
+And uh we want to have like good results
+in like judging these memories and you
+know ddup things ddup memories that
+don't make sense
+>> things like that. Uh and then we just
+like sort these memories again
+>> uh into like these rules the thing that
+I showed you in the report.
+>> Mhm.
+>> And this is just very easy to do. And
+like we could probably join this with
+this.
+>> What is what are those types map to?
+like defect or uh internals like are
+those enum values or
+>> yeah they're uh they're enums. So you
+just in BAML you can just literally give
+it an enum and we'll figure out you know
+we'll give this to Jeff in a way that
+makes sense.
+>> We'll just say like hey
+>> classify it.
+>> Exactly. It's just like out of these
+enums choose the best one and we'll just
+give you the best one that Jeff said.
+>> Cool.
+>> Um so yeah it's just that and then
+eventually you write the drafts and
+write the reports. Right.
+>> Cool. Um, and in here it's just very
+simple like we're looking through
+messages. Uh, and uh, let me see if I
+have a
+Yeah, for example, the human could say,
+"Hey, it should be root Hispanic because
+we don't have relative namespaces. All
+names are local to the namespace. So
+clearly this is like a correction by the
+human."
+>> Mhm.
+>> And we want to like highlight these
+messages and be like, let's not lose
+this data. like we need to store this
+data somewhere because the human is
+literally correcting the agent. Um and
+it's something that the other pipeline
+might not completely get but because the
+other pipeline is like more generic
+approach. Um so in this pipeline uh this
+sub pipeline we want to like classify
+everything that is a human correction.
+Does that make sense?
+>> Yeah. Yeah. I like this. Okay.
+>> Cool. Uh but yeah, we like add this, we
+group the rules again with OPOS and then
+we send it out to this draft writer
+thing.
+>> What is the test?
+>> Oh, it's just like creates uh this um
+I'll show you. It creates this report.
+>> Okay,
+>> so it's just like oh fix this first
+built-in pipeline like uh like compiler
+to state asked for in 677
+tool calls. These four questions reoccur
+in in four or five sessions each. So we
+first generate this kind of like report
+and then from that report we uh also
+generate this stuff.
+>> Okay,
+>> it's all like tied together.
+>> Cool.
+>> Um and then the last one is like okay
+how are agents you know navigating
+through the code and and uh what's the
+heat map of this? And I wish I had a
+visualization for this because that
+would be super cool but I don't have
+one.
+>> Not yet. But uh if if not yet but like
+maybe soon.
+>> Um but yeah, it's essentially like um
+you know we group some questions uh
+saying like hey this is a recurring
+question uh would a developer to the
+repository
+um what's it called?
+Yeah, find questions about how the
+repository works that come up again and
+again asked in different sessions idea
+by different people. So in here we're
+like grouping more sessions together and
+then just saying like give me things
+that people keep asking
+>> what is the input to that
+>> is that like input
+>> sub agent intro prompts or
+>> uh this one is sub aents like sub aent
+data and uh what I did here is I don't
+have it
+>> okay so it's the it's like whatever the
+the like first user message that the
+parent model passes into the sub agent.
+>> Yeah. Okay. And actually um I pass in
+like uh I I basically have like a
+gazillion reaxes on the tool calls that
+are being made.
+>> Okay.
+>> And these reaxes like extract like um
+paths, you know, like directory names,
+things like that.
+>> Yeah.
+>> And then I send it to these models and
+they can figure out like, oh, this
+directory was visited like five times or
+this one was visited like x amount of
+times.
+>> How do we find the answers?
+>> Uh what do you mean? How do we find the
+answers?
+>> Yeah. So this this prompt what are the
+inputs to this? This is the questions
+and then the
+>> the docs. Yeah.
+So like in here for each question say
+which do answers it best. So essentially
+like I also
+>> you get the dogs from
+>> I I read the read tools and then I I
+understand like what docs are being read
+files are you just you're only looking
+at MD files or you looking at code files
+too?
+>> Uh I look at all the files. It's not
+just uh code. It's not just MD files. I
+look at all the files.
+>> Opus is getting contents of every file
+that is being put in.
+>> Exactly. So it's reading it's like doing
+a tool call to read a file. So then the
+output of that tool call is like the
+actual contents of the file.
+>> Okay. Okay, so I said it again. It's
+>> we would take what was the initial
+message passed into the sub aent of like
+here's what I want you to go find
+>> and then you take every file the sub
+agent read during its trajectory and
+then you take their contents and you
+pass the question and the docs in and
+then opus's job is to figure out
+>> um which docs Okay, cool.
+>> Yeah. Yeah. Yeah. Exactly. Which docs
+were relevant to answering that sort of
+question as well.
+>> Cool. Um but uh yeah then we like write
+these code maps and we tell uh we tell
+Jev as well to like just figure out does
+this report answer the question like
+which components were involved where
+they live and how they connect. So I
+just kind of like create a a summary of
+like what the sub agent did and then ask
+Jeb like did it answer the question.
+>> So the report is the sub agent's kind of
+final answer back to the parent model.
+>> Yeah, exactly.
+Exactly. Uh and then yeah, from here we
+create the drafts and then write the the
+actual report.
+But that's the the basic gist. And you
+know, I wanted to basically say Jeff is
+a lifesaver here. Uh it's like 97% of
+the cost, 5% of the 5% of the bill,
+which is insane. Essentially, if you're
+spending like 50 cents on something, you
+can just slap Jev into it and like get
+the cost reduced by a ton.
+>> Awesome. Uh and then yeah I had some
+other deep dives but we can we already
+went through this
+it's just some animations
+>> nice
+>> uh observability. Oh the other thing
+that I wanted to highlight uh that was
+interesting is this dashboard is uh
+actually made with a thing that we
+called BAML query. So what is BML query?
+So whenever we're writing like any
+regular code
+uh I think I have it here.
+Whenever we're writing anyone co any
+code like usually you have to like add
+spans to track everything.
+>> Yeah.
+>> Like you you do like start active span
+then you do the open responses you catch
+the error you set like the error in this
+span thing and then you like set the
+status.
+>> Yep.
+>> But with BAML that that stuff comes for
+free. So uh we just made it really
+efficient in how we capture information
+and we have like um we like create a
+spans automatically for certain types of
+functions like LLM functions in a way
+that we detect.
+>> Okay. So that basically means like I run
+my program and then what I get like a
+CLI where I can run BAML query and ask
+things about how it ran and then the
+model can use that to like pipe that
+into a report.
+>> Yeah, actually and I I'll show you
+what's happening when I run this. Uh
+maybe let's let me share my entire
+screen so you can see it.
+So here
+>> I think I still see just your browser.
+>> Yeah. Yeah. Yeah. I am loading this.
+So here is this app
+and when you can see what you can see
+here is that it's running BL query BL
+query like BML query literally all of
+this data here that I'm populating in
+this giant uh diagram comes from this
+BML query thing and all we do is
+>> is that like a SQL database on disk or
+>> so remember what uh what um Jared said
+about SQLite of like, oh, let's store
+all these HTTP requests and store them
+in SQLite.
+>> Yeah,
+>> I'm kind of like I was kind of alluding
+to this. It's like, yeah, you could
+literally just store all of your data,
+not just HTTP requests, but literally
+anything that you need when you're
+building an AI pipeline.
+Okay. So, instead of using like
+the BAML playground to inspect my
+program as it's running, I can actually
+just like vibe my own UI on top of the
+running program.
+>> Yeah. So, yeah. So, in the past, you
+know, you've used the BAML playground
+before. Yeah,
+>> but the balance is has been outdated by
+like it's it's no longer tenable because
+uh people need to build like really
+bespoke UIs to make good decisions.
+>> Y
+>> and like this UI I won't find this stuff
+in any AI observability dashboard
+>> like that will just not happen. Like
+who's going to build this for you?
+>> It's really hard to build a UI that is
+like generic enough to meet. It's like
+even if this could be made, you'd be
+clicking around and dragging things or
+like it's like well I just want to write
+code. Just let me let my model write
+code on top of the data.
+>> Exactly. And like um even you know
+clicking here
+>> like I can load each of the recordings.
+So you know this is BLQ query running
+again
+>> and it's like giving me the inputs and
+outputs
+>> like the inputs was this stuff the
+output was this stuff. uh I can like
+iterate over these things.
+>> Okay. So you have a devel you have a web
+server running in the background that is
+just executing BAML query like with a
+shell command but you could have
+>> only a yeah
+>> you have native bindings to it if you
+wanted to.
+>> Exactly. The only API you need here is
+BLM query like uh essentially we
+converted all of your basically what we
+built is a program database of just like
+when you run a program we create a
+database for you that just works and you
+can query all sorts of stuff from it.
+>> That's awesome. That was one of the
+things that uh I I want wanted to
+highlight. I was just like, okay, when
+you have this kind of tooling, I don't
+need to add these like spans everywhere.
+And not only that, but I have a language
+that agents can use, which is SQL
+>> to build anything, right?
+>> That's awesome.
+>> So yeah, like the output tokens, that
+kind of stuff, we already just store
+this for you by like using one of these,
+you know, LLM calls. And B is a fully
+touring complete language now. I mean
+you can write any sort of web app or
+anything in it or sorry not a web app
+but like a server.
+>> You could do something like I know
+Golang supports like you can just mount
+a route on your API that like serves up
+the profiler UI. So like your running
+program could serve an API into its own
+like internal state.
+>> Yeah. Yeah. You could do that. You could
+literally do that as well.
+>> Uh and then yeah like these are just
+some of the queries. uh and and you know
+I just showed you this but yeah that's
+basically the BML query thing of like
+how do we make it such that we can
+create a product that also helps people
+iterate and build these uh these tools
+quickly right
+>> without having to reinvent
+>> insanely cool this is so
+>> the data store um yeah thanks um but but
+uh yeah that was the main thing of like
+okay can we just come up with a lang
+language that every agent understands
+and you can query your program and like
+before it would be untenable to give
+this to a human like imagine giving a
+human six tables and being like here is
+the manual on how you use these and then
+giving them like a 100page PDF of just
+like how to create your program.
+>> Yeah.
+>> Like now that you don't need to do that
+you can literally just give uh the agent
+keys to the database and be like oh yeah
+this you can just run this. Um so uh
+yeah that's how it works and you know we
+have a cloud platform as well uh but uh
+this is can also just run locally.
+Um but yeah, I did want to chat about
+like one uh remaining problem here with
+this whole pipeline. And I think you you
+were also alluding to this at the
+beginning of like okay now that we have
+a context chart and maybe we accept some
+of them and deny some of them like how
+do we track the health of a memory right
+>> and the model and suddenly something we
+needed to tell it all the time is now in
+the way it's like how do we how do we
+identify that and like remove it from
+context because we may be like Tariq
+calls it like hobbling the model by
+giving telling it to do things that it
+already knows how to do.
+>> Yeah. Yeah. And so I don't know if you
+had some ideas here. I don't have
+anything else here by the way in these
+slides, but if you have any ideas on how
+we could do the health of a of a memory.
+>> Yeah. I think I think health of a memory
+is interesting. I also think that like
+um there's some like problem of like how
+do you store this and make it available
+to the model? Obviously like the really
+naive approach is like put it in cloud
+MD or put it in a skill. But like what
+you don't want to do is have, you know,
+200 new skills, each of which is like
+one fact, and like rely on the model to
+go call those as it needs to. I I don't
+think skills stack very well since they
+put in a bunch of like user messages and
+like if you invoke 200 skills, like I
+don't know how well the attention
+following is. We should probably I I
+don't know if there's an eval for this,
+but that would be an interesting like
+public benchmark of like, you know, big
+skill eval.
+>> Um
+>> Yeah. Yeah. Big skill eval or like uh
+what skills go stale. I don't think
+anyone has worked on this stuff too in
+too much detail. Even Cognition.
+>> Oh yeah, we can we could talk we should
+talk about the cognition thing too.
+>> Uh like Cognition released this thing.
+Uh I don't know if you have the the link
+somewhere.
+>> Um I think I sent it to you because
+their thing was more about like how do
+you like store memories and less about
+like the pipeline for identifying what's
+worth remembering.
+>> Yeah, exactly. And uh what they do is
+like yeah like you know introducing
+dreaming across sessions Devon builds a
+memory graph of how you like to work. So
+then I'm like okay that's cool. It's
+very similar to what I was working on
+right just like how do you create
+memories and stuff like that.
+>> But if we click here there's nothing
+that really tells you how something
+makes it into a memory. Uh so that's
+like I think that's the hardest part.
+One of the hardest parts. there's like
+um you know this repository layout and
+here's how you can organize your
+memories and entries and metadata and
+composability and like all of that is
+really cool like how do you store this
+for later uh referencing by the model
+but uh uh an interesting part is just
+like how they decide what goes into a
+memory file and in here it's probably
+the agent deciding that so like the
+agent tracks who said what and writes
+each to the right repo Um, and this is
+one of the interesting parts about like
+writing memories and calculating
+memories and do it in after the fact.
+So, for example, our team could just
+have a a uh what's it called? A cloud MD
+instruction that says, hey, if you find
+anything that should be a memory, just
+put it in a file, right? But the problem
+with doing that is that if you're just
+in a single session, you're not able to
+make correlations across many sessions.
+for example. Um, so I don't know, that's
+one interesting part about this is that
+it's not a fully sort of it's not like a
+full complete workflow on how you create
+memories. It's just like leave it to the
+agent and we'll see what happens.
+Um, so yeah, that's one thing. Um, and
+then the other part was
+>> Yeah. Okay. Okay. And like how do you
+share things and how do you remix them?
+And like like I said, yeah, I think I
+think something like uh you know when
+when Gmail came out, they were like,
+"Hey, we're not going to have folders.
+We're going to have labels." Like
+because folders enforce like a very
+specific hierarchy and like what they
+wanted was a thing to be able to be in
+multiple
+>> folders, but like basically the thing
+can be have multiple labels uh without
+you like committing to a place like once
+it's in a place it can't be in any other
+place.
+>> Yeah. Yeah. Exactly. Uh and I think you
+sort of need these almost like chron
+jobs that do like u they uh do like RAM
+sleep, right?
+>> And then uh you go over all the memories
+and compact them and coales them and do
+the kind of stuff that I was doing in
+this pipeline.
+>> Well, you almost need to like I feel
+like to tell if a memory is stale, you
+almost need to like run some percentage
+of of your sessions without the
+memories.
+Uh but like what user is going to be
+like, "Oh yeah, I'm I'm fine with my
+agents being slow or confused if it uh
+on the off chance that maybe they don't
+need the memories anymore." So like I
+don't know how I guess you could back
+test it on take the new model and back
+test it on old like traces and see if it
+still needs the memory. like say, "Hey,
+same initial prompt." And then like,
+yeah, long horizon evals are really hard
+because it's like, okay, if something in
+the first 100 messages changes, maybe
+just feeding in the next user message
+that that was that was done in the past
+eval the trace we have doesn't make
+sense anymore. Like it's very hard to
+determine if you are actually using the
+same inputs to evaluate the outputs.
+>> Yeah. And I think my my one idea I had
+actually to like figure out how to
+figure out whether something is stale is
+um is I tie each sort of memory to like
+a place in the codebase or a or a region
+in the codebase
+and
+uh and there's various ways of like
+doing that like the code map that I
+mentioned where like you tie each memory
+to like a place in the codebase.
+>> Yeah. But also you can probably ask the
+agent also like hey if I'm here and this
+is in your context now and you just
+worked on these this file like is this
+outdated or not and then you kind of
+just let the agent decide like oh yeah
+this thing is stale it's incorrect let
+me fix that
+>> or you just analyze it after the fact
+just like we did
+>> where we analyze the session again and
+we find the message where an agent says
+oh snap that was not correct let me fix
+that.
+>> Um and I think you could get a similar
+sense of like the health of a of a
+memory
+or let let a a human do it.
+>> Have you thought at all obviously you
+can just run this pipeline and run it
+once a day or once a week or whatever
+and generate new suggestions. Have have
+you thought at all how you would kind of
+continuously evolve the pipeline itself
+based on feedback? like, hey, like, hey,
+let's say we generate all these memories
+and, you know, we serve it to a bunch of
+users and users be like, I want to keep
+those four and I want to don't care
+about these four cuz they're bad. Like,
+how how would you think about like
+ingesting that feedback to improve the
+pipeline itself? What would your what
+would your like eval climb look like?
+>> I think there would be like another
+fourth input. So you know how the
+pipeline had like three different
+inputs, there will be a fourth one that
+just goes into like the final draft and
+report that has either the existing uh
+save memories from previous sessions.
+>> Uh because otherwise it's going to
+regenerate the same if you pass the same
+sessions in it's going to regenerate.
+Okay. So if you the first step is make
+it incremental where like hey if I run
+it again the final step will will have
+awareness of hey what memories do we
+already have? So it won't generate a
+report for stuff we already have kind of
+logged and and in circulation. Okay.
+>> Exactly. Like there's it's almost like a
+memory gets upgraded into like approved,
+right? Like the the user approved it. So
+you should just put that data in there.
+Like if uh we run it again, we should
+put the memories that were already
+approved. Uh and maybe put like the
+whole like cloud MD that someone has in
+there. Um or the skill that someone has.
+and these uh skills at least ideally
+they won't they wouldn't be too many
+tokens right so it's easier to process
+this uh so I think that would scale for
+quite a bit uh before you need to group
+like ddup stuff and group again
+>> and then and then it's fairly trivial to
+take that fourth pipeline that is the
+input to the final report and just
+include by the way here's 10 memories
+that the user dismissed and maybe they
+even left feedback about why it's bad
+and like incorporate that into your next
+flow And maybe the final report has not
+only
+>> uh what to what to add to the report but
+also like hey what should be removed
+from your memory system because user
+said hey this is not relevant or this is
+already handled somewhere else.
+>> Exactly. And the easiest part to modify
+is that final like step of the pipeline
+like that the human's going to see. Um,
+but once you start getting more
+information, for example, what if
+there's memories that the human rejected
+or uh they're like this is bad, don't do
+this, then I think you could start
+building a feedback loop on the rest of
+the pipeline. So then you could start
+using either agents or something to get
+all this feedback and figure out like
+okay um do I need to change earlier
+steps here and maybe like change what
+criteria I have for finding a fact or
+finding a correction things like that.
+Uh so it would be like uh yeah having
+our own feedback sort of engine for this
+whole system as well.
+>> Sick. Uh dude this was super fun. I know
+we're almost at time. I know you put in
+a ton of work and the slides were super.
+I really like that we could just like
+pull up the prompts during the slides.
+That was that was awesome.
+>> Oh, yeah. Yeah. Yeah. Yeah. Exactly. Uh
+but yeah, it's a quick project, but uh
+you know, it's it's just cool using the
+tooling and testing things out and
+seeing what works and the lessons that
+we learned.
+>> Amazing, dude. This is going to be
+awesome.

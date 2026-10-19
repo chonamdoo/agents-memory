@@ -1,0 +1,222 @@
+{
+  "purpose": "integrated_adversarial_architecture_review_not_AF_approval",
+  "input_sha256": "652608762ebe333532a83ed81fd555c5a697c1c382bf9f6019337470d6668dba",
+  "input_bytes": 17840,
+  "identical_stdin": true,
+  "opus": {
+    "cli_version": "2.1.296 (Claude Code)",
+    "requested": {
+      "model": "claude-opus-5-5",
+      "effort": "xhigh",
+      "timeout_seconds": 1800,
+      "final_report_character_target_max": 7000,
+      "tools": "",
+      "strict_mcp_config": true,
+      "mcp_servers": {},
+      "safe_mode": true,
+      "disable_slash_commands": true,
+      "no_session_persistence": true
+    },
+    "observed": {
+      "models_from_modelUsage_keys": [
+        "claude-opus-5-5"
+      ],
+      "effort": null,
+      "effort_observation_limit": "Requested effort xhigh is in argv; final envelope has no served-effort observation.",
+      "terminal_exit": 0,
+      "timed_out": false,
+      "is_error": false,
+      "type": "result",
+      "subtype": "success",
+      "num_turns": 1,
+      "duration_ms": 191946,
+      "duration_api_ms": 191826,
+      "stop_reason": "end_turn",
+      "result_nonempty": true,
+      "result_characters": 5940,
+      "within_7000_characters": true,
+      "result_sha256": "938854f0984a6bba0dddb359cb1a0841bd7bc6a5cf8a634c20e6c8a7d062c959"
+    },
+    "elapsed_seconds": 193.119823,
+    "attempt_count": 2,
+    "all_attempts_elapsed_seconds": 377.139392166,
+    "usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 8388,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 18770,
+      "output_tokens_details": {
+        "thinking_tokens": 14875
+      },
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 8388,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "global",
+      "iterations": [
+        {
+          "input_tokens": 2,
+          "output_tokens": 18770,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 8388,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 8388
+          },
+          "type": "message"
+        }
+      ],
+      "speed": "standard",
+      "fallback_credit": null
+    },
+    "prior_attempts": [
+      {
+        "attempt": 1,
+        "reason_not_selected": "Actual native final text was 7233 characters, above requested maximum; not edited. Reran independently with identical packet and stricter system length instruction.",
+        "observed": {
+          "models_from_modelUsage_keys": [
+            "claude-opus-5-5"
+          ],
+          "effort": null,
+          "effort_observation_limit": "Requested effort is in argv; no independent served-effort claim unless native envelope reports it.",
+          "terminal_exit": 0,
+          "timed_out": false,
+          "is_error": false,
+          "type": "result",
+          "subtype": "success",
+          "num_turns": 1,
+          "duration_ms": 182797,
+          "duration_api_ms": 182769,
+          "stop_reason": "end_turn",
+          "result_nonempty": true,
+          "result_characters": 7233,
+          "result_sha256": "c0084417927b7dbd8c1f7efcb159d6461f2536339248b759d4dad71c81c00666"
+        },
+        "usage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 8335,
+          "cache_read_input_tokens": 0,
+          "output_tokens": 16627,
+          "output_tokens_details": {
+            "thinking_tokens": 11653
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 8335,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 16627,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 8335,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 8335
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard",
+          "fallback_credit": null
+        },
+        "list_price_estimate_not_invoice": 0.399228
+      }
+    ],
+    "selected_list_price_estimate_not_invoice": 0.44251199999999996,
+    "tool_observation": {
+      "output_format": "json final envelope (not stream-json)",
+      "top_level_keys": [
+        "api_error_status",
+        "duration_api_ms",
+        "duration_ms",
+        "fast_mode_disabled_reason",
+        "fast_mode_state",
+        "first_content_frame_ms",
+        "is_error",
+        "modelUsage",
+        "num_turns",
+        "permission_denials",
+        "queued_turn_count",
+        "result",
+        "result_index",
+        "safety_stops",
+        "session_id",
+        "stop_reason",
+        "subagent_stats",
+        "subtype",
+        "terminal_reason",
+        "time_to_request_ms",
+        "total_cost_usd",
+        "ttft_ms",
+        "ttft_stream_ms",
+        "type",
+        "usage",
+        "uuid"
+      ],
+      "tool_or_call_fields": {},
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "limit": "Only final JSON envelope fields were observed; no full tool-call event trace. No absolute zero-tool proof or production isolation guarantee is inferred from command flags, empty permission denials, num_turns, or absence of tool fields."
+    }
+  },
+  "codex": {
+    "cli_version": "codex-cli 0.162.1",
+    "requested": {
+      "model": "gpt-6.1-sol",
+      "reasoning_effort": "xhigh"
+    },
+    "observed": {
+      "served_model": "unknown",
+      "served_reasoning_effort": "unknown",
+      "reason": "CLI JSONL does not report served model or effective reasoning effort; argv is request evidence only"
+    },
+    "terminal_exit_code": 0,
+    "elapsed_seconds": 226.274082334,
+    "actual_terminal_tools": {
+      "observation_scope": "Calls surfaced as native CLI JSONL items only; absence is not a general isolation or zero-tools guarantee",
+      "unique_call_count": 0,
+      "category_call_counts": {
+        "web": 0,
+        "apps": 0,
+        "collaboration": 0,
+        "command": 0,
+        "file_change": 0,
+        "resource_listing": 0,
+        "resource_reading": 0,
+        "other": 0
+      },
+      "calls": [],
+      "resource_listing_results": [],
+      "empty_resource_listing_allowance_used": false
+    },
+    "usage": [
+      {
+        "input_tokens": 26361,
+        "cached_input_tokens": 9600,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 7100,
+        "reasoning_output_tokens": 4142
+      }
+    ],
+    "report_chars": 7695,
+    "character_limit_note": "Native text exceeded requested7000; unedited retained"
+  },
+  "company_permission_proven": false,
+  "implementation_approved": false,
+  "production_isolation_proven": false,
+  "raw_reasoning_published": false
+}
