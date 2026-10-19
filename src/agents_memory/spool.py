@@ -573,7 +573,7 @@ class ProducerSpool:
                 )
         return inserted
 
-    def flush(self, client: LocalClient, limit: int = 32) -> dict:
+    def flush(self, client: LocalClient, limit: int = 32, *, wait: float = 0.0) -> dict:
         if not 1 <= limit <= 128:
             raise DomainError("SPOOL_LIMIT_INVALID", "Choose a bounded flush limit")
         descriptor = os.open(
@@ -584,11 +584,16 @@ class ProducerSpool:
             info = os.fstat(descriptor)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
                 raise DomainError("SPOOL_PATH_DENIED", "The outbox delivery lock must be private and owned")
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return {"committed": 0, "newly_quarantined": 0, "errors": [],
-                        "flush_owner": "busy", **self.status()}
+            deadline = time.monotonic() + wait
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        return {"committed": 0, "newly_quarantined": 0, "errors": [],
+                                "flush_owner": "busy", **self.status()}
+                    time.sleep(0.05)
             return self._flush_owned(client, limit)
         finally:
             os.close(descriptor)

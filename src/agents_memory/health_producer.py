@@ -281,6 +281,8 @@ def observe_health_workspace(
         return {"state": "disabled", "configured": False}
     if not 1 <= flush_limit <= 128:
         raise DomainError("SPOOL_LIMIT_INVALID", "Choose a bounded flush limit")
+    # One explicit deadline covers both the observation lock and a background delivery in flight.
+    deadline = time.monotonic() + lock_wait
     with _owner(receipt, wait=lock_wait):
         spool = _spool(receipt)
         try:
@@ -293,7 +295,7 @@ def observe_health_workspace(
             prior_receipt = {}
             if prior.get("key"):
                 if not defer_flush:
-                    spool.flush(client, limit=flush_limit)
+                    spool.flush(client, limit=flush_limit, wait=max(0.0, deadline - time.monotonic()))
                 try:
                     prior_receipt = spool.disposition(prior["key"])
                     prior_disposition = prior_receipt["state"]
@@ -371,7 +373,7 @@ def observe_health_workspace(
                 return {"state": "queued", "configured": True, "workspace_id": config.workspace_id,
                         "coverage": command.coverage, "files": len(files),
                         "freshness": "uncommitted_not_context_proof"}
-            spool.flush(client, limit=flush_limit)
+            spool.flush(client, limit=flush_limit, wait=max(0.0, deadline - time.monotonic()))
             disposition = spool.disposition(command.idempotency_key)
             if disposition["state"] != "committed":
                 return _incomplete(require_committed, "HEALTH_OBSERVATION_UNCOMMITTED")
