@@ -114,6 +114,7 @@ async def test_minimum_mcp_cap_can_inspect_a_plain_captured_source(authority, tr
         result = await bounded_inspection_plane(edge, authority, {
             "binding_id": authority.binding_id, "ref": source.source_id,
         }, transport)
+        assert result.get("kind") == "source", result
         first = result
         fragments = [result["body"]]
         cursor = result["next_byte"]
