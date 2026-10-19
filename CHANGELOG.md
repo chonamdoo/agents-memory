@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### advisory 설치의 project 밖 행동 경고 제거
+
+- non-strict(OMP·Codex·Claude advisory) 설치에서 project 밖 행동·세션에 `HOST_SCOPE_UNRESOLVED` 경고를 내지 않는다. 대상이 모두 등록 project 밖인 행동(다른 worktree·`/tmp`·시스템 설정 등)과 cwd가 project 밖인 세션의 event는 `outside_advisory_coverage`로 끝나며 capture·context 전달·상태 기록을 하지 않는다. 그 세션의 명시 OMP capture 명령은 `not_captured` info를 표시한다. 일부 대상만 project 안인 OMP hashline edit은 그 대상의 규칙만 전달하고, 대소문자·Unicode 정규화만 다른 project 경로는 안으로 판정한다. cwd가 없거나 삭제된 event와 strict(Claude)는 기존처럼 거절한다.
+
+### 명시 health 작업과 서비스 background 관측의 잠금 경합
+
+- 로컬 서비스의 spool recovery가 등록 workspace를 주기적으로 관측하며 `health.lock`을 잡고, 관측을 queue에 넣은 뒤에는 spool flush lock 아래에서 전송한다. 그 사이 명시 `health workspace-register`·`health observe` CLI와 MCP `memory_context` 직전 관측이 즉시 `HEALTH_OBSERVER_BUSY` 또는 `HEALTH_OBSERVATION_UNCOMMITTED`로 실패하던 경합을 고쳤다. CI health smoke가 간헐적으로 이 오류로 실패했다. 명시 작업은 두 잠금을 합쳐 최대 10초 기다리고, 자동 hook과 background recovery는 기존처럼 기다리지 않는다. 한도를 넘으면 같은 오류다.
+
 ### CI 설치 wheel consumer 시간 예산
 
 - 설치 wheel consumer 제한을 300초에서 600초로 올렸다. 약 900개 사례를 새 process로 다시 실행하는 현재 subset이 정상 runner에서도 290–305초가 걸려 main CI(`6ab6118`, run 39209425762)가 58% 지점에서 timeout으로 실패했다. lint 120초·build 300초·source shard 600초와 job 15분 제한, timeout을 실패로 집계하는 aggregate는 그대로다.

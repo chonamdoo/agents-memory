@@ -415,6 +415,41 @@ def test_unknown_scope_or_footprint_never_allows_strict_action(installation, aut
     assert result["code"] == code
 
 
+@pytest.mark.parametrize("host", ["claude", "codex", "omp"])
+def test_advisory_scope_outside_project_is_silent_and_never_attributed(installation, authority, host, tmp_path):
+    project, _, _, _, install = installation
+    receipt = install(host, strict=False)
+    outside = tmp_path / "elsewhere" / "notes.md"
+    events = []
+    if host != "codex":
+        entirely = action(project, host)
+        entirely["tool_input"] = {"file_path" if host == "claude" else "path": str(outside)}
+        result = hosts.handle_hook(receipt, entirely)
+        assert (result["state"], result["code"], result["stdout"]) == ("outside_advisory_coverage", None, {})
+        events.append(dict(entirely, cwd=str(tmp_path)))
+    prompt_event = "before_agent_start" if host == "omp" else "UserPromptSubmit"
+    events.append(native(project, host, prompt_event, prompt="session started outside the registered project",
+                         cwd=str(tmp_path)))
+    if host == "omp":
+        events.append(native(project, host, "input", text="ingress outside the project", source="interactive",
+                             cwd=str(tmp_path)))
+    for event in events:
+        outside_cwd = hosts.handle_hook(receipt, event)
+        assert (outside_cwd["state"], outside_cwd["code"], outside_cwd["stdout"]) == (
+            "outside_advisory_coverage", None, {})
+        assert "capture" not in outside_cwd
+    if host == "omp":
+        explicit = hosts.handle_hook(receipt, native(project, host, "capture_finding", text="explicit finding",
+                                                     cwd=str(tmp_path)))
+        assert (explicit["state"], explicit["code"]) == ("outside_advisory_coverage", None)
+        assert explicit["capture"] == {"state": "not_captured", "reason": "session_outside_registered_project"}
+    assert authority.calls == []
+    runtime = Path(hosts.load_receipt(receipt)["runtime_dir"])
+    assert not list(runtime.glob("*.json")) and not list(runtime.glob("*.sqlite3"))
+    missing = native(project, host, prompt_event, prompt="cwd removed", cwd=str(tmp_path / "removed"))
+    assert hosts.handle_hook(receipt, missing)["code"] == "HOST_SCOPE_UNRESOLVED"
+
+
 def test_overflow_is_not_truncated_into_success(installation, authority):
     project, _, _, _, install = installation
     receipt = install(prompt_recall=True)

@@ -80,7 +80,7 @@ class StdioRelay:
                     and message.get("method") == "tools/call"
                     and isinstance(message.get("params"), dict)
                     and message["params"].get("name") == "memory_context"):
-                from .health_producer import health_before_context
+                from .health_producer import EXPLICIT_LOCK_WAIT_SECONDS, health_before_context
                 from .hosts import load_receipt
 
                 receipt = load_receipt(self.settings.health_receipt)
@@ -88,7 +88,7 @@ class StdioRelay:
                         or receipt["deployment_id"] != self.settings.deployment_id
                         or Path(receipt["agent_token_file"]) != self.token_file):
                     raise DomainError("HEALTH_WORKSPACE_SCOPE", "The relay receipt changed scope")
-                observed = health_before_context(receipt)
+                observed = health_before_context(receipt, lock_wait=EXPLICIT_LOCK_WAIT_SECONDS)
                 arguments = message["params"].get("arguments", {})
                 if not isinstance(arguments, dict):
                     return self.error(message, "RPC_ENVELOPE_INVALID")
