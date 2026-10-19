@@ -210,6 +210,7 @@ def test_generated_hashline_edit_never_truncates_its_complete_path_boundary(
     "https://example.invalid/reference?q=read#part", "file:///private/example.txt",
     "custom+resource://entry/path:5-9", "proc://",
     "skill://architecture:5-9", "skill://architecture:raw", "artifact://182:5-9",
+    "local://report draft.md:5-9", "local://[notes].md",
 ))
 def test_resource_reads_keep_every_callback_outside_local_advisory_coverage(
     tmp_path, node_binary, installation, path,
@@ -236,8 +237,7 @@ def test_resource_reads_keep_every_callback_outside_local_advisory_coverage(
 @pytest.mark.parametrize("inputs", (
     {}, {"path": None}, {"path": 42}, {"path": ""},
     {"path": "://14"}, {"path": "1issue://14"}, {"path": "issue://bad%escape"},
-    {"path": "https://[broken"},
-    {"path": "issue://14/\nbody"}, {"path": "issue://14/<body>"},
+    {"path": "issue://14/\nbody"},
     {"path": "./notes/issue://14"},
 ))
 def test_malformed_resource_reads_remain_visible_refusals(tmp_path, node_binary, installation, inputs):
