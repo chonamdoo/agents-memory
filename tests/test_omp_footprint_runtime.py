@@ -209,6 +209,7 @@ def test_generated_hashline_edit_never_truncates_its_complete_path_boundary(
     "issue://14", "pr://9/diff/all", "skill://architecture",
     "https://example.invalid/reference?q=read#part", "file:///private/example.txt",
     "custom+resource://entry/path:5-9", "proc://",
+    "skill://architecture:5-9", "skill://architecture:raw", "artifact://182:5-9",
 ))
 def test_resource_reads_keep_every_callback_outside_local_advisory_coverage(
     tmp_path, node_binary, installation, path,
@@ -233,9 +234,9 @@ def test_resource_reads_keep_every_callback_outside_local_advisory_coverage(
 
 
 @pytest.mark.parametrize("inputs", (
-    {}, {"path": None}, {"path": 42}, {"path": ""}, {"path": "issue://14\x00"},
+    {}, {"path": None}, {"path": 42}, {"path": ""},
     {"path": "://14"}, {"path": "1issue://14"}, {"path": "issue://bad%escape"},
-    {"path": "https://[broken"}, {"path": "https://example.invalid:bad/path"},
+    {"path": "https://[broken"},
     {"path": "issue://14/\nbody"}, {"path": "issue://14/<body>"},
     {"path": "./notes/issue://14"},
 ))
@@ -253,6 +254,7 @@ def test_malformed_resource_reads_remain_visible_refusals(tmp_path, node_binary,
 @pytest.mark.parametrize("failure,code", (
     ("receipt", "HOST_RECEIPT_UNAVAILABLE"),
     ("envelope", "HOST_ENVELOPE_INVALID"),
+    ("nul", "HOST_ENVELOPE_INVALID"),
     ("cwd", "HOST_SCOPE_UNRESOLVED"),
 ))
 def test_resource_addressing_never_skips_prior_hook_validation(
@@ -261,6 +263,8 @@ def test_resource_addressing_never_skips_prior_hook_validation(
     project, _, _, _, install = installation
     receipt = install("omp")
     event = {"toolName": "read", "toolCallId": "refused-resource", "input": {"path": "issue://14"}}
+    if failure == "nul":
+        event["input"]["path"] += "\x00"
     if failure == "receipt":
         receipt.write_text("{}")
     if failure == "cwd":

@@ -21,6 +21,7 @@ from contextlib import ExitStack, contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
@@ -1544,6 +1545,23 @@ def _scoped_cwd(receipt: dict, event: dict) -> Path:
     return cwd
 
 
+def _omp_resource_read(event: dict) -> bool:
+    inputs = event.get("tool_input")
+    if event.get("tool_name") != "read" or not isinstance(inputs, dict):
+        return False
+    path = inputs.get("path")
+    if not isinstance(path, str) or re.match(r"[A-Za-z][A-Za-z0-9+.-]*://", path) is None:
+        return False
+    if re.search(r'[\s\x00-\x1f\x7f<>"{}|\\^`]|%(?![0-9A-Fa-f]{2})', path):
+        return False
+    try:
+        # Native selectors can occupy authority text; do not interpret it as a URL port.
+        urlsplit(path)
+    except ValueError:
+        return False
+    return True
+
+
 def _footprint(receipt: dict, event: dict, cwd: Path) -> tuple[str, ...]:
     name = event.get("tool_name")
     inputs = event.get("tool_input")
@@ -1966,7 +1984,11 @@ def handle_hook(receipt_path: Path, event: dict) -> dict:
             core_prefix = "mcp__agents_memory_" if host == "omp" else "mcp__agents-memory__"
             core_tools = {"memory_context", "memory_inspect", "memory_record", "memory_feedback"}
             delegated = isinstance(tool_name, str) and tool_name in {core_prefix + tool for tool in core_tools}
-            if delegated or (not strict and tool_name not in receipt["capabilities"]["supported_path_tools"]):
+            outside_coverage = not strict and (
+                tool_name not in receipt["capabilities"]["supported_path_tools"]
+                or (host == "omp" and _omp_resource_read(event))
+            )
+            if delegated or outside_coverage:
                 result = _native_result(host, event_name)
                 result["state"] = "delegated" if delegated else "outside_advisory_coverage"
                 return result
