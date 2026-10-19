@@ -1544,12 +1544,25 @@ def _scoped_cwd(receipt: dict, event: dict) -> Path:
     return cwd
 
 
-def _omp_resource_read(event: dict) -> bool:
+def _omp_xd_device(path: object) -> str | None:
+    """The device name of an OMP `xd://` tool-device address; the scheme is case-insensitive natively."""
+    return path[5:] if isinstance(path, str) and path[:5].lower() == "xd://" else None
+
+
+def _omp_resource_target(event: dict) -> bool:
+    """Classify a `read` of a `scheme://` resource or a `write` to an `xd://` tool device as outside local coverage.
+
+    The backing target is not inspected. Other writable schemes (e.g. `conflict://`, `vault://`)
+    can change project files, so their writes keep the unknown-footprint warning.
+    """
     inputs = event.get("tool_input")
-    if event.get("tool_name") != "read" or not isinstance(inputs, dict):
+    tool_name = event.get("tool_name")
+    if tool_name not in ("read", "write") or not isinstance(inputs, dict):
         return False
     path = inputs.get("path")
     if not isinstance(path, str) or re.match(r"[A-Za-z][A-Za-z0-9+.-]*://", path) is None:
+        return False
+    if tool_name == "write" and _omp_xd_device(path) is None:
         return False
     # Native authorities may be literal filenames, not URL hosts.
     return re.search(r"[\x00-\x1f\x7f]|%(?![0-9A-Fa-f]{2})", path) is None
@@ -1975,11 +1988,17 @@ def handle_hook(receipt_path: Path, event: dict) -> dict:
         if event_name in ACTION_EVENTS:
             tool_name = event.get("tool_name")
             core_prefix = "mcp__agents_memory_" if host == "omp" else "mcp__agents-memory__"
-            core_tools = {"memory_context", "memory_inspect", "memory_record", "memory_feedback"}
-            delegated = isinstance(tool_name, str) and tool_name in {core_prefix + tool for tool in core_tools}
+            core_tools = {core_prefix + tool for tool in ("memory_context", "memory_inspect", "memory_record", "memory_feedback")}
+            inputs = event.get("tool_input")
+            delegated = isinstance(tool_name, str) and (
+                tool_name in core_tools
+                # OMP invokes discoverable MCP tools by writing arguments to their xd:// device.
+                or (host == "omp" and tool_name == "write" and isinstance(inputs, dict)
+                    and _omp_xd_device(inputs.get("path")) in core_tools)
+            )
             outside_coverage = not strict and (
                 tool_name not in receipt["capabilities"]["supported_path_tools"]
-                or (host == "omp" and _omp_resource_read(event))
+                or (host == "omp" and _omp_resource_target(event))
             )
             if delegated or outside_coverage:
                 result = _native_result(host, event_name)

@@ -205,26 +205,30 @@ def test_generated_hashline_edit_never_truncates_its_complete_path_boundary(
         assert "Retain the alpha invariant." not in visible
 
 
-@pytest.mark.parametrize("path", (
-    "issue://14", "pr://9/diff/all", "skill://architecture",
-    "https://example.invalid/reference?q=read#part", "file:///private/example.txt",
-    "custom+resource://entry/path:5-9", "proc://",
-    "skill://architecture:5-9", "skill://architecture:raw", "artifact://182:5-9",
-    "local://report draft.md:5-9", "local://[notes].md",
-))
-def test_resource_reads_keep_every_callback_outside_local_advisory_coverage(
-    tmp_path, node_binary, installation, path,
-):
+RESOURCE_TARGETS = (
+    *(("read", path) for path in (
+        "issue://14", "pr://9/diff/all", "skill://architecture",
+        "https://example.invalid/reference?q=read#part", "file:///private/example.txt",
+        "custom+resource://entry/path:5-9", "proc://",
+        "skill://architecture:5-9", "skill://architecture:raw", "artifact://182:5-9",
+        "local://report draft.md:5-9", "local://[notes].md", "xd://mcp__codegraph_explore",
+    )),
+    ("write", "xd://mcp__codegraph_explore"), ("write", "xd://lsp"), ("write", "XD://mcp__codegraph_explore"),
+)
+
+
+def test_resource_reads_keep_every_callback_outside_local_advisory_coverage(tmp_path, node_binary, installation):
+    # One generated-extension run per scenario keeps the installed-wheel consumer within its CI budget.
     project, _, _, _, install = installation
     events = [
-        {"toolName": "read", "toolCallId": identity, "input": {"path": path}}
+        {"toolName": tool, "toolCallId": identity, "input": {"path": path}}
+        for tool, path in RESOURCE_TARGETS
         for identity in ("resource-one", "resource-two", "resource-one")
     ]
     outcome, _ = run_scoped_tools(tmp_path, node_binary, install("omp"), project, {}, events=events)
     hooks = [entry for entry in outcome["hooks"] if entry["envelope"]["event"] == "tool_call"]
-    assert [entry["envelope"]["tool_use_id"] for entry in hooks] == [
-        "resource-one", "resource-two", "resource-one",
-    ]
+    assert [(entry["envelope"]["tool_name"], entry["envelope"]["tool_input"]["path"], entry["envelope"]["tool_use_id"])
+            for entry in hooks] == [(event["toolName"], event["input"]["path"], event["toolCallId"]) for event in events]
     assert outcome["notifications"] == []
     for entry in hooks:
         assert entry["result"]["state"] == "outside_advisory_coverage"
@@ -234,21 +238,33 @@ def test_resource_reads_keep_every_callback_outside_local_advisory_coverage(
         assert entry["requests"] == []
 
 
-@pytest.mark.parametrize("inputs", (
-    {}, {"path": None}, {"path": 42}, {"path": ""},
-    {"path": "://14"}, {"path": "1issue://14"}, {"path": "issue://bad%escape"},
-    {"path": "issue://14/\nbody"},
-    {"path": "./notes/issue://14"},
-))
-def test_malformed_resource_reads_remain_visible_refusals(tmp_path, node_binary, installation, inputs):
+MALFORMED_INPUTS = (
+    {}, {"path": None}, {"path": 42}, {"path": ""}, {"path": ["xd://mcp__agents_memory_memory_inspect"]},
+    {"path": "://14"}, {"path": "1issue://14"}, {"path": "issue://bad%escape"}, {"path": "xd://bad%escape"},
+    {"path": "issue://14/\nbody"}, {"path": "xd://mcp__agents_memory_memory_inspect\n"},
+    {"path": "./notes/issue://14"}, {"path": "./xd://mcp__agents_memory_memory_inspect"},
+)
+# Writable schemes such as conflict:// and vault:// can change project files natively.
+NON_DEVICE_URI_WRITES = (
+    "conflict://1", "conflict://*", "vault://notes/plan.md", "local://report.md", "file:///private/example.txt",
+)
+
+
+def test_malformed_resources_and_non_device_uri_writes_remain_visible_refusals(tmp_path, node_binary, installation):
     project, _, _, _, install = installation
-    events = [{"toolName": "read", "toolCallId": "invalid-read", "input": inputs}]
+    events = [
+        *({"toolName": tool, "toolCallId": "invalid-target", "input": inputs}
+          for tool in ("read", "write") for inputs in MALFORMED_INPUTS),
+        *({"toolName": "write", "toolCallId": "uri-write", "input": {"path": path}} for path in NON_DEVICE_URI_WRITES),
+    ]
     outcome, _ = run_scoped_tools(tmp_path, node_binary, install("omp"), project, {}, events=events)
-    hook = outcome["hooks"][-1]
-    assert hook["result"]["code"] == "HOST_FOOTPRINT_UNKNOWN"
-    assert hook["result"]["state"] == "degraded"
-    assert hook["requests"] == []
-    assert outcome["notifications"] == ["HOST_FOOTPRINT_UNKNOWN"]
+    hooks = [entry for entry in outcome["hooks"] if entry["envelope"]["event"] == "tool_call"]
+    assert len(hooks) == len(events)
+    for entry in hooks:
+        assert entry["result"]["code"] == "HOST_FOOTPRINT_UNKNOWN"
+        assert entry["result"]["state"] == "degraded"
+        assert entry["requests"] == []
+    assert [action["notifications"] for action in outcome["actions"]] == [["HOST_FOOTPRINT_UNKNOWN"]] * len(events)
 
 
 @pytest.mark.parametrize("failure,code", (
@@ -262,22 +278,31 @@ def test_resource_addressing_never_skips_prior_hook_validation(
 ):
     project, _, _, _, install = installation
     receipt = install("omp")
-    event = {"toolName": "read", "toolCallId": "refused-resource", "input": {"path": "issue://14"}}
-    if failure == "nul":
-        event["input"]["path"] += "\x00"
+    events = [
+        {"toolName": tool, "toolCallId": "refused-" + tool, "input": {"path": path}}
+        for tool, path in (
+            ("read", "issue://14"), ("write", "xd://mcp__codegraph_explore"),
+            ("write", "xd://mcp__agents_memory_memory_inspect"),
+        )
+    ]
+    for event in events:
+        if failure == "nul":
+            event["input"]["path"] += "\x00"
+        if failure == "cwd":
+            event["cwd"] = str(tmp_path)
     if failure == "receipt":
         receipt.write_text("{}")
-    if failure == "cwd":
-        event["cwd"] = str(tmp_path)
     raw_override = '{"event":"tool_call","event":"input"}' if failure == "envelope" else None
     outcome, _ = run_scoped_tools(
-        tmp_path, node_binary, receipt, project, {}, events=[event], raw_override=raw_override,
+        tmp_path, node_binary, receipt, project, {}, events=events, raw_override=raw_override,
     )
-    hook = outcome["hooks"][-1]
-    assert hook["result"]["code"] == code
-    assert hook["result"]["state"] != "outside_advisory_coverage"
-    assert hook["requests"] == []
-    assert outcome["notifications"] == [code]
+    hooks = [entry for entry in outcome["hooks"] if entry["envelope"]["event"] == "tool_call"]
+    assert len(hooks) == len(events)
+    for entry in hooks:
+        assert entry["result"]["code"] == code
+        assert entry["result"]["state"] not in {"outside_advisory_coverage", "delegated"}
+        assert entry["requests"] == []
+    assert [action["notifications"] for action in outcome["actions"]] == [[code]] * len(events)
 
 
 def test_resource_reads_never_hide_local_context_or_subsequent_real_refusals(
@@ -309,6 +334,39 @@ def test_resource_reads_never_hide_local_context_or_subsequent_real_refusals(
     assert outcome["actions"][3]["notifications"] == ["HOST_FOOTPRINT_UNKNOWN"]
     assert outcome["actions"][4]["notifications"] == []
     assert outcome["actions"][5]["notifications"] == ["HOST_SCOPE_UNRESOLVED"]
+
+
+def test_core_tool_devices_delegate_without_hiding_other_writes(tmp_path, node_binary, installation):
+    project, _, _, _, install = installation
+    (project / "src").mkdir()
+    outside = tmp_path / "outside.py"
+    core = ("memory_context", "memory_inspect", "memory_record", "memory_feedback")
+    near_misses = (
+        "xd://mcp__agents_memory_memory_purge",
+        "xd://mcp__agents_memory_memory_inspect:raw", "xd://mcp__agents_memory_memory_inspect?ref=judge",
+        "xd://mcp__agents-memory__memory_inspect",
+    )
+    events = [
+        *({"toolName": "write", "toolCallId": tool, "input": {"path": "xd://mcp__agents_memory_" + tool}}
+          for tool in core),
+        {"toolName": "write", "toolCallId": "scheme-case", "input": {"path": "XD://mcp__agents_memory_memory_inspect"}},
+        {"toolName": "read", "toolCallId": "core-docs", "input": {"path": "xd://mcp__agents_memory_memory_inspect"}},
+        *({"toolName": "write", "toolCallId": "near-miss", "input": {"path": path}} for path in near_misses),
+        {"toolName": "write", "toolCallId": "required", "input": {"path": "src/alpha.py"}},
+        {"toolName": "write", "toolCallId": "outside", "input": {"path": str(outside)}},
+    ]
+    outcome, _ = run_scoped_tools(tmp_path, node_binary, install("omp"), project, {}, events=events)
+    hooks = [entry for entry in outcome["hooks"] if entry["envelope"]["event"] == "tool_call"]
+    covered = 6 + len(near_misses)
+    assert [entry["result"]["state"] for entry in hooks] == [
+        *["delegated"] * 5,
+        *["outside_advisory_coverage"] * (1 + len(near_misses)), "degraded", "degraded",
+    ]
+    assert all(entry["requests"] == [] for entry in hooks[:covered])
+    assert [action["notifications"] for action in outcome["actions"][:covered]] == [[]] * covered
+    assert hooks[covered]["requests"] == [{"route": "/api/required-context", "paths": ["src/alpha.py"]}]
+    assert "Retain the alpha invariant." in "\n".join(outcome["actions"][covered]["notifications"])
+    assert outcome["actions"][covered + 1]["notifications"] == ["HOST_SCOPE_UNRESOLVED"]
 
 
 def test_additive_resource_handlers_do_not_overwrite_independent_registrations(
