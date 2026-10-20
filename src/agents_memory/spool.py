@@ -48,6 +48,12 @@ PAYLOAD_RETENTION_SECONDS = 24 * 60 * 60
 RECEIPT_RETENTION_SECONDS = 24 * 60 * 60
 RECEIPT_MAX_COUNT = 4096
 HOUSEKEEPING_ROWS = 128
+# Health observations share the outbox with captures; this classifies a row by its payload kind.
+_HEALTH_ROW_SQL = (
+    "CASE WHEN json_valid(payload) THEN CASE "
+    "WHEN json_extract(payload,'$.kind') IN ('code_observation','session_observation') THEN 1 "
+    "ELSE 0 END ELSE 0 END"
+)
 
 ProducerCommand = CaptureCommand | CodeObservationCommand | SessionObservationCommand
 _HEALTH_PRODUCER_ADAPTER = TypeAdapter(Annotated[
@@ -444,7 +450,8 @@ class ProducerSpool:
 
     def status(self) -> dict:
         self._housekeep()
-        count, oldest = self.db.execute("SELECT COUNT(*),MIN(created_at) FROM outbox").fetchone()
+        count = self.db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0]
+        oldest_capture = self.db.execute(f"SELECT MIN(created_at) FROM outbox WHERE ({_HEALTH_ROW_SQL})=0").fetchone()[0]
         dead = self.db.execute("SELECT COUNT(*) FROM quarantine").fetchone()[0]
         size = self.db.execute("SELECT COALESCE(SUM(bytes),0) FROM (SELECT bytes FROM outbox UNION ALL SELECT bytes FROM quarantine)").fetchone()[0]
         gaps = dict(self.db.execute("SELECT code,count FROM gaps"))
@@ -452,7 +459,7 @@ class ProducerSpool:
         receipts = self.db.execute("SELECT COUNT(*) FROM receipts").fetchone()[0]
         return {
             "pending": count, "quarantined": dead, "bytes": size, "limit_bytes": self.limit_bytes,
-            "oldest_pending_seconds": max(0, int(time.time() - oldest)) if count else 0,
+            "oldest_pending_capture_seconds": 0 if oldest_capture is None else max(0, int(time.time() - oldest_capture)),
             "storage_bytes": self._storage_bytes(), "storage_limit_bytes": self.storage_limit_bytes,
             "retained_receipts": receipts, "receipt_limit": self.receipt_limit,
             "receipt_retention_seconds": RECEIPT_RETENTION_SECONDS,
@@ -603,17 +610,12 @@ class ProducerSpool:
         self._housekeep()
         accepted, quarantined = 0, 0
         failures = []
-        health_kind_sql = (
-            "CASE WHEN json_valid(payload) THEN CASE "
-            "WHEN json_extract(payload,'$.kind') IN ('code_observation','session_observation') THEN 1 "
-            "ELSE 0 END ELSE 0 END"
-        )
         captures = self.db.execute(
-            f"SELECT key FROM outbox WHERE expires_at>? AND ({health_kind_sql})=0 ORDER BY rowid LIMIT ?",
+            f"SELECT key FROM outbox WHERE expires_at>? AND ({_HEALTH_ROW_SQL})=0 ORDER BY rowid LIMIT ?",
             (time.time(), limit),
         ).fetchall()
         health = self.db.execute(
-            f"SELECT key FROM outbox WHERE expires_at>? AND ({health_kind_sql})=1 ORDER BY rowid LIMIT ?",
+            f"SELECT key FROM outbox WHERE expires_at>? AND ({_HEALTH_ROW_SQL})=1 ORDER BY rowid LIMIT ?",
             (time.time(), limit),
         ).fetchall()
         capture_quota = max(1, limit // 2) if health else limit

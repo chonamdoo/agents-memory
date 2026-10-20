@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -68,7 +69,7 @@ async def capture_status_world(installation, capture_authority, monkeypatch):
     assert historical_count > 0
     return SimpleNamespace(
         capture=capture, state=state, store=store, actor=actor, binding=binding,
-        historical_count=historical_count,
+        historical_count=historical_count, spool_path=runtime / "capture.sqlite3",
     )
 
 
@@ -106,7 +107,7 @@ async def test_permanently_refused_capture_remains_degraded_despite_retained_gap
 
 
 @pytest.mark.asyncio
-async def test_deferred_durable_capture_is_silent_until_its_backlog_is_stale(capture_status_world, monkeypatch):
+async def test_deferred_durable_capture_is_silent_until_its_backlog_is_stale(capture_status_world):
     world = capture_status_world
     world.state.error = "SERVICE_UNAVAILABLE"
     deferred = await world.capture("A deferred capture stays durable while the service is busy.")
@@ -115,14 +116,24 @@ async def test_deferred_durable_capture_is_silent_until_its_backlog_is_stale(cap
     assert deferred["capture"]["state"] == "durably_spooled"
     assert "source_pointer" not in deferred["capture"]
     assert deferred["capture"]["pending"] == 1
-    monkeypatch.setattr(hosts, "CAPTURE_BACKLOG_ALERT_SECONDS", 0)
+    with sqlite3.connect(world.spool_path) as spool:
+        spool.execute("UPDATE outbox SET created_at=created_at-?", (hosts.CAPTURE_BACKLOG_ALERT_SECONDS + 1,))
     stale = await world.capture("A second capture behind a stale backlog.")
     assert stale["state"] == "degraded"
     assert stale["stdout"]["warning"] == "agents-memory: HOST_CAPTURE_DEGRADED"
-    assert stale["capture"]["pending"] == 2
+    assert stale["capture"]["oldest_pending_capture_seconds"] > hosts.CAPTURE_BACKLOG_ALERT_SECONDS
     world.state.error = None
-    monkeypatch.setattr(hosts, "CAPTURE_BACKLOG_ALERT_SECONDS", 300)
     delivered = await world.capture("The service recovered and drains the backlog.")
     assert delivered["state"] == "ok"
     assert delivered["capture"]["state"] == "committed"
     assert delivered["capture"]["pending"] == 0
+
+
+@pytest.mark.asyncio
+async def test_retryable_failure_other_than_a_busy_service_warns_at_once(capture_status_world):
+    world = capture_status_world
+    world.state.error = "CREDENTIAL_REVOKED"
+    result = await world.capture("A capture refused by a revoked credential stays spooled.")
+    assert result["capture"]["state"] == "durably_spooled"
+    assert result["state"] == "degraded"
+    assert result["stdout"]["warning"] == "agents-memory: HOST_CAPTURE_DEGRADED"

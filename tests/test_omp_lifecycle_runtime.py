@@ -414,6 +414,7 @@ def test_slow_input_capture_does_not_hold_the_submission_and_still_precedes_prep
 ):
     # OMP queues the submission only after input handlers return; Enter must not wait for capture.
     project, _, _, _, install = installation
+    # The unawaited input hook may read the control file after the next step rewrites it.
     slow = {"capture_delay": 2}
     outcome = run_lifecycle(tmp_path, node_binary, install("omp"), project, [
         {"event": "input", "payload": {"text": "Ship the parser.", "source": "interactive"}, "control": slow},

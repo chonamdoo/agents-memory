@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 
 import pytest
 from test_store_authority import TOKEN, command, ready_claim, relation_judgment, source_selection
@@ -191,9 +190,9 @@ async def test_context_delivery_waits_out_an_in_flight_deletion_instead_of_refus
             return await connection.fetchval("""SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock'
                 AND query LIKE '%am_clock%FOR UPDATE%'""")
 
-    async def until_waiters(count):
+    async def until_waiters(count, done=lambda: False):
         async with asyncio.timeout(5):
-            while await clock_waiters() < count:
+            while not done() and await clock_waiters() < count:
                 await asyncio.sleep(0.02)
 
     request = ContextCommand(binding_id=authority.binding_id, query="Protected action conventions",
@@ -206,10 +205,8 @@ async def test_context_delivery_waits_out_an_in_flight_deletion_instead_of_refus
             proceed.set()
             await until_waiters(1)
             reader = asyncio.create_task(application.required_context(actor, request))
-            with suppress(TimeoutError):
-                async with asyncio.timeout(1):
-                    while not reader.done() and await clock_waiters() < 2:
-                        await asyncio.sleep(0.02)
+            # A reader that never queues on the lock finishes at once; the old one refused here.
+            await until_waiters(2, reader.done)
     required = await asyncio.wait_for(reader, 5)
     assert (await asyncio.wait_for(retraction, 5))["logical_retraction"] == "committed"
     assert required["required"] is False
