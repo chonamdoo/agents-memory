@@ -6,8 +6,10 @@ import pytest
 from test_store_authority import TOKEN, command, ready_claim, relation_judgment, source_selection
 from test_store_authority import authority as authority
 
+from agents_memory.application import Application
 from agents_memory.config import Settings
-from agents_memory.domain import DomainError, EffectState
+from agents_memory.domain import ContextCommand, DomainError, EffectState
+from agents_memory.lexical import tokens
 
 
 async def count(authority, query, *args):
@@ -145,6 +147,26 @@ async def test_authentication_does_not_wait_for_the_global_clock_lock(authority)
             await holder.execute("SELECT 1 FROM am_clock WHERE singleton FOR UPDATE")
             current = await asyncio.wait_for(store.authenticate(TOKEN), 5)
     assert current.credential_id == authority.actor.credential_id
+
+
+async def test_context_delivery_does_not_wait_for_the_global_clock_lock(authority):
+    # Every protected action and recall delivers context; serialized behind the writer lock, a slow
+    # delivery queued every hook and the prompt capture behind it until clients timed out.
+    store, actor = authority.store, authority.actor
+    application = Application(store.settings, store)
+    _, claim = await ready_claim(authority)
+    rows, admission = await store.search_lexical(actor, authority.binding_id, tokens("CacheKey"), None, 20, request_digest="0" * 64)
+    assert [row[0].id for row in rows] == [claim.id]
+    request = ContextCommand(binding_id=authority.binding_id, query="Protected action conventions",
+        paths=("src/app.py",), host="omp")
+    async with store.pool.acquire() as holder:
+        async with holder.transaction():
+            await holder.execute("SELECT 1 FROM am_clock WHERE singleton FOR UPDATE")
+            required = await asyncio.wait_for(application.required_context(actor, request), 5)
+            delivered = await asyncio.wait_for(store.delivery(actor, authority.binding_id, (), (),
+                nonmodel_admission=admission, selected_claim_ids=(claim.id,)), 5)
+    assert required["required"] is False
+    assert delivered["stats"]["active_claims"] == 1
 
 
 async def test_exhausted_pool_refuses_after_its_deadline_without_starting(authority):
