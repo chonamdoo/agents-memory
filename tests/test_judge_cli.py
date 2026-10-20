@@ -121,7 +121,7 @@ async def test_project_add_without_effective_jev_is_successful_and_replayable(au
     settings.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     settings.state_dir.chmod(0o700)
     await set_egress_policy(settings, store, actor, jev_allowed=True)
-    await set_jev(settings, store, actor, KEY, verify=lambda *_: "jev-1.13.0")
+    await set_jev(settings, store, actor, KEY, verify=lambda *_: "jev-1.14.0")
     (judge_dir(settings) / "egress-policy.json").unlink()
     worker_token = read_worker_token(settings)
     args = cli.parser().parse_args(cli_files(authority, tmp_path) + [
@@ -144,7 +144,7 @@ async def test_doctor_reports_agent_judgment_when_configured_jev_has_no_egress(a
     settings.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     settings.state_dir.chmod(0o700)
     await set_egress_policy(settings, store, actor, jev_allowed=True)
-    await set_jev(settings, store, actor, KEY, verify=lambda *_: "jev-1.13.0")
+    await set_jev(settings, store, actor, KEY, verify=lambda *_: "jev-1.14.0")
     path = judge_dir(settings) / EGRESS_POLICY_FILE
     if policy == "absent":
         path.unlink()

@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Event
 
 import pytest
@@ -16,7 +18,7 @@ from agents_memory import judge as judge_module
 from agents_memory.application import Application
 from agents_memory.config import Settings
 from agents_memory.domain import CaptureCommand, DomainError, Principal, Role
-from agents_memory.jev import JevClient, JevFailure, JevResult
+from agents_memory.jev import JevClient, ProviderFailure, ProviderResult
 from agents_memory.judge import (
     EGRESS_POLICY_FILE,
     KEY_FILE,
@@ -31,6 +33,7 @@ from agents_memory.judge import (
     read_worker_token,
     set_egress_policy,
     set_jev,
+    set_subscription,
 )
 from agents_memory.judge_worker import JudgeWorker
 from agents_memory.private_io import private_write
@@ -58,7 +61,7 @@ class FakeJev:
     constructed: int = 0
 
     def factory(self, key, model):
-        assert key == KEY and model == "jev-1.13.0"
+        assert key == KEY and model == "jev-1.14.0"
         self.constructed += 1
         return self
 
@@ -94,7 +97,7 @@ class FakeJev:
                 assert chosen in question["criteria"]
                 answers[identifier] = {"type": "choice", "choice": chosen,
                                        "probabilities": {name: float(name == chosen) for name in question["criteria"]}}
-        return JevResult(model="jev-1.13.0", answers=answers, input_tokens=7)
+        return ProviderResult(model="jev-1.14.0", answers=answers, input_tokens=7)
 
     def asked(self, prefix):
         return [identifier for _, questions in self.calls for identifier in questions if identifier.startswith(prefix)]
@@ -137,7 +140,7 @@ async def world(authority):
     settings.state_dir.mkdir(parents=True, exist_ok=True)
     settings.state_dir.chmod(0o700)
     await set_egress_policy(settings, store, authority.actor, jev_allowed=True)
-    await set_jev(settings, store, authority.actor, KEY, verify=lambda key, model: "jev-1.13.0")
+    await set_jev(settings, store, authority.actor, KEY, verify=lambda key, model: "jev-1.14.0")
     operator = await store.authenticate(TOKEN)
     application = Application(settings, store)
     jev = FakeJev()
@@ -313,7 +316,7 @@ async def test_denied_policy_refuses_jev_before_constructing_a_client(tmp_path, 
     private_write(judge_dir(settings) / KEY_FILE, KEY + "\n")
     private_write(judge_dir(settings) / TOKEN_FILE, "worker-token\n")
     private_write(judge_dir(settings) / PROVIDER_FILE, JudgeState(
-        provider="jev", revision=1, model="jev-1.13.0", key_fingerprint=key_fingerprint(settings, KEY),
+        provider="jev", revision=1, model="jev-1.14.0", key_fingerprint=key_fingerprint(settings, KEY),
         credential_id="credential_worker").model_dump_json())
 
     def forbidden_client(key, model):
@@ -326,7 +329,7 @@ async def test_denied_policy_refuses_jev_before_constructing_a_client(tmp_path, 
 
 
 async def test_rejected_key_pauses_until_the_provider_revision_changes(world):
-    world.jev.failure = JevFailure("auth", 401)
+    world.jev.failure = ProviderFailure("auth", 401)
     await world.capture("paused-source", DECISION)
 
     await world.worker.cycle()
@@ -339,7 +342,7 @@ async def test_rejected_key_pauses_until_the_provider_revision_changes(world):
 
     world.jev.failure = None
     world.jev.remember = {"decided": 0.95}
-    await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda key, model: "jev-1.13.0")
+    await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda key, model: "jev-1.14.0")
     await world.worker.cycle()
     assert len(world.jev.calls) > 1
     assert [row["label"] for row in await world.selections()] == ["remember"]
@@ -452,7 +455,7 @@ async def test_operator_deny_during_inflight_request_retires_authority_and_block
 
 @pytest.mark.parametrize("failure", ["transport", "server", "rate_limit"])
 async def test_jev_failure_is_explicit_and_leaves_work_pending_without_provider_fallback(world, failure):
-    world.jev.failure = JevFailure(failure)
+    world.jev.failure = ProviderFailure(failure)
     await world.capture("provider-unavailable", DECISION)
     await world.worker.cycle()
     assert world.worker.phase == "waiting" and world.worker.last_error == "JEV_UNAVAILABLE"
@@ -530,7 +533,7 @@ def retrying_worker(world):
             if len(sent) == 1:
                 raise http_error(429)
             return io.BytesIO(json.dumps({
-                "model": "jev-1.13.0",
+                "model": "jev-1.14.0",
                 "answers": {identifier: {"type": "noul", "noul": 0.04} for identifier in payload["questions"]},
             }).encode())
 
@@ -554,7 +557,7 @@ async def test_operator_transition_during_actual_client_backoff_prevents_retry_a
     try:
         assert await asyncio.to_thread(paused.wait, 10)
         if transition == "provider":
-            await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda *_: "jev-1.13.0")
+            await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda *_: "jev-1.14.0")
         else:
             await set_egress_policy(world.settings, world.store, world.operator, jev_allowed=transition != "deny")
     finally:
@@ -612,7 +615,7 @@ async def test_failed_jev_replacement_fences_old_worker_retry_and_publication(wo
                 patcher.setattr(world.store, "revoke_token", refused)
             patcher.setattr(judge_module, "_save_state", interrupted_save)
             with pytest.raises((DomainError, OSError)):
-                await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda *_: "jev-1.13.0")
+                await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda *_: "jev-1.14.0")
         state = load_state(world.settings)
         assert state.provider == "jev" and state.revision > previous.revision
         assert state.credential_id in state.retiring_credential_ids
@@ -628,3 +631,57 @@ async def test_failed_jev_replacement_fences_old_worker_retry_and_publication(wo
     assert len(sent) == 1
     assert worker.provider == "jev" and worker.phase == "error"
     assert worker.last_error == "JUDGE_CREDENTIAL_INVALID"
+
+
+async def subscription_worker(world, host="codex", model="gpt-test"):
+    """Switch the world from Jev to a subscription CLI judged by the in-process fake."""
+    await set_egress_policy(world.settings, world.store, world.operator, subscription_allowed=True)
+    await set_subscription(world.settings, world.store, world.operator, host, Path(sys.executable), model=model,
+                           verify=lambda client: model)
+    received = []
+
+    def connect(host, executable, model, *, workdir, dispatch_guard):
+        received.append((host, str(executable), model))
+        return world.jev
+
+    worker = JudgeWorker(world.settings, world.store, world.application,
+                         client_factory=lambda *_: pytest.fail("Jev was contacted for a subscription selection"),
+                         subscription_factory=connect)
+    return worker, received
+
+
+async def test_subscription_cli_remembers_under_its_own_worker_credential(world):
+    worker, received = await subscription_worker(world)
+    world.jev.remember = {"decided": 0.93}
+    await world.capture("subscription-source", f"{DECISION} {CHATTER}")
+
+    await worker.cycle()
+
+    assert received == [("codex", sys.executable, "gpt-test")]
+    [selection] = await world.selections()
+    assert selection["label"] == "remember" and selection["state"] == "active"
+    assert selection["credential_id"] == load_state(world.settings).credential_id != world.operator.credential_id
+    assert selection["reason"].startswith("Subscription(codex:gpt-test) kept 1 span")
+    [claim_id] = (await world.inspect(selection["id"]))["claim_ids"]
+    assert (await world.inspect(claim_id))["statement"] == DECISION
+    assert await world.pending("source_selection") == ["resolved"]
+
+
+async def test_subscription_denial_during_cli_call_drops_the_result(world):
+    worker, _ = await subscription_worker(world, host="omp", model=None)
+    world.jev.remember = {"decided": 0.95}
+
+    def revoke(number):
+        policy = load_egress_policy(world.settings)
+        private_write(judge_dir(world.settings) / EGRESS_POLICY_FILE,
+            policy.model_copy(update={"subscription_allowed": False, "revision": policy.revision + 1}).model_dump_json(),
+            replace=True)
+
+    world.jev.on_call = revoke
+    await world.capture("subscription-fenced-source", DECISION)
+    await worker.cycle()
+
+    assert len(world.jev.calls) == 1
+    assert await world.selections() == []
+    assert await world.pending("source_selection") == ["pending"]
+    assert worker.phase == "refused" and worker.last_error == "JUDGE_PROVIDER_FORBIDDEN"

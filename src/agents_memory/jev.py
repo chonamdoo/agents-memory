@@ -12,12 +12,12 @@ from typing import Any, Protocol
 
 JEV_BASE_URL = "https://api.typesafe.ai"
 JEV_ENDPOINT = JEV_BASE_URL + "/v1/systemone"
-JEV_DEFAULT_MODEL = "jev-1.13.0"
+JEV_DEFAULT_MODEL = "jev-1.14.0"
 _MAX_RESPONSE_BYTES = 1048576
 _RETRYABLE = frozenset({"rate_limited", "overloaded", "transport"})
 
 
-class JevFailure(Exception):
+class ProviderFailure(Exception):
     """Classified provider failure; carries no request or response body."""
 
     def __init__(self, kind: str, status: int | None = None, retry_after: float | None = None) -> None:
@@ -29,11 +29,11 @@ class JevFailure(Exception):
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise JevFailure("redirect", code)
+        raise ProviderFailure("redirect", code)
 
 
 @dataclass(frozen=True)
-class JevResult:
+class ProviderResult:
     model: str
     answers: dict[str, dict[str, Any]]
     input_tokens: int | None
@@ -67,28 +67,28 @@ def _classify(status: int) -> str:
 
 def _probability(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise JevFailure("response")
+        raise ProviderFailure("response")
     number = float(value)
     if not math.isfinite(number) or not 0.0 <= number <= 1.0:
-        raise JevFailure("response")
+        raise ProviderFailure("response")
     return number
 
 
-def parse_answers(payload: object, questions: Mapping[str, Mapping[str, Any]]) -> JevResult:
+def parse_answers(payload: object, questions: Mapping[str, Mapping[str, Any]]) -> ProviderResult:
     """Accept only a complete typed answer for every asked question."""
     if not isinstance(payload, dict) or not isinstance(payload.get("answers"), dict):
-        raise JevFailure("response")
+        raise ProviderFailure("response")
     model = payload.get("model")
     if not isinstance(model, str) or not 1 <= len(model) <= 64:
-        raise JevFailure("response")
+        raise ProviderFailure("response")
     raw = payload["answers"]
     if set(raw) != set(questions):
-        raise JevFailure("response")
+        raise ProviderFailure("response")
     answers: dict[str, dict[str, Any]] = {}
     for identifier, question in questions.items():
         answer = raw[identifier]
         if not isinstance(answer, dict) or answer.get("type") != question["type"]:
-            raise JevFailure("response")
+            raise ProviderFailure("response")
         if question["type"] == "noul":
             answers[identifier] = {"type": "noul", "noul": _probability(answer.get("noul"))}
             continue
@@ -96,20 +96,20 @@ def parse_answers(payload: object, questions: Mapping[str, Mapping[str, Any]]) -
         choice = answer.get("choice")
         probabilities = answer.get("probabilities")
         if choice not in options or not isinstance(probabilities, dict) or not set(probabilities).issubset(options):
-            raise JevFailure("response")
+            raise ProviderFailure("response")
         answers[identifier] = {
             "type": "choice", "choice": choice,
             "probabilities": {name: _probability(probabilities.get(name, 0.0)) for name in question["criteria"]},
         }
     usage = payload.get("usage")
     tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
-    return JevResult(model=model, answers=answers, input_tokens=tokens if type(tokens) is int and tokens >= 0 else None)
+    return ProviderResult(model=model, answers=answers, input_tokens=tokens if type(tokens) is int and tokens >= 0 else None)
 
 
 class SystemOneClient(Protocol):
     def system_one(
         self, state: object, questions: Mapping[str, Mapping[str, Any]], *, before_attempt: Callable[[], None],
-    ) -> JevResult: ...
+    ) -> ProviderResult: ...
 
 
 class JevClient:
@@ -143,17 +143,17 @@ class JevClient:
         except urllib.error.HTTPError as error:
             headers = error.headers
             error.close()
-            raise JevFailure(_classify(error.code), error.code, _retry_after(headers)) from None
-        except JevFailure:
+            raise ProviderFailure(_classify(error.code), error.code, _retry_after(headers)) from None
+        except ProviderFailure:
             raise
         except (urllib.error.URLError, TimeoutError, OSError):
-            raise JevFailure("transport") from None
+            raise ProviderFailure("transport") from None
         if len(raw) > _MAX_RESPONSE_BYTES:
-            raise JevFailure("response")
+            raise ProviderFailure("response")
         try:
             return json.loads(raw)
         except (ValueError, UnicodeError):
-            raise JevFailure("response") from None
+            raise ProviderFailure("response") from None
 
     def _with_retries(
         self, operation: Callable[[], object], *, before_attempt: Callable[[], None] | None,
@@ -163,17 +163,17 @@ class JevClient:
                 before_attempt()
             try:
                 return operation()
-            except JevFailure as failure:
+            except ProviderFailure as failure:
                 if failure.kind not in _RETRYABLE or attempt == self.max_retries:
                     raise
                 delay = failure.retry_after if failure.retry_after is not None else 0.5 * 2 ** attempt
                 self._sleep(min(delay, 30.0))
-        raise JevFailure("transport")
+        raise ProviderFailure("transport")
 
     def system_one(
         self, state: object, questions: Mapping[str, Mapping[str, Any]], *,
         before_attempt: Callable[[], None] | None = None,
-    ) -> JevResult:
+    ) -> ProviderResult:
         if not questions:
             raise ValueError("At least one question is required")
         body = json.dumps({"model": self.model, "state": state, "questions": questions},

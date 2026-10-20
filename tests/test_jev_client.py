@@ -7,7 +7,7 @@ from email.message import Message
 
 import pytest
 
-from agents_memory.jev import JevClient, JevFailure
+from agents_memory.jev import JevClient, ProviderFailure
 
 KEY = "sk-jev-TEST-qwrtyuiopZXCVNMLKJH"
 URL = "https://api.typesafe.ai/v1/systemone"
@@ -23,7 +23,7 @@ def answer_payload(**changes):
         "kind": {"type": "choice", "choice": "finding", "probabilities": {"fact": 0.2, "finding": 0.8}},
     }
     answers.update(changes)
-    return {"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": 42}}
+    return {"model": "jev-1.14.0", "answers": answers, "usage": {"input_tokens": 42}}
 
 
 def http_error(code, headers=None, body=b""):
@@ -49,7 +49,7 @@ class FakeOpener:
 
 
 def client(opener, delays=None, **options):
-    return JevClient(KEY, "jev-1.13.0", opener=opener, sleep=(delays.append if delays is not None else _no_sleep), **options)
+    return JevClient(KEY, "jev-1.14.0", opener=opener, sleep=(delays.append if delays is not None else _no_sleep), **options)
 
 
 def _no_sleep(seconds):
@@ -65,10 +65,10 @@ def test_system_one_posts_typed_questions_with_bearer_key_and_parses_answers():
     assert request.full_url == URL and request.get_method() == "POST"
     assert request.get_header("Authorization") == "Bearer " + KEY
     assert json.loads(request.data) == {
-        "model": "jev-1.13.0", "state": {"spans": [{"id": "s0000", "text": "Pin PostgreSQL 18."}]}, "questions": QUESTIONS,
+        "model": "jev-1.14.0", "state": {"spans": [{"id": "s0000", "text": "Pin PostgreSQL 18."}]}, "questions": QUESTIONS,
     }
     assert timeout is not None and timeout > 0
-    assert result.model == "jev-1.13.0" and result.input_tokens == 42
+    assert result.model == "jev-1.14.0" and result.input_tokens == 42
     assert result.answers["keep"] == {"type": "noul", "noul": 0.91}
     assert result.answers["kind"]["choice"] == "finding"
     assert result.answers["kind"]["probabilities"] == {"fact": 0.2, "finding": 0.8}
@@ -86,7 +86,7 @@ def test_rate_limit_honors_retry_after_then_returns_answers():
 @pytest.mark.parametrize(("status", "kind"), [(401, "auth"), (403, "auth"), (400, "request"), (422, "request")])
 def test_rejected_key_or_request_fails_after_one_send_without_retry(status, kind):
     opener = FakeOpener(http_error(status))
-    with pytest.raises(JevFailure) as caught:
+    with pytest.raises(ProviderFailure) as caught:
         client(opener).system_one("state", QUESTIONS)
     assert caught.value.kind == kind and caught.value.status == status
     assert len(opener.requests) == 1
@@ -96,7 +96,7 @@ def test_rejected_key_or_request_fails_after_one_send_without_retry(status, kind
 def test_overload_beyond_retry_budget_is_classified_after_every_attempt(status):
     delays = []
     opener = FakeOpener(http_error(status))
-    with pytest.raises(JevFailure) as caught:
+    with pytest.raises(ProviderFailure) as caught:
         client(opener, delays, max_retries=2).system_one("state", QUESTIONS)
     assert caught.value.kind == "overloaded"
     assert len(opener.requests) == 3
@@ -104,7 +104,7 @@ def test_overload_beyond_retry_budget_is_classified_after_every_attempt(status):
 
 
 @pytest.mark.parametrize("body", [
-    {"model": "jev-1.13.0", "answers": {"keep": {"type": "noul", "noul": 0.5}}},
+    {"model": "jev-1.14.0", "answers": {"keep": {"type": "noul", "noul": 0.5}}},
     answer_payload(extra={"type": "noul", "noul": 0.5}),
     answer_payload(keep={"type": "noul", "noul": 1.5}),
     answer_payload(keep={"type": "noul", "noul": -0.1}),
@@ -113,7 +113,7 @@ def test_overload_beyond_retry_budget_is_classified_after_every_attempt(status):
 ], ids=["missing-id", "extra-id", "noul-above-one", "noul-below-zero", "choice-outside-criteria", "non-json"])
 def test_incomplete_or_untyped_responses_are_rejected(body):
     opener = FakeOpener(body)
-    with pytest.raises(JevFailure) as caught:
+    with pytest.raises(ProviderFailure) as caught:
         client(opener).system_one("state", QUESTIONS)
     assert caught.value.kind == "response"
     assert len(opener.requests) == 1
@@ -124,7 +124,7 @@ def test_key_never_appears_in_client_repr_or_failures():
     opener = FakeOpener(echoed)
     jev = client(opener)
     assert KEY not in repr(jev) and KEY not in str(jev)
-    with pytest.raises(JevFailure) as caught:
+    with pytest.raises(ProviderFailure) as caught:
         jev.system_one("state", QUESTIONS)
     failure = caught.value
     assert KEY not in str(failure) and KEY not in repr(failure)

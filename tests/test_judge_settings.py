@@ -4,8 +4,10 @@ import asyncio
 import json
 import os
 import stat
+import sys
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from threading import Barrier, Event
 from types import SimpleNamespace
 
@@ -34,10 +36,11 @@ from agents_memory.judge import (
     load_state,
     read_supplied_key,
     read_worker_token,
-    require_jev_allowed,
+    require_route_allowed,
     set_agent,
     set_egress_policy,
     set_jev,
+    set_subscription,
     validate_key,
 )
 
@@ -46,7 +49,7 @@ OTHER_KEY = "sk-jev-SECOND-mnbvcxzPOIUYTRWQ"
 
 
 def verified(key, model):
-    return "jev-1.13.0"
+    return "jev-1.14.0"
 
 
 def personal(tmp_path, mode="personal", deployment_id="deployment-001"):
@@ -134,7 +137,7 @@ def test_private_policy_scalar_coercions_fail_closed(tmp_path, field, value):
     settings = personal(tmp_path)
     private_file(judge_dir(settings) / EGRESS_POLICY_FILE, json.dumps({field: value}))
     with pytest.raises(DomainError) as caught:
-        require_jev_allowed(settings)
+        require_route_allowed(settings, "jev")
     assert caught.value.code == "JUDGE_EGRESS_POLICY_INVALID"
 
 
@@ -147,13 +150,13 @@ def test_private_judge_scalars_accept_exact_json_types(tmp_path):
     assert load_state(settings).revision == 2
     assert load_state(settings).forget_key_pending is False
     assert load_egress_policy(settings).revision == 3
-    require_jev_allowed(settings)
+    require_route_allowed(settings, "jev")
 
 def test_jev_state_requires_model_key_fingerprint_and_credential():
     with pytest.raises(ValidationError):
         JudgeState(provider="jev")
     with pytest.raises(ValidationError):
-        JudgeState(provider="jev", model="jev-1.13.0", key_fingerprint="hmac-sha256:0123456789ab")
+        JudgeState(provider="jev", model="jev-1.14.0", key_fingerprint="hmac-sha256:0123456789ab")
 
 
 def test_read_supplied_key_warns_on_shared_file_and_refuses_symlink(tmp_path):
@@ -175,7 +178,7 @@ def test_describe_hides_identifiers_from_agents_and_key_from_everyone(tmp_path):
     private_file(judge_dir(settings) / KEY_FILE, KEY + "\n")
     private_file(judge_dir(settings) / EGRESS_POLICY_FILE, EgressPolicy(jev_allowed=True).model_dump_json())
     fingerprint = key_fingerprint(settings, KEY)
-    state = JudgeState(provider="jev", revision=2, model="jev-1.13.0", key_fingerprint=fingerprint,
+    state = JudgeState(provider="jev", revision=2, model="jev-1.14.0", key_fingerprint=fingerprint,
         credential_id="credential_worker")
     agent_view = describe(settings, state, operator=False)
     operator_view = describe(settings, state, operator=True)
@@ -219,7 +222,7 @@ async def test_allowing_egress_is_independent_of_mode_and_does_not_select_or_con
     assert load_egress_policy(settings).jev_allowed is False
     result = await set_egress_policy(settings, MemoryJudgeStore(), operator_principal(), jev_allowed=True)
     assert load_egress_policy(settings).jev_allowed is True
-    require_jev_allowed(settings)
+    require_route_allowed(settings, "jev")
     assert result["provider"] == "agent"
     assert result["source_judgment"] == "current_coding_agent_via_mcp"
     assert result["egress_policy"]["jev_allowed"] is True
@@ -238,7 +241,7 @@ def test_egress_policy_invalid_or_exposed_fails_closed(tmp_path, content, permis
     settings = personal(tmp_path)
     private_file(judge_dir(settings) / EGRESS_POLICY_FILE, content, permissions)
     with pytest.raises(DomainError) as caught:
-        require_jev_allowed(settings)
+        require_route_allowed(settings, "jev")
     assert caught.value.code == "JUDGE_EGRESS_POLICY_INVALID"
 
 
@@ -315,7 +318,7 @@ async def test_waiting_judge_mutations_recheck_live_operator_authority(
             worker = await store.authenticate(read_worker_token(settings))
             assert worker.credential_id == load_state(settings).credential_id
         elif mutation == "allow":
-            require_jev_allowed(settings)
+            require_route_allowed(settings, "jev")
         else:
             assert load_state(settings).provider == "agent"
             assert not load_egress_policy(settings).jev_allowed
@@ -343,7 +346,7 @@ async def test_operator_revoked_during_verification_cannot_publish_a_transition_
     def blocked_verify(key, model):
         entered.set()
         assert released.wait(5), "Verification was not released"
-        return "jev-1.13.0"
+        return "jev-1.14.0"
 
     setup = asyncio.create_task(set_jev(settings, store, actor, KEY, verify=blocked_verify))
     try:
@@ -494,7 +497,7 @@ async def test_revocation_during_key_verification_does_not_publish_provider_or_c
         policy = load_egress_policy(settings)
         private_file(judge_dir(settings) / EGRESS_POLICY_FILE,
             EgressPolicy(jev_allowed=False, revision=policy.revision + 1).model_dump_json())
-        return "jev-1.13.0"
+        return "jev-1.14.0"
 
     with pytest.raises(DomainError) as caught:
         await set_jev(settings, judged.store, actor, KEY, verify=revoke_during_verify)
@@ -511,7 +514,7 @@ async def test_completed_deny_then_allow_cannot_resurrect_inflight_setup(judged)
     def blocked_verify(key, model):
         entered.set()
         assert released.wait(5), "Verification was not released"
-        return "jev-1.13.0"
+        return "jev-1.14.0"
 
     setup = asyncio.create_task(set_jev(settings, store, actor, KEY, verify=blocked_verify))
     try:
@@ -535,7 +538,7 @@ async def test_concurrent_verified_setups_do_not_overwrite_a_new_selection(judge
     def blocked_verify(key, model):
         entered.wait(5)
         assert released.wait(5), "Concurrent verification was not released"
-        return "jev-1.13.0"
+        return "jev-1.14.0"
 
     setups = [asyncio.create_task(set_jev(settings, store, actor, key, verify=blocked_verify))
               for key in (KEY, OTHER_KEY)]
@@ -720,7 +723,7 @@ async def test_invalid_provider_requires_explicit_agent_repair_before_key_verifi
 @pytest.mark.parametrize("policy", ["absent", "denied", "invalid"])
 def test_describe_never_claims_jev_egress_without_effective_permission(tmp_path, mode, policy):
     settings = personal(tmp_path, mode=mode)
-    state = JudgeState(provider="jev", model="jev-1.13.0", key_fingerprint=key_fingerprint(settings, KEY),
+    state = JudgeState(provider="jev", model="jev-1.14.0", key_fingerprint=key_fingerprint(settings, KEY),
                        credential_id="credential_worker")
     if policy != "absent":
         private_file(judge_dir(settings) / EGRESS_POLICY_FILE,
@@ -951,7 +954,7 @@ async def test_deny_error_before_provider_cleanup_still_reports_durable_policy_c
     assert load_state(settings) == previous
     assert caught.value.code == "DATABASE_BUSY" and caught.value.effect == EffectState.UNKNOWN
     with pytest.raises(DomainError) as denied:
-        require_jev_allowed(settings)
+        require_route_allowed(settings, "jev")
     assert denied.value.code == "JUDGE_PROVIDER_FORBIDDEN"
     recovered = await set_egress_policy(settings, store, actor, jev_allowed=False)
     assert recovered["provider"] == "agent" and not recovered["retirement_pending"]
@@ -1123,3 +1126,56 @@ async def test_judge_file_failures_keep_publication_identity_and_explicit_recove
             with pytest.raises(DomainError) as retired:
                 await store.authenticate(token)
             assert retired.value.code == "AUTH_DENIED"
+
+
+async def test_subscription_requires_its_own_grant_before_contacting_the_cli(tmp_path):
+    settings, store, actor = personal(tmp_path), MemoryJudgeStore(), operator_principal()
+    await set_egress_policy(settings, store, actor, jev_allowed=True)
+    checked = []
+    with pytest.raises(DomainError) as caught:
+        await set_subscription(settings, store, actor, "claude", Path(sys.executable), verify=checked.append)
+    assert caught.value.code == "JUDGE_PROVIDER_FORBIDDEN" and checked == [] and store.issued == 0
+
+    await set_egress_policy(settings, store, actor, jev_allowed=False)
+    await set_egress_policy(settings, store, actor, subscription_allowed=True)
+    with pytest.raises(DomainError) as caught:
+        require_route_allowed(settings, "jev")
+    assert caught.value.code == "JUDGE_PROVIDER_FORBIDDEN"
+    result = await set_subscription(settings, store, actor, "claude", Path(sys.executable), model="haiku",
+                                    verify=lambda client: "claude-haiku-test")
+    state = load_state(settings)
+    assert (state.provider, state.host, state.model, state.executable) == ("subscription", "claude", "haiku", sys.executable)
+    assert result["source_judgment"] == "subscription_cli_background_then_server_validation"
+    assert result["verified_model"] == "claude-haiku-test" and result["egress"]["executable"] == sys.executable
+    worker = await store.authenticate(read_worker_token(settings))
+    assert worker.role == Role.AGENT and worker.credential_id == state.credential_id
+    assert describe(settings, state, operator=False)["egress"]["executable"] is None
+
+
+async def test_denying_one_route_never_retires_the_other_routes_worker(tmp_path):
+    settings, store, actor = personal(tmp_path), MemoryJudgeStore(), operator_principal()
+    await set_egress_policy(settings, store, actor, jev_allowed=True)
+    await set_egress_policy(settings, store, actor, subscription_allowed=True)
+    await set_subscription(settings, store, actor, "omp", Path(sys.executable), verify=lambda client: "omp-default")
+    token = read_worker_token(settings)
+
+    await set_egress_policy(settings, store, actor, jev_allowed=False)
+    assert load_state(settings).provider == "subscription"
+    assert (await store.authenticate(token)).role == Role.AGENT
+
+    result = await set_egress_policy(settings, store, actor, subscription_allowed=False)
+    assert result["provider"] == "agent" and load_state(settings).provider == "agent"
+    with pytest.raises(DomainError) as retired:
+        await store.authenticate(token)
+    assert retired.value.code == "AUTH_DENIED"
+
+
+async def test_subscription_is_refused_when_state_lives_inside_a_project(tmp_path):
+    settings, store, actor = personal(tmp_path), MemoryJudgeStore(), operator_principal()
+    (tmp_path / ".git").mkdir()
+    await set_egress_policy(settings, store, actor, subscription_allowed=True)
+    checked = []
+    with pytest.raises(DomainError) as caught:
+        await set_subscription(settings, store, actor, "claude", Path(sys.executable), verify=checked.append)
+    assert caught.value.code == "JUDGE_RUN_DIR_INSIDE_PROJECT" and checked == [] and store.issued == 0
+    assert load_state(settings).provider == "agent"

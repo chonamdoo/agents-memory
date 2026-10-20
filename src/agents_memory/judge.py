@@ -1,8 +1,10 @@
-"""Judge provider: who judges captured sources — the current coding agent (default) or TypeSafe Jev.
+"""Judge provider: who judges captured sources — the current coding agent (default), TypeSafe Jev, or a
+signed-in subscription CLI (Claude Code, Codex or OMP) run headless by the background worker.
 
 The provider lives in private files under ``state_dir/judge`` that only the operator CLI writes. The
-service rereads them before every Jev request, so a switch takes effect without a restart. Keys never
-enter Settings, the database, backups, MCP responses, argv or logs.
+service rereads them before every worker request, so a switch takes effect without a restart. Keys never
+enter Settings, the database, backups, MCP responses, argv or logs. Each background route needs its own
+default-deny egress grant; neither grant implies the other.
 """
 from __future__ import annotations
 
@@ -12,11 +14,12 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import stat
 import time
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -25,15 +28,18 @@ from pydantic import Field, ValidationError, field_validator, model_validator
 
 from .config import Settings
 from .domain import DomainError, EffectState, Handle, Principal, Role, TypedModel
-from .jev import JEV_DEFAULT_MODEL, JEV_ENDPOINT, JevClient, JevFailure
+from .jev import JEV_DEFAULT_MODEL, JEV_ENDPOINT, JevClient, ProviderFailure
 from .private_io import private_read, private_write
+from .subscription import Host, SubscriptionClient, project_ancestor, resolve_executable
 
 PROVIDER_FILE = "provider.json"
 EGRESS_POLICY_FILE = "egress-policy.json"
 KEY_FILE = "jev.key"
+# The worker credential file keeps its original name so existing deployments need no migration.
 TOKEN_FILE = "jev-agent.token"
 ISSUING_TOKEN_FILE = "issuing-agent.token"
 WORKER_FILE = "worker.json"
+RUNS_DIR = "runs"
 JEV_EGRESS = {
     "endpoint": JEV_ENDPOINT,
     "hosting": "united_states",
@@ -41,12 +47,30 @@ JEV_EGRESS = {
     "training": "provider_states_no_training_on_input",
     "retention": "zero_data_retention_enterprise_only",
 }
-ModelId = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+# A worker route needs its own grant: (egress policy field, judge policy argument, acknowledged destination).
+ROUTES = {
+    "jev": ("jev_allowed", "allow-jev", "api.typesafe.ai in the US"),
+    "subscription": ("subscription_allowed", "allow-subscription",
+                     "the vendor behind the selected Claude Code, Codex or OMP login, outside the current coding session"),
+}
+MODEL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+ModelId = Field(default=None, min_length=1, max_length=64, pattern=MODEL_PATTERN)
+
+
+def subscription_egress(host: str, executable: str | None) -> dict:
+    return {
+        "route": f"{host} CLI run headless by the background worker under the operator's signed-in login",
+        "executable": executable,
+        "sent": "captured source windows and memory statements of granted projects",
+        "vendor": "the provider of that CLI login; its account plan governs training and retention",
+        "isolation": "fresh private directory, no tools, MCP servers, hooks, extensions or session persistence",
+    }
 
 
 class EgressPolicy(TypedModel):
     format: Literal[1] = 1
     jev_allowed: bool = Field(default=False, strict=True)
+    subscription_allowed: bool = Field(default=False, strict=True)
     revision: int = Field(default=0, ge=0, strict=True)
     updated_at: datetime | None = None
     updated_by: Handle | None = None
@@ -61,9 +85,11 @@ class EgressPolicy(TypedModel):
 
 class JudgeState(TypedModel):
     format: Literal[1] = 1
-    provider: Literal["agent", "jev"] = "agent"
+    provider: Literal["agent", "jev", "subscription"] = "agent"
     revision: int = Field(default=0, ge=0, strict=True)
     model: str | None = ModelId
+    host: Host | None = None
+    executable: str | None = Field(default=None, min_length=2, max_length=4096, pattern=r"^/[^\x00\r\n]*$")
     key_fingerprint: str | None = Field(default=None, pattern=r"^hmac-sha256:[0-9a-f]{12}$")
     credential_id: Handle | None = None
     retiring_credential_ids: tuple[Handle, ...] = ()
@@ -82,8 +108,12 @@ class JudgeState(TypedModel):
     def complete_provider(self) -> JudgeState:
         if self.provider == "jev" and (self.model is None or self.key_fingerprint is None or self.credential_id is None):
             raise ValueError("Jev judgment requires a model, a stored key and its worker credential")
+        if self.provider == "subscription" and (self.host is None or self.executable is None or self.credential_id is None):
+            raise ValueError("Subscription judgment requires a host, its pinned executable and a worker credential")
+        if self.provider != "subscription" and (self.host is not None or self.executable is not None):
+            raise ValueError("Only subscription judgment keeps a host executable")
         if self.provider == "agent" and (self.model is not None or self.credential_id is not None):
-            raise ValueError("Agent judgment keeps no Jev model or worker credential")
+            raise ValueError("Agent judgment keeps no worker model or worker credential")
         return self
 
 
@@ -146,13 +176,8 @@ async def _publication_authority(store, actor: Principal) -> AsyncIterator[None]
             ) from None
 
 
-@asynccontextmanager
-async def judge_guard(settings: Settings) -> AsyncIterator[None]:
-    """Keep policy/provider changes linearizable with the entire publication commit.
-
-    Vendor calls stay outside this guard. Nonblocking attempts let an existing
-    publisher finish awaited database work without blocking its event loop.
-    """
+@contextmanager
+def _authority_lock(settings: Settings) -> Iterator[int]:
     directory = judge_dir(settings)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -168,6 +193,21 @@ async def judge_guard(settings: Settings) -> AsyncIterator[None]:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise DomainError("PATH_DENIED", "The judge authority lock must be a private owned regular file")
+        yield descriptor
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory_fd)
+
+
+@asynccontextmanager
+async def judge_guard(settings: Settings) -> AsyncIterator[None]:
+    """Keep policy/provider changes linearizable with the entire publication commit.
+
+    Vendor calls stay outside this guard. Nonblocking attempts let an existing
+    publisher finish awaited database work without blocking its event loop.
+    """
+    with _authority_lock(settings) as descriptor:
         while True:
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -175,10 +215,15 @@ async def judge_guard(settings: Settings) -> AsyncIterator[None]:
             except BlockingIOError:
                 await asyncio.sleep(0.01)
         yield
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        os.close(directory_fd)
+
+
+@contextmanager
+def dispatch_guard(settings: Settings) -> Iterator[None]:
+    """Blocking form for a worker thread: the last authorization check and the source hand-off happen
+    while no policy or provider change can commit. The vendor's response is awaited outside it."""
+    with _authority_lock(settings) as descriptor:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
 
 
 def validate_key(raw: str) -> str:
@@ -228,12 +273,14 @@ def read_worker_token(settings: Settings) -> str:
     state = load_state(settings)
     if state.credential_id is not None and state.credential_id in state.retiring_credential_ids:
         raise DomainError(
-            "JUDGE_CREDENTIAL_INVALID", "Jev replacement is incomplete; rerun judge set jev or explicitly select agent",
+            "JUDGE_CREDENTIAL_INVALID",
+            f"The {state.provider} replacement is incomplete; rerun judge set {state.provider} or explicitly select agent",
             status=409,
         )
     path = judge_dir(settings) / TOKEN_FILE
     if _absent(path):
-        raise DomainError("JUDGE_CREDENTIAL_INVALID", "The Jev worker credential is missing; rerun judge set jev", status=409)
+        raise DomainError("JUDGE_CREDENTIAL_INVALID",
+                          f"The worker credential is missing; rerun judge set {state.provider}", status=409)
     return _read_private_text(path, 4096).strip()
 
 
@@ -248,13 +295,29 @@ def _remove(settings: Settings, name: str) -> None:
     os.unlink(path)
 
 
-def require_jev_allowed(settings: Settings) -> None:
-    if not load_egress_policy(settings).jev_allowed:
+def route_allowed(policy: EgressPolicy, provider: str) -> bool:
+    return provider in ROUTES and getattr(policy, ROUTES[provider][0]) is True
+
+
+def require_route_allowed(settings: Settings, provider: str) -> None:
+    if not route_allowed(load_egress_policy(settings), provider):
+        argument = ROUTES[provider][1] if provider in ROUTES else "allow-jev"
         raise DomainError(
             "JUDGE_PROVIDER_FORBIDDEN",
-            "Jev egress is denied; explicitly authorize it with judge policy allow-jev --ack-egress before selecting Jev",
+            f"{provider} egress is denied; explicitly authorize it with judge policy {argument} --ack-egress "
+            f"before selecting {provider}",
             status=403,
         )
+
+
+def validate_model(value: str | None) -> str | None:
+    if value is not None and (not 1 <= len(value) <= 64 or re.fullmatch(MODEL_PATTERN, value) is None):
+        raise DomainError("INPUT_INVALID", "A model ID is 1 to 64 letters, digits or . _ : / - and starts alphanumerically")
+    return value
+
+
+def runs_dir(settings: Settings) -> Path:
+    return judge_dir(settings) / RUNS_DIR
 
 
 def verify_key(
@@ -263,7 +326,7 @@ def verify_key(
 ) -> str:
     try:
         return client_factory(key, model).verify(before_attempt=before_attempt)
-    except JevFailure as failure:
+    except ProviderFailure as failure:
         if failure.kind == "auth":
             raise DomainError("JUDGE_KEY_REJECTED", "TypeSafe rejected the Jev API key", status=401) from None
         if failure.kind == "request":
@@ -290,24 +353,36 @@ def describe(settings: Settings, state: JudgeState, *, operator: bool) -> dict:
     """Body- and key-free provider view; operator views add identifiers that agents do not need."""
     try:
         policy = load_egress_policy(settings)
-        policy_status = "absent" if _absent(judge_dir(settings) / EGRESS_POLICY_FILE) else "allowed" if policy.jev_allowed else "denied"
-        egress_policy = {"jev_allowed": policy.jev_allowed, "status": policy_status}
+        absent = _absent(judge_dir(settings) / EGRESS_POLICY_FILE)
+        egress_policy = {
+            "jev_allowed": policy.jev_allowed, "subscription_allowed": policy.subscription_allowed,
+            "status": "absent" if absent else "allowed" if policy.jev_allowed else "denied",
+            "subscription_status": "absent" if absent else "allowed" if policy.subscription_allowed else "denied",
+        }
     except DomainError as error:
-        egress_policy = {"jev_allowed": False, "status": "invalid", "error": error.code}
-    jev = state.provider == "jev" and egress_policy["jev_allowed"]
-    unavailable = jev and state.credential_id in state.retiring_credential_ids
+        egress_policy = {"jev_allowed": False, "subscription_allowed": False, "status": "invalid",
+                         "subscription_status": "invalid", "error": error.code}
+    route = state.provider if state.provider in ROUTES and egress_policy[ROUTES[state.provider][0]] else None
+    unavailable = route is not None and state.credential_id in state.retiring_credential_ids
+    judgment = (f"{route}_unavailable_explicit_reselection_required" if unavailable
+                else "jev_background_then_server_validation" if route == "jev"
+                else "subscription_cli_background_then_server_validation" if route == "subscription"
+                else "current_coding_agent_via_mcp")
     view = {
-        "provider": "jev" if jev else "agent",
+        "provider": route or "agent",
         "configured_provider": state.provider,
         "configured_model": state.model,
+        "configured_host": state.host,
         "revision": state.revision,
         "mode": settings.mode,
         "egress_policy": egress_policy,
-        "model": state.model if jev else None,
-        "source_judgment": "jev_unavailable_explicit_reselection_required" if unavailable else "jev_background_then_server_validation" if jev else "current_coding_agent_via_mcp",
+        "model": state.model if route else None,
+        "host": state.host if route == "subscription" else None,
+        "source_judgment": judgment,
         "relevance_judgment": "current_coding_agent_via_mcp",
         "retirement_pending": bool(state.retiring_credential_ids or state.forget_key_pending or not _absent(judge_dir(settings) / ISSUING_TOKEN_FILE)),
-        "egress": JEV_EGRESS if jev else None,
+        "egress": (JEV_EGRESS if route == "jev"
+                   else subscription_egress(state.host or "", state.executable if operator else None) if route else None),
         "fallback": "none: unjudged work stays pending for the coding agent",
         "change": "operator CLI only: agents-memory judge set",
     }
@@ -327,10 +402,17 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-async def set_egress_policy(settings: Settings, store, actor: Principal, *, jev_allowed: bool) -> dict:
-    """Authorize independently of provider choice; revoke before retiring any worker authority."""
+async def set_egress_policy(
+    settings: Settings, store, actor: Principal, *, jev_allowed: bool | None = None,
+    subscription_allowed: bool | None = None,
+) -> dict:
+    """Authorize one route independently of provider choice; revoke before retiring any worker authority."""
+    if (jev_allowed is None) == (subscription_allowed is None):
+        raise DomainError("INPUT_INVALID", "Change exactly one egress route per policy update")
+    route, allowed = ("jev", jev_allowed) if jev_allowed is not None else ("subscription", subscription_allowed)
+    field = ROUTES[route][0]
     if actor.role != Role.OPERATOR:
-        raise DomainError("ROLE_DENIED", "Only the operator can authorize Jev egress", status=403)
+        raise DomainError("ROLE_DENIED", f"Only the operator can authorize {route} egress", status=403)
     async with judge_guard(settings):
         try:
             previous = load_egress_policy(settings)
@@ -339,9 +421,9 @@ async def set_egress_policy(settings: Settings, store, actor: Principal, *, jev_
                 raise
             previous = EgressPolicy(revision=int(time.time()))
         cleanup_committed = False
-        if jev_allowed:
+        if allowed:
             state = load_state(settings)
-            if not previous.jev_allowed and state.provider == "jev":
+            if not getattr(previous, field) and state.provider == route:
                 await _set_agent(settings, store, actor, forget_key=False)
                 cleanup_committed = True
             else:
@@ -350,9 +432,9 @@ async def set_egress_policy(settings: Settings, store, actor: Principal, *, jev_
                     or not _absent(judge_dir(settings) / ISSUING_TOKEN_FILE)
                 )
                 await _finish_retirement(settings, store, actor, state)
-        policy = EgressPolicy(
-            jev_allowed=jev_allowed, revision=previous.revision + 1, updated_at=_now(), updated_by=actor.id,
-        )
+        policy = previous.model_copy(update={
+            field: allowed, "revision": previous.revision + 1, "updated_at": _now(), "updated_by": actor.id,
+        })
         try:
             async with _publication_authority(store, actor):
                 private_write(judge_dir(settings) / EGRESS_POLICY_FILE, policy.model_dump_json(indent=2) + "\n", replace=True)
@@ -363,14 +445,19 @@ async def set_egress_policy(settings: Settings, store, actor: Principal, *, jev_
                 error.code, "Worker cleanup is committed, but egress policy publication was refused. " + error.message,
                 status=error.status, effect=EffectState.COMMITTED,
             ) from None
-        if not policy.jev_allowed:
+        try:
+            # Denying one route never retires the other route's selected worker.
+            other_route = load_state(settings).provider not in {route, "agent"}
+        except DomainError:
+            other_route = False
+        if not allowed and not other_route:
             try:
                 result = await _set_agent(settings, store, actor, forget_key=False)
             except DomainError as error:
                 raise DomainError(
                     error.code,
-                    "Jev egress denial is committed. Provider cleanup or worker retirement is incomplete or unresolved; "
-                    "inspect judge status and rerun judge policy deny-jev. " + error.message,
+                    f"The {route} egress denial is committed. Provider cleanup or worker retirement is incomplete or "
+                    f"unresolved; inspect judge status and rerun judge policy deny-{route}. " + error.message,
                     status=error.status, effect=EffectState.UNKNOWN,
                 ) from None
         else:
@@ -382,35 +469,103 @@ async def set_jev(
     settings: Settings, store, actor: Principal, key: str, *, model: str = JEV_DEFAULT_MODEL,
     verify: Callable[[str, str], str] | None = None,
 ) -> dict:
-    """Verify outside the guard; publish only a durably tracked new worker credential."""
-    require_jev_allowed(settings)
+    """Verify the key outside the guard; publish it only with a durably tracked new worker credential."""
+    require_route_allowed(settings, "jev")
     if actor.role != Role.OPERATOR:
         raise DomainError("ROLE_DENIED", "Only the operator can choose the judge provider", status=403)
     key = validate_key(key)
+    validate_model(model)
+
+    def check(before_attempt: Callable[[], None]) -> str:
+        if verify is not None:
+            return verify(key, model)
+        return verify_key(key, model, before_attempt=before_attempt)
+
+    def build(state: JudgeState, credential_id: str) -> JudgeState:
+        return JudgeState(
+            provider="jev", revision=state.revision + 1, model=model,
+            key_fingerprint=key_fingerprint(settings, key), credential_id=credential_id,
+            retiring_credential_ids=state.retiring_credential_ids, updated_at=_now(), updated_by=actor.id,
+        )
+
+    return await _select_worker(settings, store, actor, "jev", check, build, {KEY_FILE: key})
+
+
+async def set_subscription(
+    settings: Settings, store, actor: Principal, host: Host, executable: Path | None = None, *,
+    model: str | None = None, verify: Callable[[SubscriptionClient], str] | None = None,
+) -> dict:
+    """Pin a signed-in host CLI after a synthetic check; the worker reuses its login, never a copied credential."""
+    require_route_allowed(settings, "subscription")
+    if actor.role != Role.OPERATOR:
+        raise DomainError("ROLE_DENIED", "Only the operator can choose the judge provider", status=403)
+    executable = resolve_executable(host, executable)
+    validate_model(model)
+    project = project_ancestor(runs_dir(settings))
+    if project is not None:
+        # A CLI started below a project would load that project's hooks, MCP servers and instructions.
+        raise DomainError(
+            "JUDGE_RUN_DIR_INSIDE_PROJECT",
+            "The deployment state directory is inside a project tree; move state_dir outside every project "
+            "before selecting subscription judgment", status=409,
+        )
+    client = SubscriptionClient(host, executable, model, workdir=runs_dir(settings))
+
+    def check(before_attempt: Callable[[], None]) -> str:
+        if verify is not None:
+            return verify(client)
+        try:
+            return client.verify(before_attempt=before_attempt)
+        except ProviderFailure as failure:
+            if failure.kind == "auth":
+                raise DomainError("JUDGE_LOGIN_REJECTED", f"The {host} CLI login was rejected; sign in again", status=401) from None
+            if failure.kind == "request":
+                raise DomainError("JUDGE_MODEL_REJECTED", f"The {host} CLI rejected the requested model", status=422) from None
+            raise DomainError(
+                "JUDGE_PROVIDER_UNAVAILABLE",
+                f"The {host} CLI did not return a typed answer; confirm it is installed, signed in and the model exists",
+                status=503,
+            ) from None
+
+    def build(state: JudgeState, credential_id: str) -> JudgeState:
+        return JudgeState(
+            provider="subscription", revision=state.revision + 1, model=model, host=host,
+            executable=str(executable), key_fingerprint=state.key_fingerprint if has_key(settings) else None,
+            credential_id=credential_id, retiring_credential_ids=state.retiring_credential_ids,
+            updated_at=_now(), updated_by=actor.id,
+        )
+
+    return await _select_worker(settings, store, actor, "subscription", check, build, {})
+
+
+async def _select_worker(
+    settings: Settings, store, actor: Principal, provider: str,
+    check: Callable[[Callable[[], None]], str], build: Callable[[JudgeState, str], JudgeState], files: dict[str, str],
+) -> dict:
+    """Verify outside the guard; publish only a durably tracked new worker credential."""
     async with judge_guard(settings):
-        require_jev_allowed(settings)
+        require_route_allowed(settings, provider)
         try:
             previous = load_state(settings)
         except DomainError as error:
             if error.code != "JUDGE_STATE_INVALID":
                 raise
             raise DomainError(
-                "JUDGE_STATE_INVALID", "Repair the provider with judge set agent before selecting Jev", status=503,
+                "JUDGE_STATE_INVALID", f"Repair the provider with judge set agent before selecting {provider}", status=503,
             ) from None
         async with store.operator_authority(actor):
             policy_revision = load_egress_policy(settings).revision
+
     def verify_authorized() -> str:
-        _require_policy_revision(settings, policy_revision)
-        if verify is not None:
-            return verify(key, model)
-        return verify_key(key, model, before_attempt=lambda: _require_policy_revision(settings, policy_revision))
+        _require_policy_revision(settings, provider, policy_revision)
+        return check(lambda: _require_policy_revision(settings, provider, policy_revision))
 
     resolved = await asyncio.to_thread(verify_authorized)
     async with judge_guard(settings):
-        _require_policy_revision(settings, policy_revision)
+        _require_policy_revision(settings, provider, policy_revision)
         current = load_state(settings)
         if current != previous:
-            raise DomainError("JUDGE_PROVIDER_CHANGED", "The judge provider changed during Jev setup; retry explicitly", status=409)
+            raise DomainError("JUDGE_PROVIDER_CHANGED", f"The judge provider changed during {provider} setup; retry explicitly", status=409)
         retiring = previous.retiring_credential_ids
         if previous.credential_id is not None and previous.credential_id not in retiring:
             retiring = (*retiring, previous.credential_id)
@@ -438,35 +593,32 @@ async def set_jev(
             principal = await store.issue_token(actor, Role.AGENT, bindings, token)
             async with _publication_authority(store, actor):
                 private_write(judge_dir(settings) / TOKEN_FILE, token + "\n", replace=True)
-                private_write(judge_dir(settings) / KEY_FILE, key + "\n", replace=True)
-                state = JudgeState(
-                    provider="jev", revision=state.revision + 1, model=model,
-                    key_fingerprint=key_fingerprint(settings, key), credential_id=principal.credential_id,
-                    retiring_credential_ids=state.retiring_credential_ids,
-                    updated_at=_now(), updated_by=actor.id,
-                )
+                for name, content in files.items():
+                    private_write(judge_dir(settings) / name, content + "\n", replace=True)
+                state = build(state, principal.credential_id)
                 _save_state(settings, state)
-            stage = "published Jev worker retirement"
+            stage = f"published {provider} worker retirement"
             state, retired = await _finish_retirement(settings, store, actor, state)
         except DomainError as error:
             raise DomainError(
                 error.code,
                 f"The provider transition fence is committed; setup failed during {stage}. "
-                "Inspect judge status and rerun judge set jev, or explicitly select judge set agent. " + error.message,
+                f"Inspect judge status and rerun judge set {provider}, or explicitly select judge set agent. " + error.message,
                 status=error.status,
                 effect=EffectState.UNKNOWN if error.effect == EffectState.UNKNOWN else failure_effect,
             ) from None
         return {
             **describe(settings, state, operator=True), "verified_model": resolved,
             "granted_bindings": list(bindings), "retired_credential": retired_before_issue or retired,
-            "service": "a running service applies this before its next Jev request", "effect": EffectState.COMMITTED,
+            "service": "a running service applies this before its next worker request", "effect": EffectState.COMMITTED,
         }
 
 
-def _require_policy_revision(settings: Settings, revision: int) -> None:
-    require_jev_allowed(settings)
+def _require_policy_revision(settings: Settings, provider: str, revision: int) -> None:
+    require_route_allowed(settings, provider)
     if load_egress_policy(settings).revision != revision:
-        raise DomainError("JUDGE_EGRESS_POLICY_CHANGED", "The egress policy changed during Jev setup; retry explicitly", status=409)
+        raise DomainError("JUDGE_EGRESS_POLICY_CHANGED",
+                          f"The egress policy changed during {provider} setup; retry explicitly", status=409)
 
 
 async def set_agent(settings: Settings, store, actor: Principal, *, forget_key: bool) -> dict:
@@ -533,7 +685,7 @@ async def _finish_retirement(settings: Settings, store, actor: Principal, state:
         raise DomainError(
             error.code,
             "Durable worker cleanup intent remains pending; issuance or credential retirement is unresolved. "
-            "Inspect judge status and rerun judge set jev or explicitly select judge set agent. " + error.message,
+            "Inspect judge status and rerun judge set or explicitly select judge set agent. " + error.message,
             status=error.status, effect=EffectState.UNKNOWN,
         ) from None
     return state, retired
@@ -566,17 +718,17 @@ async def _retire(store, actor: Principal, credential_id: str) -> str:
 
 
 async def grant_new_binding(settings: Settings, store, actor: Principal, binding_id: str) -> dict | None:
-    """A project added while Jev judges joins the worker grant; agent mode leaves grants unchanged."""
+    """A project added while a worker judges joins its grant; agent mode leaves grants unchanged."""
     async with judge_guard(settings):
         state = load_state(settings)
-        if (state.provider != "jev" or state.credential_id is None
+        if (state.provider not in ROUTES or state.credential_id is None
                 or state.credential_id in state.retiring_credential_ids):
             return None
         try:
-            require_jev_allowed(settings)
+            require_route_allowed(settings, state.provider)
         except DomainError as error:
             if error.code not in {"JUDGE_PROVIDER_FORBIDDEN", "JUDGE_EGRESS_POLICY_INVALID"}:
                 raise
             return None
         await store.grant_binding(actor, state.credential_id, binding_id)
-        return {"provider": "jev", "worker_grant": "added", "credential_id": state.credential_id}
+        return {"provider": state.provider, "worker_grant": "added", "credential_id": state.credential_id}

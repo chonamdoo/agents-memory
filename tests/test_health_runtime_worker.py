@@ -16,7 +16,7 @@ from test_store_authority import authority as authority
 from agents_memory import judge_worker as worker_module
 from agents_memory.domain import CaptureCommand, CaptureCoverage, RevisionRef
 from agents_memory.health import HealthPolicyCommand, MemoryReviewCommand, SessionObservationCommand
-from agents_memory.jev import JevClient, JevResult
+from agents_memory.jev import JevClient, ProviderResult
 from agents_memory.judge import load_state, read_worker_token
 from agents_memory.judge_worker import JudgeWorker
 
@@ -76,7 +76,7 @@ def health_provider(world, *, revoke=None, no_evidence=False):
             )
             answers[key] = {"type": "choice", "choice": choice,
                             "probabilities": {name: float(name == choice) for name in question["criteria"]}}
-        return JevResult(model="jev-1.13.0", answers=answers, input_tokens=None)
+        return ProviderResult(model="jev-1.14.0", answers=answers, input_tokens=None)
 
     world.jev.system_one = system_one
     return calls
@@ -163,7 +163,7 @@ async def test_health_worker_does_not_quarantine_offline_claim_for_online_correc
                     choice = "contradicted" if "not retained while online" in pair["evidence"] else "unknown"
             answers[key] = {"type": "choice", "choice": choice,
                 "probabilities": {name: float(name == choice) for name in question["criteria"]}}
-        return JevResult(model="jev-1.13.0", answers=answers, input_tokens=None)
+        return ProviderResult(model="jev-1.14.0", answers=answers, input_tokens=None)
 
     world.jev.system_one = scoped_oracle
     await world.worker.cycle()
@@ -367,14 +367,14 @@ class HealthProtocolPeer:
                 )
                 answers[key] = {"type": "choice", "choice": chosen,
                     "probabilities": {name: float(name == chosen) for name in question["criteria"]}}
-        return io.BytesIO(json.dumps({"model": "jev-1.13.0", "answers": answers}).encode())
+        return io.BytesIO(json.dumps({"model": "jev-1.14.0", "answers": answers}).encode())
 
 
 def health_protocol_worker(world, failure):
     peer = HealthProtocolPeer(failure)
 
     def factory(key, model):
-        assert key == KEY and model == "jev-1.13.0"
+        assert key == KEY and model == "jev-1.14.0"
         return JevClient(key, model, opener=peer)
 
     world.worker = JudgeWorker(world.settings, world.store, world.application, client_factory=factory)
@@ -560,7 +560,7 @@ async def test_next_worker_judgment_uses_authorized_exact_reject_without_blackli
         for key in questions:
             if key.startswith("remember_") and "thirty days" in spans.get(key.removeprefix("remember_"), ""):
                 answers[key] = {"type": "noul", "noul": 0.5}
-        return JevResult(result.model, answers, result.input_tokens)
+        return ProviderResult(result.model, answers, result.input_tokens)
 
     world.jev.system_one = reasoned_judgment
     health_provider(world)
@@ -609,9 +609,9 @@ def withdrawing_provider(world, withdraw, boundary):
                 )
                 answers[key] = {"type": "choice", "choice": chosen,
                     "probabilities": {name: float(name == chosen) for name in question["criteria"]}}
-            return io.BytesIO(json.dumps({"model": "jev-1.13.0", "answers": answers}).encode())
+            return io.BytesIO(json.dumps({"model": "jev-1.14.0", "answers": answers}).encode())
 
-    client = JevClient(KEY, "jev-1.13.0", opener=Peer(), sleep=lambda _: None)
+    client = JevClient(KEY, "jev-1.14.0", opener=Peer(), sleep=lambda _: None)
 
     def system_one(state, questions, *, before_attempt):
         if boundary == "first":
