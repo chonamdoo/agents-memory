@@ -14,8 +14,8 @@
     {"id": "tls-proxy", "type": "security", "label": "Caddy · TLS", "sublabel": "독립 컨테이너 · 공개 HTTPS", "pos": [740, 250], "size": [220, 80]},
     {"id": "memory-api", "type": "backend", "label": "agents-memory", "sublabel": "OAuth/bearer · 원문·권한 검증", "pos": [1070, 250], "size": [250, 90]},
     {"id": "postgres-authority", "type": "database", "label": "PostgreSQL 18", "sublabel": "Unix socket · 원문·판단·색인", "pos": [740, 750], "size": [250, 90]},
-    {"id": "optional-judge", "type": "backend", "label": "Jev worker · 선택 기능", "sublabel": "별도 허용 + 명시선택 시만 실행", "pos": [1070, 550], "size": [250, 90]},
-    {"id": "jev-vendor", "type": "external", "label": "Jev API", "sublabel": "api.typesafe.ai · 미국", "pos": [1070, 950], "size": [250, 80]}
+    {"id": "optional-judge", "type": "backend", "label": "판단 worker · 선택 기능", "sublabel": "Jev 또는 구독 CLI · 경로별 허용 + 명시선택", "pos": [1070, 550], "size": [250, 90]},
+    {"id": "jev-vendor", "type": "external", "label": "Jev API · 구독 CLI vendor", "sublabel": "api.typesafe.ai · Anthropic · OpenAI", "pos": [1070, 950], "size": [250, 80]}
   ],
   "boundaries": [
     {"kind": "region", "label": "개발자 PC · DB/operator 비밀 없음", "wraps": ["coding-agent", "stdio-relay", "pc-outbox"], "pad": 24},
@@ -34,8 +34,8 @@
     {"from": "optional-judge", "to": "jev-vendor", "label": "원문·확률 응답", "variant": "dashed", "labelDy": 48}
   ],
   "cards": [
-    {"dot": "cyan", "title": "같은 검증 계약", "items": ["span·revision·권한·삭제 floor를 서버가 검증", "Jev 실패는 pending, provider 자동 fallback 없음"]},
-    {"dot": "emerald", "title": "서로 다른 권한", "items": ["PC는 agent·producer와 bounded spool만 보유", "DB·operator·Jev key는 서버 private state"]},
+    {"dot": "cyan", "title": "같은 검증 계약", "items": ["span·revision·권한·삭제 floor를 서버가 검증", "Jev·구독 CLI 실패는 pending, 자동 fallback 없음"]},
+    {"dot": "emerald", "title": "서로 다른 권한", "items": ["PC는 agent·producer와 bounded spool만 보유", "DB·operator·Jev key·CLI 로그인은 서버 쪽에만"]},
     {"dot": "rose", "title": "실행 증거의 경계", "items": ["격리 합성 HTTPS·PG·vendor·native 실행", "실제 계정·corpus 이동·외부 witness는 별도"]}
   ]
 }

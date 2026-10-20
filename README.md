@@ -42,13 +42,13 @@ Python 3.12 이상 기반의 독립적인 메모리 서비스다. PC capture spo
 
 ### 로컬 환경 (기본 구성 완료)
 
-![로컬 환경: 개인·회사 운영 모두 독립 default-deny Jev 정책을 사용한다. 불가·미설정·미선택은 구독 coding-agent의 MCP 판단, 허용·명시선택은 Jev worker다. macOS launchd 자동 시작·장애 복구, DB readiness, bounded spool 자동 전송과 명시적 중지를 표시한다](docs/images/architecture-local.png)
+![로컬 환경: 개인·회사 운영 모두 Jev와 구독 CLI에 각각 독립 default-deny 정책을 사용한다. 허용·명시선택된 판단 worker는 Jev API 또는 로그인된 claude·codex·omp CLI를 headless로 호출한다. worker가 불가·미설정·미선택이면 구독 coding-agent가 MCP로 판단한다. macOS launchd 자동 시작·장애 복구, DB readiness, bounded spool 자동 전송과 명시적 중지를 표시한다](docs/images/architecture-local.png)
 
-coding agent는 stdio relay로 MCP를 호출하고, host adapter는 hook capture를 SQLite spool에 넣은 뒤 `/api/capture`로 보낸다. 서비스는 `127.0.0.1`에만 bind하며 PostgreSQL 18이 정본이다. Jev 불가·미설정·미선택인 로컬 환경에서도 구독 coding agent가 `memory_inspect` → 원문 선택·관계 판단 → `memory_record`로 기억을 관리한다. 개인·회사 모두 Jev 허용·명시선택 시 worker가 pending 원문 window와 관계를 판단해 같은 서버 검증으로 기록한다. relevance는 양쪽 모두 coding agent의 몫이며, 불확실·실패는 pending으로 남고 자동 fallback은 없다.
+coding agent는 stdio relay로 MCP를 호출하고, host adapter는 hook capture를 SQLite spool에 넣은 뒤 `/api/capture`로 보낸다. 서비스는 `127.0.0.1`에만 bind하며 PostgreSQL 18이 정본이다. worker 경로가 불가·미설정·미선택인 로컬 환경에서도 구독 coding agent가 `memory_inspect` → 원문 선택·관계 판단 → `memory_record`로 기억을 관리한다. 개인·회사 모두 Jev 또는 구독 CLI 경로가 허용·명시선택되면 worker가 pending 원문 window와 관계를 판단해 같은 서버 검증으로 기록한다. relevance는 모든 경로에서 coding agent의 몫이며, 불확실·실패는 pending으로 남고 자동 fallback은 없다.
 
 ### 클라우드 환경 (원격 경로 구현·격리 합성 검증)
 
-![클라우드 환경: 개인·회사 운영 모두 가능하다. PC의 구독 agent와 bounded spool이 검증된 HTTPS로 연결하고, Jev는 별도 허용·명시선택일 때만 호출한다. 실제 계정 provisioning과 corpus 이동은 별도다](docs/images/architecture-cloud.png)
+![클라우드 환경: 개인·회사 운영 모두 가능하다. PC의 구독 agent와 bounded spool이 검증된 HTTPS로 연결한다. 판단 worker는 Jev 또는 구독 CLI가 경로별로 허용·명시선택된 경우에만 호출한다. 실제 계정 provisioning과 corpus 이동은 별도다](docs/images/architecture-cloud.png)
 
 클라우드는 개인 또는 회사가 같은 core·API·schema·규칙을 원격에 배포한다. PC는 DB DSN·operator credential을 갖지 않는다. 원격 MCP/capture, bearer 또는 issuer·audience·scope·현재 PG 권한을 검증하는 OAuth, one-binding bootstrap, private CA, bounded spool과 durable PC 중지·재연결을 구현했다. `deploy/cloud/`는 기존 PostgreSQL 18 Unix socket·SCRAM 인증을 사용하는 non-root 배포다. Caddy와 app은 독립 컨테이너이며 backend port는 publish하지 않는다. app은 선언한 private proxy IP 하나와 `X-Forwarded-Proto=https`만 신뢰한다. Caddy는 app state·journal·DB socket을 mount하지 않는다.
 
