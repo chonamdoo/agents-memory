@@ -21,6 +21,7 @@ from .jev import JevClient, ProviderFailure, ProviderResult, SystemOneClient
 from .judge import (
     ROUTES,
     JudgeState,
+    dispatch_guard,
     judge_guard,
     load_egress_policy,
     load_state,
@@ -312,6 +313,7 @@ class JudgeWorker:
             return self._client_factory(read_key(self.settings), state.model or "")
         return self._subscription_factory(
             state.host, Path(state.executable or ""), state.model, workdir=runs_dir(self.settings),
+            dispatch_guard=lambda: dispatch_guard(self.settings),
         )
 
     async def cycle(self) -> bool:
@@ -413,6 +415,8 @@ class JudgeWorker:
             if self._stop.is_set():
                 raise ProviderChanged("SERVICE_DRAINING")
             await before_request()
+            # The admission recheck awaited the database; a denial may have committed meanwhile.
+            self._current(state)
 
         def before_attempt() -> None:
             asyncio.run_coroutine_threadsafe(current(), loop).result()

@@ -18,8 +18,8 @@ import re
 import secrets
 import stat
 import time
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -176,13 +176,8 @@ async def _publication_authority(store, actor: Principal) -> AsyncIterator[None]
             ) from None
 
 
-@asynccontextmanager
-async def judge_guard(settings: Settings) -> AsyncIterator[None]:
-    """Keep policy/provider changes linearizable with the entire publication commit.
-
-    Vendor calls stay outside this guard. Nonblocking attempts let an existing
-    publisher finish awaited database work without blocking its event loop.
-    """
+@contextmanager
+def _authority_lock(settings: Settings) -> Iterator[int]:
     directory = judge_dir(settings)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -198,6 +193,21 @@ async def judge_guard(settings: Settings) -> AsyncIterator[None]:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise DomainError("PATH_DENIED", "The judge authority lock must be a private owned regular file")
+        yield descriptor
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory_fd)
+
+
+@asynccontextmanager
+async def judge_guard(settings: Settings) -> AsyncIterator[None]:
+    """Keep policy/provider changes linearizable with the entire publication commit.
+
+    Vendor calls stay outside this guard. Nonblocking attempts let an existing
+    publisher finish awaited database work without blocking its event loop.
+    """
+    with _authority_lock(settings) as descriptor:
         while True:
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -205,10 +215,15 @@ async def judge_guard(settings: Settings) -> AsyncIterator[None]:
             except BlockingIOError:
                 await asyncio.sleep(0.01)
         yield
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        os.close(directory_fd)
+
+
+@contextmanager
+def dispatch_guard(settings: Settings) -> Iterator[None]:
+    """Blocking form for a worker thread: the last authorization check and the source hand-off happen
+    while no policy or provider change can commit. The vendor's response is awaited outside it."""
+    with _authority_lock(settings) as descriptor:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
 
 
 def validate_key(raw: str) -> str:

@@ -23,7 +23,8 @@ FAKE_CLI = """\
 import json, os, subprocess, sys, time
 argv, data = sys.argv[1:], sys.stdin.read()
 with open(os.environ["FAKE_CLI_LOG"], "w") as log:
-    json.dump({"argv": argv, "stdin": data, "cwd": os.getcwd()}, log)
+    json.dump({"argv": argv, "stdin": data, "cwd": os.getcwd(),
+               "credentials": sorted(name for name in os.environ if name.endswith(("_API_KEY", "_AUTH_TOKEN")))}, log)
 mode, host = os.environ.get("FAKE_CLI_MODE", "ok"), os.environ["FAKE_CLI_HOST"]
 questions = json.loads(data.split("<questions>\\n", 1)[1].split("\\n</questions>", 1)[0])
 answers = {}
@@ -38,6 +39,16 @@ if mode == "missing":
     answers.popitem()
 if mode == "out_of_range":
     answers[next(iter(answers))] = {"type": "noul", "noul": 1.5}
+if mode in {"not_argmax", "partial_labels", "unnormalized"}:
+    kind = next(identifier for identifier in answers if answers[identifier]["type"] == "choice")
+    answers[kind]["probabilities"] = {"not_argmax": {"fact": 0.1, "preference": 0.9},
+                                      "partial_labels": {"fact": 1.0},
+                                      "unnormalized": {"fact": 0.9, "preference": 0.9}}[mode]
+if mode == "orphan":
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(os.environ["FAKE_CHILD_PID"], "w") as handle:
+        handle.write(str(child.pid))
 if mode == "sleep":
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     with open(os.environ["FAKE_CHILD_PID"], "w") as handle:
@@ -125,7 +136,10 @@ def test_each_host_output_becomes_complete_typed_answers(fake_cli, host, model, 
 
 
 @pytest.mark.parametrize("host", ["claude", "codex", "omp"])
-@pytest.mark.parametrize(("mode", "kind"), [("missing", "response"), ("out_of_range", "response"), ("fail", "transport")])
+@pytest.mark.parametrize(("mode", "kind"), [
+    ("missing", "response"), ("out_of_range", "response"), ("fail", "transport"),
+    ("not_argmax", "response"), ("partial_labels", "response"), ("unnormalized", "response"),
+])
 def test_incomplete_invalid_or_failed_answers_are_never_accepted(fake_cli, host, mode, kind):
     with pytest.raises(ProviderFailure) as caught:
         fake_cli(host, mode).system_one(STATE, QUESTIONS)
@@ -136,6 +150,20 @@ def test_rejected_claude_login_pauses_instead_of_escalating_items(fake_cli):
     with pytest.raises(ProviderFailure) as caught:
         fake_cli("claude", "login").system_one(STATE, QUESTIONS)
     assert caught.value.kind == "auth" and caught.value.status == 401
+
+
+def test_api_credentials_cannot_replace_the_subscription_login(fake_cli, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token-test")
+    fake_cli("claude").system_one(STATE, QUESTIONS)
+    assert fake_cli.log()["credentials"] == []
+
+
+def test_descendant_that_closed_stdout_does_not_outlive_a_completed_call(fake_cli):
+    result = fake_cli("omp", "orphan").system_one(STATE, QUESTIONS)
+    assert result.answers["remember_s0001"]["noul"] == 0.9
+    assert _gone(int(fake_cli.child_pid.read_text()))
 
 
 def test_deadline_stops_the_cli_and_its_descendants(fake_cli):

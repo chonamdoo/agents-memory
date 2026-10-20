@@ -640,7 +640,7 @@ async def subscription_worker(world, host="codex", model="gpt-test"):
                            verify=lambda client: model)
     received = []
 
-    def connect(host, executable, model, *, workdir):
+    def connect(host, executable, model, *, workdir, dispatch_guard):
         received.append((host, str(executable), model))
         return world.jev
 

@@ -8,29 +8,35 @@ Output is bounded and parsed into the same typed answers Jev returns; no body is
 """
 from __future__ import annotations
 
+import errno
 import json
+import math
 import os
 import pwd
+import select
 import selectors
 import shutil
 import signal
+import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping
-from contextlib import suppress
+from contextlib import AbstractContextManager, ExitStack, closing, nullcontext, suppress
 from pathlib import Path
 from typing import Any, Literal
 
 from .domain import DomainError
 from .jev import ProviderFailure, ProviderResult, _classify, parse_answers
-from .native_status import _stop_process_group
 
 Host = Literal["claude", "codex", "omp"]
 HOSTS: tuple[Host, ...] = ("claude", "codex", "omp")
 DEFAULT_TIMEOUT = 300.0
 _EXIT_GRACE = 10.0
+_REAP_SECONDS = 5.0
+_CHOICE_SUM_TOLERANCE = 0.05
 _MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 _SYSTEM = (
     "You are agents-memory's typed judgment function, not a coding assistant. The input holds a JSON document "
@@ -43,8 +49,17 @@ _SYSTEM = (
     "criteria label, summing to 1, and L the most probable label. "
     'Reply with only the JSON object {"answers":{"<question id>":<answer>,...}} and no other text.'
 )
-# A user-level OMP memory backend or project MCP config would otherwise observe the judge call.
-_OMP_OVERLAY = {"memory": {"backend": "off"}, "memories": {"enabled": False}, "mcp": {"enableProjectConfig": False}}
+# A user-level OMP memory backend or project MCP config would otherwise observe the judge call. OMP still
+# starts user-level MCP servers under --no-tools, so every tool call must need an approval print mode cannot give.
+_OMP_OVERLAY = {
+    "memory": {"backend": "off"}, "memories": {"enabled": False}, "mcp": {"enableProjectConfig": False},
+    "tools": {"approvalMode": "always-ask", "approval": {}},
+}
+# API keys and cloud-provider switches outrank a CLI's subscription login; the route is the login only.
+_ROUTE_OVERRIDES = frozenset({
+    "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+    "OPENAI_BASE_URL", "CODEX_API_KEY",
+})
 
 
 def resolve_executable(host: str, explicit: Path | None = None) -> Path:
@@ -123,11 +138,77 @@ def _token_count(*values: object) -> int | None:
     return sum(values)  # type: ignore[arg-type]
 
 
+def _exited_unreaped(pid: int, timeout: float) -> bool:
+    """Wait for the child's exit without reaping it; the group ID stays reserved until wait()."""
+    if sys.platform == "darwin":
+        with closing(select.kqueue()) as observer:
+            try:
+                events = observer.control([select.kevent(
+                    pid, filter=select.KQ_FILTER_PROC, flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                    fflags=select.KQ_NOTE_EXIT,
+                )], 1, timeout)
+            except ProcessLookupError:
+                return True  # Darwin cannot attach NOTE_EXIT to an already exited (zombie) child.
+            if not events:
+                return False
+            return not events[0].flags & select.KQ_EV_ERROR or events[0].data == errno.ESRCH
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is not None:
+                return True
+        except ChildProcessError:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.02)
+
+
+def _read_bounded(path: Path) -> bytes:
+    """Read a CLI answer file without following links, blocking on a FIFO or holding an oversized body."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        raise ProviderFailure("response") from None
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ProviderFailure("response")
+        raw = bytearray()
+        while len(raw) <= _MAX_OUTPUT_BYTES:
+            chunk = os.read(descriptor, min(65536, _MAX_OUTPUT_BYTES + 1 - len(raw)))
+            if not chunk:
+                return bytes(raw)
+            raw += chunk
+        raise ProviderFailure("response")
+    finally:
+        os.close(descriptor)
+
+
+def _require_distributions(payload: dict, questions: Mapping[str, Mapping[str, Any]]) -> None:
+    """A generated choice must give every label a probability, sum to one and pick its most probable label."""
+    answers = payload.get("answers")
+    if not isinstance(answers, dict):
+        raise ProviderFailure("response")
+    for identifier, question in questions.items():
+        if question["type"] != "choice":
+            continue
+        answer = answers.get(identifier)
+        probabilities = answer.get("probabilities") if isinstance(answer, dict) else None
+        if not isinstance(probabilities, dict) or set(probabilities) != set(question["criteria"]):
+            raise ProviderFailure("response")
+        values = list(probabilities.values())
+        if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) for value in values):
+            raise ProviderFailure("response")
+        if abs(sum(values) - 1.0) > _CHOICE_SUM_TOLERANCE or probabilities.get(answer.get("choice"), -1.0) < max(values):
+            raise ProviderFailure("response")
+
+
 class SubscriptionClient:
     """Synchronous single-attempt client; the worker runs it in a thread and may cancel it."""
 
     def __init__(
         self, host: str, executable: Path, model: str | None, *, workdir: Path, timeout: float = DEFAULT_TIMEOUT,
+        dispatch_guard: Callable[[], AbstractContextManager[Any]] = nullcontext,
     ) -> None:
         if host not in HOSTS:
             raise DomainError("JUDGE_STATE_INVALID", "The subscription host is invalid; rerun judge set", status=503)
@@ -136,6 +217,7 @@ class SubscriptionClient:
         self.model = model
         self.workdir = Path(workdir)
         self.timeout = timeout
+        self._dispatch_guard = dispatch_guard
         self._lock = threading.Lock()
         self._process: subprocess.Popen[bytes] | None = None
         self._cancelled = False
@@ -148,6 +230,7 @@ class SubscriptionClient:
         with self._lock:
             self._cancelled = True
             process = self._process
+            # The leader is reaped only under this lock, so its group ID cannot have been reused.
             if process is not None and process.returncode is None:
                 with suppress(ProcessLookupError, PermissionError):
                     os.killpg(process.pid, signal.SIGKILL)
@@ -170,10 +253,13 @@ class SubscriptionClient:
         (run / "overlay.json").write_text(json.dumps(_OMP_OVERLAY), encoding="utf-8")
         return [str(self.executable), "-p", "--no-tools", "--no-extensions", "--no-skills", "--no-rules",
                 "--no-session", "--no-lsp", "--no-title", "--mode", "text", "--config", str(run / "overlay.json"),
-                "--system-prompt", _SYSTEM, *model]
+                "--approval-mode", "always-ask", "--system-prompt", _SYSTEM, *model]
 
     def _environment(self) -> dict[str, str]:
-        environment = dict(os.environ)
+        environment = {
+            name: value for name, value in os.environ.items()
+            if name not in _ROUTE_OVERRIDES and not name.endswith(("_API_KEY", "_AUTH_TOKEN"))
+        }
         inherited = environment.get("PATH") or "/usr/bin:/bin:/usr/sbin:/sbin"
         # A Node-based CLI resolves its interpreter next to itself under the service's minimal PATH.
         environment["PATH"] = f"{self.executable.parent}{os.pathsep}{inherited}"
@@ -183,19 +269,31 @@ class SubscriptionClient:
         environment.setdefault("LOGNAME", account)
         return environment
 
-    def _run(self, argv: list[str], payload: bytes, run: Path) -> tuple[int, bytes]:
+    def _run(
+        self, argv: list[str], payload: bytes, run: Path, before_attempt: Callable[[], None] | None,
+    ) -> tuple[int, bytes]:
         deadline = time.monotonic() + self.timeout
-        with self._lock:
-            if self._cancelled:
-                raise ProviderFailure("cancelled")
-            try:
-                process = subprocess.Popen(
-                    argv, cwd=run, env=self._environment(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL, start_new_session=True,
-                )
-            except OSError:
-                raise ProviderFailure("unavailable") from None
-            self._process = process
+        dispatch = ExitStack()
+        # The final authorization check and the hand-off of source text are one step under the judge
+        # authority lock, so a policy denial either precedes the check or waits until stdin is delivered.
+        dispatch.enter_context(self._dispatch_guard())
+        try:
+            if before_attempt is not None:
+                before_attempt()
+            with self._lock:
+                if self._cancelled:
+                    raise ProviderFailure("cancelled")
+                try:
+                    process = subprocess.Popen(
+                        argv, cwd=run, env=self._environment(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL, start_new_session=True,
+                    )
+                except OSError:
+                    raise ProviderFailure("unavailable") from None
+                self._process = process
+        except BaseException:
+            dispatch.close()
+            raise
         assert process.stdin is not None and process.stdout is not None
         output = bytearray()
         try:
@@ -217,6 +315,7 @@ class SubscriptionClient:
                             if not pending:
                                 selector.unregister(process.stdin)
                                 process.stdin.close()
+                                dispatch.close()
                             continue
                         chunk = os.read(key.fd, 65536)
                         if not chunk:
@@ -225,28 +324,26 @@ class SubscriptionClient:
                         output += chunk
                         if len(output) > _MAX_OUTPUT_BYTES:
                             raise ProviderFailure("response")
-            # Descendants share stdout, so EOF leaves only the leader; reap it under the cancel lock.
-            grace = min(_EXIT_GRACE, deadline - time.monotonic())
-            while True:
-                with self._lock:
-                    if process.poll() is not None:
-                        break
-                if grace <= 0:
-                    raise ProviderFailure("transport")
-                time.sleep(0.05)
-                grace -= 0.05
+            # Observe the leader's exit without reaping it, so the group can still be signalled safely below.
+            if not _exited_unreaped(process.pid, min(_EXIT_GRACE, max(0.0, deadline - time.monotonic()))):
+                raise ProviderFailure("transport")
         finally:
+            dispatch.close()
             with self._lock:
                 self._process = None
-                try:
-                    _stop_process_group(process)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
+                if process.returncode is None:
+                    # Also ends descendants that closed stdout; a zombie leader keeps the group ID reserved.
+                    with suppress(ProcessLookupError, PermissionError):
+                        os.killpg(process.pid, signal.SIGKILL)
+                    with suppress(subprocess.TimeoutExpired):
+                        process.wait(timeout=_REAP_SECONDS)
                 for stream in (process.stdin, process.stdout):
                     with suppress(OSError):
                         stream.close()
         if self._cancelled:
             raise ProviderFailure("cancelled")
+        if process.returncode is None:
+            raise ProviderFailure("transport")
         return process.returncode, bytes(output)
 
     def _parse(self, returncode: int, output: bytes, run: Path) -> dict:
@@ -281,13 +378,7 @@ class SubscriptionClient:
                     if isinstance(event, dict) and event.get("type") == "turn.completed" and isinstance(event.get("usage"), dict):
                         usage = event["usage"]
                         tokens = _token_count(usage.get("input_tokens"))
-            try:
-                answer = (run / "answer.json").read_bytes()[:_MAX_OUTPUT_BYTES + 1]
-            except OSError:
-                raise ProviderFailure("response") from None
-            if len(answer) > _MAX_OUTPUT_BYTES:
-                raise ProviderFailure("response")
-            return {**_json_object(answer), "model": self._label(), "usage": {"input_tokens": tokens}}
+            return {**_json_object(_read_bounded(run / "answer.json")), "model": self._label(), "usage": {"input_tokens": tokens}}
         return {**_json_object(output), "model": self._label(), "usage": {}}
 
     def system_one(
@@ -304,10 +395,10 @@ class SubscriptionClient:
         try:
             argv = self._argv(answer_schema(questions), run)
             payload = render_input(state, questions, system=self.host == "codex")
-            if before_attempt is not None:
-                before_attempt()
-            returncode, output = self._run(argv, payload, run)
-            return parse_answers(self._parse(returncode, output, run), questions)
+            returncode, output = self._run(argv, payload, run, before_attempt)
+            parsed = self._parse(returncode, output, run)
+            _require_distributions(parsed, questions)
+            return parse_answers(parsed, questions)
         finally:
             shutil.rmtree(run, ignore_errors=True)
 
