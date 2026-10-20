@@ -5,7 +5,8 @@
 ### context 전달의 전역 lock 대기
 
 - 읽기 전용인 `rules()`와 context `delivery`가 전역 `am_clock ... FOR UPDATE` lock을 잡던 문제를 고쳤다. delivery는 응답의 partial 판정용 corpus 통계(`_stats`, 실제 corpus에서 수천 번의 순차 DB 조회, 약 1.3초)를 이 lock 안에서 계산했다. 그래서 모든 agent의 read·write·edit hook(required-context와 행동 직전 회상)과 prompt capture가 한 줄로 기다렸다. 동시 hook은 4초 client 기한을 넘겨 `action: SERVICE_UNAVAILABLE`로 보였고, 같은 lock을 기다리는 입력 capture 때문에 Enter가 멈췄다.
-- 두 경로는 이제 lock을 잡지 않는 read-only repeatable-read snapshot으로 실행한다. writer는 clock lock 아래에서 commit하므로 한 snapshot의 clock epoch·rule·통계는 같은 commit 시점을 가리킨다. stamp와 전체 rule 일치 검사, 철회·admission 재검사는 그대로다. `/api/required-context`는 응답에 쓰지 않는 통계 계산도 하지 않는다.
+- 두 경로는 이제 lock을 잡지 않는 read-only repeatable-read snapshot으로 실행한다. writer는 clock lock 아래에서 commit하므로 한 snapshot의 clock epoch·rule·통계는 같은 commit 시점을 가리킨다. stamp와 전체 rule 일치 검사, 철회·admission 재검사는 그대로다. 기존 lock 없는 reader(인증·readiness·health 정책 등)도 같은 snapshot 격리로 바뀐다. `/api/required-context`는 응답에 쓰지 않는 통계 계산도 하지 않는다.
+- OMP는 input handler가 끝나야 제출을 queue에 넣는다. 확장이 capture 완료까지 기다려서, 같은 agent의 앞선 hook과 service 응답이 끝날 때까지 Enter가 멈췄다. 이제 input capture는 같은 agent queue에 동기적으로 넣고 기다리지 않는다. 그 제출의 preparation은 여전히 capture 뒤에 실행되어 연결 locator를 본다.
 
 ### 구독 CLI 판단 worker
 

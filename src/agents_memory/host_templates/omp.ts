@@ -302,7 +302,10 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  pi.on("input", async (event, ctx) => serial(ctx, "input", async (current) => {
+  // OMP awaits input handlers before the submission is queued, so awaiting the capture held Enter
+  // behind this agent's queued hooks and the service. The capture is enqueued synchronously here,
+  // so the submission's preparation still runs after it and sees its correlation locator.
+  pi.on("input", (event, ctx) => void serial(ctx, "input", async (current) => {
     const operation = randomUUID();
     const result = await invoke(ctx, current, "input", { text: event.text, source: event.source, hook_instance_id: operation });
     notify(ctx, current, result, "input");

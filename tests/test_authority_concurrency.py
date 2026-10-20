@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 
 import pytest
 from test_store_authority import TOKEN, command, ready_claim, relation_judgment, source_selection
@@ -150,8 +151,7 @@ async def test_authentication_does_not_wait_for_the_global_clock_lock(authority)
 
 
 async def test_context_delivery_does_not_wait_for_the_global_clock_lock(authority):
-    # Every protected action and recall delivers context; serialized behind the writer lock, a slow
-    # delivery queued every hook and the prompt capture behind it until clients timed out.
+    # Read-only context delivery never queues behind writers holding the clock lock.
     store, actor = authority.store, authority.actor
     application = Application(store.settings, store)
     _, claim = await ready_claim(authority)
@@ -167,6 +167,52 @@ async def test_context_delivery_does_not_wait_for_the_global_clock_lock(authorit
                 nonmodel_admission=admission, selected_claim_ids=(claim.id,)), 5)
     assert required["required"] is False
     assert delivered["stats"]["active_claims"] == 1
+
+
+async def test_context_delivery_waits_out_an_in_flight_deletion_instead_of_refusing(authority, monkeypatch):
+    # A deletion appends its journal intent before committing the new head; a reader between the two
+    # waits for that commit, as it did under the clock lock, rather than reporting a deletion barrier.
+    store, actor = authority.store, authority.actor
+    application = Application(store.settings, store)
+    operation, _ = await ready_claim(authority)
+    appended, proceed = asyncio.Event(), asyncio.Event()
+    original = store._append_deletion_intent
+
+    async def gated(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        appended.set()
+        await proceed.wait()
+        return result
+
+    monkeypatch.setattr(store, "_append_deletion_intent", gated)
+
+    async def clock_waiters():
+        async with store.pool.acquire() as connection:
+            return await connection.fetchval("""SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock'
+                AND query LIKE '%am_clock%FOR UPDATE%'""")
+
+    async def until_waiters(count):
+        async with asyncio.timeout(5):
+            while await clock_waiters() < count:
+                await asyncio.sleep(0.02)
+
+    request = ContextCommand(binding_id=authority.binding_id, query="Protected action conventions",
+        paths=("src/app.py",), host="omp")
+    retraction = asyncio.create_task(store.retract(actor, authority.binding_id, operation.source_id, "in-flight-retract"))
+    await asyncio.wait_for(appended.wait(), 5)
+    async with store.pool.acquire() as holder:
+        async with holder.transaction():
+            await holder.execute("SELECT 1 FROM am_clock WHERE singleton FOR UPDATE")
+            proceed.set()
+            await until_waiters(1)
+            reader = asyncio.create_task(application.required_context(actor, request))
+            with suppress(TimeoutError):
+                async with asyncio.timeout(1):
+                    while not reader.done() and await clock_waiters() < 2:
+                        await asyncio.sleep(0.02)
+    required = await asyncio.wait_for(reader, 5)
+    assert (await asyncio.wait_for(retraction, 5))["logical_retraction"] == "committed"
+    assert required["required"] is False
 
 
 async def test_exhausted_pool_refuses_after_its_deadline_without_starting(authority):

@@ -234,7 +234,9 @@ class Store:
         """Serialize writers on the global clock; ``lock=False`` is a read-only snapshot that never waits for it.
 
         Writers commit under the clock lock, so one repeatable-read snapshot sees the clock and every row
-        of the same committed prefix: a read-only stamp from it is as consistent as one taken under the lock.
+        of the same committed prefix. Only the journal file lives outside that snapshot: a deletion appends
+        its intent before committing the new head, so a lock-free reader that observes the head mismatch
+        waits once for that writer, as a locked reader would, before it decides the barrier.
         """
         if self.pool is None:
             raise DomainError("STORE_CLOSED", "The authority connection is not open", status=503)
@@ -246,6 +248,12 @@ class Store:
         except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError):
             raise _connection_failed() from None
         try:
+            if barrier and not lock and self._ready and journal["head"] != await connection.fetchval(
+                "SELECT journal_head FROM am_clock WHERE singleton"
+            ):
+                async with connection.transaction():
+                    await connection.execute("SELECT 1 FROM am_clock WHERE singleton FOR UPDATE")
+                journal = await self._verified_journal()
             async with connection.transaction(readonly=not lock, isolation=None if lock else "repeatable_read"):
                 clock = await connection.fetchrow("SELECT * FROM am_clock WHERE singleton FOR UPDATE" if lock else "SELECT * FROM am_clock WHERE singleton")
                 if clock is None:
@@ -3634,8 +3642,8 @@ class Store:
             if tuple(sorted(expected)) != tuple(sorted(rule_versions)) or len({item[0] for item in rule_versions}) != len(rule_versions):
                 raise DomainError("CONTEXT_STALE", "The complete active rule snapshot changed before delivery")
             if not include_stats:
-                # Corpus statistics cost thousands of round-trips under the global clock lock;
-                # a caller that reports only the stamp must not make every writer wait for them.
+                # Corpus statistics cost thousands of sequential round-trips on a real corpus; a caller
+                # that reports only the stamp, on every protected action, must not pay for them.
                 return {"epoch": clock["epoch"]}
             return {"epoch": clock["epoch"], "stats": await self._stats(connection, binding_id, clock["epoch"], snapshot,
                 code_workspace_id=workspace_id, workspace_scoped=True)}
