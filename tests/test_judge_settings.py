@@ -49,7 +49,7 @@ OTHER_KEY = "sk-jev-SECOND-mnbvcxzPOIUYTRWQ"
 
 
 def verified(key, model):
-    return "jev-1.13.0"
+    return "jev-1.14.0"
 
 
 def personal(tmp_path, mode="personal", deployment_id="deployment-001"):
@@ -156,7 +156,7 @@ def test_jev_state_requires_model_key_fingerprint_and_credential():
     with pytest.raises(ValidationError):
         JudgeState(provider="jev")
     with pytest.raises(ValidationError):
-        JudgeState(provider="jev", model="jev-1.13.0", key_fingerprint="hmac-sha256:0123456789ab")
+        JudgeState(provider="jev", model="jev-1.14.0", key_fingerprint="hmac-sha256:0123456789ab")
 
 
 def test_read_supplied_key_warns_on_shared_file_and_refuses_symlink(tmp_path):
@@ -178,7 +178,7 @@ def test_describe_hides_identifiers_from_agents_and_key_from_everyone(tmp_path):
     private_file(judge_dir(settings) / KEY_FILE, KEY + "\n")
     private_file(judge_dir(settings) / EGRESS_POLICY_FILE, EgressPolicy(jev_allowed=True).model_dump_json())
     fingerprint = key_fingerprint(settings, KEY)
-    state = JudgeState(provider="jev", revision=2, model="jev-1.13.0", key_fingerprint=fingerprint,
+    state = JudgeState(provider="jev", revision=2, model="jev-1.14.0", key_fingerprint=fingerprint,
         credential_id="credential_worker")
     agent_view = describe(settings, state, operator=False)
     operator_view = describe(settings, state, operator=True)
@@ -346,7 +346,7 @@ async def test_operator_revoked_during_verification_cannot_publish_a_transition_
     def blocked_verify(key, model):
         entered.set()
         assert released.wait(5), "Verification was not released"
-        return "jev-1.13.0"
+        return "jev-1.14.0"
 
     setup = asyncio.create_task(set_jev(settings, store, actor, KEY, verify=blocked_verify))
     try:
@@ -497,7 +497,7 @@ async def test_revocation_during_key_verification_does_not_publish_provider_or_c
         policy = load_egress_policy(settings)
         private_file(judge_dir(settings) / EGRESS_POLICY_FILE,
             EgressPolicy(jev_allowed=False, revision=policy.revision + 1).model_dump_json())
-        return "jev-1.13.0"
+        return "jev-1.14.0"
 
     with pytest.raises(DomainError) as caught:
         await set_jev(settings, judged.store, actor, KEY, verify=revoke_during_verify)
@@ -514,7 +514,7 @@ async def test_completed_deny_then_allow_cannot_resurrect_inflight_setup(judged)
     def blocked_verify(key, model):
         entered.set()
         assert released.wait(5), "Verification was not released"
-        return "jev-1.13.0"
+        return "jev-1.14.0"
 
     setup = asyncio.create_task(set_jev(settings, store, actor, KEY, verify=blocked_verify))
     try:
@@ -538,7 +538,7 @@ async def test_concurrent_verified_setups_do_not_overwrite_a_new_selection(judge
     def blocked_verify(key, model):
         entered.wait(5)
         assert released.wait(5), "Concurrent verification was not released"
-        return "jev-1.13.0"
+        return "jev-1.14.0"
 
     setups = [asyncio.create_task(set_jev(settings, store, actor, key, verify=blocked_verify))
               for key in (KEY, OTHER_KEY)]
@@ -723,7 +723,7 @@ async def test_invalid_provider_requires_explicit_agent_repair_before_key_verifi
 @pytest.mark.parametrize("policy", ["absent", "denied", "invalid"])
 def test_describe_never_claims_jev_egress_without_effective_permission(tmp_path, mode, policy):
     settings = personal(tmp_path, mode=mode)
-    state = JudgeState(provider="jev", model="jev-1.13.0", key_fingerprint=key_fingerprint(settings, KEY),
+    state = JudgeState(provider="jev", model="jev-1.14.0", key_fingerprint=key_fingerprint(settings, KEY),
                        credential_id="credential_worker")
     if policy != "absent":
         private_file(judge_dir(settings) / EGRESS_POLICY_FILE,

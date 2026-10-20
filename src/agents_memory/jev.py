@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 JEV_BASE_URL = "https://api.typesafe.ai"
 JEV_ENDPOINT = JEV_BASE_URL + "/v1/systemone"
-JEV_DEFAULT_MODEL = "jev-1.13.0"
+JEV_DEFAULT_MODEL = "jev-1.14.0"
 _MAX_RESPONSE_BYTES = 1048576
 _RETRYABLE = frozenset({"rate_limited", "overloaded", "transport"})
 

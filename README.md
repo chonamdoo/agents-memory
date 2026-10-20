@@ -158,7 +158,7 @@ uv run agents-memory --config "$CONFIG" judge status
 ```
 
 - 키는 `--key-file`로 한 번 읽거나 터미널에서 화면 표시 없이 입력한다. argv·환경변수·MCP로는 받지 않는다. 서비스는 `STATE_DIR/judge/jev.key`(0600) 사본만 쓰고, 응답·상태에는 deployment별 HMAC fingerprint만 나온다. 원래 키 파일이 group/other에 읽히면 경고한다.
-- 키는 저장 전에 합성 질문 1개로 검증한다. 기억 원문은 보내지 않는다. 모델은 기본 `jev-1.13.0`으로 고정한다.
+- 키는 저장 전에 합성 질문 1개로 검증한다. 기억 원문은 보내지 않는다. 모델은 기본 `jev-1.14.0`으로 고정한다.
 - `judge set jev`는 Jev worker 전용 agent credential을 새로 발급해 현재 모든 project에 grant하고 이전 worker credential을 폐기한다. 이후 `project add`한 project도 자동으로 grant된다. restore는 credential을 회전하므로 restore 뒤에는 `judge set jev`를 다시 실행한다.
 - MCP에서는 `memory_inspect(ref="judge")`로 provider·egress·worker 상태만 읽는다. 키·fingerprint·credential은 나오지 않으며 MCP로 provider를 바꿀 수 없다.
 - Jev worker는 span마다 "장기 기억으로 남길 가치"를 묻고 p ≥ 0.8인 span만 원문 그대로 claim으로 기록한다(`subject="project"`, `predicate`=kind, `object`=원문 span). 모든 span이 p ≤ 0.2이면 discard한다. 그 사이이거나, tool·document 원문에 AI 지시 주입이 의심되거나, 관련 이전 거절과 같은 내용이면 기록하지 않고 pending으로 남겨 coding agent가 판단하게 한다. 정리(cleanup) 관계는 서버 검증을 통과할 수 있는 쌍만 묻고 p ≥ 0.8만 기록하며 0.5–0.8은 agent에게 남긴다.

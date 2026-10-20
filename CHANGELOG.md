@@ -7,6 +7,7 @@
 - Jev 없이도 background worker가 원문 선택·관계를 자동 판단하도록 `subscription` provider를 추가했다. operator가 `judge policy allow-subscription --ack-egress`로 Jev와 독립된 default-deny 허가를 준 뒤 `judge set subscription --host claude|codex|omp [--model …] [--executable …]`로 선택한다. 선택할 때 CLI 절대 경로를 고정하고 합성 질문 1개로 로그인·모델을 확인한다. worker는 Jev와 같은 질문·임계값·서버 검증·fence로 기록하며, reason에는 `Subscription(<host>[:<model>])`이 남는다.
 - 호출은 로그인된 CLI를 그대로 쓴다. 인증 파일은 읽지 않고, API 키·base URL·Bedrock/Vertex 전환 변수는 CLI 환경에서 지운다. 원문은 stdin으로만 보낸다. 호출마다 project 밖 private 임시 디렉터리에서 agents-memory hook·확장·skill·rule·세션 저장 없이 실행해 판단 호출이 다시 capture되지 않게 한다. OMP의 user MCP 도구 호출은 print 모드 승인 요구로 모두 거절된다. 재시도 없이 1회, 300초 기한, 출력·답 파일 4MiB 상한이다. 끝나거나 기한을 넘기거나 서비스가 멈추면, leader를 회수하기 전에 process group 전체를 종료한다. 마지막 허가 확인과 원문 전달은 judge authority lock 아래에서 수행하고, DB admission 재검사 뒤에 허가를 한 번 더 확인한다. choice 답은 모든 label·합 1·최댓값 선택을 검사한다. launchd의 최소 환경에서도 Node 기반 CLI와 Claude keychain 로그인을 찾도록 실행 파일 디렉터리를 `PATH` 앞에 두고 `USER`·`LOGNAME`을 채운다.
 - 한 경로를 deny해도 다른 경로로 선택된 worker는 바뀌지 않는다. health 작업과 `health_dispositions`는 Jev 전용 health 전송 허가 대상이라 구독 worker가 보내지 않는다. `JevFailure`·`JevResult`는 공용 `ProviderFailure`·`ProviderResult`로 이름을 바꿨다.
+- Jev 기본 모델을 `jev-1.14.0`으로 올렸다. 저장된 키로 합성 검증과 remember·kind 질문을 실제로 호출해 1.13.0과 같은 응답 형식임을 확인했다. 기존 배포는 `judge set jev --model jev-1.14.0`으로 명시 전환해야 하며, 저장된 키는 그대로 쓴다.
 
 ### 사용자 지시 없는 자동 회상
 

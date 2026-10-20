@@ -61,7 +61,7 @@ class FakeJev:
     constructed: int = 0
 
     def factory(self, key, model):
-        assert key == KEY and model == "jev-1.13.0"
+        assert key == KEY and model == "jev-1.14.0"
         self.constructed += 1
         return self
 
@@ -97,7 +97,7 @@ class FakeJev:
                 assert chosen in question["criteria"]
                 answers[identifier] = {"type": "choice", "choice": chosen,
                                        "probabilities": {name: float(name == chosen) for name in question["criteria"]}}
-        return ProviderResult(model="jev-1.13.0", answers=answers, input_tokens=7)
+        return ProviderResult(model="jev-1.14.0", answers=answers, input_tokens=7)
 
     def asked(self, prefix):
         return [identifier for _, questions in self.calls for identifier in questions if identifier.startswith(prefix)]
@@ -140,7 +140,7 @@ async def world(authority):
     settings.state_dir.mkdir(parents=True, exist_ok=True)
     settings.state_dir.chmod(0o700)
     await set_egress_policy(settings, store, authority.actor, jev_allowed=True)
-    await set_jev(settings, store, authority.actor, KEY, verify=lambda key, model: "jev-1.13.0")
+    await set_jev(settings, store, authority.actor, KEY, verify=lambda key, model: "jev-1.14.0")
     operator = await store.authenticate(TOKEN)
     application = Application(settings, store)
     jev = FakeJev()
@@ -316,7 +316,7 @@ async def test_denied_policy_refuses_jev_before_constructing_a_client(tmp_path, 
     private_write(judge_dir(settings) / KEY_FILE, KEY + "\n")
     private_write(judge_dir(settings) / TOKEN_FILE, "worker-token\n")
     private_write(judge_dir(settings) / PROVIDER_FILE, JudgeState(
-        provider="jev", revision=1, model="jev-1.13.0", key_fingerprint=key_fingerprint(settings, KEY),
+        provider="jev", revision=1, model="jev-1.14.0", key_fingerprint=key_fingerprint(settings, KEY),
         credential_id="credential_worker").model_dump_json())
 
     def forbidden_client(key, model):
@@ -342,7 +342,7 @@ async def test_rejected_key_pauses_until_the_provider_revision_changes(world):
 
     world.jev.failure = None
     world.jev.remember = {"decided": 0.95}
-    await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda key, model: "jev-1.13.0")
+    await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda key, model: "jev-1.14.0")
     await world.worker.cycle()
     assert len(world.jev.calls) > 1
     assert [row["label"] for row in await world.selections()] == ["remember"]
@@ -533,7 +533,7 @@ def retrying_worker(world):
             if len(sent) == 1:
                 raise http_error(429)
             return io.BytesIO(json.dumps({
-                "model": "jev-1.13.0",
+                "model": "jev-1.14.0",
                 "answers": {identifier: {"type": "noul", "noul": 0.04} for identifier in payload["questions"]},
             }).encode())
 
@@ -557,7 +557,7 @@ async def test_operator_transition_during_actual_client_backoff_prevents_retry_a
     try:
         assert await asyncio.to_thread(paused.wait, 10)
         if transition == "provider":
-            await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda *_: "jev-1.13.0")
+            await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda *_: "jev-1.14.0")
         else:
             await set_egress_policy(world.settings, world.store, world.operator, jev_allowed=transition != "deny")
     finally:
@@ -615,7 +615,7 @@ async def test_failed_jev_replacement_fences_old_worker_retry_and_publication(wo
                 patcher.setattr(world.store, "revoke_token", refused)
             patcher.setattr(judge_module, "_save_state", interrupted_save)
             with pytest.raises((DomainError, OSError)):
-                await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda *_: "jev-1.13.0")
+                await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda *_: "jev-1.14.0")
         state = load_state(world.settings)
         assert state.provider == "jev" and state.revision > previous.revision
         assert state.credential_id in state.retiring_credential_ids
