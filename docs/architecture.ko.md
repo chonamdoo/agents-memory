@@ -2,7 +2,7 @@
 
 ## 결정
 
-**Python 3.12 이상 + 공식 MCP SDK 2.3 + PostgreSQL 18 authority + 현재 coding-agent 판단**을 사용한다. PC spool은 별도의 patched SQLite 지원 검사를 통과해야 한다. 공통 MCP 계약은 `agent_judged`다. 기본 `agent` 경로에서는 Claude Code·Codex·OMP의 현재 구독 세션이 MCP로 원문 선택·관계·relevance를 판단한다. 별도 default-deny Jev 전송 허가·키·명시선택을 충족한 `jev` 경로는 worker가 원문 선택·관계를 판단하며 relevance는 coding agent가 판단한다. 두 경로 모두 서버가 원문 span·revision·권한·삭제·snapshot을 검증한다. lexical/entity는 후보 검색뿐이며 서버가 구독을 API 키처럼 쓰거나 로컬 모델·자동 fallback을 시작하지 않는다. Agent Flow 없이도 같은 계약이다.
+**Python 3.12 이상 + 공식 MCP SDK 2.3 + PostgreSQL 18 authority + 현재 coding-agent 판단**을 사용한다. PC spool은 별도의 patched SQLite 지원 검사를 통과해야 한다. 공통 MCP 계약은 `agent_judged`다. 기본 `agent` 경로에서는 Claude Code·Codex·OMP의 현재 구독 세션이 MCP로 원문 선택·관계·relevance를 판단한다. 별도 default-deny Jev 전송 허가·키·명시선택을 충족한 `jev` 경로, 또는 Jev와 독립된 default-deny 구독 CLI 허가·합성 검증·명시선택을 충족한 `subscription` 경로에서는 worker가 원문 선택·관계를 판단하며 relevance는 coding agent가 판단한다. `subscription` worker는 로그인된 `claude`·`codex`·`omp` CLI를 headless로 실행할 뿐 인증 파일을 읽거나 API 키로 바꾸지 않는다. 모든 경로에서 서버가 원문 span·revision·권한·삭제·snapshot을 검증한다. lexical/entity는 후보 검색뿐이며 허가 없는 background 구독 실행·로컬 모델·자동 fallback은 없다. Agent Flow 없이도 같은 계약이다.
 
 Hindsight를 실행 엔진으로 감싸지 않는다. 입력 eligibility와 내부 writer fencing을 외부 wrapper로 강제하지 못하고 `processing=0`도 완전한 quiescence가 아니기 때문이다. 별도 vector DB, Neo4j, Redis, 두 번째 job owner, 외부 trace 서비스는 필요하지 않다. PostgreSQL 안의 edge table로 제한된 근거 graph를 구성한다. SQLite는 host의 임시 spool에만 사용한다.
 
@@ -30,7 +30,7 @@ Hindsight를 실행 엔진으로 감싸지 않는다. 입력 eligibility와 내�
 
 ## 2. 구조·권위
 
-Consumer의 네 MCP 도구와 인증 producer/API·operator CLI는 shared application handler를 호출한다. PostgreSQL transaction이 source/claim revision·credential/grant·receipt·admission·relation·rule approval·deletion authority를 소유한다. `CleanupScheduler(settings,store)`는 due pending을 만들 뿐 원문을 해석하거나 DB를 축소하지 않는다. `agent`에서는 구독 coding agent가 bounded pending/source/claim을 inspect하고 판단해 record한다. 개인·회사 모두 Jev 허용·명시선택의 `jev`에서는 `JudgeWorker`가 전용 agent credential로 같은 inspect/record를 호출한다. relevance는 coding agent가 판단하며 final authority fence를 거쳐 전달한다. 독립 body-free deletion journal은 restore 밖에 남는다. 로컬 model gateway·두 번째 판단 queue는 없다.
+Consumer의 네 MCP 도구와 인증 producer/API·operator CLI는 shared application handler를 호출한다. PostgreSQL transaction이 source/claim revision·credential/grant·receipt·admission·relation·rule approval·deletion authority를 소유한다. `CleanupScheduler(settings,store)`는 due pending을 만들 뿐 원문을 해석하거나 DB를 축소하지 않는다. `agent`에서는 구독 coding agent가 bounded pending/source/claim을 inspect하고 판단해 record한다. 개인·회사 모두 허용·명시선택된 `jev`·`subscription`에서는 `JudgeWorker`가 전용 agent credential로 같은 inspect/record를 호출한다. `subscription`의 외부 호출은 원문을 stdin으로만 넘기고, 호출마다 project 밖 private 임시 디렉터리에서 도구·MCP·hook·확장·세션 저장 없이 실행한다. 1회·기한·process group 종료·출력 상한이 있으며 서비스 중지 때 취소된다. relevance는 coding agent가 판단하며 final authority fence를 거쳐 전달한다. 독립 body-free deletion journal은 restore 밖에 남는다. 로컬 model gateway·두 번째 판단 queue는 없다.
 
 | 경계 | 소유 |
 |---|---|
@@ -88,7 +88,7 @@ remote host receipt는 typed profile과 credential role·one-binding bounds를 �
 
 Agent-plane과 producer/operator-plane의 credential을 분리한다. MCP token은 read/record/feedback만 가능하며 approval·publish·migration·backup·실제 철회 권한이 없다. producer는 인증된 adapter envelope를 capture할 수 있지만 declared speaker는 사실성 보장이 아니다. credential revoke는 다음 요청과 진행 중 publication에서도 재검사한다. Legacy MCP session도 각 호출의 현재 인증을 사용하며 session ID만으로 actor를 유지하지 않는다.
 
-배포 위치와 별개로 회사·고객·개인 corpus는 독립 deployment로 격리한다. 다른 deployment로의 자동 동기화·무승인 이전이나 backup fallback은 없으며 승인된 회사 클라우드는 회사 배포다. 계획·코드 기능이 corpus 이동·저장·외부 전송 허가를 부여하지 않는다. 기존 `mode=personal|company`는 유지하되 Jev 정책은 독립 default-deny다. coding-agent 모델 처리·memory 저장·Jev 외부 전송 허가는 각각 별개다. strict no-egress는 허가된 coding-agent 경로 및 OS/network 정책을 요구한다. 팀 구독을 server background API 허가로 간주하지 않는다. 허가·명시선택된 Jev 대상은 worker credential이 grant받은 project의 원문 window·기억 문장이다. TypeSafe는 미국에서 처리하며 zero data retention은 enterprise에만 제공한다.
+배포 위치와 별개로 회사·고객·개인 corpus는 독립 deployment로 격리한다. 다른 deployment로의 자동 동기화·무승인 이전이나 backup fallback은 없으며 승인된 회사 클라우드는 회사 배포다. 계획·코드 기능이 corpus 이동·저장·외부 전송 허가를 부여하지 않는다. 기존 `mode=personal|company`는 유지하되 Jev·구독 CLI 정책은 각각 독립 default-deny다. coding-agent 모델 처리·memory 저장·Jev 외부 전송·구독 CLI background 실행 허가는 각각 별개다. strict no-egress는 허가된 coding-agent 경로 및 OS/network 정책을 요구한다. 팀 구독 로그인만으로 server background 실행을 허가하지 않으며 `allow-subscription --ack-egress`가 따로 필요하다. 허가·명시선택된 worker 대상은 worker credential이 grant받은 project의 원문 window·기억 문장이다. TypeSafe는 미국에서 처리하며 zero data retention은 enterprise에만 제공한다. 구독 CLI의 학습·보관 조건은 그 로그인 계정의 plan을 따른다.
 
 기본은 loopback HTTP+bearer와 exact Host/Origin allowlist다. token·원문·raw provider trace/추론을 로그·telemetry에 남기지 않는다. capture/record/feedback의 secret-carrying field는 digest·spool 전에 공통 `reject_source_secrets` guard를 거친다. 고신뢰 prefixed credential·완전한 private-key armor는 generic `SOURCE_SECRET_REJECTED`, `effect=not_started`, status422이며 host는 safe gap metadata만 남긴다. rejected body·digest·key를 저장하거나 derivative를 redaction/rewrite하지 않는다. 일반 code example까지 모두 비밀로 취급하지 않으며 임의 모든 비밀/PII 검출은 보장하지 않는다.
 
@@ -169,7 +169,7 @@ producer는 매 관측 때 현재 observer 권한·정책·workspace revision과
 
 공유 outbox는 limit≥2에서 ordinary capture와 health에 bounded 전송 기회를 배분한다. ordinary capture의 FIFO와 unknown/malformed ACK 앞의 중단은 유지한다. health 실패는 exact 원본 envelope를 보존하면서 독립 capture를 막지 않으며, 확정 not_started/not_committed인 영구 거절만 quarantine한다. limit1은 한 항목만 처리할 수 있으므로 capture를 우선한다. native pre-context와 background 기본 window는4개이며 ordinary 재사용은 최종 server health/code fence를 다시 통과해야 한다.
 
-사후 분석은 이미 허용된 source/segment/origin과 close watermark를 bounded manifest로 pending에 연결한다. full-session 관측으로 확대하거나 없는 Stop/tool-result/transcript를 수집하지 않는다. 다음 권한 있는 agent가 판단하며 background API로 구독을 깨우지 않는다. Jev는 독립 source-egress 허가·명시 provider 선택·health 허용이 모두 있어야 한다. 기존 correct/retract_request는 agent_note 후보이고 explicit accept/decline 및 승인된 correction successor와 구분한다.
+사후 분석은 이미 허용된 source/segment/origin과 close watermark를 bounded manifest로 pending에 연결한다. full-session 관측으로 확대하거나 없는 Stop/tool-result/transcript를 수집하지 않는다. 다음 권한 있는 agent가 판단하며 별도 허가·선택 없이 background로 구독을 깨우지 않는다. Jev는 독립 source-egress 허가·명시 provider 선택·health 허용이 모두 있어야 한다. 구독 CLI worker는 health 작업을 판단하지 않는다. 기존 correct/retract_request는 agent_note 후보이고 explicit accept/decline 및 승인된 correction successor와 구분한다.
 
 feedback resolution의 본문 없는 판정 이력과 opaque 참조는 후보·사유 원문이 지워진 뒤에도 독립적으로 보존한다. 사유 원문을 읽는 권한은 별개다. 기존 source 읽기 경계에서 feedback의 실제 target이 현재 snapshot·source/revision·철회/삭제 자격을 만족하는지 같은 disclosure manifest로 재검사한다. 지워질 수 있는 후보 본문을 판정 이력의 생존 조건으로 만들거나 전역 target을 판정 당시 request snapshot에 묶지 않는다.
 

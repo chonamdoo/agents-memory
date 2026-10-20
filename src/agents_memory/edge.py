@@ -580,7 +580,7 @@ class SecurityEdge:
 
 
 def readiness_judgment(settings: Settings) -> dict:
-    """Operator readiness reports who judges sources; Jev means an opt-in external inference call."""
+    """Operator readiness reports who judges sources; a worker route means an opt-in external inference call."""
     try:
         judgment = describe(settings, load_state(settings), operator=False)["source_judgment"]
     except DomainError as error:
@@ -589,6 +589,8 @@ def readiness_judgment(settings: Settings) -> dict:
         return {"judgment": "unavailable", "server_inference": "unknown", "judge_error": "JUDGE_STATE_INVALID"}
     if judgment == "jev_background_then_server_validation":
         return {"judgment": judgment, "server_inference": "typesafe_jev_explicit_egress_opt_in"}
+    if judgment == "subscription_cli_background_then_server_validation":
+        return {"judgment": judgment, "server_inference": "subscription_cli_explicit_egress_opt_in"}
     if judgment == "current_coding_agent_via_mcp":
         return {"judgment": judgment, "server_inference": "absent"}
     return {"judgment": judgment, "server_inference": "unavailable"}

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 구독 CLI 판단 worker
+
+- Jev 없이도 background worker가 원문 선택·관계를 자동 판단하도록 `subscription` provider를 추가했다. operator가 `judge policy allow-subscription --ack-egress`로 Jev와 독립된 default-deny 허가를 준 뒤 `judge set subscription --host claude|codex|omp [--model …] [--executable …]`로 선택한다. 선택할 때 CLI 절대 경로를 고정하고 합성 질문 1개로 로그인·모델을 확인한다. worker는 Jev와 같은 질문·임계값·서버 검증·fence로 기록하며, reason에는 `Subscription(<host>[:<model>])`이 남는다.
+- 호출은 로그인된 CLI를 그대로 쓴다. 인증 파일은 읽지 않는다. 원문은 stdin으로만 보내고, 호출마다 project 밖 private 임시 디렉터리에서 도구·MCP·hook·확장·skill·rule·세션 저장 없이 실행해 판단 호출이 다시 capture되지 않게 한다. 재시도 없이 1회, 300초 기한, 출력 4MiB 상한이며 기한 초과·서비스 중지 때 process group 전체를 종료한다. launchd의 최소 환경에서도 Node 기반 CLI와 Claude keychain 로그인을 찾도록 실행 파일 디렉터리를 `PATH` 앞에 두고 `USER`·`LOGNAME`을 채운다.
+- 한 경로를 deny해도 다른 경로로 선택된 worker는 바뀌지 않는다. health 작업과 `health_dispositions`는 Jev 전용 health 전송 허가 대상이라 구독 worker가 보내지 않는다. `JevFailure`·`JevResult`는 공용 `ProviderFailure`·`ProviderResult`로 이름을 바꿨다.
+
 ### 사용자 지시 없는 자동 회상
 
 - advisory Claude·OMP 설치는 project 안 파일 read·write·edit 때 hook이 1차 `memory_context`를 대신 조회하고 admission·정확한 request·전체 후보 ID 목록을 모델 context에 넣는다. agent는 inspect 후 relevance만 제출한다. 판단하지 않은 후보 본문·미리보기는 넣지 않으며 전체 ID가 예산을 넘으면 일부 ID 대신 명시 gap을 넣는다. 같은 submission의 같은 경로는 다시 조회하지 않고, 실패는 기록하되 required 규칙과 행동 결과를 바꾸지 않는다. 기존 `manifest_not_delivered` 안내는 제거했다.

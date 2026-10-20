@@ -5,7 +5,7 @@
 Python 3.12 이상 기반의 독립적인 메모리 서비스다. PC capture spool은 Python 버전과 별도로 안전한 SQLite runtime을 요구한다. Agent Flow는 선택 사항이다. Claude Code, Codex, OMP, 일반 MCP client와 CLI가 같은 인증·project binding·메모리 core를 사용한다.
 
 - 정본: PostgreSQL 18. lexical/entity index는 작은 후보 목록만 찾으며 기억 채택·관계·관련성을 결정하지 않는다.
-- 판단: 기본은 지금 쓰는 Claude Code·Codex·OMP 등 구독 coding agent가 MCP로 원문 선택(`source_selection`)·관계를 판단한다. Jev 외부 전송이 허용되고 operator가 명시 선택한 경우에는 TypeSafe Jev worker가 판단한다. 불가·미설정·미선택이면 `agent` 경로를 사용하며 실패 시 자동 fallback은 없다. relevance는 항상 coding agent가 판단하고, 두 경로 모두 서버가 원문 UTF-8 span·revision·권한·삭제·snapshot을 검증한다. 로컬 모델 gateway·자동 다운로드는 없다. Jev 허가는 운영 주체와 독립적인 default-deny 정책이다.
+- 판단: 기본은 지금 쓰는 Claude Code·Codex·OMP 등 구독 coding agent가 MCP로 원문 선택(`source_selection`)·관계를 판단한다. Jev 외부 전송이 허용되고 operator가 명시 선택한 경우에는 TypeSafe Jev worker가 판단한다. 구독 CLI 경로가 따로 허용되고 명시 선택된 경우에는 같은 worker가 로그인된 `claude`·`codex`·`omp` CLI를 headless로 실행해 판단한다. 불가·미설정·미선택이면 `agent` 경로를 사용하며 실패 시 자동 fallback은 없다. relevance는 항상 coding agent가 판단하고, 모든 경로에서 서버가 원문 UTF-8 span·revision·권한·삭제·snapshot을 검증한다. 로컬 모델 gateway·자동 다운로드는 없다. Jev·구독 CLI 허가는 각각 운영 주체와 독립적인 default-deny 정책이다.
 - 파이프라인: capture → source inspect → `source_selection` → `claim_judgment` → 후보 조회 → 전체 후보 relevance 판단 → bounded context → correction/retraction → 다음 호출.
 - MCP: 공식 Python SDK `mcp==2.3.0`. `2026-07-28` stateless 호출과 기존 `2025-11-25` client가 같은 handler를 사용한다. stdio는 로컬 loopback HTTP 또는 명시 remote profile의 검증된 HTTPS 중계이며 별도 DB/메모리 engine이 아니다.
 - 연결 시 instructions·corpus·규칙 본문은 비어 있다. 도구는 `memory_context`, `memory_inspect`, `memory_record`, `memory_feedback` 네 개다. 선택 결과가 없으면 context 본문도 빈 문자열이다.
@@ -131,11 +131,11 @@ uv run agents-memory --config "$CONFIG" --token-file "$OPERATOR_TOKEN_FILE" proj
 
 새 locator는 존재하는 canonical directory여야 한다. 이전 경로는 이미 삭제됐어도 exact expected locator로 검증한다. 첫 실행은 locator·revision만 변경하고 owner·label·grant·roster·memory·frozen target은 유지한다. 같은 key/인자의 replay는 같은 결과이며, 이후 다시 이전된 binding의 과거 replay는 committed conflict로 반환한다. 경로/CWD 변경 자체는 권한이나 승인이 아니다.
 
-배포 위치와 별개로 회사·고객·개인 corpus의 보안 경계는 유지한다. 서로 다른 deployment, database/schema, journal, state directory, token, port와 host 설정으로 격리한다. 다른 deployment로의 자동 동기화·무승인 이전 경로는 없으며 승인된 회사 클라우드는 회사 배포다. 각 corpus의 명시적 저장·외부 전송 허가를 준수해야 하며 “회사”라는 이름만으로 클라우드 저장이나 Jev 허용 여부를 정하지 않는다. 기존 `mode=personal|company`와 두 mode의 `capability: "agent_judged"` 식별자는 유지한다. coding-agent 모델 처리·memory 저장·Jev 외부 전송 허가는 별개이며 구독을 background API 허가로 간주하지 않는다. strict no-egress는 허가된 coding-agent 실행 경로와 OS/network 정책을 따로 구성해야 한다. OS 파일 소유권과 operator bearer는 악성 same-UID agent 차단이나 인간/회사 승인의 증명이 아니다.
+배포 위치와 별개로 회사·고객·개인 corpus의 보안 경계는 유지한다. 서로 다른 deployment, database/schema, journal, state directory, token, port와 host 설정으로 격리한다. 다른 deployment로의 자동 동기화·무승인 이전 경로는 없으며 승인된 회사 클라우드는 회사 배포다. 각 corpus의 명시적 저장·외부 전송 허가를 준수해야 하며 “회사”라는 이름만으로 클라우드 저장이나 Jev 허용 여부를 정하지 않는다. 기존 `mode=personal|company`와 두 mode의 `capability: "agent_judged"` 식별자는 유지한다. coding-agent 모델 처리·memory 저장·Jev 외부 전송·구독 CLI background 실행 허가는 각각 별개다. 구독 로그인이 있다는 사실만으로 background 실행을 허가하지 않으며 `judge policy allow-subscription --ack-egress`가 따로 필요하다. strict no-egress는 허가된 coding-agent 실행 경로와 OS/network 정책을 따로 구성해야 한다. OS 파일 소유권과 operator bearer는 악성 same-UID agent 차단이나 인간/회사 승인의 증명이 아니다.
 
 `init`은 private recovery intent와 원래 operator credential을 먼저 영속화한다. bootstrap 이후 완료 receipt를 쓰지 못한 경우 같은 인자·owner·원래 token으로 `init --resume`한다. 기존 배포를 새 owner/token으로 묵시적으로 인수하지 않으며 완료 replay도 정상 변경한 설정을 초기값으로 되돌리지 않는다.
 
-### 판단 provider: agent 또는 Jev
+### 판단 provider: agent, Jev 또는 구독 CLI
 
 captured 원문을 기억할지 누가 판단할지 고른다. relevance(`memory_context` 두 번째 호출)의 기본·지원 계약은 provider와 무관하게 그 기억을 쓰는 coding agent의 inline 판단이다. 아래의 **실험용 fork 위임**은 별도 host opt-in이며, Jev 사용·미사용 모두에 적용된다. host별 측정을 통과하기 전에는 이 실험을 일반 지원 계약으로 승격하지 않는다.
 
@@ -143,6 +143,7 @@ captured 원문을 기억할지 누가 판단할지 고른다. relevance(`memory
 |---|---|---|---|
 | `agent` (기본) | 지금 쓰는 Claude Code·Codex·OMP가 MCP `memory_inspect` → `memory_record`로 판단 | coding agent 자신의 모델 경로뿐 | `personal`·`company` 모두 기본 |
 | `jev` | 서비스 안 Jev 판단 worker | 판단할 원문 window·기존 기억 문장이 `https://api.typesafe.ai/v1/systemone`(미국)로 전송 | 두 mode 모두 별도 명시 허가·선택·키 검증 필요 |
+| `subscription` | 서비스 안 판단 worker가 로그인된 `claude`·`codex`·`omp` CLI를 headless로 실행 | 같은 원문 window·기억 문장이 그 CLI 로그인의 vendor(Anthropic·OpenAI 등)로 전송. 지금 대화 중인 세션과 별개의 호출 | 두 mode 모두 Jev와 독립된 별도 명시 허가·선택·합성 검증 필요 |
 
 `init`에서 `--judge`를 생략하면 개인·회사 모두 터미널에서는 대화형으로 묻고 비대화형에서는 `agent`로 설정한다. Jev는 별도 허가와 전송 확인이 필요하며 키 존재나 운영 주체로 허가를 추론하지 않는다. 기존 배포의 `init` replay는 현재 설정이나 명시적 중지를 초기화하지 않는다.
 
@@ -164,6 +165,22 @@ uv run agents-memory --config "$CONFIG" judge status
 - 기록은 agent와 같은 `inspect → record` 검증·single-winner·거절 비교를 거치고 worker credential로 남는다. reason에는 `Jev(<model>)`와 확률·임계값이 기록된다. 다른 provider로의 자동 fallback은 없다.
 - 키 거절(401/403)이면 provider 설정이 바뀔 때까지 멈추고, 429·529·5xx·timeout은 짧게 재시도한 뒤 다음 주기로 미룬다. 요청·응답 본문은 로그·상태에 남기지 않는다.
 - TypeSafe 문서 기준 데이터는 미국에서 처리되고 입력으로 학습하지 않으며 zero data retention은 enterprise 계약에서만 제공된다. 고객 계약은 telemetry(로그·hash·통계)의 장기 보관을 허용한다. 운영 주체와 관계없이 이 조건에 대한 해당 corpus의 명시 허가가 있어야 한다. deny는 먼저 영속화하고 provider를 agent로 돌리며 worker credential을 폐기한다. 요청·응답·게시 시 policy/provider revision을 재검사하고 이미 전송된 데이터의 회수를 보장하지 않는다.
+
+구독 CLI 판단은 Jev와 독립된 경로다. Jev 허가가 구독 허가를 뜻하지 않고, 그 반대도 마찬가지다.
+
+```sh
+uv run agents-memory --config "$CONFIG" judge policy allow-subscription --ack-egress
+uv run agents-memory --config "$CONFIG" judge set subscription --host claude --model haiku
+uv run agents-memory --config "$CONFIG" judge set subscription --host codex
+uv run agents-memory --config "$CONFIG" judge set subscription --host omp --model anthropic/claude-haiku-5-5
+uv run agents-memory --config "$CONFIG" judge policy deny-subscription
+```
+
+- `judge set subscription`은 지금 shell의 `PATH`에서 찾은 CLI(또는 `--executable`)의 절대 경로를 고정한다. launchd 서비스에는 로그인 `PATH`가 없기 때문이다. 저장 전에 합성 질문 1개로 로그인·모델·격리 옵션을 확인하며 기억 원문은 보내지 않는다. `--model`을 생략하면 CLI 자신의 기본 모델을 쓴다. 판단 비용은 그 구독 계정의 사용량으로 잡힌다.
+- worker는 서비스가 쓰는 계정의 로그인을 그대로 쓴다. 인증 파일을 읽거나 복사하지 않는다. 원문은 stdin으로만 넘기고 argv에는 넣지 않는다. 호출마다 project 밖 owner 전용 임시 디렉터리에서 도구·MCP·hook·확장·skill·rule·세션 저장 없이 실행하고, 끝나면 그 디렉터리를 지운다. Claude는 `--safe-mode --tools "" --strict-mcp-config --no-session-persistence --json-schema`, Codex는 `exec --ephemeral --ignore-user-config --ignore-rules --sandbox read-only --output-schema`, OMP는 `-p --no-tools --no-extensions --no-skills --no-rules --no-session`과 memory backend·project MCP를 끄는 설정 overlay로 실행한다. 그래서 판단 호출 자체가 새 기억 원문으로 capture되지 않는다.
+- 호출은 재시도 없이 1회, 기본 300초 기한이며 넘으면 process group 전체를 종료한다. 서비스를 멈추면 실행 중인 호출을 즉시 끊고 결과는 게시하지 않는다. 응답은 질문 전체에 대한 typed 답이어야 하며 누락·범위 밖 확률·형식 오류는 그 window를 coding agent에게 남긴다. CLI 실패·timeout은 다음 주기로 미루고 Claude 로그인 거절(401/403)은 provider 설정이 바뀔 때까지 멈춘다.
+- 판단 기준·임계값·서버 검증은 Jev와 같고 reason에는 `Subscription(<host>[:<model>])`이 기록된다. 확률은 생성형 모델이 말한 값이며 Jev처럼 보정된 분포가 아니다. health 판정은 Jev 전용 health 전송 허가가 따로 있으므로 구독 worker는 health 작업·`health_dispositions`를 보내지 않고 coding agent에게 남긴다.
+- deny는 먼저 영속화하고 그 경로가 선택돼 있으면 provider를 agent로 돌리며 worker credential을 폐기한다. 다른 경로를 deny해도 선택된 구독 worker는 유지된다. 회사 corpus라면 구독 계정의 headless 자동 호출과 그 vendor로의 전송이 회사 정책상 허용되는지 먼저 확인한다.
 
 ### macOS 로컬 서비스 운영
 

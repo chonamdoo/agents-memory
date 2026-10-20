@@ -40,6 +40,7 @@ from .domain import (
 from .jev import JEV_DEFAULT_MODEL
 from .judge import (
     PROVIDER_FILE,
+    ROUTES,
     describe,
     grant_new_binding,
     has_key,
@@ -47,16 +48,18 @@ from .judge import (
     read_key,
     read_supplied_key,
     read_worker_token,
-    require_jev_allowed,
+    require_route_allowed,
     set_agent,
     set_egress_policy,
     set_jev,
+    set_subscription,
     validate_key,
     verify_key,
     worker_snapshot,
 )
 from .private_io import private_read, private_write
 from .selection import RECORD_ADAPTER, RecordInput
+from .subscription import HOSTS
 from .wire import decode_json, decode_json_value, validate_wire
 
 
@@ -257,7 +260,7 @@ async def execute_judge(args, settings: Settings, store, actor) -> dict:
         state = load_state(settings)
         projects = [binding.id for binding in await store.list_bindings(actor)]
         grants: list[str] | dict | None = None
-        if state.provider == "jev":
+        if state.provider in ROUTES:
             try:
                 grants = list((await store.authenticate(read_worker_token(settings), (Role.AGENT,))).bindings)
             except DomainError as error:
@@ -270,22 +273,29 @@ async def execute_judge(args, settings: Settings, store, actor) -> dict:
             "worker": worker_snapshot(settings),
         }
     if args.judge_action == "policy":
-        allowed = args.policy == "allow-jev"
+        decision, route = args.policy.split("-", 1)
+        allowed = decision == "allow"
         if allowed and not args.ack_egress:
             raise DomainError("JUDGE_EGRESS_ACK_REQUIRED",
-                "Pass --ack-egress only after approving this deployment's source transfer to api.typesafe.ai in the US",
+                f"Pass --ack-egress only after approving this deployment's source transfer to {ROUTES[route][2]}",
                 status=403)
-        return await set_egress_policy(settings, store, actor, jev_allowed=allowed)
-    if args.provider == "agent":
-        if args.key_file is not None or args.prompt_key:
-            raise DomainError("INPUT_INVALID", "Key options apply only to judge set jev")
-        return await set_agent(settings, store, actor, forget_key=args.forget_key)
-    if args.forget_key:
+        return await set_egress_policy(settings, store, actor, **{ROUTES[route][0]: allowed})
+    if args.provider != "jev" and (args.key_file is not None or args.prompt_key):
+        raise DomainError("INPUT_INVALID", "Key options apply only to judge set jev")
+    if args.provider != "subscription" and (args.host is not None or args.executable is not None):
+        raise DomainError("INPUT_INVALID", "--host and --executable apply only to judge set subscription")
+    if args.provider != "agent" and args.forget_key:
         raise DomainError("INPUT_INVALID", "--forget-key applies only to judge set agent")
-    require_jev_allowed(settings)
+    if args.provider == "agent":
+        return await set_agent(settings, store, actor, forget_key=args.forget_key)
+    if args.provider == "subscription":
+        if args.host is None:
+            raise DomainError("INPUT_INVALID", "judge set subscription requires --host claude, codex or omp")
+        return await set_subscription(settings, store, actor, args.host, args.executable, model=args.model)
+    require_route_allowed(settings, "jev")
     stored = None if args.prompt_key or not has_key(settings) else (lambda: read_key(settings))
     key, warnings = jev_key(args.key_file, stored)
-    result = await set_jev(settings, store, actor, key, model=args.model)
+    result = await set_jev(settings, store, actor, key, model=args.model or JEV_DEFAULT_MODEL)
     if warnings:
         result["warnings"] = warnings
     return result
@@ -1122,15 +1132,19 @@ def parser() -> argparse.ArgumentParser:
     judge = commands.add_parser("judge", help="Inspect or choose who judges captured sources").add_subparsers(
         dest="judge_action", required=True)
     judge.add_parser("status")
-    policy = judge.add_parser("policy", help="Grant or revoke independent Jev source-egress permission")
-    policy.add_argument("policy", choices=("allow-jev", "deny-jev"))
+    policy = judge.add_parser("policy", help="Grant or revoke one independent worker source-egress route")
+    policy.add_argument("policy", choices=("allow-jev", "deny-jev", "allow-subscription", "deny-subscription"))
     policy.add_argument("--ack-egress", action="store_true",
-                        help="Acknowledge approved source transfer to api.typesafe.ai in the US")
+                        help="Acknowledge approved source transfer to the route's destination (Jev: api.typesafe.ai "
+                             "in the US; subscription: the vendor behind the selected CLI login)")
     choose = judge.add_parser("set")
-    choose.add_argument("provider", choices=("agent", "jev"))
+    choose.add_argument("provider", choices=("agent", "jev", "subscription"))
     choose.add_argument("--key-file", type=Path, help="Jev API key file read once; the service keeps a private 0600 copy")
     choose.add_argument("--prompt-key", action="store_true", help="Enter a new Jev API key without echo")
-    choose.add_argument("--model", default=JEV_DEFAULT_MODEL, help="Pinned Jev model ID")
+    choose.add_argument("--model", help=f"Pinned model ID (Jev default {JEV_DEFAULT_MODEL}; subscription default: the CLI's own)")
+    choose.add_argument("--host", choices=HOSTS, help="With subscription: the signed-in CLI the worker runs headless")
+    choose.add_argument("--executable", type=Path,
+                        help="With subscription: absolute CLI path; defaults to the one on this shell's PATH")
     choose.add_argument("--forget-key", action="store_true", help="With agent: delete the stored Jev API key")
     credential = commands.add_parser("credential").add_subparsers(dest="credential_action", required=True)
     issue = credential.add_parser("issue")

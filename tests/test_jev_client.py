@@ -7,7 +7,7 @@ from email.message import Message
 
 import pytest
 
-from agents_memory.jev import JevClient, JevFailure
+from agents_memory.jev import JevClient, ProviderFailure
 
 KEY = "sk-jev-TEST-qwrtyuiopZXCVNMLKJH"
 URL = "https://api.typesafe.ai/v1/systemone"
@@ -86,7 +86,7 @@ def test_rate_limit_honors_retry_after_then_returns_answers():
 @pytest.mark.parametrize(("status", "kind"), [(401, "auth"), (403, "auth"), (400, "request"), (422, "request")])
 def test_rejected_key_or_request_fails_after_one_send_without_retry(status, kind):
     opener = FakeOpener(http_error(status))
-    with pytest.raises(JevFailure) as caught:
+    with pytest.raises(ProviderFailure) as caught:
         client(opener).system_one("state", QUESTIONS)
     assert caught.value.kind == kind and caught.value.status == status
     assert len(opener.requests) == 1
@@ -96,7 +96,7 @@ def test_rejected_key_or_request_fails_after_one_send_without_retry(status, kind
 def test_overload_beyond_retry_budget_is_classified_after_every_attempt(status):
     delays = []
     opener = FakeOpener(http_error(status))
-    with pytest.raises(JevFailure) as caught:
+    with pytest.raises(ProviderFailure) as caught:
         client(opener, delays, max_retries=2).system_one("state", QUESTIONS)
     assert caught.value.kind == "overloaded"
     assert len(opener.requests) == 3
@@ -113,7 +113,7 @@ def test_overload_beyond_retry_budget_is_classified_after_every_attempt(status):
 ], ids=["missing-id", "extra-id", "noul-above-one", "noul-below-zero", "choice-outside-criteria", "non-json"])
 def test_incomplete_or_untyped_responses_are_rejected(body):
     opener = FakeOpener(body)
-    with pytest.raises(JevFailure) as caught:
+    with pytest.raises(ProviderFailure) as caught:
         client(opener).system_one("state", QUESTIONS)
     assert caught.value.kind == "response"
     assert len(opener.requests) == 1
@@ -124,7 +124,7 @@ def test_key_never_appears_in_client_repr_or_failures():
     opener = FakeOpener(echoed)
     jev = client(opener)
     assert KEY not in repr(jev) and KEY not in str(jev)
-    with pytest.raises(JevFailure) as caught:
+    with pytest.raises(ProviderFailure) as caught:
         jev.system_one("state", QUESTIONS)
     failure = caught.value
     assert KEY not in str(failure) and KEY not in repr(failure)

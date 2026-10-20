@@ -1,6 +1,6 @@
-"""Background Jev judge for explicitly authorized deployments.
+"""Background judge for explicitly authorized deployments: TypeSafe Jev or a signed-in subscription CLI.
 
-The worker judges captured sources, cleanup and explicitly opted-in health manifests through the same
+The worker judges captured sources, cleanup and explicitly opted-in Jev health manifests through the same
 ``inspect`` → ``record`` validation a coding agent uses over MCP, under its own agent credential.
 Failures never trigger a provider fallback or an inferred successful judgment.
 """
@@ -11,25 +11,29 @@ import logging
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from .config import Settings
 from .domain import Claim, DomainError, Role
 from .health_inference import HealthInputs
-from .jev import JevClient, JevFailure, JevResult, SystemOneClient
+from .jev import JevClient, ProviderFailure, ProviderResult, SystemOneClient
 from .judge import (
+    ROUTES,
     JudgeState,
     judge_guard,
     load_egress_policy,
     load_state,
     read_key,
     read_worker_token,
-    require_jev_allowed,
+    require_route_allowed,
+    runs_dir,
     save_worker_snapshot,
 )
 from .representation import serialized_json_bytes
 from .selection import ClaimJudgmentCommand, SourceSelectionCommand
 from .semantic import grounded_identifiers
+from .subscription import SubscriptionClient
 
 logger = logging.getLogger(__name__)
 
@@ -196,16 +200,26 @@ class CycleBudget:
     windows: int = WINDOWS_PER_CYCLE
 
 
+def judge_label(state: JudgeState) -> str:
+    """Who judged, as recorded in body-free selection and judgment reasons."""
+    if state.provider == "subscription":
+        return f"Subscription({state.host}{':' + state.model if state.model else ''})"
+    return f"Jev({state.model})"
+
+
 class JudgeWorker:
     def __init__(
         self, settings: Settings, store, application, *, interval: float = 30.0,
         client_factory: Callable[[str, str], SystemOneClient] = JevClient,
+        subscription_factory: Callable[..., SystemOneClient] = SubscriptionClient,
     ) -> None:
         self.settings = settings
         self.store = store
         self.application = application
         self.interval = interval
         self._client_factory = client_factory
+        self._subscription_factory = subscription_factory
+        self._client: SystemOneClient | None = None
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         self._task: asyncio.Task | None = None
@@ -235,7 +249,7 @@ class JudgeWorker:
         if self._task is not None and not self._task.done():
             return
         self._stop.clear()
-        self._task = asyncio.create_task(self.run(), name="agents-memory-jev-judge")
+        self._task = asyncio.create_task(self.run(), name="agents-memory-judge-worker")
 
     def notify(self) -> None:
         self._wake.set()
@@ -243,6 +257,10 @@ class JudgeWorker:
     async def stop(self, timeout: float = 30) -> dict:
         self._stop.set()
         self._wake.set()
+        # A subscription CLI can run for minutes; its result would be discarded at the next fence anyway.
+        cancel = getattr(self._client, "cancel", None)
+        if callable(cancel):
+            cancel()
         if self._task is not None:
             try:
                 await asyncio.wait_for(asyncio.shield(self._task), timeout)
@@ -262,7 +280,7 @@ class JudgeWorker:
                 more = await self.cycle()
             except Exception as error:  # noqa: BLE001 - the worker must survive and report a body-free code
                 self.phase, self.last_error = "error", getattr(error, "code", "JUDGE_WORKER_FAILED")
-                logger.warning("Jev judge cycle failed: exception_type=%s", type(error).__name__)
+                logger.warning("Judge worker cycle failed: exception_type=%s", type(error).__name__)
             self._persist()
             if more and not self._stop.is_set():
                 await asyncio.sleep(0)
@@ -276,17 +294,25 @@ class JudgeWorker:
         try:
             save_worker_snapshot(self.settings, {**self.status, "observed_at": datetime.now(UTC).isoformat()})
         except (DomainError, OSError):
-            logger.warning("Jev judge status could not be persisted")
+            logger.warning("Judge worker status could not be persisted")
 
     def _current(self, expected: JudgeState) -> None:
         try:
-            require_jev_allowed(self.settings)
+            require_route_allowed(self.settings, expected.provider)
             policy = load_egress_policy(self.settings)
         except DomainError as error:
             raise ProviderChanged(error.code) from None
         state = load_state(self.settings)
-        if state.provider != "jev" or state.revision != expected.revision or policy.revision != self._policy_revision:
+        if (state.provider != expected.provider or state.revision != expected.revision
+                or policy.revision != self._policy_revision):
             raise ProviderChanged()
+
+    def _connect(self, state: JudgeState) -> SystemOneClient:
+        if state.provider == "jev":
+            return self._client_factory(read_key(self.settings), state.model or "")
+        return self._subscription_factory(
+            state.host, Path(state.executable or ""), state.model, workdir=runs_dir(self.settings),
+        )
 
     async def cycle(self) -> bool:
         """One bounded pass; returns True when more pending work remains for an immediate next pass."""
@@ -297,11 +323,11 @@ class JudgeWorker:
             self.phase, self.last_error = "error", error.code
             return False
         self.provider, self.revision = state.provider, state.revision
-        if state.provider != "jev":
+        if state.provider not in ROUTES:
             self.phase, self.last_error, self._paused_revision = "idle", None, None
             return False
         try:
-            require_jev_allowed(self.settings)
+            require_route_allowed(self.settings, state.provider)
             self._policy_revision = load_egress_policy(self.settings).revision
         except DomainError as error:
             self.phase, self.last_error = "refused", error.code
@@ -309,12 +335,13 @@ class JudgeWorker:
         if self._paused_revision == state.revision:
             return False
         try:
-            client = self._client_factory(read_key(self.settings), state.model or "")
+            client = self._connect(state)
             actor = await self.store.authenticate(read_worker_token(self.settings), (Role.AGENT,))
         except DomainError as error:
             self.phase = "error"
             self.last_error = "JUDGE_CREDENTIAL_INVALID" if error.code in {"AUTH_DENIED", "SCOPE_DENIED", "TOKEN_INVALID"} else error.code
             return False
+        self._client = client
         self.phase, self.last_error = "judging", None
         budget = CycleBudget()
         try:
@@ -326,18 +353,21 @@ class JudgeWorker:
         except ProviderChanged as change:
             self.phase, self.last_error = ("refused", change.code) if change.code else ("idle", None)
             return False
-        except JevFailure as failure:
+        except ProviderFailure as failure:
+            jev = state.provider == "jev"
             if failure.kind == "auth":
                 self._paused_revision = state.revision
-                self.phase, self.last_error = "paused", "JEV_KEY_REJECTED"
+                self.phase, self.last_error = "paused", "JEV_KEY_REJECTED" if jev else "SUBSCRIPTION_LOGIN_REJECTED"
             else:
-                self.phase, self.last_error = "waiting", "JEV_UNAVAILABLE"
+                self.phase, self.last_error = "waiting", "JEV_UNAVAILABLE" if jev else "SUBSCRIPTION_UNAVAILABLE"
             return False
         except DomainError as error:
             if error.code != "SERVICE_DRAINING":
                 raise
             self.phase = "draining"
             return False
+        finally:
+            self._client = None
         self.phase = "waiting"
         return False
 
@@ -389,7 +419,7 @@ class JudgeWorker:
 
         for chunk in _chunks(list(questions), QUESTIONS_PER_REQUEST):
             await current()
-            result: JevResult = await asyncio.to_thread(
+            result: ProviderResult = await asyncio.to_thread(
                 client.system_one, payload, {identifier: questions[identifier] for identifier in chunk},
                 before_attempt=before_attempt,
             )
@@ -414,6 +444,9 @@ class JudgeWorker:
             raise ProviderChanged("HEALTH_EGRESS_DENIED")
 
     async def _health_item(self, actor, binding_id, snapshot, item, client, state, budget) -> None:
+        # Health manifests carry their own Jev-only egress grant; other routes leave them to the coding agent.
+        if state.provider != "jev":
+            return
         policy = await self.store.health_policy(actor, binding_id)
         if policy.get("enabled") is not True or policy.get("allow_jev_health") is not True:
             return
@@ -450,10 +483,10 @@ class JudgeWorker:
                 raise
             self._escalate(key, "health_" + error.code.lower(), health_version=version)
             self.last_error = "HEALTH_PENDING_REVIEW"
-        except JevFailure as failure:
+        except ProviderFailure as failure:
             if failure.kind not in {"request", "response", "redirect"}:
                 raise
-            self._escalate(key, "health_jev_" + failure.kind, health_version=version)
+            self._escalate(key, "health_provider_" + failure.kind, health_version=version)
             self.last_error = "HEALTH_PENDING_REVIEW"
         else:
             self.counts.health_assessments_recorded += 1
@@ -464,7 +497,7 @@ class JudgeWorker:
         else:
             self._health_skipped[key] = health_version
         self.counts.escalated += 1
-        logger.info("Jev judge left work for the coding agent: reason=%s", reason)
+        logger.info("Judge worker left work for the coding agent: reason=%s", reason)
         return "escalated"
 
     async def _source_item(self, actor, binding_id, snapshot, item, client, state, budget) -> None:
@@ -490,11 +523,11 @@ class JudgeWorker:
                 except Escalated as escalation:
                     escalated = True
                     self._escalate(marker, escalation.reason)
-                except JevFailure as failure:
+                except ProviderFailure as failure:
                     if failure.kind not in {"request", "response", "redirect"}:
                         raise
                     escalated = True
-                    self._escalate(marker, "jev_" + failure.kind)
+                    self._escalate(marker, "provider_" + failure.kind)
             complete = start is None
         if escalated and complete:
             # Every remaining window waits for the coding agent; stop re-inspecting it in this process.
@@ -524,15 +557,15 @@ class JudgeWorker:
 
     async def _judge_window(self, actor, binding_id, snapshot, window, client, state) -> str:
         spans = window["span_inventory"]
-        model = state.model
+        who = judge_label(state)
         candidates = [(index, span) for index, span in enumerate(spans) if meaningful(span["quote"])]
         if not candidates:
             return await self._record_selection(actor, binding_id, snapshot, window, state, "discard", None, (),
-                f"Jev worker({model}): no span has two or more letters or digits; nothing to remember.")
+                f"{who}: no span has two or more letters or digits; nothing to remember.")
         payload = {"speaker": window["source_speaker"], "spans": [{"id": span["span_id"], "text": span["quote"]} for span in spans]}
         health_policy = None
         dispositions = window.get("judgment_context", {}).get("health_dispositions", [])
-        if dispositions:
+        if dispositions and state.provider == "jev":
             policy = await self.store.health_policy(actor, binding_id)
             if policy.get("enabled") is True and policy.get("allow_jev_health") is True:
                 health_policy = policy
@@ -571,7 +604,7 @@ class JudgeWorker:
             if uncertain:
                 raise Escalated("uncertain")
             return await self._record_selection(actor, binding_id, snapshot, window, state, "discard", None, (),
-                f"Jev({model}) judged every span not worth remembering: highest p(remember)={max(scores.values()):.2f} ≤ {DISCARD_AT:.2f}.")
+                f"{who} judged every span not worth remembering: highest p(remember)={max(scores.values()):.2f} ≤ {DISCARD_AT:.2f}.")
         rejections = await self._rejections(actor, binding_id, snapshot, window)
         attributes = await self._ask(client, state, {**payload, "rejections": [
             {"reason": item["reason"], "text": item["text"]} for item in rejections]},
@@ -590,7 +623,7 @@ class JudgeWorker:
             if uncertain:
                 raise Escalated("uncertain_after_rejections")
             return await self._record_selection(actor, binding_id, snapshot, window, state, "discard", None, (),
-                f"Jev({model}) matched every rememberable span to a prior rejection (p(same) ≥ {SAME_REJECTION_AT:.2f}).")
+                f"{who} matched every rememberable span to a prior rejection (p(same) ≥ {SAME_REJECTION_AT:.2f}).")
         extraction = {
             "claims": [{
                 "assertion_id": f"a{number:04d}", "assertion_span_id": span["span_id"], "statement": span["quote"],
@@ -603,16 +636,16 @@ class JudgeWorker:
         }
         comparisons = tuple({
             "rejection_id": rejection_id, "decision": "unrelated",
-            "reason": f"Jev({model}) found no kept span stating this rejected memory: highest p(same)={value:.2f} < {SAME_REJECTION_AT:.2f}.",
+            "reason": f"{who} found no kept span stating this rejected memory: highest p(same)={value:.2f} < {SAME_REJECTION_AT:.2f}.",
         } for rejection_id, value in same_max.items())
-        reason = (f"Jev({model}) kept {len(kept)} span(s) with p(remember) ≥ {REMEMBER_AT:.2f}; "
+        reason = (f"{who} kept {len(kept)} span(s) with p(remember) ≥ {REMEMBER_AT:.2f}; "
                   f"{len(uncertain)} uncertain and the remaining spans stay unused.")
         return await self._record_selection(actor, binding_id, snapshot, window, state, "remember", extraction, comparisons, reason, claims=len(kept))
 
     async def _record_selection(self, actor, binding_id, snapshot, window, state, label, extraction, comparisons, reason, *, claims: int = 0) -> str:
         self._current(state)
         command = SourceSelectionCommand.model_validate({
-            "kind": "source_selection", "binding_id": binding_id, "idempotency_key": f"jev:{window['admission_id']}:{label}",
+            "kind": "source_selection", "binding_id": binding_id, "idempotency_key": f"{state.provider}:{window['admission_id']}:{label}",
             "admission_id": window["admission_id"], "source_id": window["source_id"], "source_revision": window["source_revision"],
             "binding_revision": window["binding_revision"], "snapshot": snapshot, "byte_start": window["byte_start"],
             "byte_end": window["byte_end"], "window_digest": window["window_digest"], "policy_revision": window["policy_revision"],
@@ -628,7 +661,7 @@ class JudgeWorker:
                 return "already_judged"
             if error.code == "EVIDENCE_REJECTED" and label == "remember":
                 return await self._record_selection(actor, binding_id, snapshot, window, state, "discard", None, (),
-                    f"Jev({state.model}) would remember this window, but the server refused it as previously rejected evidence (EVIDENCE_REJECTED).")
+                    f"{judge_label(state)} would remember this window, but the server refused it as previously rejected evidence (EVIDENCE_REJECTED).")
             if error.code in {"SELECTION_GROUNDING_INVALID", "REJECTION_COMPARISON_REQUIRED", "REJECTION_REFERENCE_INVALID",
                               "SOURCE_INELIGIBLE", "SOURCE_SECRET_REJECTED", "INPUT_INVALID"}:
                 raise Escalated("record_" + error.code.lower()) from None
@@ -682,17 +715,17 @@ class JudgeWorker:
 
             try:
                 answers = await self._ask(client, state, payload, questions, before_request=before_request)
-            except JevFailure as failure:
+            except ProviderFailure as failure:
                 if failure.kind not in {"request", "response", "redirect"}:
                     raise
-                self._escalate(key, "jev_" + failure.kind)
+                self._escalate(key, "provider_" + failure.kind)
                 return
             for number, (newer, older, options) in enumerate(pairs):
                 probabilities = answers[f"relation_{number}"]["probabilities"]
                 name, value = max(((label, probabilities[label]) for label in options if label != "unrelated"), key=lambda pair: pair[1])
                 if value >= RELATION_AT:
                     relations.append((value, {"left_id": newer.id, "right_id": older.id, "relation": name,
-                        "reason": f"Jev({state.model}) judged '{name}' with p={value:.2f} ≥ {RELATION_AT:.2f}; left is the newer memory."}))
+                        "reason": f"{judge_label(state)} judged '{name}' with p={value:.2f} ≥ {RELATION_AT:.2f}; left is the newer memory."}))
                 elif value >= RELATION_DOUBT_AT:
                     self._escalate(key, "uncertain_relation")
                     return
@@ -701,11 +734,11 @@ class JudgeWorker:
             return
         self._current(state)
         command = ClaimJudgmentCommand.model_validate({
-            "kind": "claim_judgment", "binding_id": binding_id, "idempotency_key": f"jev:{manifest['admission_id']}",
+            "kind": "claim_judgment", "binding_id": binding_id, "idempotency_key": f"{state.provider}:{manifest['admission_id']}",
             "admission_id": manifest["admission_id"], "manifest_digest": manifest["manifest_digest"],
             "claims": manifest["claims"], "sources": manifest["sources"],
             "relations": [relation for _, relation in sorted(relations, key=lambda pair: -pair[0])],
-            "reason": (f"Jev({state.model}) compared {len(pairs)} validation-compatible pair(s) of {len(claims)} claims and "
+            "reason": (f"{judge_label(state)} compared {len(pairs)} validation-compatible pair(s) of {len(claims)} claims and "
                        f"recorded {len(relations)} relation(s) with p ≥ {RELATION_AT:.2f}; other pairs stay unrelated."),
         })
         try:
