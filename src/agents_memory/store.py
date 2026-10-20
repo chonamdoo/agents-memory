@@ -230,8 +230,16 @@ class Store:
         self._ready = False
 
     @asynccontextmanager
-    async def _tx(self, barrier: bool = True, lock: bool = True) -> AsyncIterator[tuple[asyncpg.Connection, asyncpg.Record]]:
-        """Serialize writers on the global clock; ``lock=False`` is a read-only transaction that never waits for it."""
+    async def _tx(self, barrier: bool = True, lock: bool = True, snapshot: bool = False) -> AsyncIterator[tuple[asyncpg.Connection, asyncpg.Record]]:
+        """Serialize writers on the global clock; ``lock=False`` is a read-only transaction that does not hold it.
+
+        Lock-free readers default to per-statement reads so a credential revoked mid-request is honored.
+        ``snapshot=True`` reads one repeatable-read snapshot instead: writers commit under the clock lock,
+        so that snapshot sees the clock and every row of the same committed prefix. Only the journal file
+        lives outside it: a deletion appends its intent before committing the new head, so a lock-free
+        reader that observes the head mismatch first waits once for the clock lock, letting a deletion
+        already queued on it commit, then decides the barrier exactly as a locked reader would.
+        """
         if self.pool is None:
             raise DomainError("STORE_CLOSED", "The authority connection is not open", status=503)
         journal = await self._verified_journal() if barrier else None
@@ -242,7 +250,13 @@ class Store:
         except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError):
             raise _connection_failed() from None
         try:
-            async with connection.transaction(readonly=not lock):
+            if barrier and not lock and self._ready and journal["head"] != await connection.fetchval(
+                "SELECT journal_head FROM am_clock WHERE singleton"
+            ):
+                async with connection.transaction():
+                    await connection.execute("SELECT 1 FROM am_clock WHERE singleton FOR UPDATE")
+                journal = await self._verified_journal()
+            async with connection.transaction(readonly=not lock, isolation="repeatable_read" if snapshot and not lock else None):
                 clock = await connection.fetchrow("SELECT * FROM am_clock WHERE singleton FOR UPDATE" if lock else "SELECT * FROM am_clock WHERE singleton")
                 if clock is None:
                     raise DomainError("MIGRATION_REQUIRED", "The authority clock is missing", status=503)
@@ -2754,7 +2768,7 @@ class Store:
             source_ids=tuple(source["id"] for source in sources))
 
     async def rules(self, actor: Principal, binding_id: str) -> list[ActiveRule]:
-        async with self._tx() as (connection, _):
+        async with self._tx(lock=False, snapshot=True) as (connection, _):
             current = await self._actor(connection, actor, binding_id)
             rows = await connection.fetch("""SELECT r.* FROM am_rules r JOIN am_rule_targets t ON t.rule_id=r.id
                 WHERE t.binding_id=$1 AND r.state='active' ORDER BY r.id""", binding_id)
@@ -3595,10 +3609,10 @@ class Store:
             raise DomainError("DELETION_BARRIER", "Purge intent durability is unknown; reconcile the independent journal",
                 status=503, effect=EffectState.UNKNOWN) from None
 
-    async def delivery(self, actor: Principal, binding_id: str, admissions: tuple[()], rule_versions: tuple[tuple[str, int, str], ...], snapshot: str | None = None, relation_ids: tuple[str, ...] = (), *, nonmodel_admission: NonmodelAdmission | None = None, selected_claim_ids: tuple[str, ...] = ()) -> dict:
+    async def delivery(self, actor: Principal, binding_id: str, admissions: tuple[()], rule_versions: tuple[tuple[str, int, str], ...], snapshot: str | None = None, relation_ids: tuple[str, ...] = (), *, nonmodel_admission: NonmodelAdmission | None = None, selected_claim_ids: tuple[str, ...] = (), include_stats: bool = True) -> dict:
         if len(admissions) > 16 or len(rule_versions) > 1024 or len(relation_ids) > 128 or len(set(relation_ids)) != len(relation_ids):
             raise DomainError("MANIFEST_TOO_LARGE", "The final delivery manifest is too large")
-        async with self._tx() as (connection, clock):
+        async with self._tx(lock=False, snapshot=True) as (connection, clock):
             current = await self._actor(connection, actor, binding_id)
             workspace_id = None
             if admissions or (nonmodel_admission is None and (selected_claim_ids or relation_ids)):
@@ -3629,6 +3643,10 @@ class Store:
                 expected.append((rule.id, rule.revision, rule.digest))
             if tuple(sorted(expected)) != tuple(sorted(rule_versions)) or len({item[0] for item in rule_versions}) != len(rule_versions):
                 raise DomainError("CONTEXT_STALE", "The complete active rule snapshot changed before delivery")
+            if not include_stats:
+                # Corpus statistics cost thousands of sequential round-trips on a real corpus; a caller
+                # that reports only the stamp, on every protected action, must not pay for them.
+                return {"epoch": clock["epoch"]}
             return {"epoch": clock["epoch"], "stats": await self._stats(connection, binding_id, clock["epoch"], snapshot,
                 code_workspace_id=workspace_id, workspace_scoped=True)}
 

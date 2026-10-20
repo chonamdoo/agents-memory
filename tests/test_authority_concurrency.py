@@ -6,8 +6,10 @@ import pytest
 from test_store_authority import TOKEN, command, ready_claim, relation_judgment, source_selection
 from test_store_authority import authority as authority
 
+from agents_memory.application import Application
 from agents_memory.config import Settings
-from agents_memory.domain import DomainError, EffectState
+from agents_memory.domain import ContextCommand, DomainError, EffectState
+from agents_memory.lexical import tokens
 
 
 async def count(authority, query, *args):
@@ -145,6 +147,69 @@ async def test_authentication_does_not_wait_for_the_global_clock_lock(authority)
             await holder.execute("SELECT 1 FROM am_clock WHERE singleton FOR UPDATE")
             current = await asyncio.wait_for(store.authenticate(TOKEN), 5)
     assert current.credential_id == authority.actor.credential_id
+
+
+async def test_context_delivery_does_not_wait_for_the_global_clock_lock(authority):
+    # Read-only context delivery never queues behind writers holding the clock lock.
+    store, actor = authority.store, authority.actor
+    application = Application(store.settings, store)
+    _, claim = await ready_claim(authority)
+    rows, admission = await store.search_lexical(actor, authority.binding_id, tokens("CacheKey"), None, 20, request_digest="0" * 64)
+    assert [row[0].id for row in rows] == [claim.id]
+    request = ContextCommand(binding_id=authority.binding_id, query="Protected action conventions",
+        paths=("src/app.py",), host="omp")
+    async with store.pool.acquire() as holder:
+        async with holder.transaction():
+            await holder.execute("SELECT 1 FROM am_clock WHERE singleton FOR UPDATE")
+            required = await asyncio.wait_for(application.required_context(actor, request), 5)
+            delivered = await asyncio.wait_for(store.delivery(actor, authority.binding_id, (), (),
+                nonmodel_admission=admission, selected_claim_ids=(claim.id,)), 5)
+    assert required["required"] is False
+    assert delivered["stats"]["active_claims"] == 1
+
+
+async def test_context_delivery_waits_out_an_in_flight_deletion_instead_of_refusing(authority, monkeypatch):
+    # A deletion appends its journal intent before committing the new head; a reader between the two
+    # waits for that commit, as it did under the clock lock, rather than reporting a deletion barrier.
+    store, actor = authority.store, authority.actor
+    application = Application(store.settings, store)
+    operation, _ = await ready_claim(authority)
+    appended, proceed = asyncio.Event(), asyncio.Event()
+    original = store._append_deletion_intent
+
+    async def gated(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        appended.set()
+        await proceed.wait()
+        return result
+
+    monkeypatch.setattr(store, "_append_deletion_intent", gated)
+
+    async def clock_waiters():
+        async with store.pool.acquire() as connection:
+            return await connection.fetchval("""SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock'
+                AND query LIKE '%am_clock%FOR UPDATE%'""")
+
+    async def until_waiters(count, done=lambda: False):
+        async with asyncio.timeout(5):
+            while not done() and await clock_waiters() < count:
+                await asyncio.sleep(0.02)
+
+    request = ContextCommand(binding_id=authority.binding_id, query="Protected action conventions",
+        paths=("src/app.py",), host="omp")
+    retraction = asyncio.create_task(store.retract(actor, authority.binding_id, operation.source_id, "in-flight-retract"))
+    await asyncio.wait_for(appended.wait(), 5)
+    async with store.pool.acquire() as holder:
+        async with holder.transaction():
+            await holder.execute("SELECT 1 FROM am_clock WHERE singleton FOR UPDATE")
+            proceed.set()
+            await until_waiters(1)
+            reader = asyncio.create_task(application.required_context(actor, request))
+            # A reader that never queues on the lock finishes at once; the old one refused here.
+            await until_waiters(2, reader.done)
+    required = await asyncio.wait_for(reader, 5)
+    assert (await asyncio.wait_for(retraction, 5))["logical_retraction"] == "committed"
+    assert required["required"] is False
 
 
 async def test_exhausted_pool_refuses_after_its_deadline_without_starting(authority):

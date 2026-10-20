@@ -302,7 +302,10 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  pi.on("input", async (event, ctx) => serial(ctx, "input", async (current) => {
+  // OMP awaits input handlers before it queues the submission, so the capture must not be awaited
+  // here or Enter waits on this agent's hooks and the service. It is enqueued synchronously, so the
+  // submission's preparation still runs after it and sees its correlation locator.
+  pi.on("input", (event, ctx) => void serial(ctx, "input", async (current) => {
     const operation = randomUUID();
     const result = await invoke(ctx, current, "input", { text: event.text, source: event.source, hook_instance_id: operation });
     notify(ctx, current, result, "input");
@@ -314,7 +317,7 @@ export default function (pi: ExtensionAPI) {
     if (pending.length < 2) pending.push(operation);
     current.ingress.set(key, pending);
     if (current.ingress.size > 16) current.ingress.delete(current.ingress.keys().next().value!);
-  }));
+  }).catch(() => undefined));
 
   pi.on("before_agent_start", async (event, ctx) => serial(ctx, "preparation", async (current) => {
     const admissionGeneration = current.generation;
@@ -435,8 +438,14 @@ export default function (pi: ExtensionAPI) {
     description: "Show scoped memory adapter incidents, occurrence counts, recovery and last structured outcomes",
     handler: async (_args, ctx) => {
       const current = state(ctx);
+      // An unawaited input capture may still be running; report settled outcomes, bounded so a hung
+      // hook cannot also hold the diagnostic.
+      const queueSettled = await Promise.race([
+        current.queue.then(() => true),
+        new Promise<boolean>(resolve => { setTimeout(resolve, 2000, false).unref(); }),
+      ]);
       ctx.ui.notify(JSON.stringify({
-        agent: ctx.agent, session_id: ctx.sessionManager.getSessionId(), cwd: ctx.cwd,
+        agent: ctx.agent, session_id: ctx.sessionManager.getSessionId(), cwd: ctx.cwd, queue_settled: queueSettled,
         submission_observed: !!current.prepared, provider_input_observed: false,
         coverage: current.prepared ? "advisory_submission_observed" : "limited_no_agent_preparation",
         pending_ingress_correlations: current.ingress.size,

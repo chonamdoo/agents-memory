@@ -92,6 +92,10 @@ RECALL_SKILL_PATHS = {
 # Below this remaining budget a request cannot complete readiness and dispatch; refusing it keeps
 # a detached hook from outliving its native event instead of starting doomed network work.
 _EVENT_REQUEST_FLOOR_SECONDS = 0.05
+# A durably spooled capture whose delivery is deferred is retried by every later hook; only a capture
+# backlog older than this, or a flush failure other than a busy service, is a delivery incident.
+CAPTURE_BACKLOG_ALERT_SECONDS = 300
+CAPTURE_DEFERRAL_CODES = frozenset({"SERVICE_UNAVAILABLE", "SERVICE_BUSY", "SERVICE_DRAINING", "DATABASE_BUSY", "QUEUE_FULL"})
 
 
 def _json(value: object) -> str:
@@ -2609,7 +2613,9 @@ def handle_hook(receipt_path: Path, event: dict) -> dict:
             capture = result.get("capture")
             if isinstance(capture, dict) and (
                 capture.get("state") in {"gap", "expired", "discarded", "quarantined"}
-                or capture.get("pending") or capture.get("quarantined") or capture.get("errors")
+                or capture.get("quarantined")
+                or capture.get("oldest_pending_capture_seconds", 0) >= CAPTURE_BACKLOG_ALERT_SECONDS
+                or any(code not in CAPTURE_DEFERRAL_CODES for code in capture.get("errors") or ())
                 or (capture.get("gaps") and capture.get("gaps_scope") != "cumulative_spool_history")
             ):
                 code = capture.get("code") or "HOST_CAPTURE_DEGRADED"

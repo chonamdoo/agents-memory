@@ -204,6 +204,7 @@ class Application:
             (),
             tuple(sorted((rule.id, rule.revision, rule.digest) for rule in rules)),
             command.snapshot,
+            include_stats=False,
         )
         return {
             "context": composed.text,

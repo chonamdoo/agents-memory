@@ -50,6 +50,7 @@ def run_lifecycle(tmp_path, node_binary, receipt, project, steps, *, hook_mode="
         import os
         import signal
         import sys
+        import time
         from datetime import datetime, timezone
         from pathlib import Path
 
@@ -73,6 +74,7 @@ def run_lifecycle(tmp_path, node_binary, receipt, project, steps, *, hook_mode="
             def request(self, route, payload):
                 requests.append({"route": route, "payload": payload})
                 if route == "/api/capture":
+                    time.sleep(control.get("capture_delay", 0))
                     if control.get("capture_error"):
                         raise DomainError(control["capture_error"], "Capture delivery refused")
                     identity = hashlib.sha256(payload["idempotency_key"].encode()).hexdigest()
@@ -173,6 +175,7 @@ def run_lifecycle(tmp_path, node_binary, receipt, project, steps, *, hook_mode="
           ui: { notify: (message, level) => notifications.push({ message, level }) },
         };
         const actions = [];
+        const elapsed = [];
         for (const step of scenario.steps) {
           writeFileSync(process.argv[4], JSON.stringify(step.control || {}));
           const context = {
@@ -180,6 +183,7 @@ def run_lifecycle(tmp_path, node_binary, receipt, project, steps, *, hook_mode="
             sessionManager: { getSessionId: () => step.session || "native-lifecycle-contract" },
           };
           const start = notifications.length;
+          const startedAt = performance.now();
           const results = [];
           let error = null;
           try {
@@ -198,8 +202,9 @@ def run_lifecycle(tmp_path, node_binary, receipt, project, steps, *, hook_mode="
             catch (failure) { if (failure.code !== "ESRCH") throw failure; }
           }
           actions.push({ results, error, notifications: notifications.slice(start), ownedProcessAlive });
+          elapsed.push(performance.now() - startedAt);
         }
-        console.log(JSON.stringify({ actions, notifications, commands: [...commands.keys()] }));
+        console.log(JSON.stringify({ actions, elapsed, notifications, commands: [...commands.keys()] }));
     '''))
     completed = subprocess.run(
         [node_binary, str(runner), str(extension), str(scenario_path), str(control_path), str(pid_path)],
@@ -402,6 +407,25 @@ def test_queued_followup_capture_is_not_promoted_until_matching_preparation(
     assert prompts[2]["result"]["capture"]["source_pointer"] == pointer
     for entry in actions:
         assert_required_context(entry)
+
+
+def test_slow_input_capture_does_not_hold_the_submission_and_still_precedes_preparation(
+    tmp_path, node_binary, installation,
+):
+    # OMP queues the submission only after input handlers return; Enter must not wait for capture.
+    project, _, _, _, install = installation
+    # The unawaited input hook may read the control file after the next step rewrites it.
+    slow = {"capture_delay": 2}
+    outcome = run_lifecycle(tmp_path, node_binary, install("omp"), project, [
+        {"event": "input", "payload": {"text": "Ship the parser.", "source": "interactive"}, "control": slow},
+        {**prepare("Ship the parser."), "control": slow},
+    ])
+    entered, prepared = outcome["elapsed"]
+    assert outcome["actions"][0]["error"] is None and entered < 1000
+    assert prepared >= 1500
+    [ingress] = hooks_for(outcome, "input")
+    [prompt] = hooks_for(outcome, "before_agent_start")
+    assert prompt["result"]["capture"]["source_pointer"] == ingress["result"]["capture"]["source_pointer"]
 
 
 def test_queued_input_matching_active_submission_keeps_turn_without_correlation(

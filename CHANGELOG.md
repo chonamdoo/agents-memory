@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### context 전달의 전역 lock 대기
+
+- 읽기 전용인 `rules()`와 context `delivery`가 전역 `am_clock ... FOR UPDATE` lock을 잡던 문제를 고쳤다. delivery는 응답의 partial 판정용 corpus 통계(`_stats`, 실제 corpus에서 수천 번의 순차 DB 조회, 약 1.3초)를 이 lock 안에서 계산했다. 그래서 모든 agent의 read·write·edit hook(required-context와 행동 직전 회상)과 prompt capture가 한 줄로 기다렸다. 동시 hook은 4초 client 기한을 넘겨 `action: SERVICE_UNAVAILABLE`로 보였고, 같은 lock을 기다리는 입력 capture 때문에 Enter가 멈췄다.
+- 두 경로는 이제 lock을 잡지 않는 read-only repeatable-read snapshot으로 실행한다. writer는 clock lock 아래에서 commit하므로 한 snapshot의 clock epoch·rule·통계는 같은 commit 시점을 가리킨다. stamp와 전체 rule 일치 검사, 철회·admission 재검사는 그대로다. 다른 lock 없는 reader(인증·health observer 등)는 요청 중 폐기된 credential을 반영하도록 문장 단위 읽기를 유지한다. 삭제가 journal intent를 쓰고 head를 commit하기 전 사이에 온 lock 없는 reader는 한 번 clock lock을 기다린 뒤 barrier를 판정한다. `/api/required-context`는 응답에 쓰지 않는 통계 계산도 하지 않는다.
+- OMP는 input handler가 끝나야 제출을 queue에 넣는다. 확장이 capture 완료까지 기다려서, 같은 agent의 앞선 hook과 service 응답이 끝날 때까지 Enter가 멈췄다. 이제 input capture는 같은 agent queue에 동기적으로 넣고 기다리지 않는다. 그 제출의 preparation은 여전히 capture 뒤에 실행되어 연결 locator를 본다.
+- `input: agents-memory: HOST_CAPTURE_DEGRADED` 경고가 전송만 미뤄진 capture에도 떴다. service가 잠시 바쁘거나 다른 hook이 같은 spool을 flush 중이면, local spool에 안전하게 남아 다음 hook이 보낼 capture도 pending으로 세어 경고했기 때문이다. 이제 이번 capture의 거절·격리·만료·유실, 남아 있는 격리 capture, service 혼잡이 아닌 flush 실패(credential 폐기 등), 5분을 넘긴 미전송 capture backlog만 경고한다. 결과의 `durably_spooled`·`pending` 표시는 그대로이며 전달됨으로 바꾸지 않는다. spool status는 health observation을 뺀 `oldest_pending_capture_seconds`를 함께 반환한다. OMP `/memory-status`는 실행 중인 input capture를 최대 2초 기다린 뒤 `queue_settled`와 함께 보고한다.
+
 ### 구독 CLI 판단 worker
 
 - Jev 없이도 background worker가 원문 선택·관계를 자동 판단하도록 `subscription` provider를 추가했다. operator가 `judge policy allow-subscription --ack-egress`로 Jev와 독립된 default-deny 허가를 준 뒤 `judge set subscription --host claude|codex|omp [--model …] [--executable …]`로 선택한다. 선택할 때 CLI 절대 경로를 고정하고 합성 질문 1개로 로그인·모델을 확인한다. worker는 Jev와 같은 질문·임계값·서버 검증·fence로 기록하며, reason에는 `Subscription(<host>[:<model>])`이 남는다.

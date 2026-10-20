@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -68,7 +69,7 @@ async def capture_status_world(installation, capture_authority, monkeypatch):
     assert historical_count > 0
     return SimpleNamespace(
         capture=capture, state=state, store=store, actor=actor, binding=binding,
-        historical_count=historical_count,
+        historical_count=historical_count, spool_path=runtime / "capture.sqlite3",
     )
 
 
@@ -89,21 +90,50 @@ async def test_successful_capture_does_not_reclassify_retained_receipt_history_a
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("code,delivery", (
-    ("SERVICE_UNAVAILABLE", "durably_spooled"),
-    ("SCOPE_DENIED", "quarantined"),
-))
-async def test_current_capture_failure_remains_degraded_despite_retained_gap_history(capture_status_world, code, delivery):
+async def test_permanently_refused_capture_remains_degraded_despite_retained_gap_history(capture_status_world):
     world = capture_status_world
-    world.state.error = code
-    body = "A current unavailable capture must not be advertised as delivered."
+    world.state.error = "SCOPE_DENIED"
+    body = "A refused capture must not be advertised as delivered."
     result = await world.capture(body)
     assert result["state"] == "degraded"
     assert result["stdout"]["warning"]
-    assert result["capture"]["state"] == delivery
+    assert result["capture"]["state"] == "quarantined"
     assert "source_pointer" not in result["capture"]
-    assert result["capture"]["pending" if delivery == "durably_spooled" else "quarantined"] == 1
+    assert result["capture"]["quarantined"] == 1
     assert result["capture"]["gaps"]["SPOOL_RECEIPT_REPLAY_EXPIRED"] >= world.historical_count
     exposed = json.dumps(result)
     assert "synthetic_private_capture_failure" not in exposed
     assert body not in exposed
+
+
+@pytest.mark.asyncio
+async def test_deferred_durable_capture_is_silent_until_its_backlog_is_stale(capture_status_world):
+    world = capture_status_world
+    world.state.error = "SERVICE_UNAVAILABLE"
+    deferred = await world.capture("A deferred capture stays durable while the service is busy.")
+    assert deferred["state"] == "ok"
+    assert "warning" not in deferred["stdout"]
+    assert deferred["capture"]["state"] == "durably_spooled"
+    assert "source_pointer" not in deferred["capture"]
+    assert deferred["capture"]["pending"] == 1
+    with sqlite3.connect(world.spool_path) as spool:
+        spool.execute("UPDATE outbox SET created_at=created_at-?", (hosts.CAPTURE_BACKLOG_ALERT_SECONDS + 1,))
+    stale = await world.capture("A second capture behind a stale backlog.")
+    assert stale["state"] == "degraded"
+    assert stale["stdout"]["warning"] == "agents-memory: HOST_CAPTURE_DEGRADED"
+    assert stale["capture"]["oldest_pending_capture_seconds"] > hosts.CAPTURE_BACKLOG_ALERT_SECONDS
+    world.state.error = None
+    delivered = await world.capture("The service recovered and drains the backlog.")
+    assert delivered["state"] == "ok"
+    assert delivered["capture"]["state"] == "committed"
+    assert delivered["capture"]["pending"] == 0
+
+
+@pytest.mark.asyncio
+async def test_retryable_failure_other_than_a_busy_service_warns_at_once(capture_status_world):
+    world = capture_status_world
+    world.state.error = "CREDENTIAL_REVOKED"
+    result = await world.capture("A capture refused by a revoked credential stays spooled.")
+    assert result["capture"]["state"] == "durably_spooled"
+    assert result["state"] == "degraded"
+    assert result["stdout"]["warning"] == "agents-memory: HOST_CAPTURE_DEGRADED"
