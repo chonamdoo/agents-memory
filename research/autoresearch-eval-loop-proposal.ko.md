@@ -234,8 +234,8 @@ dense 비교군에서 G2/G3의 남은 격차가 클 때만 벡터 도입을 **�
 
 | 단계 | 산출물 | 완료 기준 |
 |---|---|---|
-| P0 | 사람이 결정: 기존 합격선을 동결할지 재산정할지. dev gold를 #10과 분리할지 | 결정 기록 |
-| P1 | 무결성 변형 스위트(I1–I5)를 현재 코드에 적용 | 현재 baseline에서 위반 0 확인. 위반이 나오면 그 자체가 버그 |
+| P0 | 사람이 결정: 기존 합격선을 동결할지 재산정할지. dev gold를 #10과 분리할지 | **결정됨 (2026-10-20, 사용자).** ① 합격선은 기존 기준 그대로 동결: Recall@20·feasible coverage·agent-selected Precision@3 각각 ≥90%, 의미 보존 ≥95%, critical fixture 100%, no-match 오반환·false-empty 각각 ≤5%, off/on 성공률 각각 ≥80%이고 차이 CI 하한 ≥0, 조건 누락·근거 오류·false promotion 비증가. 루프 시작 후 변경하지 않음. ② 루프용 gold는 #10 trial gold와 분리. 루프는 trial용 사람 gold 120개를 절대 보지 않으며, 루프용 개발 세트와 내부 holdout을 따로 만든다 |
+| P1 | 무결성 변형 스위트(I1–I5)를 현재 코드에 적용 | **완료 (2026-10-20).** `tests/test_retrieval_integrity.py` 15개가 PG 18.6 + pgvector(CI와 같은 이미지 digest)에서 모두 통과해 baseline 위반 0을 확인했다. 범위: 원문 철회, claim 철회, purge, 철회 전 백업 복원, supersedes, correct, 원문 revision 불일치, 다른 binding, 다른 realm, 만료, 다른 snapshot, health reject, code workspace 범위, 철회된 정확 일치 21개의 pool 압박. 함께 확인한 동작 세 가지: (a) supersedes는 삭제가 아니라 edge이므로 옛 claim은 후보로 남지만 그 edge가 항상 함께 전달된다. (b) 등록되지 않은 workspace 질의는 전역 pool로 넓어지지 않고 `HEALTH_WORKSPACE_SCOPE`로 거부된다. (c) 복원 직후에는 모든 claim이 운영자 재수락 전까지 보류된다. 순위 관찰: 같은 entity를 공유하는 두 claim은 entity arm에서 id 순서로 순위가 갈려 RRF 점수가 정확히 같아진다. 그래서 lexical 우위가 상쇄되고 id 순서가 최종 순위를 정한다 (루프의 첫 개선 후보) |
 | P2 | `eval/`: 10군 dev corpus/gold, 미끼, crowding, 동결 하네스, `results.tsv` | baseline 군별 수치 기록. 같은 commit 3회 실행 결과가 완전히 같음 |
 | P3 | `program.md`와 수정 범위 강제. 루프 1차: 비교군 "lexical 개선" | keep commit 확보 또는 "개선 없음" 기록 (둘 다 결과로 인정) |
 | P4 | dense 비교군 3개를 오프라인으로 측정 | 군별 격차표 → 벡터 정책 안건 여부 판단 |
