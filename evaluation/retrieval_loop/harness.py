@@ -174,6 +174,7 @@ async def _open(split: str, scale: int | None, corpus: Corpus):
     else:
         store = Store(settings, DeletionJournal(settings.journal_dir, settings.deployment_id))
         await store.open()
+        await store.reconcile_journal()  # what the service does when it reopens existing authority
     loaded = json.loads(meta.read_text())
     if loaded.get("lexical") != _digest(ROOT / "src/agents_memory/lexical.py"):
         await _reindex(store)
