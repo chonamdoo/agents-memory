@@ -659,14 +659,17 @@ def test_remote_bad_first_outbox_cannot_starve_retained_healthy_batch(
     state["denied_producers"] = {"Bearer synthetic-producer-credential"}
     root = settings.state_dir / "host-adapters"
     bad_directory = hosts._receipt_path(settings, Path(bad["project_root"]), bad["host"]).parent.name
+    healthy_directory = healthy_path.parent.name
     scandir = recovery.os.scandir
 
+    # Runtime directories share the root; random digest names must not push the healthy receipt past the
+    # per-cycle budget, so the scan is pinned to bad receipt, healthy receipt, then everything else.
     def bad_first(path):
         entries = scandir(path)
         if path != root:
             return entries
         with entries:
-            ordered = sorted(entries, key=lambda entry: entry.name != bad_directory)
+            ordered = sorted(entries, key=lambda entry: (entry.name != bad_directory, entry.name != healthy_directory))
         return (entry for entry in ordered)
 
     monkeypatch.setattr(recovery.os, "scandir", bad_first)
