@@ -30,7 +30,7 @@ from .config import Settings
 from .domain import DomainError, EffectState, Handle, Principal, Role, TypedModel
 from .jev import JEV_DEFAULT_MODEL, JEV_ENDPOINT, JevClient, ProviderFailure
 from .private_io import private_read, private_write
-from .subscription import Host, SubscriptionClient, resolve_executable
+from .subscription import Host, SubscriptionClient, project_ancestor, resolve_executable
 
 PROVIDER_FILE = "provider.json"
 EGRESS_POLICY_FILE = "egress-policy.json"
@@ -501,6 +501,14 @@ async def set_subscription(
         raise DomainError("ROLE_DENIED", "Only the operator can choose the judge provider", status=403)
     executable = resolve_executable(host, executable)
     validate_model(model)
+    project = project_ancestor(runs_dir(settings))
+    if project is not None:
+        # A CLI started below a project would load that project's hooks, MCP servers and instructions.
+        raise DomainError(
+            "JUDGE_RUN_DIR_INSIDE_PROJECT",
+            "The deployment state directory is inside a project tree; move state_dir outside every project "
+            "before selecting subscription judgment", status=409,
+        )
     client = SubscriptionClient(host, executable, model, workdir=runs_dir(settings))
 
     def check(before_attempt: Callable[[], None]) -> str:

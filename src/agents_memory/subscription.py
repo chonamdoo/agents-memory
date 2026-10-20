@@ -60,6 +60,25 @@ _ROUTE_OVERRIDES = frozenset({
     "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
     "OPENAI_BASE_URL", "CODEX_API_KEY",
 })
+# Files a coding-agent CLI discovers upward from its working directory as project scope.
+_PROJECT_MARKERS = (".git", ".claude", ".codex", ".omp", ".mcp.json", "CLAUDE.md", "AGENTS.md")
+
+
+def project_ancestor(path: Path) -> Path | None:
+    """The nearest directory at or above ``path`` that a CLI would treat as a project, if any.
+
+    The home directory holds user-level CLI settings rather than a project, so it and the levels
+    above it are not considered.
+    """
+    home = Path.home().resolve()
+    candidate = Path(os.path.abspath(path))
+    for directory in (candidate, *candidate.parents):
+        resolved = directory.resolve()
+        if resolved == home or home.is_relative_to(resolved):
+            return None
+        if any((directory / marker).exists() for marker in _PROJECT_MARKERS):
+            return directory
+    return None
 
 
 def resolve_executable(host: str, explicit: Path | None = None) -> Path:
@@ -387,6 +406,8 @@ class SubscriptionClient:
     ) -> ProviderResult:
         if not questions:
             raise ValueError("At least one question is required")
+        if project_ancestor(self.workdir) is not None:
+            raise ProviderFailure("unavailable")
         try:
             self.workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
             run = Path(tempfile.mkdtemp(prefix="judge-", dir=self.workdir))

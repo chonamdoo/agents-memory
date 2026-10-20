@@ -166,6 +166,15 @@ def test_descendant_that_closed_stdout_does_not_outlive_a_completed_call(fake_cl
     assert _gone(int(fake_cli.child_pid.read_text()))
 
 
+def test_cli_never_starts_below_a_project_tree(tmp_path, monkeypatch):
+    fake = FakeCli(tmp_path, monkeypatch)
+    (tmp_path / ".git").mkdir()
+    with pytest.raises(ProviderFailure) as caught:
+        fake("claude").system_one(STATE, QUESTIONS)
+    assert caught.value.kind == "unavailable"
+    assert not (tmp_path / "invocation.json").exists() and not fake.runs.exists()
+
+
 def test_deadline_stops_the_cli_and_its_descendants(fake_cli):
     started = time.monotonic()
     with pytest.raises(ProviderFailure) as caught:

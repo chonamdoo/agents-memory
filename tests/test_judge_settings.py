@@ -1168,3 +1168,14 @@ async def test_denying_one_route_never_retires_the_other_routes_worker(tmp_path)
     with pytest.raises(DomainError) as retired:
         await store.authenticate(token)
     assert retired.value.code == "AUTH_DENIED"
+
+
+async def test_subscription_is_refused_when_state_lives_inside_a_project(tmp_path):
+    settings, store, actor = personal(tmp_path), MemoryJudgeStore(), operator_principal()
+    (tmp_path / ".git").mkdir()
+    await set_egress_policy(settings, store, actor, subscription_allowed=True)
+    checked = []
+    with pytest.raises(DomainError) as caught:
+        await set_subscription(settings, store, actor, "claude", Path(sys.executable), verify=checked.append)
+    assert caught.value.code == "JUDGE_RUN_DIR_INSIDE_PROJECT" and checked == [] and store.issued == 0
+    assert load_state(settings).provider == "agent"
