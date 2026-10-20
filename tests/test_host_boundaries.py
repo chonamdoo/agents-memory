@@ -1429,7 +1429,7 @@ def test_recovered_hook_backlog_converges_in_order_and_exposes_remaining_gap(ins
     authority.capture_error = None
     recovered = hosts.handle_hook(receipt, native(project, "codex", prompt="human input 8", turn_id="turn-8"))
     assert recovered["capture"]["pending"] == 5
-    assert recovered["state"] == "degraded"
+    assert recovered["state"] == "ok"
     recovered = hosts.handle_hook(receipt, native(project, "codex", prompt="human input 9", turn_id="turn-9"))
     assert recovered["capture"]["pending"] == 2
     recovered = hosts.handle_hook(receipt, native(project, "codex", prompt="human input 10", turn_id="turn-10"))

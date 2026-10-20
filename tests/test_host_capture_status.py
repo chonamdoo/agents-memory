@@ -89,21 +89,40 @@ async def test_successful_capture_does_not_reclassify_retained_receipt_history_a
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("code,delivery", (
-    ("SERVICE_UNAVAILABLE", "durably_spooled"),
-    ("SCOPE_DENIED", "quarantined"),
-))
-async def test_current_capture_failure_remains_degraded_despite_retained_gap_history(capture_status_world, code, delivery):
+async def test_permanently_refused_capture_remains_degraded_despite_retained_gap_history(capture_status_world):
     world = capture_status_world
-    world.state.error = code
-    body = "A current unavailable capture must not be advertised as delivered."
+    world.state.error = "SCOPE_DENIED"
+    body = "A refused capture must not be advertised as delivered."
     result = await world.capture(body)
     assert result["state"] == "degraded"
     assert result["stdout"]["warning"]
-    assert result["capture"]["state"] == delivery
+    assert result["capture"]["state"] == "quarantined"
     assert "source_pointer" not in result["capture"]
-    assert result["capture"]["pending" if delivery == "durably_spooled" else "quarantined"] == 1
+    assert result["capture"]["quarantined"] == 1
     assert result["capture"]["gaps"]["SPOOL_RECEIPT_REPLAY_EXPIRED"] >= world.historical_count
     exposed = json.dumps(result)
     assert "synthetic_private_capture_failure" not in exposed
     assert body not in exposed
+
+
+@pytest.mark.asyncio
+async def test_deferred_durable_capture_is_silent_until_its_backlog_is_stale(capture_status_world, monkeypatch):
+    world = capture_status_world
+    world.state.error = "SERVICE_UNAVAILABLE"
+    deferred = await world.capture("A deferred capture stays durable while the service is busy.")
+    assert deferred["state"] == "ok"
+    assert "warning" not in deferred["stdout"]
+    assert deferred["capture"]["state"] == "durably_spooled"
+    assert "source_pointer" not in deferred["capture"]
+    assert deferred["capture"]["pending"] == 1
+    monkeypatch.setattr(hosts, "CAPTURE_BACKLOG_ALERT_SECONDS", 0)
+    stale = await world.capture("A second capture behind a stale backlog.")
+    assert stale["state"] == "degraded"
+    assert stale["stdout"]["warning"] == "agents-memory: HOST_CAPTURE_DEGRADED"
+    assert stale["capture"]["pending"] == 2
+    world.state.error = None
+    monkeypatch.setattr(hosts, "CAPTURE_BACKLOG_ALERT_SECONDS", 300)
+    delivered = await world.capture("The service recovered and drains the backlog.")
+    assert delivered["state"] == "ok"
+    assert delivered["capture"]["state"] == "committed"
+    assert delivered["capture"]["pending"] == 0

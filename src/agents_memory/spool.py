@@ -444,7 +444,7 @@ class ProducerSpool:
 
     def status(self) -> dict:
         self._housekeep()
-        count = self.db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0]
+        count, oldest = self.db.execute("SELECT COUNT(*),MIN(created_at) FROM outbox").fetchone()
         dead = self.db.execute("SELECT COUNT(*) FROM quarantine").fetchone()[0]
         size = self.db.execute("SELECT COALESCE(SUM(bytes),0) FROM (SELECT bytes FROM outbox UNION ALL SELECT bytes FROM quarantine)").fetchone()[0]
         gaps = dict(self.db.execute("SELECT code,count FROM gaps"))
@@ -452,6 +452,7 @@ class ProducerSpool:
         receipts = self.db.execute("SELECT COUNT(*) FROM receipts").fetchone()[0]
         return {
             "pending": count, "quarantined": dead, "bytes": size, "limit_bytes": self.limit_bytes,
+            "oldest_pending_seconds": max(0, int(time.time() - oldest)) if count else 0,
             "storage_bytes": self._storage_bytes(), "storage_limit_bytes": self.storage_limit_bytes,
             "retained_receipts": receipts, "receipt_limit": self.receipt_limit,
             "receipt_retention_seconds": RECEIPT_RETENTION_SECONDS,
