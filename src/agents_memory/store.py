@@ -50,6 +50,7 @@ from .domain import (
 )
 from .journal import DeletionJournal
 from .migrations import MIGRATION, MIGRATIONS
+from .retrieval_ranking import RANKING_SQL
 from .selection import (
     ClaimJudgmentCommand,
     RecordInput,
@@ -2471,21 +2472,8 @@ class Store:
                 AND NOT EXISTS(SELECT 1 FROM am_claim_sources d JOIN am_sources s ON s.id=d.source_id WHERE d.claim_id=c.id
                     AND (s.state<>'active' OR s.body IS NULL OR s.revision<>d.source_revision OR s.binding_id<>$1 OR s.realm<>$4
                     OR (s.snapshot IS NOT NULL AND s.snapshot IS DISTINCT FROM $3)))
-            ), lexical_candidates AS (
-                SELECT id,row_number() OVER(ORDER BY cardinality(ARRAY(SELECT unnest(lexical_tokens) INTERSECT SELECT unnest($2::text[]))) DESC,id) AS rank
-                FROM eligible WHERE lexical_tokens && $2::text[]
-                ORDER BY cardinality(ARRAY(SELECT unnest(lexical_tokens) INTERSECT SELECT unnest($2::text[]))) DESC,id LIMIT $5
-            ), entity_candidates AS (
-                SELECT c.id,row_number() OVER(ORDER BY count(*) DESC,c.id) AS rank
-                FROM eligible c JOIN am_entities e ON e.claim_id=c.id WHERE e.search_name=ANY($6::text[])
-                GROUP BY c.id ORDER BY count(*) DESC,c.id LIMIT $5
-            ), arms AS (
-                SELECT id,rank,'lexical'::text AS arm FROM lexical_candidates
-                UNION ALL SELECT id,rank,'entity' FROM entity_candidates
-            ), fused AS (
-                SELECT id,sum(1.0/(60+rank)) AS score,array_agg(arm ORDER BY arm) AS arms
-                FROM arms GROUP BY id ORDER BY score DESC,id LIMIT $5
-            ) SELECT c.*,f.arms FROM fused f JOIN eligible c ON c.id=f.id ORDER BY f.score DESC,c.id""",
+            )"""
+                + RANKING_SQL,
                 binding_id, list(dict.fromkeys(lexical_tokens)), snapshot, current.realm, limit,
                 list(dict.fromkeys(_entity(token) for token in lexical_tokens)), code_workspace_id)
             claim_ids = tuple(row["id"] for row in rows)
