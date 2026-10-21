@@ -1,0 +1,6 @@
+time	commit	editable	split	arm	label	status	integrity	sem_x1	sem_x5	sem_x20	sem_gold	kw_x1	kw_x5	kw_x20	sem_mrr_x5	kw_mrr_x5	S8_returned_x5	p95_x20	embed_ms_q
+2026-10-21T04:22:15	5ff661f	3abfb935ea5c	dev	L0	baseline L0 lexical	baseline	pass	41	36	31	84	97	95	93	0.2696	0.6081	19.0	124.01	None
+2026-10-21T04:22:39	5ff661f	3abfb935ea5c	holdout	L0	baseline	holdout-baseline		35	35	32	58	76	76	74	0.3997	0.631	15.25	124.86	None
+2026-10-21T04:24:29	5ff661f	3abfb935ea5c	policy	L0	baseline	holdout-baseline		0			0	76						123.15	None
+2026-10-21T04:28:19	5ff661f	6f22af2caa72	dev	X-v0	agent expansions v0 (tool description) and v1 (guidance)	keep	pass	83	83	82	84	104	104	104	0.5444	0.6125	19.33	117.56	None
+2026-10-21T04:28:19	5ff661f	6f22af2caa72	dev	X-v1	agent expansions v0 (tool description) and v1 (guidance)	discard: x1 KEYWORD MRR 0.6179->0.5578; x5 KEYWORD MRR 0.6081->0.5515; x20 KEYWORD MRR 0.6001->0.5049	pass	82	82	82	84	103	103	103	0.5404	0.5515	19.33	127.42	None
