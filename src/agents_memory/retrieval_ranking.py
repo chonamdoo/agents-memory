@@ -19,8 +19,8 @@ from __future__ import annotations
 # evidence never receives typo evidence). A Hangul query word that occurs in no eligible claim may
 # match a Hangul word of a pooled claim sharing at least two and at least half of its jamo trigrams;
 # it then counts as that claim word, weighted by the similarity and by the word's IDF within the
-# pool, capped at the lowest IDF of the correctly spelled query tokens so a typo never outweighs
-# real exact evidence. It runs at query time, so stored tokens and every other tokenizer user are unchanged and no
+# pool, each corrected word capped at the lowest IDF of the correctly spelled query tokens (several
+# corrected words can together outweigh one exact token). It runs at query time, so stored tokens and every other tokenizer user are unchanged and no
 # reindex is needed, and it is bounded: words of 2-10 syllables on both sides, the first 16 query
 # words that are not bigrams cut from a longer query word, claim words within one syllable of a
 # query word's length, at most 512 of those (most shared syllables first), and only on UTF8 servers
@@ -47,7 +47,7 @@ RANKING_SQL = """, query_tokens AS MATERIALIZED (
                 FROM word_matches m JOIN matched_tokens t ON t.id=m.id JOIN token_frequency f ON f.token=t.token
                 CROSS JOIN corpus_stats s GROUP BY m.id, m.length, s.average_length
             ), exact_floor AS MATERIALIZED (
-                -- A corrected typo never counts more than the least informative correctly spelled query token.
+                -- A corrected word never counts more than the least informative correctly spelled query token.
                 SELECT min(ln(1 + (s.n - f.df + 0.5) / (f.df + 0.5))) AS idf FROM token_frequency f CROSS JOIN corpus_stats s
             ), rerank_pool AS MATERIALIZED (
                 SELECT m.id, m.lexical_tokens, m.length, x.score FROM exact_scores x JOIN word_matches m ON m.id=x.id
