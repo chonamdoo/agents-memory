@@ -6,3 +6,4 @@ time	commit	editable	split	arm	label	status	integrity	sem_x1	sem_x5	sem_x20	sem_
 2026-10-21T04:28:19	5ff661f	6f22af2caa72	dev	X-v1	agent expansions v0 (tool description) and v1 (guidance)	discard: x1 KEYWORD MRR 0.6179->0.5578; x5 KEYWORD MRR 0.6081->0.5515; x20 KEYWORD MRR 0.6001->0.5049	pass	82	82	82	84	103	103	103	0.5404	0.5515	19.33	127.42	None
 2026-10-21T04:36:30	e83c383	f619ceeced8a	dev	X-v0	X-v0 tool-free, fact-disjoint batches	discard: x5 KEYWORD MRR 0.6081->0.5809; x20 KEYWORD MRR 0.6001->0.5638	pass	63	62	60	84	103	102	102	0.4435	0.5809	19.33	137.65	None
 2026-10-21T04:50:07	8de96ba	e47a568bd8bf	dev	X-v2	X-v2 guidance v2, tool-free fact-disjoint batches	discard: x20 KEYWORD MRR 0.6001->0.5757	pass	82	80	81	84	103	102	101	0.5055	0.5926	19.33	128.5	None
+2026-10-21T04:57:08	5724b20	2af201db96a1	dev	X-v3	X-v3 guidance v3 (no expansions on identifier queries)	discard: x20 KEYWORD MRR 0.6001->0.5709	pass	83	82	82	84	103	102	100	0.5298	0.6034	19.0	140.97	None
