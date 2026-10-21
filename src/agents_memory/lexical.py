@@ -32,4 +32,9 @@ def tokens(text: str) -> list[str]:
             add(value)
             for position in range(len(value) - 1):
                 add(value[position : position + 2])
+            if len(value) >= 2:
+                # Jamo trigrams tolerate one-letter typos (회의룩/회의록); the prefix keeps them apart from words.
+                jamo = unicodedata.normalize("NFD", value)
+                for position in range(len(jamo) - 2):
+                    add("~" + jamo[position : position + 3])
     return list(result)
