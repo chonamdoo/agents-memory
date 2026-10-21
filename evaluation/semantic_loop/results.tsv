@@ -14,3 +14,9 @@ time	commit	editable	split	arm	label	status	integrity	sem_x1	sem_x5	sem_x20	sem_
 2026-10-21T07:57:03	bdc6555	b188052a5b9a	dev	H-e5	dense/hybrid first measurement	keep	pass	82	80	78	84	103	101	102	0.5147	0.7038	20.0	119.7	39.85
 2026-10-21T07:57:03	bdc6555	b188052a5b9a	dev	H-mini	dense/hybrid first measurement	keep	pass	76	69	64	84	102	99	97	0.4092	0.5908	20.0	119.79	3.51
 2026-10-21T07:57:03	bdc6555	b188052a5b9a	dev	H-potion	dense/hybrid first measurement	keep	pass	65	58	52	84	99	98	98	0.3888	0.6727	20.0	98.51	0.38
+2026-10-21T08:01:35	c9a7f75	b188052a5b9a	dev	H-e5	hybrid latency repeat 2	keep	pass	82	80	78	84	103	101	102	0.5147	0.7038	20.0	118.12	39.85
+2026-10-21T08:01:35	c9a7f75	b188052a5b9a	dev	H-mini	hybrid latency repeat 2	keep	pass	76	69	64	84	102	99	97	0.4092	0.5908	20.0	103.14	3.51
+2026-10-21T08:01:35	c9a7f75	b188052a5b9a	dev	H-potion	hybrid latency repeat 2	keep	pass	65	58	52	84	99	98	98	0.3888	0.6727	20.0	125.73	0.38
+2026-10-21T08:05:39	c9a7f75	b188052a5b9a	dev	H-e5	hybrid latency repeat 3	keep	pass	82	80	78	84	103	101	102	0.5147	0.7038	20.0	118.91	39.85
+2026-10-21T08:05:39	c9a7f75	b188052a5b9a	dev	H-mini	hybrid latency repeat 3	keep	pass	76	69	64	84	102	99	97	0.4092	0.5908	20.0	105.64	3.51
+2026-10-21T08:05:39	c9a7f75	b188052a5b9a	dev	H-potion	hybrid latency repeat 3	keep	pass	65	58	52	84	99	98	98	0.3888	0.6727	20.0	102.59	0.38
