@@ -91,7 +91,7 @@ def run_lifecycle(tmp_path, node_binary, receipt, project, steps, *, hook_mode="
                         "source_id": pointer["source_id"], "epoch": 1,
                         "source_pointer": pointer, "capture_disposition": "captured",
                     }
-                if route not in {"/api/context", "/api/required-context"}:
+                if route not in {"/api/hook-context", "/api/required-context"}:
                     raise AssertionError("unexpected authority endpoint: " + route)
                 if control.get("context_error"):
                     raise DomainError(control["context_error"], "Context delivery refused")
@@ -277,7 +277,7 @@ def test_replacement_boundaries_still_require_new_native_preparation(
     assert denied["result"]["state"] != "ok"
     assert denied["result"]["code"] == "HOST_GENERATION_UNOBSERVED"
     assert denied["result"]["coverage"] == "limited_no_agent_preparation"
-    assert [request["route"] for request in denied["requests"]] == ["/api/required-context", "/api/context"]
+    assert [request["route"] for request in denied["requests"]] == ["/api/required-context", "/api/hook-context"]
     assert RULE_BODY in json.dumps(denied["result"]["stdout"])
     assert_required_context(refreshed)
     prompts = hooks_for(outcome, "before_agent_start")
@@ -565,7 +565,7 @@ def test_unprepared_native_subagent_never_borrows_parent_and_diagnostics_retain_
         {"command": "memory-status", **child}, read_file("parent-still-active"),
     ])
     first, second, parent = hooks_for(outcome, "tool_call")
-    for entry, routes in ((first, ["/api/required-context", "/api/context"]), (second, ["/api/required-context"])):
+    for entry, routes in ((first, ["/api/required-context", "/api/hook-context"]), (second, ["/api/required-context"])):
         assert entry["result"]["state"] != "ok"
         assert entry["result"]["code"] == "HOST_GENERATION_UNOBSERVED"
         assert entry["result"]["coverage"] == "limited_no_agent_preparation"
