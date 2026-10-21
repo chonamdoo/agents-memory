@@ -1,0 +1,625 @@
+{
+ "holdout-S1-00": [
+  "merge factor",
+  "segment merge",
+  "세그먼트"
+ ],
+ "holdout-S1-01": [
+  "max clause count",
+  "TooManyClauses",
+  "불리언 쿼리"
+ ],
+ "holdout-S1-02": [],
+ "holdout-S1-03": [
+  "full reindex",
+  "start date",
+  "YYYY-MM-DD"
+ ],
+ "holdout-S2-00": [
+  "remote build cache",
+  "CI"
+ ],
+ "holdout-S1-04": [
+  "onboarding",
+  "온보딩",
+  "buddy"
+ ],
+ "holdout-S1-05": [
+  "SLA",
+  "응답 시간",
+  "first response"
+ ],
+ "holdout-S1-06": [
+  "onboarding",
+  "입사일",
+  "laptop"
+ ],
+ "holdout-S2-01": [
+  "refund",
+  "담당팀",
+  "customer support"
+ ],
+ "holdout-S1-07": [
+  "crash report",
+  "크래시 리포트",
+  "error reporting"
+ ],
+ "holdout-S1-08": [
+  "configuration cache",
+  "Gradle"
+ ],
+ "holdout-S1-09": [
+  "macro",
+  "canned response",
+  "응대 매크로"
+ ],
+ "holdout-S1-10": [
+  "synonym",
+  "query-time",
+  "index-time"
+ ],
+ "holdout-S1-11": [
+  "QA sign-off",
+  "app store review",
+  "QA"
+ ],
+ "holdout-S1-12": [
+  "full reindex",
+  "재색인",
+  "rebuild"
+ ],
+ "holdout-S2-05": [
+  "고객 만족도",
+  "customer satisfaction"
+ ],
+ "holdout-S1-13": [
+  "onboarding survey",
+  "30-day",
+  "온보딩"
+ ],
+ "holdout-S1-14": [
+  "batch size",
+  "배치 크기",
+  "bulk"
+ ],
+ "holdout-S2-06": [
+  "OpenAPI",
+  "Swagger",
+  "API docs"
+ ],
+ "holdout-S1-15": [
+  "error rate",
+  "alert threshold",
+  "임계값"
+ ],
+ "holdout-S2-07": [
+  "Reserved Instance",
+  "RI",
+  "약정"
+ ],
+ "holdout-S6-00": [
+  "beta tester",
+  "TestFlight",
+  "push notification"
+ ],
+ "holdout-S6-01": [
+  "synonym list",
+  "approval",
+  "QA"
+ ],
+ "holdout-S6-02": [
+  "VIP",
+  "auto-reply",
+  "자동 응답"
+ ],
+ "holdout-S5-00": [
+  "timeout",
+  "search timeout",
+  "타임아웃"
+ ],
+ "holdout-S5-02": [
+  "support hours",
+  "운영 시간",
+  "business hours"
+ ],
+ "holdout-S8-00": [
+  "TTL",
+  "cache expiration",
+  "result cache"
+ ],
+ "holdout-S8-01": [
+  "dark mode",
+  "dark theme",
+  "테마"
+ ],
+ "holdout-S8-02": [
+  "shift",
+  "agent",
+  "로테이션"
+ ],
+ "holdout-S8-03": [
+  "replica",
+  "number_of_replicas",
+  "레플리카"
+ ],
+ "holdout-G8-00": [
+  "office move",
+  "relocation",
+  "이사"
+ ],
+ "holdout-G8-01": [
+  "payment gateway",
+  "transaction fee",
+  "PG"
+ ],
+ "holdout-G8-02": [],
+ "holdout-G8-03": [
+  "디자인 시스템",
+  "border radius",
+  "corner radius"
+ ],
+ "holdout-S3-00": [
+  "병합 계수",
+  "segment merge",
+  "컴팩션"
+ ],
+ "holdout-S3-01": [
+  "maxClauseCount",
+  "절 개수 한도",
+  "TooManyClauses"
+ ],
+ "holdout-S3-02": [
+  "part size",
+  "분할 크기",
+  "멀티파트 업로드"
+ ],
+ "holdout-S3-03": [
+  "ISO 8601",
+  "날짜 형식",
+  "timestamp"
+ ],
+ "holdout-S3-04": [
+  "원격 빌드 캐시",
+  "settings.gradle",
+  "CI"
+ ],
+ "holdout-S3-05": [
+  "온보딩 가이드",
+  "입사 첫 주",
+  "orientation"
+ ],
+ "holdout-S3-06": [
+  "응답 기한",
+  "SLA",
+  "first response"
+ ],
+ "holdout-S3-07": [
+  "노트북 지급",
+  "신규 입사자",
+  "provisioning"
+ ],
+ "holdout-S3-08": [
+  "환불 요청",
+  "billing",
+  "정산"
+ ],
+ "holdout-S2-02": [
+  "crash report",
+  "Wi-Fi",
+  "와이파이"
+ ],
+ "holdout-S2-03": [
+  "configuration cache",
+  "org.gradle.configuration-cache"
+ ],
+ "holdout-S2-04": [
+  "canned response",
+  "quarterly review",
+  "매크로 검토"
+ ],
+ "holdout-S3-09": [
+  "동의어 필터",
+  "색인 시점",
+  "analyzer"
+ ],
+ "holdout-S3-10": [
+  "앱 스토어 제출",
+  "QA 승인",
+  "release"
+ ],
+ "holdout-S3-11": [
+  "전체 재색인",
+  "reindex",
+  "cron"
+ ],
+ "holdout-S3-12": [
+  "CSAT",
+  "고객 만족도",
+  "목표 점수"
+ ],
+ "holdout-S3-13": [
+  "온보딩 설문",
+  "설문 발송",
+  "입사 후"
+ ],
+ "holdout-S3-14": [
+  "bulk size",
+  "색인 배치 크기",
+  "batchSize"
+ ],
+ "holdout-S3-15": [
+  "API 문서",
+  "OpenAPI",
+  "Swagger"
+ ],
+ "holdout-S3-16": [
+  "오류율 임계치",
+  "alerting",
+  "5xx"
+ ],
+ "holdout-S3-17": [
+  "약정 기간",
+  "RI",
+  "savings plan"
+ ],
+ "holdout-S3-18": [
+  "베타 사용자",
+  "푸시 알림",
+  "TestFlight"
+ ],
+ "holdout-S3-19": [
+  "동의어 사전",
+  "업데이트 시기",
+  "freeze"
+ ],
+ "holdout-S3-20": [
+  "상용구 답변",
+  "VIP 고객",
+  "macro"
+ ],
+ "holdout-S5-01": [
+  "검색 타임아웃",
+  "request timeout",
+  "timeout_ms"
+ ],
+ "holdout-S5-03": [
+  "고객지원 운영 시간",
+  "business hours",
+  "CS"
+ ],
+ "holdout-S4-00": [
+  "온보딩",
+  "onboarding reading",
+  "신규 입사자"
+ ],
+ "holdout-S4-01": [
+  "셀룰러",
+  "crash report upload",
+  "Wi-Fi"
+ ],
+ "holdout-G1-00": [],
+ "holdout-G1-03": [],
+ "holdout-G1-06": [],
+ "holdout-G1-09": [],
+ "holdout-G1-11": [],
+ "holdout-G2-03": [
+  "응답 SLA",
+  "response time",
+  "티켓 응답"
+ ],
+ "holdout-G2-06": [
+  "신규 입사자 장비",
+  "laptop provisioning",
+  "입사일"
+ ],
+ "holdout-G2-09": [
+  "refund",
+  "결제팀",
+  "billing"
+ ],
+ "holdout-G3-04": [
+  "Gradle cache",
+  "build cache",
+  "configuration cache"
+ ],
+ "holdout-G3-06": [
+  "macro review",
+  "canned response",
+  "템플릿 답변"
+ ],
+ "holdout-G3-10": [
+  "synonym filter",
+  "index time",
+  "query time"
+ ],
+ "holdout-G4-00": [
+  "App Store submission",
+  "릴리스 심사",
+  "출시"
+ ],
+ "holdout-G4-03": [
+  "full reindex",
+  "재색인",
+  "rebuild"
+ ],
+ "holdout-G4-05": [
+  "CSAT",
+  "customer satisfaction",
+  "고객 만족도"
+ ],
+ "holdout-G4-07": [
+  "onboarding survey",
+  "입사 후 피드백"
+ ],
+ "holdout-G5-00": [
+  "batch size",
+  "bulk size",
+  "벌크 색인"
+ ],
+ "holdout-G5-03": [
+  "OpenAPI",
+  "API docs generation",
+  "Swagger"
+ ],
+ "holdout-G5-05": [
+  "error rate threshold",
+  "alert",
+  "에러율"
+ ],
+ "holdout-G5-08": [
+  "Reserved Instance",
+  "Savings Plans",
+  "RI"
+ ],
+ "holdout-G6-00": [
+  "search timeout",
+  "query timeout",
+  "검색 제한 시간"
+ ],
+ "holdout-G6-02": [
+  "support hours",
+  "고객지원 영업시간",
+  "business hours"
+ ],
+ "holdout-G7-00": [
+  "push notification",
+  "beta testers",
+  "TestFlight"
+ ],
+ "holdout-G7-03": [
+  "synonym dictionary",
+  "synonyms update",
+  "유의어"
+ ],
+ "holdout-G7-06": [
+  "auto-reply",
+  "VIP customer",
+  "자동 회신"
+ ],
+ "holdout-G1-01": [],
+ "holdout-G1-04": [
+  "maxClauseCount",
+  "too many clauses",
+  "불리언 절 제한"
+ ],
+ "holdout-G1-07": [
+  "multipart chunk size",
+  "snapshot upload",
+  "청크 크기"
+ ],
+ "holdout-G1-10": [
+  "reindex-all"
+ ],
+ "holdout-G1-12": [
+  "remote build cache",
+  "Gradle cache",
+  "캐시 활성화"
+ ],
+ "holdout-G2-00": [
+  "onboarding guide",
+  "입사 첫날",
+  "신규 입사자"
+ ],
+ "holdout-G2-04": [
+  "SLA",
+  "first response time",
+  "답변 기한"
+ ],
+ "holdout-G2-07": [
+  "노트북 지급",
+  "new hire equipment",
+  "laptop provisioning"
+ ],
+ "holdout-G2-10": [
+  "refund owner",
+  "환불 담당자",
+  "결제팀"
+ ],
+ "holdout-G3-00": [
+  "crash report upload",
+  "Crashlytics",
+  "충돌 보고"
+ ],
+ "holdout-G3-05": [
+  "configuration cache",
+  "mobile build cache",
+  "Gradle"
+ ],
+ "holdout-G3-07": [
+  "support macro review",
+  "답변 템플릿",
+  "검토 주기"
+ ],
+ "holdout-G3-11": [
+  "synonym filter",
+  "analyzer",
+  "색인 시점"
+ ],
+ "holdout-G4-01": [
+  "app store submission",
+  "release QA",
+  "앱 심사"
+ ],
+ "holdout-G4-04": [
+  "reindex duration",
+  "재색인 소요 시간",
+  "full reindex"
+ ],
+ "holdout-G4-06": [
+  "CSAT target",
+  "고객 만족도",
+  "satisfaction score"
+ ],
+ "holdout-G4-08": [
+  "onboarding survey",
+  "신규 입사자 설문",
+  "new hire survey"
+ ],
+ "holdout-G5-01": [],
+ "holdout-G5-04": [],
+ "holdout-G5-06": [
+  "error rate threshold",
+  "alert threshold",
+  "에러율 임계치"
+ ],
+ "holdout-G5-09": [
+  "reserved instance term",
+  "RI 약정",
+  "약정 기간"
+ ],
+ "holdout-G6-01": [
+  "search timeout",
+  "query timeout",
+  "검색 타임아웃"
+ ],
+ "holdout-G6-03": [
+  "support hours",
+  "상담 운영 시간",
+  "business hours"
+ ],
+ "holdout-G7-01": [
+  "push notification exclusion",
+  "opt-out",
+  "발송 제외"
+ ],
+ "holdout-G7-04": [
+  "synonym dictionary update",
+  "synonyms",
+  "변경 가능 시간"
+ ],
+ "holdout-G7-07": [
+  "VIP auto-reply",
+  "자동응답",
+  "auto response"
+ ],
+ "holdout-G1-02": [
+  "mergeFactor"
+ ],
+ "holdout-G1-05": [
+  "QueryPlanner"
+ ],
+ "holdout-G1-08": [],
+ "holdout-G1-13": [],
+ "holdout-G2-01": [
+  "버디",
+  "onboarding buddy",
+  "first week"
+ ],
+ "holdout-G2-05": [
+  "문의",
+  "SLA",
+  "response time"
+ ],
+ "holdout-G2-08": [
+  "장비",
+  "노트북 지급",
+  "laptop"
+ ],
+ "holdout-G2-11": [
+  "refund",
+  "담당 부서",
+  "billing"
+ ],
+ "holdout-G3-01": [
+  "crash report",
+  "전송 시점"
+ ],
+ "holdout-G3-08": [
+  "매크로",
+  "macro",
+  "템플릿 답변"
+ ],
+ "holdout-G4-02": [
+  "앱스토어",
+  "App Store",
+  "심사"
+ ],
+ "holdout-G4-09": [
+  "설문",
+  "survey",
+  "pulse check"
+ ],
+ "holdout-G5-02": [
+  "배치",
+  "batch size",
+  "indexing"
+ ],
+ "holdout-G5-07": [],
+ "holdout-G6-04": [
+  "운영",
+  "support hours",
+  "business hours"
+ ],
+ "holdout-G7-02": [
+  "푸시",
+  "push notification",
+  "beta tester"
+ ],
+ "holdout-G7-05": [
+  "synonym",
+  "유의어"
+ ],
+ "holdout-G9-01": [
+  "reindex",
+  "index rebuild",
+  "weekend"
+ ],
+ "holdout-G9-02": [
+  "CSAT",
+  "customer satisfaction"
+ ],
+ "holdout-G9-04": [
+  "search timeout",
+  "응답 시간 초과"
+ ],
+ "holdout-G2-02": [
+  "가이드",
+  "onboarding guide",
+  "신규 입사자"
+ ],
+ "holdout-G3-02": [
+  "crash report",
+  "Wi-Fi",
+  "무선 네트워크"
+ ],
+ "holdout-G3-09": [
+  "매크로",
+  "support macro",
+  "응대 템플릿"
+ ],
+ "holdout-G9-00": [
+  "App Store submission",
+  "앱 심사",
+  "출시 체크리스트"
+ ],
+ "holdout-G9-03": [
+  "beta tester",
+  "push notification",
+  "테스터"
+ ],
+ "holdout-G3-03": [
+  "crash report",
+  "Wi-Fi",
+  "무선 네트워크"
+ ]
+}

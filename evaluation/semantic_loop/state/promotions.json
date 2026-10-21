@@ -1,0 +1,137 @@
+[
+ {
+  "arm": "H-e5",
+  "label": "promotion 1: H-e5 (hybrid, multilingual-e5-large)",
+  "commit": "d460e1a",
+  "passed": false,
+  "verdicts": {
+   "holdout": {
+    "semantic_delta_mean": 0.9444,
+    "ci95": [
+     0.5926,
+     1.2963
+    ],
+    "checks": {
+     "x1": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": -0.0289
+     },
+     "x5": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": -0.0128
+     },
+     "x20": {
+      "keyword_group_drops": [
+       "G2"
+      ],
+      "keyword_mrr_drop": -0.0735
+     }
+    }
+   },
+   "policy": {
+    "semantic_delta_mean": 0.275,
+    "ci95": [
+     0.1917,
+     0.3583
+    ],
+    "checks": {
+     "x1": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": 0.0796
+     }
+    }
+   }
+  }
+ },
+ {
+  "arm": "H-mini",
+  "label": "promotion 2: H-mini (hybrid, paraphrase-multilingual-MiniLM)",
+  "commit": "e626912",
+  "passed": false,
+  "verdicts": {
+   "holdout": {
+    "semantic_delta_mean": 0.6852,
+    "ci95": [
+     0.3704,
+     1.0
+    ],
+    "checks": {
+     "x1": {
+      "keyword_group_drops": [
+       "G5"
+      ],
+      "keyword_mrr_drop": 0.006
+     },
+     "x5": {
+      "keyword_group_drops": [
+       "G2"
+      ],
+      "keyword_mrr_drop": 0.0205
+     },
+     "x20": {
+      "keyword_group_drops": [
+       "G2",
+       "G5"
+      ],
+      "keyword_mrr_drop": -0.0133
+     }
+    }
+   },
+   "policy": {
+    "semantic_delta_mean": 0.05,
+    "ci95": [
+     -0.025,
+     0.125
+    ],
+    "checks": {
+     "x1": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": 0.1925
+     }
+    }
+   }
+  }
+ },
+ {
+  "arm": "H-potion",
+  "label": "promotion 3: H-potion (hybrid, potion-multilingual-128M)",
+  "commit": "ad9442a",
+  "passed": false,
+  "verdicts": {
+   "holdout": {
+    "semantic_delta_mean": 0.6759,
+    "ci95": [
+     0.3889,
+     0.9907
+    ],
+    "checks": {
+     "x1": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": -0.0118
+     },
+     "x5": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": -0.0207
+     },
+     "x20": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": -0.0629
+     }
+    }
+   },
+   "policy": {
+    "semantic_delta_mean": 0.075,
+    "ci95": [
+     0.0083,
+     0.1417
+    ],
+    "checks": {
+     "x1": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": 0.0944
+     }
+    }
+   }
+  }
+ }
+]
