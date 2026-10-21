@@ -5,7 +5,7 @@
   "evaluation/retrieval_loop/policy_corpus.py": "e4e041dfee01641d8334bc712216324f9b80abfdfcf2711984fcd436b35d04fb",
   "evaluation/retrieval_loop/program.md": "5311fb19bf8f39587ed7f0c29a1142c403b63a606fd7ddd8c9eb589126dd421b",
   "src/agents_memory/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "src/agents_memory/application.py": "9de3726d5d2ec86f71f2284a4b477638542d7d0fbae17a1f097d295e4679bd9b",
+  "src/agents_memory/application.py": "07d9afa9b6b88babf07a6f7f05f74ee20e78f774212d501c3e1f4fcf948e8bb2",
   "src/agents_memory/capture_guard.py": "2b7e95a4e04fb00b50bf33b53f3939829ea8cd33a71cb44a66752a477aec3ec6",
   "src/agents_memory/cli.py": "9336b5b24b121ba161c56b950a611239654e546561025dbfdaf6f9a50796ce98",
   "src/agents_memory/client.py": "ae3e1b4231251ef41668a3a62813b51eac1c354125155570404b6ac26e2bf0ee",
@@ -62,7 +62,7 @@
   "src/agents_memory/service.py": "fb5d461564acce0342a6a0ccc92cdca62506ef974a6f21f86119d67a79edaff9",
   "src/agents_memory/spool.py": "a5610868ad14c56bde7b1e9bf50a4d8113c74f3c746a4d2fd26ce71d2350a501",
   "src/agents_memory/stdio.py": "e7f1095f6245715af6c86277c64185f1e355457529dbcb529a712bb006b2b07a",
-  "src/agents_memory/store.py": "9d8ea3cd04e98c7775262d2a3baf8f8f3cbb7e2cebc4ba82206aa4b2b74538a4",
+  "src/agents_memory/store.py": "9915cbf4512710027b22034e2178caf984970bc4a3f4f0ae6f9c939fbf7e1c05",
   "src/agents_memory/subscription.py": "59dbfc2d47341bdffcf95605326b4fe67154109de3dded48e71476918587e8fa",
   "src/agents_memory/wire.py": "d81d703d92407e7a5b5cd3be1fd76190a91f2d28c4ad3768a1df9157c57bd979",
   "tests/test_retrieval_integrity.py": "0002f7036bff8a53d21c8b26e1c746d08c5b6a5b56dab345f45f6949e0df7a25"

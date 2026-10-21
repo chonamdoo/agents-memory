@@ -154,3 +154,14 @@
     - potion은 0.2ms로 거의 공짜다. 다만 의미 이득이 더 작다(20배 의미 hit 52, H-e5는 78).
     - 회사의 로컬 ML 금지 제약과 함께 정책 결정이 필요하다.
   - 배경 claim은 한 가지 문장 틀이라 dense가 쉽게 구별한다. 그래서 합성 20배 결과는 실제보다 낙관적일 수 있다(리뷰 P2-6).
+
+## 재현 절차: 새 DB에 다시 올릴 때 (2026-10-21)
+
+- 평가 claim은 `Store.record`가 매기는 무작위 UUID를 ID로 갖는다. 순위 SQL은 점수가 같을 때 ID 순으로 자른다.
+- 그래서 캐시 schema(`am_loop_*`)를 지우고 corpus를 새로 올리면, 순위 코드가 같아도 동점 claim의 순서가 바뀔 수 있다. 그러면 hit·MRR이 commit된 baseline과 달라질 수 있다.
+- 이 LOG와 `results.tsv`의 모든 수치는 같은 PostgreSQL 인스턴스의 같은 캐시 schema에서 쟀다.
+- 새 환경에서 다시 재려면 baseline부터 새로 잰다.
+  - dev: `run --baseline`
+  - holdout·실문서: `state/baseline-*.json`을 옮겨 두고 `baseline-holdouts`
+  - 그 다음에 후보를 비교한다. 예전 baseline과 새 결과를 섞지 않는다.
+  - `weighting_loop/weighting_harness.py neutral`은 이 불일치를 드러낸다.

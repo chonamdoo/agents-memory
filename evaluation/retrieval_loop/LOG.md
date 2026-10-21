@@ -244,3 +244,20 @@ holdout과 실문서 holdout (집계만)
 - `src/agents_memory/retrieval_ranking.py`: 순위 SQL 분리(원래 SQL 그대로).
 - `evaluation/retrieval_loop/`: 동결 corpus, 하네스, 로그, results.tsv.
 - 후보 코드는 git 이력에 보존된다(H6e c4059b7, H8k 317c6af).
+
+## 재현 절차: 새 DB에 다시 올릴 때 (2026-10-21)
+
+- 평가 claim은 `Store.record`가 매기는 무작위 UUID를 ID로 갖는다. 순위 SQL은 점수가 같을 때 ID 순으로 자른다.
+- 그래서 캐시 schema(`am_loop_*`)를 지우고 corpus를 새로 올리면, 순위 코드가 같아도 동점 claim의 순서가 바뀔 수 있다. 그러면 hit·MRR이 commit된 baseline과 달라질 수 있다.
+- 이 LOG와 `results.tsv`의 모든 수치는 같은 PostgreSQL 인스턴스의 같은 캐시 schema에서 쟀다.
+- 새 환경에서 다시 재려면 baseline부터 새로 잰다.
+  - dev: `run --baseline`
+  - holdout·실문서: `state/baseline-*.json`을 옮겨 두고 `baseline-holdouts`
+  - 그 다음에 후보를 비교한다. 예전 baseline과 새 결과를 섞지 않는다.
+  - `weighting_loop/weighting_harness.py neutral`은 이 불일치를 드러낸다.
+
+## 재동결 (2026-10-21)
+
+- 의미·확장 가중치 루프를 준비하면서 `store.py`(`query_tokens`, `query_terms` CTE)와 `application.py`(질의 토큰 전달)가 바뀌었다.
+- 원래 순위 SQL은 새 CTE를 읽지 않는다. 같은 claim과 키워드 질의로 잰 dev L0와 holdout·실문서 L0가 질의별로 저장된 baseline과 완전히 같았다. 자세한 내용은 `semantic_loop/LOG.md`와 `weighting_loop/LOG.md`에 있다.
+- 그래서 이 루프의 `frozen.json`도 다시 동결했다. 규칙과 baseline은 그대로다.
