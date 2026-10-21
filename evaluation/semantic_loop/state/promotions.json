@@ -91,5 +91,47 @@
     }
    }
   }
+ },
+ {
+  "arm": "H-potion",
+  "label": "promotion 3: H-potion (hybrid, potion-multilingual-128M)",
+  "commit": "ad9442a",
+  "passed": false,
+  "verdicts": {
+   "holdout": {
+    "semantic_delta_mean": 0.6759,
+    "ci95": [
+     0.3889,
+     0.9907
+    ],
+    "checks": {
+     "x1": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": -0.0118
+     },
+     "x5": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": -0.0207
+     },
+     "x20": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": -0.0629
+     }
+    }
+   },
+   "policy": {
+    "semantic_delta_mean": 0.075,
+    "ci95": [
+     0.0083,
+     0.1417
+    ],
+    "checks": {
+     "x1": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": 0.0944
+     }
+    }
+   }
+  }
  }
 ]

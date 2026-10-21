@@ -24,3 +24,5 @@ time	commit	editable	split	arm	label	status	integrity	sem_x1	sem_x5	sem_x20	sem_
 2026-10-21T08:40:49	d460e1a	b188052a5b9a	policy	H-e5	promotion 1: H-e5 (hybrid, multilingual-e5-large)	promotion-eval	pass	0			0	76						95.86	41.13
 2026-10-21T08:50:31	e626912	b188052a5b9a	holdout	H-mini	promotion 2: H-mini (hybrid, paraphrase-multilingual-MiniLM)	promotion-eval	pass	50	48	47	58	78	76	73	0.5687	0.6105	20.0	266.56	2.74
 2026-10-21T08:52:19	e626912	b188052a5b9a	policy	H-mini	promotion 2: H-mini (hybrid, paraphrase-multilingual-MiniLM)	promotion-eval	pass	0			0	76						102.3	3.79
+2026-10-21T09:01:59	ad9442a	b188052a5b9a	holdout	H-potion	promotion 3: H-potion (hybrid, potion-multilingual-128M)	promotion-eval	pass	52	48	44	58	80	80	78	0.5327	0.6517	20.0	248.51	0.11
+2026-10-21T09:03:45	ad9442a	b188052a5b9a	policy	H-potion	promotion 3: H-potion (hybrid, potion-multilingual-128M)	promotion-eval	pass	0			0	76						107.96	0.15
