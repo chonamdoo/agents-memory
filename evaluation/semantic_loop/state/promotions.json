@@ -1,0 +1,46 @@
+[
+ {
+  "arm": "H-e5",
+  "label": "promotion 1: H-e5 (hybrid, multilingual-e5-large)",
+  "commit": "d460e1a",
+  "passed": false,
+  "verdicts": {
+   "holdout": {
+    "semantic_delta_mean": 0.9444,
+    "ci95": [
+     0.5926,
+     1.2963
+    ],
+    "checks": {
+     "x1": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": -0.0289
+     },
+     "x5": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": -0.0128
+     },
+     "x20": {
+      "keyword_group_drops": [
+       "G2"
+      ],
+      "keyword_mrr_drop": -0.0735
+     }
+    }
+   },
+   "policy": {
+    "semantic_delta_mean": 0.275,
+    "ci95": [
+     0.1917,
+     0.3583
+    ],
+    "checks": {
+     "x1": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": 0.0796
+     }
+    }
+   }
+  }
+ }
+]
