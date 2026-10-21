@@ -15,5 +15,4 @@ MODELS = {
 ARMS = [
     {"name": "L0", "kind": "lexical", "expansions": None},
     {"name": "X-v0", "kind": "lexical", "expansions": "v0"},
-    {"name": "X-v1", "kind": "lexical", "expansions": "v1"},
 ]
