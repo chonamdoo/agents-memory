@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### hook 경로의 필수 규칙 누락과 회상 지연
+
+- OMP `read`의 줄 범위 같은 보기 지정(`src/a.py:1-20`, `data.json?q=…`, `archive.zip:member`)이 경로에 그대로 남아, 경로 selector가 있는 필수 규칙이 오류 없이 빠지던 문제를 고쳤다(I16). 이제 `read`는 `:`·`?` 앞에서 실제로 존재하는 가장 긴 경로를 대상으로 쓴다. 존재하는 경로가 없는데 마지막 경로 구성요소에 `:`·`?`가 있으면 없는 파일인지 보기 지정인지 알 수 없어 `HOST_FOOTPRINT_UNKNOWN`이다. 보기 지정 뒤에 `..` 경로 구성요소가 있으면 다른 파일을 가리킬 수 있어 역시 `HOST_FOOTPRINT_UNKNOWN`이다. 범위만 다른 read는 같은 파일이라 행동 직전 회상도 중복 제거된다. `write`·`edit`는 보기 지정이 없으므로 경로를 그대로 쓴다.
+- hook의 1차 회상(행동 직전·`--prompt-recall`)은 새 `/api/hook-context`를 쓴다. 응답에 쓰지 않는 corpus 통계(`_stats`)를 계산하지 않는다. 이전에 실제 corpus에서 잰 `_stats` 시간은 약 1.3초였다. 새 경로의 회상 시간과 동시 hook이 2초 회상 예산 안에 드는지는 배포 후 측정한다. 통계를 평가하지 않았으므로 응답은 `partial: true`이고 `pipeline`·`coverage`·`health`를 넣지 않는다. MCP `memory_context`와 `/api/context`는 그대로 통계를 반환한다.
+- 회상 검색(`search_lexical`)은 lock 없는 snapshot에서 검색·관계·원문 lineage·health manifest를 계산하고, 전역 clock lock은 credential 재확인과 admission 기록에만 짧게 잡는다. 검색과 기록 사이에 삭제가 commit되면(기록 transaction이 lock을 기다리는 동안 commit된 경우 포함) 한 번 다시 검색하고, 다시 바뀌면 `ADMISSION_STALE`이다. 실제 삭제 journal 불일치만 `DELETION_BARRIER`로 남는다. 그 사이 credential이 바뀌면 기존처럼 거절한다. admission은 검색이 본 snapshot의 epoch·deletion generation을 기록하며, 그 밖의 변경은 기존처럼 전달 시점 재검사가 거절한다.
+
 ### context 전달의 전역 lock 대기
 
 - 읽기 전용인 `rules()`와 context `delivery`가 전역 `am_clock ... FOR UPDATE` lock을 잡던 문제를 고쳤다. delivery는 응답의 partial 판정용 corpus 통계(`_stats`, 실제 corpus에서 수천 번의 순차 DB 조회, 약 1.3초)를 이 lock 안에서 계산했다. 그래서 모든 agent의 read·write·edit hook(required-context와 행동 직전 회상)과 prompt capture가 한 줄로 기다렸다. 동시 hook은 4초 client 기한을 넘겨 `action: SERVICE_UNAVAILABLE`로 보였고, 같은 lock을 기다리는 입력 capture 때문에 Enter가 멈췄다.

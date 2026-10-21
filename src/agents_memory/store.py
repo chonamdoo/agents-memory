@@ -1319,6 +1319,13 @@ class Store:
             health_manifest = await self._admitted_health_manifest(connection, binding_id,
                 [item.id for item in claims], relation_ids,
                 code_workspace_id=code_workspace_id, workspace_scoped=purpose == 'caller_recall')
+        return await self._insert_caller_admission(connection, clock, actor, binding_id, purpose, request_digest, snapshot,
+            policy, health_manifest, claims=claims, sources=sources, relation_ids=relation_ids,
+            rejection_ids=rejection_ids, pending_id=pending_id)
+
+    async def _insert_caller_admission(self, connection, clock, actor, binding_id, purpose, request_digest, snapshot,
+        policy, health_manifest, *, claims=(), sources=(), relation_ids=(), rejection_ids=(), pending_id=None) -> NonmodelAdmission:
+        """Record inputs already read at `clock`; the caller holds the clock lock and rechecked `actor` under it."""
         await connection.execute("""DELETE FROM am_admissions WHERE id IN (SELECT id FROM am_admissions
             WHERE kind='nonmodel' AND deadline<=clock_timestamp() LIMIT 64)""")
         row = await connection.fetchrow("""INSERT INTO am_admissions(id,binding_id,credential_id,credential_generation,epoch,
@@ -2472,62 +2479,95 @@ class Store:
             not isinstance(token, str) or not token or len(token.encode()) > 1024 for token in lexical_tokens
         ):
             raise DomainError("SEARCH_LIMIT_INVALID", "The retrieval bounds are invalid")
-        async with self._tx() as (connection, clock):
-            current = await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR))
-            rows = await connection.fetch(f"""WITH eligible AS MATERIALIZED (
-                SELECT c.* FROM am_claims c JOIN am_source_selections q ON q.id=c.selection_id
-                WHERE c.binding_id=$1 AND c.state='active' AND c.draft IS NOT NULL AND c.superseded_by IS NULL
-                AND c.capability='agent_judged' AND q.state='active' AND q.realm=$4
-                AND (c.snapshot IS NULL OR c.snapshot=$3)
-                AND (c.valid_from IS NULL OR c.valid_from<=clock_timestamp()) AND (c.valid_until IS NULL OR c.valid_until>clock_timestamp())
-                AND ({_HEALTH_REUSE_SQL}) AND ({_CODE_CONTEXT_SQL.format(workspace="$7")})
-                AND EXISTS(SELECT 1 FROM am_claim_sources d WHERE d.claim_id=c.id)
-                AND NOT EXISTS(SELECT 1 FROM am_claim_sources d JOIN am_sources s ON s.id=d.source_id WHERE d.claim_id=c.id
-                    AND (s.state<>'active' OR s.body IS NULL OR s.revision<>d.source_revision OR s.binding_id<>$1 OR s.realm<>$4
-                    OR (s.snapshot IS NOT NULL AND s.snapshot IS DISTINCT FROM $3)))
-            ), lexical_candidates AS (
-                SELECT id,row_number() OVER(ORDER BY cardinality(ARRAY(SELECT unnest(lexical_tokens) INTERSECT SELECT unnest($2::text[]))) DESC,id) AS rank
-                FROM eligible WHERE lexical_tokens && $2::text[]
-                ORDER BY cardinality(ARRAY(SELECT unnest(lexical_tokens) INTERSECT SELECT unnest($2::text[]))) DESC,id LIMIT $5
-            ), entity_candidates AS (
-                SELECT c.id,row_number() OVER(ORDER BY count(*) DESC,c.id) AS rank
-                FROM eligible c JOIN am_entities e ON e.claim_id=c.id WHERE e.search_name=ANY($6::text[])
-                GROUP BY c.id ORDER BY count(*) DESC,c.id LIMIT $5
-            ), arms AS (
-                SELECT id,rank,'lexical'::text AS arm FROM lexical_candidates
-                UNION ALL SELECT id,rank,'entity' FROM entity_candidates
-            ), fused AS (
-                SELECT id,sum(1.0/(60+rank)) AS score,array_agg(arm ORDER BY arm) AS arms
-                FROM arms GROUP BY id ORDER BY score DESC,id LIMIT $5
-            ) SELECT c.*,f.arms FROM fused f JOIN eligible c ON c.id=f.id ORDER BY f.score DESC,c.id""",
-                binding_id, list(dict.fromkeys(lexical_tokens)), snapshot, current.realm, limit,
-                list(dict.fromkeys(_entity(token) for token in lexical_tokens)), code_workspace_id)
-            claim_ids = tuple(row["id"] for row in rows)
-            relations = await self._lexical_relations(
-                connection, binding_id, claim_ids, snapshot,
-                code_workspace_id=code_workspace_id, workspace_scoped=True)
-            dependencies = await connection.fetch("""SELECT DISTINCT source_id FROM am_claim_sources WHERE claim_id=ANY($1::text[])
-                UNION SELECT source_id FROM am_relation_sources WHERE relation_id=ANY($2::text[]) ORDER BY source_id""",
-                list(claim_ids), [row["id"] for row in relations])
-            inputs = {row["source_id"] for row in dependencies}
-            relation_claims = await connection.fetch("""SELECT DISTINCT claim_id FROM am_relation_claims WHERE relation_id=ANY($1::text[])
-                UNION SELECT unnest($2::text[]) AS claim_id""", [row["id"] for row in relations],
-                sorted({endpoint for row in relations for endpoint in (row["left_id"], row["right_id"])}))
-            for item in relation_claims:
-                sources = await connection.fetch("SELECT source_id FROM am_claim_sources WHERE claim_id=$1", item["claim_id"])
-                inputs.update(row["source_id"] for row in sources)
-            if len(inputs) > 128:
-                raise DomainError("MANIFEST_TOO_LARGE", "The complete lexical and relation source lineage exceeds the input limit")
-            sources = []
-            for source_id in sorted(inputs):
-                source = await self._source_row(connection, binding_id, source_id, snapshot, True)
-                sources.append({"id": source_id, "revision": source["revision"]})
-            admission = await self._new_caller_admission(connection, clock, current, binding_id, "caller_recall",
-                request_digest, snapshot,
-                claims=tuple(RevisionRef(id=claim["id"], revision=claim["revision"]) for claim in rows),
-                sources=tuple(RevisionRef.model_validate(source) for source in sources),
-                relation_ids=tuple(relation["id"] for relation in relations), code_workspace_id=code_workspace_id)
-            return [(await self._claim(connection, claim), tuple(claim["arms"])) for claim in rows], admission
+        # The search reads one lock-free snapshot; only the admission insert queues behind writers. A deletion that
+        # commits in between, before or after the insert read the journal, makes the snapshot stale, so it re-searches.
+        # A lock-free read waits out a queued deletion before judging the journal, so only a real fault stays a barrier;
+        # a changed credential is refused by `_actor`.
+        for attempt in range(2):
+            async with self._tx(lock=False, snapshot=True) as (connection, seen):
+                current = await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR))
+                found, admitted = await self._lexical_recall_inputs(
+                    connection, current, binding_id, lexical_tokens, snapshot, limit, code_workspace_id)
+            try:
+                async with self._tx() as (connection, clock):
+                    locked = await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR))
+                    if clock["deletion_generation"] != seen["deletion_generation"]:
+                        continue
+                    admission = await self._insert_caller_admission(
+                        connection, seen, locked, binding_id, "caller_recall", request_digest, snapshot, **admitted)
+            except DomainError as error:
+                if error.code != "DELETION_BARRIER":
+                    raise
+                if attempt:
+                    async with self._tx(lock=False):
+                        pass
+                continue
+            return found, admission
+        raise DomainError("ADMISSION_STALE", "Deletions kept replacing the recall search inputs")
+
+    async def _lexical_recall_inputs(
+        self, connection, current: Principal, binding_id: str, lexical_tokens: list[str], snapshot: str | None,
+        limit: int, code_workspace_id: str | None,
+    ) -> tuple[list[tuple[Claim, tuple[str, ...]]], dict]:
+        rows = await connection.fetch(f"""WITH eligible AS MATERIALIZED (
+            SELECT c.* FROM am_claims c JOIN am_source_selections q ON q.id=c.selection_id
+            WHERE c.binding_id=$1 AND c.state='active' AND c.draft IS NOT NULL AND c.superseded_by IS NULL
+            AND c.capability='agent_judged' AND q.state='active' AND q.realm=$4
+            AND (c.snapshot IS NULL OR c.snapshot=$3)
+            AND (c.valid_from IS NULL OR c.valid_from<=clock_timestamp()) AND (c.valid_until IS NULL OR c.valid_until>clock_timestamp())
+            AND ({_HEALTH_REUSE_SQL}) AND ({_CODE_CONTEXT_SQL.format(workspace="$7")})
+            AND EXISTS(SELECT 1 FROM am_claim_sources d WHERE d.claim_id=c.id)
+            AND NOT EXISTS(SELECT 1 FROM am_claim_sources d JOIN am_sources s ON s.id=d.source_id WHERE d.claim_id=c.id
+                AND (s.state<>'active' OR s.body IS NULL OR s.revision<>d.source_revision OR s.binding_id<>$1 OR s.realm<>$4
+                OR (s.snapshot IS NOT NULL AND s.snapshot IS DISTINCT FROM $3)))
+        ), lexical_candidates AS (
+            SELECT id,row_number() OVER(ORDER BY cardinality(ARRAY(SELECT unnest(lexical_tokens) INTERSECT SELECT unnest($2::text[]))) DESC,id) AS rank
+            FROM eligible WHERE lexical_tokens && $2::text[]
+            ORDER BY cardinality(ARRAY(SELECT unnest(lexical_tokens) INTERSECT SELECT unnest($2::text[]))) DESC,id LIMIT $5
+        ), entity_candidates AS (
+            SELECT c.id,row_number() OVER(ORDER BY count(*) DESC,c.id) AS rank
+            FROM eligible c JOIN am_entities e ON e.claim_id=c.id WHERE e.search_name=ANY($6::text[])
+            GROUP BY c.id ORDER BY count(*) DESC,c.id LIMIT $5
+        ), arms AS (
+            SELECT id,rank,'lexical'::text AS arm FROM lexical_candidates
+            UNION ALL SELECT id,rank,'entity' FROM entity_candidates
+        ), fused AS (
+            SELECT id,sum(1.0/(60+rank)) AS score,array_agg(arm ORDER BY arm) AS arms
+            FROM arms GROUP BY id ORDER BY score DESC,id LIMIT $5
+        ) SELECT c.*,f.arms FROM fused f JOIN eligible c ON c.id=f.id ORDER BY f.score DESC,c.id""",
+            binding_id, list(dict.fromkeys(lexical_tokens)), snapshot, current.realm, limit,
+            list(dict.fromkeys(_entity(token) for token in lexical_tokens)), code_workspace_id)
+        claim_ids = tuple(row["id"] for row in rows)
+        relations = await self._lexical_relations(
+            connection, binding_id, claim_ids, snapshot,
+            code_workspace_id=code_workspace_id, workspace_scoped=True)
+        relation_ids = tuple(relation["id"] for relation in relations)
+        dependencies = await connection.fetch("""SELECT DISTINCT source_id FROM am_claim_sources WHERE claim_id=ANY($1::text[])
+            UNION SELECT source_id FROM am_relation_sources WHERE relation_id=ANY($2::text[]) ORDER BY source_id""",
+            list(claim_ids), list(relation_ids))
+        inputs = {row["source_id"] for row in dependencies}
+        relation_claims = await connection.fetch("""SELECT DISTINCT claim_id FROM am_relation_claims WHERE relation_id=ANY($1::text[])
+            UNION SELECT unnest($2::text[]) AS claim_id""", list(relation_ids),
+            sorted({endpoint for row in relations for endpoint in (row["left_id"], row["right_id"])}))
+        for item in relation_claims:
+            sources = await connection.fetch("SELECT source_id FROM am_claim_sources WHERE claim_id=$1", item["claim_id"])
+            inputs.update(row["source_id"] for row in sources)
+        if len(inputs) > 128:
+            raise DomainError("MANIFEST_TOO_LARGE", "The complete lexical and relation source lineage exceeds the input limit")
+        sources = []
+        for source_id in sorted(inputs):
+            source = await self._source_row(connection, binding_id, source_id, snapshot, True)
+            sources.append(RevisionRef(id=source_id, revision=source["revision"]))
+        admitted = {
+            "policy": await self._selection_contract(connection, current, binding_id),
+            "health_manifest": await self._admitted_health_manifest(
+                connection, binding_id, list(claim_ids), relation_ids,
+                code_workspace_id=code_workspace_id, workspace_scoped=True),
+            "claims": tuple(RevisionRef(id=claim["id"], revision=claim["revision"]) for claim in rows),
+            "sources": tuple(sources),
+            "relation_ids": relation_ids,
+        }
+        return [(await self._claim(connection, claim), tuple(claim["arms"])) for claim in rows], admitted
 
     async def _recheck_nonmodel(self, connection, clock, actor: Principal, admission: NonmodelAdmission):
         row = await connection.fetchrow("""SELECT * FROM am_admissions WHERE id=$1 AND kind='nonmodel'

@@ -56,7 +56,7 @@ def recall_authority(monkeypatch):
                     "context": text, "context_bytes": len(text.encode()), "required": self.required,
                     "stamp": {"epoch": 1, "rules": [RULE] if self.required else []},
                 }
-            assert path == "/api/context"
+            assert path == "/api/hook-context"
             if isinstance(self.recall_error, str):
                 raise DomainError(self.recall_error, "Optional recall refused")
             if self.recall_error is not None:
@@ -130,7 +130,7 @@ def test_omp_action_recall_follows_required_context_and_deduplicates_per_submiss
     assert recall_authority.routes() == []
 
     first = hosts.handle_hook(receipt, omp_read(project))
-    assert recall_authority.routes() == ["/api/required-context", "/api/context"]
+    assert recall_authority.routes() == ["/api/required-context", "/api/hook-context"]
     lines, handoff = handoff_of(first)
     assert lines[1] == REQUIRED, "required context is delivered first and stays intact"
     sent = recall_authority.calls[-1][1]
@@ -163,6 +163,41 @@ def test_omp_action_recall_follows_required_context_and_deduplicates_per_submiss
     assert renewed["recall_offers"]["offered_recall_admissions"] == 1
 
 
+def test_omp_selector_paths_reach_required_rules_and_unknown_stays_unknown(installation, recall_authority):
+    project, _, _, _, install = installation
+    (project / "src").mkdir()
+    (project / "src" / "alpha.py").write_text("ALPHA = 1\n")
+    (project / "data.json").write_text("{}\n")
+    receipt = install("omp")
+    hosts.handle_hook(receipt, native(project, "omp", "before_agent_start", prompt="Review the module."))
+
+    def required_paths():
+        return [payload["paths"] for route, payload in recall_authority.calls if route == "/api/required-context"]
+
+    ranged = hosts.handle_hook(receipt, omp_read(project, "src/alpha.py:1-20"))
+    assert required_paths() == [["src/alpha.py"]], "a line range selects a view of the file, not another file"
+    assert handoff_of(ranged)[0][1] == REQUIRED
+    other_range = hosts.handle_hook(receipt, omp_read(project, "src/alpha.py:30-40"))
+    assert other_range["recall"] == {"trigger": "pre_action_paths", "state": "deduplicated"}
+    hosts.handle_hook(receipt, omp_read(project, "data.json?q=.items"))
+    assert required_paths()[-1] == ["data.json"]
+
+    missing = hosts.handle_hook(receipt, omp_read(project, "src/missing.py:1-5"))
+    assert missing["code"] == "HOST_FOOTPRINT_UNKNOWN", "a missing path with a selector-like suffix is unknown, not unmatched"
+    climbing = hosts.handle_hook(receipt, omp_read(project, "src/alpha.py:x/../../data.json"))
+    assert climbing["code"] == "HOST_FOOTPRINT_UNKNOWN", "a `..` after the selector leaves the target ambiguous"
+    created = hosts.handle_hook(receipt, native(
+        project, "omp", "tool_call", tool_name="write", tool_input={"path": "src/new_module.py", "content": "NEW = 1\n"},
+    ))
+    assert created["code"] != "HOST_FOOTPRINT_UNKNOWN" and required_paths()[-1] == ["src/new_module.py"]
+    hosts.handle_hook(receipt, native(
+        project, "omp", "tool_call", tool_name="write", tool_input={"path": "src/alpha.py:bak", "content": "OLD = 1\n"},
+    ))
+    assert required_paths()[-1] == ["src/alpha.py:bak"], "a write names the file it creates; there is no view to set aside"
+    nested = hosts.handle_hook(receipt, omp_read(project, "notes:2026/todo.md"))
+    assert nested["code"] != "HOST_FOOTPRINT_UNKNOWN" and required_paths()[-1] == ["notes:2026/todo.md"]
+
+
 def test_empty_manifest_adds_nothing_and_is_not_reoffered(installation, recall_authority):
     project, _, _, _, install = installation
     recall_authority.candidates = []
@@ -173,7 +208,7 @@ def test_empty_manifest_adds_nothing_and_is_not_reoffered(installation, recall_a
     assert result["recall"] == {"trigger": "pre_action_paths", "state": "empty", "candidates": 0}
     assert result["recall_offers"]["offered_recall_admissions"] == 0
     hosts.handle_hook(receipt, omp_read(project))
-    assert recall_authority.routes().count("/api/context") == 1
+    assert recall_authority.routes().count("/api/hook-context") == 1
 
 
 def test_overflow_at_action_time_keeps_required_rules_and_omits_every_id(installation, recall_authority):
@@ -243,7 +278,7 @@ def test_strict_claude_keeps_deny_semantics_without_action_recall(installation, 
         project, "claude", "PreToolUse", tool_name="Write", tool_input={"file_path": str(project / "src/alpha.py")},
     ))
     assert result["stdout"]["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "/api/context" not in recall_authority.routes() and "recall" not in result
+    assert "/api/hook-context" not in recall_authority.routes() and "recall" not in result
 
 
 def test_codex_declares_prompt_time_only_and_registers_no_advisory_action_hook(installation):
@@ -265,7 +300,7 @@ def test_pre_action_recall_receipts_stay_active_and_reinstall_is_explicit(instal
     assert "action_recall" not in loaded["capabilities"] and loaded["adapter_version"] == hosts.ADAPTER_VERSION
     hosts.handle_hook(receipt, native(project, "omp", "before_agent_start", prompt="Review the module."))
     result = hosts.handle_hook(receipt, omp_read(project))
-    assert "/api/context" not in recall_authority.routes() and "recall" not in result
+    assert "/api/hook-context" not in recall_authority.routes() and "recall" not in result
     with pytest.raises(DomainError) as changed:
         install("omp")
     assert changed.value.code == "HOST_ALREADY_INSTALLED"
@@ -299,7 +334,7 @@ def test_fork_installations_exclude_action_recall(installation, recall_authority
         result = hosts.handle_hook(receipt, native(
             project, "claude", "PreToolUse", tool_name="Read", tool_input={"file_path": str(project / "src/alpha.py")},
         ))
-        assert "/api/context" not in recall_authority.routes() and "recall" not in result
+        assert "/api/hook-context" not in recall_authority.routes() and "recall" not in result
 
 
 def test_fork_receipt_carrying_action_recall_is_invalid(installation):
@@ -320,7 +355,7 @@ def test_fork_prompt_recall_hands_off_the_workflow_without_ids(installation, rec
     receipt = install(host, strict=False, prompt_recall=True, recall_mode="fork-experimental")
     result = hosts.handle_hook(receipt, native(project, host, "UserPromptSubmit", prompt="Review the module."))
     context = result["stdout"].get("additionalContext") or result["stdout"].get("hookSpecificOutput", {}).get("additionalContext")
-    assert "/api/context" in recall_authority.routes()
+    assert "/api/hook-context" in recall_authority.routes()
     # Every first-call admission this endpoint issues starts with "admission_".
     assert not any(claim in context for claim in CLAIMS) and "admission_" not in context
     assert "candidate_ids" not in context and "admission_id" not in context

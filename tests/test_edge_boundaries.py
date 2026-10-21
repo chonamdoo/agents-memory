@@ -126,6 +126,21 @@ async def test_producer_capture_authority_never_grants_memory_read_authority(aut
             assert json.loads(denied)["error"]["code"] == "SCOPE_DENIED"
 
 
+async def test_hook_context_route_answers_agents_without_statistics_and_refuses_producers(authority):
+    producer_token = "wire-hook-producer-" + "p" * 32
+    await authority.store.issue_token(authority.actor, Role.PRODUCER, (authority.binding_id,), producer_token)
+    payload = {"binding_id": authority.binding_id, "query": "CacheKey offline", "host": "omp"}
+    async with running(authority) as edge:
+        status, body = await request(edge, payload, path="/api/hook-context")
+        hook = json.loads(body)
+        assert status == 200 and hook["partial"] is True and hook["status"] == "partial"
+        assert not {"pipeline", "coverage", "health"} & set(hook), "the hook route does not assess coverage"
+        status, body = await request(edge, payload, path="/api/context")
+        assert status == 200 and {"pipeline", "coverage"} <= set(json.loads(body))
+        status, denied = await request(edge, payload, producer_token, path="/api/hook-context")
+        assert status == 403 and json.loads(denied)["error"]["code"] == "SCOPE_DENIED"
+
+
 @pytest.mark.parametrize("arguments", [
     {"query": "recall", "limit": "3"},
     {"query": "recall", "limit": 3.0},
