@@ -14,28 +14,30 @@ expansions both equal $2 and $6.
 """
 from __future__ import annotations
 
-EXPANSION_WEIGHT = 0.25
+EXPANSION_ARM_WEIGHT = 1.0
 
-# A claim's lexical score counts its overlap with the caller's query tokens fully and its overlap with
-# expansion-only tokens at EXPANSION_WEIGHT; entity matches are weighed the same way. Without
-# expansions every token is a query token, so the order is the plain overlap order.
+# The lexical and entity arms rank by the caller's own query tokens. Tokens that only expansions brought
+# form a separate RRF arm weighted EXPANSION_ARM_WEIGHT. Without expansions that arm is empty and
+# the query tokens are all the tokens, so the order is the original one.
 RANKING_SQL = f""", lexical_candidates AS (
-                SELECT id,row_number() OVER(ORDER BY score DESC,id) AS rank FROM (
-                    SELECT e.id,cardinality(ARRAY(SELECT unnest(e.lexical_tokens) INTERSECT SELECT unnest(q.tokens)))
-                        + {EXPANSION_WEIGHT}*cardinality(ARRAY(SELECT unnest(e.lexical_tokens) INTERSECT SELECT unnest($2::text[])
-                            EXCEPT SELECT unnest(q.tokens))) AS score
+                SELECT e.id,row_number() OVER(ORDER BY cardinality(ARRAY(SELECT unnest(e.lexical_tokens) INTERSECT SELECT unnest(q.tokens))) DESC,e.id) AS rank
+                FROM eligible e CROSS JOIN query_terms q WHERE e.lexical_tokens && q.tokens
+                ORDER BY cardinality(ARRAY(SELECT unnest(e.lexical_tokens) INTERSECT SELECT unnest(q.tokens))) DESC,e.id LIMIT $5
+            ), expansion_candidates AS (
+                SELECT id,row_number() OVER(ORDER BY overlap DESC,id) AS rank FROM (
+                    SELECT e.id,cardinality(ARRAY(SELECT unnest(e.lexical_tokens) INTERSECT SELECT unnest($2::text[])
+                        EXCEPT SELECT unnest(q.tokens))) AS overlap
                     FROM eligible e CROSS JOIN query_terms q WHERE e.lexical_tokens && $2::text[]
-                ) scored ORDER BY score DESC,id LIMIT $5
+                ) scored WHERE overlap>0 ORDER BY overlap DESC,id LIMIT $5
             ), entity_candidates AS (
-                SELECT c.id,row_number() OVER(ORDER BY sum(CASE WHEN e.search_name=ANY(q.search_names) THEN 1.0
-                    ELSE {EXPANSION_WEIGHT} END) DESC,c.id) AS rank
-                FROM eligible c JOIN am_entities e ON e.claim_id=c.id CROSS JOIN query_terms q WHERE e.search_name=ANY($6::text[])
-                GROUP BY c.id ORDER BY sum(CASE WHEN e.search_name=ANY(q.search_names) THEN 1.0
-                    ELSE {EXPANSION_WEIGHT} END) DESC,c.id LIMIT $5
+                SELECT c.id,row_number() OVER(ORDER BY count(*) DESC,c.id) AS rank
+                FROM eligible c JOIN am_entities e ON e.claim_id=c.id CROSS JOIN query_terms q WHERE e.search_name=ANY(q.search_names) AND $6::text[] IS NOT NULL
+                GROUP BY c.id ORDER BY count(*) DESC,c.id LIMIT $5
             ), arms AS (
-                SELECT id,rank,'lexical'::text AS arm FROM lexical_candidates
-                UNION ALL SELECT id,rank,'entity' FROM entity_candidates
+                SELECT id,rank,'lexical'::text AS arm,1.0 AS weight FROM lexical_candidates
+                UNION ALL SELECT id,rank,'entity',1.0 FROM entity_candidates
+                UNION ALL SELECT id,rank,'expansion',{EXPANSION_ARM_WEIGHT} FROM expansion_candidates
             ), fused AS (
-                SELECT id,sum(1.0/(60+rank)) AS score,array_agg(arm ORDER BY arm) AS arms
+                SELECT id,sum(weight/(60+rank)) AS score,array_agg(arm ORDER BY arm) AS arms
                 FROM arms GROUP BY id ORDER BY score DESC,id LIMIT $5
             ) SELECT c.*,f.arms FROM fused f JOIN eligible c ON c.id=f.id ORDER BY f.score DESC,c.id"""
