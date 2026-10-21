@@ -1,0 +1,1032 @@
+{
+ "dev-S1-00": [
+  "결제 재시도 횟수",
+  "payment retry",
+  "max retries",
+  "재시도 상한"
+ ],
+ "dev-S3-00": [
+  "max retries",
+  "retry count",
+  "결제 재시도 횟수"
+ ],
+ "dev-S4-00": [
+  "결제 재시도 횟수",
+  "payment retry",
+  "카드 승인 거절",
+  "authorization retry"
+ ],
+ "dev-S1-01": [
+  "원장 플러시 주기",
+  "ledger flush interval",
+  "원장 디스크 기록",
+  "flush interval"
+ ],
+ "dev-S3-01": [
+  "flush interval",
+  "ledger flush",
+  "원장 플러시 주기",
+  "운영 환경 플러시"
+ ],
+ "dev-S2-00": [
+  "멱등성 키 없는",
+  "idempotency key missing",
+  "환불 메시지",
+  "refund message"
+ ],
+ "dev-S3-02": [
+  "dedup key",
+  "idempotency key",
+  "중복 제거 키",
+  "환불 워커"
+ ],
+ "dev-S1-02": [
+  "정산 드라이런",
+  "dry-run",
+  "settlement batch",
+  "dry run 모드"
+ ],
+ "dev-S3-03": [
+  "dry run",
+  "드라이런",
+  "정산 배치 시뮬레이션"
+ ],
+ "dev-S1-03": [
+  "원화 반올림",
+  "KRW rounding",
+  "rounding mode",
+  "원 단위 반올림"
+ ],
+ "dev-S3-04": [
+  "KRW rounding",
+  "원화 반올림",
+  "원 단위 금액"
+ ],
+ "dev-S2-01": [
+  "커넥션 풀 크기",
+  "connection pool size",
+  "max pool size",
+  "DB 풀 최대"
+ ],
+ "dev-S3-05": [
+  "connection pool size",
+  "max pool size",
+  "DB 커넥션 풀 크기",
+  "결제 DB 커넥션"
+ ],
+ "dev-S2-02": [
+  "리플레이 공격",
+  "replay attack",
+  "웹훅 타임스탬프 허용",
+  "timestamp tolerance"
+ ],
+ "dev-S3-06": [
+  "replay attack window",
+  "웹훅 재전송 방지",
+  "타임스탬프 허용 시간"
+ ],
+ "dev-S1-04": [
+  "릴리스 노트",
+  "release notes",
+  "변경 로그",
+  "changelog"
+ ],
+ "dev-S3-07": [
+  "릴리스 노트 작성자",
+  "release notes author",
+  "릴리스 노트 작성 요일"
+ ],
+ "dev-S4-01": [
+  "릴리스 노트",
+  "release notes",
+  "릴리스 노트 담당",
+  "출시 공지"
+ ],
+ "dev-S2-03": [
+  "포스트모템 필수 항목",
+  "postmortem template",
+  "사후 분석 보고서",
+  "incident review"
+ ],
+ "dev-S3-08": [
+  "postmortem template",
+  "포스트모템 필수 항목",
+  "장애 회고",
+  "root cause"
+ ],
+ "dev-S1-05": [
+  "롤백 리허설",
+  "rollback drill",
+  "롤백 연습",
+  "출시 전 롤백"
+ ],
+ "dev-S3-09": [
+  "rollback rehearsal",
+  "롤백 리허설",
+  "배포 전 롤백 연습"
+ ],
+ "dev-S2-04": [
+  "고객 공지",
+  "customer notice",
+  "CS 검토",
+  "고객지원팀 확인"
+ ],
+ "dev-S3-10": [
+  "고객 공지 승인",
+  "support approval",
+  "고객 공지 발송 전 CS 승인",
+  "customer announcement"
+ ],
+ "dev-S1-06": [
+  "회의록 공유",
+  "meeting notes",
+  "회의록 업로드",
+  "공유 드라이브"
+ ],
+ "dev-S3-11": [
+  "회의록 업로드",
+  "meeting notes upload",
+  "공유 드라이브 회의록"
+ ],
+ "dev-S4-02": [
+  "회의록 공유",
+  "meeting notes",
+  "회의록 업로드",
+  "meeting minutes"
+ ],
+ "dev-S2-05": [
+  "용어집 승인",
+  "approval",
+  "glossary 승인",
+  "authorization"
+ ],
+ "dev-S3-12": [
+  "authorization",
+  "approval",
+  "결제 용어집"
+ ],
+ "dev-S1-07": [
+  "서명된 태그",
+  "signed tag",
+  "태그 서명",
+  "GPG 서명"
+ ],
+ "dev-S2-06": [
+  "release tag signing",
+  "signed tags",
+  "GPG 서명",
+  "태그 서명"
+ ],
+ "dev-S4-03": [
+  "git tag",
+  "릴리스 태그",
+  "release tag",
+  "배포 전 태그"
+ ],
+ "dev-S1-08": [
+  "스테이징 DB 리셋",
+  "staging database reset",
+  "스테이징 초기화",
+  "데이터 리프레시"
+ ],
+ "dev-S2-07": [
+  "staging DB reset",
+  "스테이징 DB 초기화",
+  "검증 환경 초기화"
+ ],
+ "dev-S4-04": [
+  "스테이징 데이터 삭제",
+  "staging data reset",
+  "스테이징 DB 초기화",
+  "staging wipe"
+ ],
+ "dev-S1-09": [
+  "PG 타임아웃",
+  "payment gateway timeout",
+  "자동 환불",
+  "auto refund"
+ ],
+ "dev-S2-08": [
+  "PG timeout",
+  "auto refund",
+  "자동 환불 소요 시간",
+  "망취소"
+ ],
+ "dev-S1-10": [
+  "PITR",
+  "point-in-time recovery",
+  "WAL 보관 기간",
+  "로그 보존 기간"
+ ],
+ "dev-S3-13": [
+  "WAL retention",
+  "PITR",
+  "WAL 보관 기간",
+  "시점 복구"
+ ],
+ "dev-S1-11": [
+  "피처 플래그 정리",
+  "feature flag cleanup",
+  "stale feature flag",
+  "플래그 제거"
+ ],
+ "dev-S2-09": [
+  "feature flag cleanup",
+  "피처 플래그 제거",
+  "stale feature flag",
+  "피처 토글 정리"
+ ],
+ "dev-S1-12": [
+  "릴리스 승인 리뷰어",
+  "release approval reviewers",
+  "승인자 수",
+  "required reviewers"
+ ],
+ "dev-S3-14": [
+  "deployment approvals",
+  "required reviewers",
+  "배포 승인자 수",
+  "배포 리뷰어"
+ ],
+ "dev-S1-13": [
+  "스키마 마이그레이션",
+  "schema migration",
+  "DB 마이그레이션 요일",
+  "프로덕션 DDL"
+ ],
+ "dev-S3-15": [
+  "schema migration window",
+  "운영 스키마 마이그레이션",
+  "마이그레이션 허용 시간"
+ ],
+ "dev-S2-10": [
+  "결제 API 지연 시간",
+  "latency SLO",
+  "p99 응답 시간",
+  "서비스 수준 목표"
+ ],
+ "dev-S3-16": [
+  "latency SLO",
+  "p99 latency",
+  "결제 API 응답 시간",
+  "지연 목표"
+ ],
+ "dev-S2-11": [
+  "카드 번호 마스킹",
+  "PAN masking",
+  "카드번호 로그 노출",
+  "PCI DSS"
+ ],
+ "dev-S3-17": [
+  "PAN masking",
+  "카드번호 마스킹",
+  "로그 마스킹"
+ ],
+ "dev-S2-12": [
+  "시맨틱 버저닝",
+  "semantic versioning",
+  "SemVer",
+  "릴리스 버전 번호"
+ ],
+ "dev-S3-18": [
+  "semantic versioning",
+  "semver",
+  "릴리스 문서 버전",
+  "문서 버전 번호"
+ ],
+ "dev-S1-14": [
+  "정산 마감 시각",
+  "settlement cutoff",
+  "일일 정산 컷오프",
+  "daily cutoff time"
+ ],
+ "dev-S3-19": [
+  "settlement cutoff",
+  "정산 마감 시각",
+  "일일 정산 마감"
+ ],
+ "dev-S1-15": [
+  "API 레퍼런스 작성 언어",
+  "API reference language",
+  "API docs",
+  "API 문서 언어"
+ ],
+ "dev-S3-20": [
+  "API 문서 언어",
+  "API documentation language",
+  "docs locale"
+ ],
+ "dev-S2-13": [
+  "PostgreSQL 버전",
+  "Postgres major version",
+  "PostgreSQL 업그레이드"
+ ],
+ "dev-S3-21": [
+  "PostgreSQL 버전 요구사항"
+ ],
+ "dev-S1-16": [
+  "부분 환불 한도",
+  "partial refund limit",
+  "환불 상한액",
+  "partial refund cap"
+ ],
+ "dev-S3-22": [
+  "partial refund amount",
+  "부분 환불",
+  "원거래 금액 초과",
+  "refund exceeds charge"
+ ],
+ "dev-S4-05": [
+  "초과 환불",
+  "over-refund",
+  "환불 금액 한도",
+  "refund exceeds payment"
+ ],
+ "dev-S2-14": [
+  "TLS 종료",
+  "TLS termination",
+  "SSL 오프로딩",
+  "리버스 프록시"
+ ],
+ "dev-S3-23": [
+  "TLS termination",
+  "TLS 종료 지점"
+ ],
+ "dev-S6-00": [
+  "온라인 결제 캐시",
+  "payment cache disk write",
+  "캐시 디스크 저장",
+  "online mode cache"
+ ],
+ "dev-S3-24": [
+  "cache persistence online",
+  "결제 캐시 디스크 저장",
+  "온라인 모드 캐시"
+ ],
+ "dev-S6-01": [
+  "금요일 오후 배포",
+  "Friday deploy",
+  "주말 전 배포",
+  "deploy freeze"
+ ],
+ "dev-S3-25": [
+  "Friday afternoon deploy",
+  "금요일 오후 배포",
+  "deploy freeze"
+ ],
+ "dev-S6-02": [
+  "테스트 카드 번호",
+  "test card",
+  "샌드박스 결제",
+  "실제 청구"
+ ],
+ "dev-S3-26": [
+  "test card numbers",
+  "테스트 카드",
+  "실결제 발생",
+  "sandbox charges"
+ ],
+ "dev-S6-03": [
+  "핫픽스 단독 머지",
+  "hotfix self-merge",
+  "긴급 수정 머지",
+  "리뷰 없이 머지"
+ ],
+ "dev-S3-27": [
+  "hotfix",
+  "emergency merge",
+  "긴급 수정 머지",
+  "리뷰 없이 머지"
+ ],
+ "dev-S6-04": [
+  "회의록 고객 이름",
+  "meeting notes customer names",
+  "고객 개인정보",
+  "PII 기재"
+ ],
+ "dev-S3-28": [
+  "PII in meeting notes",
+  "회의록 개인정보",
+  "고객 이름 회의록"
+ ],
+ "dev-S5-00": [
+  "카드 결제 재시도",
+  "card payment retry",
+  "재시도 변경 이력",
+  "retry backoff"
+ ],
+ "dev-S5-01": [
+  "retry count",
+  "max retries",
+  "결제 재시도 횟수"
+ ],
+ "dev-S5-02": [
+  "PR 승인 수",
+  "required approvals",
+  "머지 승인 인원",
+  "branch protection"
+ ],
+ "dev-S5-03": [
+  "merge approvals",
+  "required approvals",
+  "머지 승인 수",
+  "PR 리뷰어 수"
+ ],
+ "dev-S5-04": [
+  "커넥션 타임아웃",
+  "connection timeout",
+  "커넥션 풀 대기 시간",
+  "pool wait timeout"
+ ],
+ "dev-S5-05": [
+  "DB connection timeout",
+  "connect timeout",
+  "DB 연결 타임아웃"
+ ],
+ "dev-S8-00": [
+  "결제 수수료율",
+  "payment fee rate",
+  "PG 수수료",
+  "transaction fee"
+ ],
+ "dev-S8-01": [
+  "고객 귀책 환불",
+  "customer fault refund",
+  "단순 변심",
+  "고객 책임 사유"
+ ],
+ "dev-S8-02": [
+  "CI 캐시 만료",
+  "pipeline cache TTL",
+  "빌드 캐시",
+  "cache expiration"
+ ],
+ "dev-S8-03": [
+  "읽기 복제본 수",
+  "read replica count",
+  "레플리카 개수",
+  "DB replica"
+ ],
+ "dev-S8-04": [
+  "meeting room booking",
+  "room reservation",
+  "회의실 예약"
+ ],
+ "dev-S8-05": [
+  "card settlement cycle",
+  "카드 매입 정산",
+  "settlement period"
+ ],
+ "dev-G1-00": [
+  "최대 시도 횟수"
+ ],
+ "dev-G1-01": [
+  "결제 재시도 최대 횟수"
+ ],
+ "dev-G1-02": [
+  "maxAttempts",
+  "최대 재시도 횟수"
+ ],
+ "dev-G1-03": [
+  "플러시 주기"
+ ],
+ "dev-G1-04": [
+  "원장 기록 플러시 간격"
+ ],
+ "dev-G1-05": [
+  "환불 큐 멱등성"
+ ],
+ "dev-G1-06": [
+  "환불 큐 워커",
+  "멱등성 키"
+ ],
+ "dev-G1-07": [
+  "refund_queue_worker",
+  "idempotency key"
+ ],
+ "dev-G1-08": [
+  "정산 배치 드라이런"
+ ],
+ "dev-G1-09": [
+  "정산 드라이런",
+  "settlement dry-run",
+  "DB 쓰기 없이",
+  "--dry-run"
+ ],
+ "dev-G1-10": [
+  "은행가 반올림",
+  "원화 반올림"
+ ],
+ "dev-G1-11": [
+  "KRW rounding",
+  "원 단위 반올림",
+  "원화 소수점",
+  "decimal places"
+ ],
+ "dev-G1-12": [
+  "결제 DB 커넥션 풀 최대"
+ ],
+ "dev-G1-13": [
+  "DB 커넥션 풀 최대 크기"
+ ],
+ "dev-G1-14": [
+  "payment DB connection pool max"
+ ],
+ "dev-G1-15": [
+  "서명 검증 타임스탬프"
+ ],
+ "dev-G1-16": [
+  "웹훅 서명 검증",
+  "webhook signature verification",
+  "timestamp tolerance",
+  "replay attack",
+  "재전송 공격"
+ ],
+ "dev-G2-00": [
+  "릴리스 노트 작성자",
+  "release notes author",
+  "릴리스 노트 담당",
+  "changelog"
+ ],
+ "dev-G2-01": [
+  "릴리스 노트 작성",
+  "release notes",
+  "changelog 작성",
+  "변경 내역 정리"
+ ],
+ "dev-G2-02": [
+  "릴리스 노트 담당자",
+  "release notes owner",
+  "changelog 작성",
+  "릴리즈노트"
+ ],
+ "dev-G2-03": [
+  "포스트모템",
+  "postmortem",
+  "장애 회고 필수 항목",
+  "incident review"
+ ],
+ "dev-G2-04": [
+  "재발 방지 대책",
+  "postmortem action items",
+  "회고 액션 아이템",
+  "incident retrospective"
+ ],
+ "dev-G2-05": [
+  "롤백 리허설",
+  "rollback drill",
+  "롤백 훈련",
+  "복구 연습"
+ ],
+ "dev-G2-06": [
+  "롤백 리허설",
+  "rollback rehearsal",
+  "배포 체크리스트",
+  "release checklist"
+ ],
+ "dev-G2-07": [
+  "롤백 리허설",
+  "rollback rehearsal",
+  "롤백 훈련",
+  "rollback drill"
+ ],
+ "dev-G2-08": [
+  "변경 공지 검토자",
+  "change announcement review",
+  "공지 사전 검토",
+  "변경 안내 승인"
+ ],
+ "dev-G2-09": [
+  "공지문 검토",
+  "announcement review",
+  "공지 발송 승인",
+  "고객 공지"
+ ],
+ "dev-G2-10": [
+  "회의록 업로드 기한",
+  "meeting minutes",
+  "meeting notes",
+  "회의록 공유"
+ ],
+ "dev-G2-11": [
+  "회의록 업로드",
+  "meeting notes upload",
+  "meeting minutes",
+  "회의 기록 공유"
+ ],
+ "dev-G2-12": [
+  "회의록 업로드",
+  "meeting notes",
+  "회의록 공유 요일",
+  "meeting minutes"
+ ],
+ "dev-G2-13": [
+  "승인 번역어",
+  "approval",
+  "authorization",
+  "glossary 승인"
+ ],
+ "dev-G2-14": [
+  "결제 용어 번역",
+  "payment terminology translation",
+  "authorization 번역",
+  "용어집 glossary"
+ ],
+ "dev-G3-00": [
+  "서명된 태그",
+  "signed tag",
+  "GPG 서명",
+  "릴리스 태그",
+  "git tag -s"
+ ],
+ "dev-G3-01": [
+  "서명된 태그",
+  "signed tag",
+  "GPG 태그 서명",
+  "git tag signing"
+ ],
+ "dev-G3-02": [
+  "signed tag",
+  "release tag signing",
+  "GPG 서명",
+  "git tag 서명"
+ ],
+ "dev-G3-03": [
+  "서명된 태그",
+  "signed release tag",
+  "GPG 서명",
+  "git tag -s"
+ ],
+ "dev-G3-04": [
+  "스테이징 DB 리셋",
+  "staging database reset",
+  "스테이징 데이터 초기화",
+  "staging DB refresh"
+ ],
+ "dev-G3-05": [
+  "스테이징 DB 초기화",
+  "staging database reset",
+  "스테이징 DB 리셋",
+  "staging DB refresh"
+ ],
+ "dev-G3-06": [
+  "스테이징 DB 초기화",
+  "staging database reset",
+  "staging DB",
+  "데이터베이스 초기화"
+ ],
+ "dev-G3-07": [
+  "스테이징 데이터베이스",
+  "스테이징 DB 초기화",
+  "staging database reset",
+  "staging DB"
+ ],
+ "dev-G3-08": [
+  "PG 타임아웃",
+  "gateway timeout refund",
+  "결제 타임아웃 환불",
+  "망취소"
+ ],
+ "dev-G3-09": [
+  "PG 타임아웃",
+  "payment gateway timeout",
+  "타임아웃 후 환불",
+  "망취소"
+ ],
+ "dev-G3-10": [
+  "시점 복구",
+  "WAL retention"
+ ],
+ "dev-G3-11": [
+  "WAL retention period",
+  "point-in-time recovery"
+ ],
+ "dev-G3-12": [
+  "WAL 아카이빙",
+  "WAL backup",
+  "write-ahead log",
+  "WAL archive"
+ ],
+ "dev-G3-13": [
+  "WAL archiving",
+  "write-ahead log 백업"
+ ],
+ "dev-G3-14": [
+  "피처 플래그 정리",
+  "stale feature flag",
+  "플래그 제거",
+  "피처 토글"
+ ],
+ "dev-G3-15": [
+  "피처 플래그 정리",
+  "feature flag cleanup",
+  "stale feature flags",
+  "플래그 제거"
+ ],
+ "dev-G4-00": [
+  "배포 승인 리뷰어",
+  "required reviewers",
+  "배포 승인 인원",
+  "approval count"
+ ],
+ "dev-G4-01": [
+  "배포 승인",
+  "deployment approval",
+  "릴리스 승인 요건",
+  "배포 승인자"
+ ],
+ "dev-G4-02": [
+  "DB 마이그레이션 실행 시간",
+  "production migration",
+  "운영 스키마 변경",
+  "마이그레이션 시간대"
+ ],
+ "dev-G4-03": [
+  "마이그레이션 실행 요일",
+  "DB migration",
+  "마이그레이션 실행일",
+  "schema migration"
+ ],
+ "dev-G4-04": [
+  "p95 latency",
+  "응답 시간 목표",
+  "결제 API SLO",
+  "latency target"
+ ],
+ "dev-G4-05": [
+  "결제 API 응답 시간",
+  "latency SLO",
+  "p99 latency",
+  "응답 지연 목표"
+ ],
+ "dev-G4-06": [
+  "PAN 마스킹",
+  "card number masking",
+  "카드번호 로그",
+  "log masking"
+ ],
+ "dev-G4-07": [
+  "카드 번호 마스킹",
+  "PAN masking",
+  "card number logging",
+  "PCI DSS"
+ ],
+ "dev-G4-08": [
+  "semantic versioning",
+  "시맨틱 버저닝",
+  "semver",
+  "버전 번호 체계"
+ ],
+ "dev-G4-09": [
+  "시맨틱 버저닝",
+  "semantic versioning"
+ ],
+ "dev-G5-00": [
+  "정산 마감 시간",
+  "settlement cutoff",
+  "정산 컷오프",
+  "cutoff time"
+ ],
+ "dev-G5-01": [
+  "정산 마감 시각",
+  "settlement cutoff"
+ ],
+ "dev-G5-02": [
+  "정산 마감 시간",
+  "settlement cutoff",
+  "정산 컷오프",
+  "settlement deadline"
+ ],
+ "dev-G5-03": [
+  "API 문서 작성 언어",
+  "API documentation language",
+  "API 레퍼런스"
+ ],
+ "dev-G5-04": [
+  "문서 작성 언어",
+  "documentation language"
+ ],
+ "dev-G5-05": [
+  "required PostgreSQL version",
+  "Postgres 버전",
+  "최소 PostgreSQL 버전"
+ ],
+ "dev-G5-06": [
+  "PostgreSQL 18"
+ ],
+ "dev-G5-07": [
+  "부분 환불",
+  "partial refund limit",
+  "부분 환불 최대 금액",
+  "환불 가능 금액"
+ ],
+ "dev-G5-08": [
+  "부분 환불 금액",
+  "partial refund",
+  "원결제 금액 초과",
+  "refund exceeds original"
+ ],
+ "dev-G5-09": [
+  "부분 환불 한도",
+  "partial refund limit",
+  "환불 금액 상한",
+  "부분환불"
+ ],
+ "dev-G5-10": [
+  "TLS termination",
+  "SSL 종료",
+  "TLS 오프로딩"
+ ],
+ "dev-G5-11": [
+  "TLS 인증서",
+  "TLS certificate"
+ ],
+ "dev-G6-00": [
+  "결제 재시도",
+  "payment retry",
+  "최대 재시도",
+  "retry count"
+ ],
+ "dev-G6-01": [
+  "결제 재시도 횟수",
+  "payment retry",
+  "max retries",
+  "재시도 한도"
+ ],
+ "dev-G6-02": [
+  "결제 재시도 횟수",
+  "payment retry count",
+  "재시도 최대 횟수"
+ ],
+ "dev-G6-03": [
+  "머지 조건",
+  "merge requirements",
+  "PR 승인 조건",
+  "코드 리뷰 승인"
+ ],
+ "dev-G6-04": [
+  "머지 승인 인원",
+  "required approvals",
+  "PR 리뷰어 수",
+  "코드 리뷰 승인"
+ ],
+ "dev-G6-05": [
+  "DB connection timeout",
+  "DB 연결 타임아웃",
+  "커넥션 타임아웃",
+  "connection timeout"
+ ],
+ "dev-G6-06": [
+  "DB 연결 타임아웃",
+  "connection timeout",
+  "connect timeout",
+  "커넥션 타임아웃"
+ ],
+ "dev-G7-00": [
+  "결제 캐시 디스크",
+  "payment cache disk",
+  "on-disk cache",
+  "캐시 영속화"
+ ],
+ "dev-G7-01": [
+  "디스크 캐시",
+  "disk cache",
+  "캐시 영속화",
+  "cache persistence"
+ ],
+ "dev-G7-02": [
+  "금요일 배포",
+  "Friday deploy",
+  "배포 금지 요일",
+  "배포 프리즈"
+ ],
+ "dev-G7-03": [
+  "배포 금지 시간대",
+  "deploy freeze",
+  "deployment blackout",
+  "배포 프리즈"
+ ],
+ "dev-G7-04": [
+  "금요일 배포",
+  "Friday deploy",
+  "금요일 릴리스",
+  "Friday release"
+ ],
+ "dev-G7-05": [
+  "테스트 카드",
+  "test card",
+  "실결제",
+  "sandbox 결제"
+ ],
+ "dev-G7-06": [
+  "테스트 카드",
+  "test card",
+  "실결제 테스트",
+  "live payment test"
+ ],
+ "dev-G7-07": [
+  "긴급 패치 머지",
+  "hotfix merge",
+  "단독 머지",
+  "셀프 머지"
+ ],
+ "dev-G7-08": [
+  "핫픽스 단독 머지",
+  "hotfix merge",
+  "단독 승인 머지",
+  "self-merge"
+ ],
+ "dev-G7-09": [
+  "회의록 고객 이름",
+  "meeting notes customer name",
+  "고객 개인정보",
+  "고객명 기재"
+ ],
+ "dev-G7-10": [
+  "회의록 실명 기재",
+  "meeting minutes names",
+  "참석자 이름",
+  "익명화"
+ ],
+ "dev-G8-00": [
+  "cafeteria menu",
+  "구내식당 메뉴",
+  "사내 식당"
+ ],
+ "dev-G8-01": [
+  "dark mode colors",
+  "dark theme palette",
+  "다크 모드 색상",
+  "모바일 다크 테마"
+ ],
+ "dev-G8-02": [
+  "연말 워크숍",
+  "year-end workshop",
+  "워크숍 장소",
+  "연말 행사"
+ ],
+ "dev-G8-03": [
+  "Horizontal Pod Autoscaler",
+  "오토스케일링"
+ ],
+ "dev-G8-04": [
+  "GraphQL schema versioning",
+  "스키마 버전 관리",
+  "GraphQL 스키마 변경",
+  "schema evolution"
+ ],
+ "dev-G8-05": [
+  "주차장 이용",
+  "parking",
+  "주차 등록",
+  "주차 공간"
+ ],
+ "dev-G9-00": [
+  "배포 승인 리뷰어",
+  "deploy approval reviewers",
+  "required approvals",
+  "승인자 수"
+ ],
+ "dev-G9-01": [
+  "캐시 디스크 오프라인",
+  "cache disk offline",
+  "캐시 디스크 장애",
+  "cache disk failure"
+ ],
+ "dev-G9-02": [
+  "운영 DB 마이그레이션",
+  "production database migration",
+  "프로덕션 DB 마이그레이션",
+  "migration 요일"
+ ],
+ "dev-G9-03": [
+  "결제 API p95",
+  "payment API latency",
+  "p95 latency target",
+  "응답 시간 SLO"
+ ],
+ "dev-G9-04": [
+  "로그 마스킹 저장",
+  "log masking",
+  "민감정보 마스킹",
+  "PII redaction"
+ ],
+ "dev-G9-05": [
+  "금요일 배포",
+  "Friday production deploy",
+  "운영 배포 시간대",
+  "deploy window"
+ ],
+ "dev-G9-06": [
+  "결제 재시도 횟수",
+  "payment retry count",
+  "retry attempts",
+  "재시도 횟수 변경"
+ ],
+ "dev-G9-07": [
+  "배포 승인 리뷰어",
+  "deploy approval reviewer",
+  "배포 승인자",
+  "approver"
+ ]
+}
