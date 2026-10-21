@@ -18,4 +18,10 @@ ARMS = [
     {"name": "X-v2", "kind": "lexical", "expansions": "v2"},
     {"name": "X-v3", "kind": "lexical", "expansions": "v3"},
     {"name": "X-v4", "kind": "lexical", "expansions": "v4"},
+    {"name": "D-e5", "kind": "dense", "model": "intfloat/multilingual-e5-large", "expansions": None},
+    {"name": "D-mini", "kind": "dense", "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2", "expansions": None},
+    {"name": "D-potion", "kind": "dense", "model": "minishlab/potion-multilingual-128M", "expansions": None},
+    {"name": "H-e5", "kind": "hybrid", "model": "intfloat/multilingual-e5-large", "expansions": None},
+    {"name": "H-mini", "kind": "hybrid", "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2", "expansions": None},
+    {"name": "H-potion", "kind": "hybrid", "model": "minishlab/potion-multilingual-128M", "expansions": None},
 ]
