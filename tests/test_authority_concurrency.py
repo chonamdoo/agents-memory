@@ -6,8 +6,10 @@ import pytest
 from test_store_authority import TOKEN, command, ready_claim, relation_judgment, source_selection
 from test_store_authority import authority as authority
 
+from agents_memory.application import Application
 from agents_memory.config import Settings
-from agents_memory.domain import DomainError, EffectState
+from agents_memory.domain import ContextCommand, DomainError, EffectState
+from agents_memory.lexical import tokens
 
 
 async def count(authority, query, *args):
@@ -145,6 +147,215 @@ async def test_authentication_does_not_wait_for_the_global_clock_lock(authority)
             await holder.execute("SELECT 1 FROM am_clock WHERE singleton FOR UPDATE")
             current = await asyncio.wait_for(store.authenticate(TOKEN), 5)
     assert current.credential_id == authority.actor.credential_id
+
+
+async def test_context_delivery_does_not_wait_for_the_global_clock_lock(authority):
+    # Read-only context delivery never queues behind writers holding the clock lock.
+    store, actor = authority.store, authority.actor
+    application = Application(store.settings, store)
+    _, claim = await ready_claim(authority)
+    rows, admission = await store.search_lexical(actor, authority.binding_id, tokens("CacheKey"), None, 20, request_digest="0" * 64)
+    assert [row[0].id for row in rows] == [claim.id]
+    request = ContextCommand(binding_id=authority.binding_id, query="Protected action conventions",
+        paths=("src/app.py",), host="omp")
+    async with store.pool.acquire() as holder:
+        async with holder.transaction():
+            await holder.execute("SELECT 1 FROM am_clock WHERE singleton FOR UPDATE")
+            required = await asyncio.wait_for(application.required_context(actor, request), 5)
+            delivered = await asyncio.wait_for(store.delivery(actor, authority.binding_id, (), (),
+                nonmodel_admission=admission, selected_claim_ids=(claim.id,)), 5)
+    assert required["required"] is False
+    assert delivered["stats"]["active_claims"] == 1
+
+
+async def test_hook_context_skips_statistics_while_memory_context_keeps_coverage(authority, monkeypatch):
+    store, actor = authority.store, authority.actor
+    application = Application(store.settings, store)
+    await ready_claim(authority)
+    request = ContextCommand(binding_id=authority.binding_id, query="CacheKey", host="omp")
+    full = await application.context(actor, request)
+    assert full["status"] == "judgment_required" and {"pipeline", "coverage"} <= set(full)
+
+    async def statistics_refused(*args, **kwargs):
+        raise AssertionError("a hook's first-stage context must not compute corpus statistics")
+
+    monkeypatch.setattr(store, "_stats", statistics_refused)
+    hook = await application.context(actor, request, include_stats=False)
+    assert hook["status"] == "judgment_required" and hook["partial"] is True
+    assert [item["claim_id"] for item in hook["candidate_manifest"]] == [item["claim_id"] for item in full["candidate_manifest"]]
+    assert not {"pipeline", "coverage", "health"} & set(hook), "an unassessed response must not report coverage"
+    nothing = await application.context(actor, request.model_copy(update={"query": "unrelated"}), include_stats=False)
+    assert nothing["candidate_manifest"] == [] and nothing["status"] == "partial" and nothing["partial"] is True
+
+
+async def test_context_delivery_waits_out_an_in_flight_deletion_instead_of_refusing(authority, monkeypatch):
+    # A deletion appends its journal intent before committing the new head; a reader between the two
+    # waits for that commit, as it did under the clock lock, rather than reporting a deletion barrier.
+    store, actor = authority.store, authority.actor
+    application = Application(store.settings, store)
+    operation, _ = await ready_claim(authority)
+    appended, proceed = asyncio.Event(), asyncio.Event()
+    original = store._append_deletion_intent
+
+    async def gated(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        appended.set()
+        await proceed.wait()
+        return result
+
+    monkeypatch.setattr(store, "_append_deletion_intent", gated)
+
+    async def until_waiters(count, done=lambda: False):
+        async with asyncio.timeout(5):
+            while not done() and await clock_waiters(store) < count:
+                await asyncio.sleep(0.02)
+
+    request = ContextCommand(binding_id=authority.binding_id, query="Protected action conventions",
+        paths=("src/app.py",), host="omp")
+    retraction = asyncio.create_task(store.retract(actor, authority.binding_id, operation.source_id, "in-flight-retract"))
+    await asyncio.wait_for(appended.wait(), 5)
+    async with store.pool.acquire() as holder:
+        async with holder.transaction():
+            await holder.execute("SELECT 1 FROM am_clock WHERE singleton FOR UPDATE")
+            proceed.set()
+            await until_waiters(1)
+            reader = asyncio.create_task(application.required_context(actor, request))
+            # A reader that never queues on the lock finishes at once; the old one refused here.
+            await until_waiters(2, reader.done)
+    required = await asyncio.wait_for(reader, 5)
+    assert (await asyncio.wait_for(retraction, 5))["logical_retraction"] == "committed"
+    assert required["required"] is False
+
+
+async def clock_waiters(store):
+    async with store.pool.acquire() as connection:
+        return await connection.fetchval("""SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock'
+            AND query LIKE '%am_clock%FOR UPDATE%'""")
+
+
+async def test_recall_search_runs_until_admission_insert_without_the_clock_lock(authority, monkeypatch):
+    store, actor = authority.store, authority.actor
+    _, claim = await ready_claim(authority)
+    searched = asyncio.Event()
+    original = store._lexical_relations
+
+    async def observed(*args, **kwargs):
+        searched.set()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_lexical_relations", observed)
+    async with store.pool.acquire() as holder:
+        async with holder.transaction():
+            await holder.execute("SELECT 1 FROM am_clock WHERE singleton FOR UPDATE")
+            search = asyncio.create_task(store.search_lexical(
+                actor, authority.binding_id, tokens("CacheKey"), None, 20, request_digest="0" * 64))
+            await asyncio.wait_for(searched.wait(), 5)
+            async with asyncio.timeout(5):
+                while await clock_waiters(store) < 1:
+                    await asyncio.sleep(0.02)
+            assert not search.done(), "only the admission insert waits for the writer"
+    rows, admission = await asyncio.wait_for(search, 5)
+    assert [row[0].id for row in rows] == [claim.id]
+    delivered = await store.delivery(actor, authority.binding_id, (), (),
+        nonmodel_admission=admission, selected_claim_ids=(claim.id,), include_stats=False)
+    assert delivered["epoch"] >= admission.epoch
+
+
+async def test_recall_search_retries_after_an_interleaved_deletion(authority, monkeypatch):
+    store, actor = authority.store, authority.actor
+    retracted_capture, _ = await ready_claim(authority, "interleaved-retracted")
+    _, kept = await ready_claim(authority, "interleaved-kept", "CacheKey is retained only offline during audits.")
+    original = store._lexical_relations
+    interleaved = []
+
+    async def retract_during_search(*args, **kwargs):
+        if not interleaved:
+            interleaved.append(await store.retract(actor, authority.binding_id, retracted_capture.source_id, "interleaved-retract"))
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_lexical_relations", retract_during_search)
+    rows, admission = await asyncio.wait_for(store.search_lexical(
+        actor, authority.binding_id, tokens("CacheKey"), None, 20, request_digest="0" * 64), 10)
+    assert interleaved[0]["logical_retraction"] == "committed"
+    assert [row[0].id for row in rows] == [kept.id], "the admission reflects the state after the deletion"
+    await store.delivery(actor, authority.binding_id, (), (), nonmodel_admission=admission,
+        selected_claim_ids=(kept.id,), include_stats=False)
+
+
+async def test_recall_search_retries_when_a_deletion_commits_while_its_admission_waits(authority, monkeypatch):
+    store, actor = authority.store, authority.actor
+    retracted_capture, _ = await ready_claim(authority, "queued-retracted")
+    _, kept = await ready_claim(authority, "queued-kept", "CacheKey is retained only offline during audits.")
+    original_relations, original_journal = store._lexical_relations, store._verified_journal
+    searched, interleaved = [], []
+
+    async def observed(*args, **kwargs):
+        searched.append(True)
+        return await original_relations(*args, **kwargs)
+
+    async def journal_then_retract():
+        journal = await original_journal()
+        if searched and not interleaved:
+            interleaved.append(None)
+            interleaved[0] = await store.retract(actor, authority.binding_id, retracted_capture.source_id, "queued-retract")
+        return journal
+
+    monkeypatch.setattr(store, "_lexical_relations", observed)
+    monkeypatch.setattr(store, "_verified_journal", journal_then_retract)
+    rows, admission = await asyncio.wait_for(store.search_lexical(
+        actor, authority.binding_id, tokens("CacheKey"), None, 20, request_digest="0" * 64), 10)
+    assert interleaved[0]["logical_retraction"] == "committed"
+    assert [row[0].id for row in rows] == [kept.id], "a deletion queued ahead of the admission is a stale search, not a barrier"
+    await store.delivery(actor, authority.binding_id, (), (), nonmodel_admission=admission,
+        selected_claim_ids=(kept.id,), include_stats=False)
+
+
+async def test_recall_search_refuses_when_deletions_keep_replacing_its_inputs(authority, monkeypatch):
+    store, actor = authority.store, authority.actor
+    first, _ = await ready_claim(authority, "replaced-first")
+    second, _ = await ready_claim(authority, "replaced-second", "CacheKey is retained only offline during audits.")
+    pending = [first.source_id, second.source_id]
+    original = store._lexical_relations
+
+    async def retract_during_each_search(*args, **kwargs):
+        if pending:
+            await store.retract(actor, authority.binding_id, pending.pop(0), f"replaced-{len(pending)}")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_lexical_relations", retract_during_each_search)
+    with pytest.raises(DomainError) as caught:
+        await asyncio.wait_for(store.search_lexical(
+            actor, authority.binding_id, tokens("CacheKey"), None, 20, request_digest="0" * 64), 10)
+    assert caught.value.code == "ADMISSION_STALE" and not pending
+
+
+async def test_recall_search_reports_stale_when_its_last_admission_meets_a_queued_deletion(authority, monkeypatch):
+    store, actor = authority.store, authority.actor
+    first, _ = await ready_claim(authority, "last-first")
+    second, _ = await ready_claim(authority, "last-second", "CacheKey is retained only offline during audits.")
+    original_relations, original_journal = store._lexical_relations, store._verified_journal
+    searches, retracted = [], []
+
+    async def retract_during_first_search(*args, **kwargs):
+        searches.append(True)
+        if len(searches) == 1:
+            retracted.append(await store.retract(actor, authority.binding_id, first.source_id, "last-first"))
+        return await original_relations(*args, **kwargs)
+
+    async def journal_then_retract_on_second_admission():
+        journal = await original_journal()
+        if len(searches) == 2 and len(retracted) == 1:
+            retracted.append(None)
+            retracted[1] = await store.retract(actor, authority.binding_id, second.source_id, "last-second")
+        return journal
+
+    monkeypatch.setattr(store, "_lexical_relations", retract_during_first_search)
+    monkeypatch.setattr(store, "_verified_journal", journal_then_retract_on_second_admission)
+    with pytest.raises(DomainError) as caught:
+        await asyncio.wait_for(store.search_lexical(
+            actor, authority.binding_id, tokens("CacheKey"), None, 20, request_digest="0" * 64), 10)
+    assert caught.value.code == "ADMISSION_STALE", "a committed deletion is a stale search, not a journal fault"
+    assert [item["logical_retraction"] for item in retracted] == ["committed", "committed"]
 
 
 async def test_exhausted_pool_refuses_after_its_deadline_without_starting(authority):

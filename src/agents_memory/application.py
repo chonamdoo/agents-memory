@@ -76,7 +76,7 @@ class Application:
         return {"kind": "judge", **describe(self.settings, load_state(self.settings), operator=False),
                 "worker": public_status(self.judge)}
 
-    async def context(self, actor: Principal, command: ContextCommand) -> dict[str, Any]:
+    async def context(self, actor: Principal, command: ContextCommand, *, include_stats: bool = True) -> dict[str, Any]:
         self.require_accepting()
         binding = resolve_binding(actor, command.binding_id)
         command = command.model_copy(update={"binding_id": binding})
@@ -99,7 +99,7 @@ class Application:
             delivered = await self.store.delivery(
                 actor, binding, (), tuple(sorted((rule.id, rule.revision, rule.digest) for rule in rules)),
                 command.snapshot, nonmodel_admission=admission,
-                selected_claim_ids=tuple(claim.id for claim in candidates),
+                selected_claim_ids=tuple(claim.id for claim in candidates), include_stats=include_stats,
             )
             previews = []
             for claim, arms in rows:
@@ -146,7 +146,7 @@ class Application:
         delivered = await self.store.delivery(
             actor, binding, (), tuple(sorted((rule.id, rule.revision, rule.digest) for rule in rules)),
             command.snapshot, relation_ids=composed.relation_ids,
-            nonmodel_admission=admission, selected_claim_ids=composed.claim_ids,
+            nonmodel_admission=admission, selected_claim_ids=composed.claim_ids, include_stats=include_stats,
         )
         result = self._context_result(composed, delivered)
         result["judgment_required"] = False
@@ -156,7 +156,15 @@ class Application:
     def _context_result(
         self, composed: ContextBody, delivered: dict[str, Any], *, status: str | None = None,
     ) -> dict[str, Any]:
-        stats = delivered["stats"]
+        stats = delivered.get("stats")
+        if stats is None:
+            # Coverage was not assessed, so the response cannot claim to be complete.
+            return {
+                "capability": self.settings.capability,
+                "status": status or "partial",
+                "partial": True,
+                **self._context_body(composed, delivered),
+            }
         coverage = stats.get("coverage", {})
         health = stats.get("health", {})
         health_partial = any(health.get(key, 0) for key in ("withheld", "unknown_assessments", "closed_unknown_work"))
@@ -174,22 +182,28 @@ class Application:
                 "partial" if partial else "ready" if composed.claim_ids or composed.rule_versions else "empty"
             ),
             "partial": partial,
+            **self._context_body(composed, delivered),
+            "pipeline": {key: stats.get(key, 0) for key in (
+                "pending", "blocked", "failed", "dlq", "stale_index_claims",
+            )},
+            "coverage": coverage,
+        }
+        if health.get("enabled") or health_partial or health.get("rejected"):
+            result["health"] = health
+        return result
+
+    @staticmethod
+    def _context_body(composed: ContextBody, delivered: dict[str, Any]) -> dict[str, Any]:
+        return {
             "context": composed.text,
             "context_bytes": composed.byte_count,
             "omitted": composed.omitted,
             "refs": list(composed.claim_ids),
             "stamp": {"epoch": delivered["epoch"], "rules": [list(v) for v in composed.rule_versions]},
-            "pipeline": {key: stats.get(key, 0) for key in (
-                "pending", "blocked", "failed", "dlq", "stale_index_claims",
-            )},
-            "coverage": coverage,
             "unresolved_required_rule_count": composed.unknown_rule_count,
             "selector_authority": "caller_hints_not_execution_authority",
             "evidence_role": "memory_candidates_not_execution_authority",
         }
-        if health.get("enabled") or health_partial or health.get("rejected"):
-            result["health"] = health
-        return result
 
     async def required_context(self, actor: Principal, command: ContextCommand) -> dict[str, Any]:
         self.require_accepting()
@@ -204,6 +218,7 @@ class Application:
             (),
             tuple(sorted((rule.id, rule.revision, rule.digest) for rule in rules)),
             command.snapshot,
+            include_stats=False,
         )
         return {
             "context": composed.text,

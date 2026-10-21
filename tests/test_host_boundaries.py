@@ -305,7 +305,7 @@ def test_prompt_reentry_does_not_create_another_generation(installation, authori
     # OMP discards rejected preparation messages; re-entry must return context
     # again for the accepted attempt without minting another generation/proof.
     assert first["offered"] and again["offered"]
-    assert len([call for call in authority.calls if call[0] == "/api/context"]) == 2
+    assert len([call for call in authority.calls if call[0] == "/api/hook-context"]) == 2
 
 
 @pytest.mark.parametrize("lifecycle", ["session_switch", "session_branch", "session_tree"])
@@ -1429,7 +1429,7 @@ def test_recovered_hook_backlog_converges_in_order_and_exposes_remaining_gap(ins
     authority.capture_error = None
     recovered = hosts.handle_hook(receipt, native(project, "codex", prompt="human input 8", turn_id="turn-8"))
     assert recovered["capture"]["pending"] == 5
-    assert recovered["state"] == "degraded"
+    assert recovered["state"] == "ok"
     recovered = hosts.handle_hook(receipt, native(project, "codex", prompt="human input 9", turn_id="turn-9"))
     assert recovered["capture"]["pending"] == 2
     recovered = hosts.handle_hook(receipt, native(project, "codex", prompt="human input 10", turn_id="turn-10"))
@@ -1657,7 +1657,7 @@ def test_network_wait_in_one_native_identity_does_not_lock_another(installation,
 
     class DelayedContext(authority):
         def request(self, path, payload):
-            if path == "/api/context":
+            if path == "/api/hook-context":
                 waiting.set()
                 assert release.wait(5), "The test must release its bounded network wait"
             return super().request(path, payload)
@@ -2782,7 +2782,7 @@ async def test_native_capture_pointer_requires_actual_commit_and_is_generation_s
             self.token_file = token_file
 
         def request(self, route, payload):
-            if route == "/api/context":
+            if route == "/api/hook-context":
                 text = '{"approved_rules":[],"memory_candidates":[],"relations":[]}'
                 return {"context": text, "context_bytes": len(text.encode()), "stamp": {"epoch": 1, "rules": []}}
             assert route == "/api/capture" and self.token_file == producer
@@ -3030,7 +3030,7 @@ def test_recall_disabled_prompt_carries_capture_status_only_in_metadata(installa
     assert isinstance(result["capture"], dict)
     assert "additionalContext" not in result["stdout"] and "hookSpecificOutput" not in result["stdout"]
     assert hosts.BOUNDED_CONTEXT_MARKER not in json.dumps(result["stdout"])
-    assert not any(call[0] == "/api/context" for call in authority.calls)
+    assert not any(call[0] == "/api/hook-context" for call in authority.calls)
 
 
 @pytest.mark.parametrize("host", ["claude", "codex", "omp"])
@@ -3221,9 +3221,9 @@ async def test_opt_in_hook_hands_off_unjudged_candidates_without_injecting_them(
             pass
 
         def request(self, route, payload):
-            assert route == "/api/context"
+            assert route == "/api/hook-context"
             result = asyncio.run_coroutine_threadsafe(
-                application.context(actor, ContextCommand.model_validate(payload)), loop,
+                application.context(actor, ContextCommand.model_validate(payload), include_stats=False), loop,
             ).result(timeout=30)
             observed.append(result)
             return result

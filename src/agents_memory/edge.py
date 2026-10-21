@@ -688,6 +688,11 @@ def create_app(settings: Settings):
                 return JSONResponse(await application.health_observer(actor, command.binding_id))
             if name == "context":
                 return JSONResponse(await application.context(actor, command_from_wire(ContextCommand, data)))
+            if name == "hook-context":
+                # A host hook's first stage uses only candidates, admission and stamp; coverage stays unassessed.
+                return JSONResponse(await application.context(
+                    actor, command_from_wire(ContextCommand, data), include_stats=False,
+                ))
             if name == "required-context":
                 return JSONResponse(await application.required_context(actor, command_from_wire(ContextCommand, data)))
             if name == "inspect":

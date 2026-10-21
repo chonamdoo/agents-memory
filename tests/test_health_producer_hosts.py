@@ -67,7 +67,7 @@ def health_installation(installation, monkeypatch, request):
                     "kind": payload["kind"], "state": "health_recorded", "epoch": 1,
                     "artifact_id": "health:" + uuid.uuid4().hex, "effect": "committed",
                 }
-            if route in {"/api/context", "/api/required-context"}:
+            if route in {"/api/hook-context", "/api/required-context"}:
                 text = '{"approved_rules":[],"memory_candidates":[],"relations":[]}'
                 return {
                     "context": text, "context_bytes": len(text.encode()), "refs": [],
@@ -96,7 +96,7 @@ def test_file_change_is_observed_before_actual_next_native_context(health_instal
     assert two["state"] in {"ok", "degraded"}
     observations = [(index, payload) for index, (route, payload) in enumerate(calls)
                     if route == "/api/health" and payload["kind"] == "code_observation"]
-    contexts = [(index, payload) for index, (route, payload) in enumerate(calls) if route == "/api/context"]
+    contexts = [(index, payload) for index, (route, payload) in enumerate(calls) if route == "/api/hook-context"]
     assert len(observations) == len(contexts) == 2
     assert observations[0][0] < contexts[0][0] < observations[1][0] < contexts[1][0]
     assert observations[0][1]["files"][0]["file_digest"] == hashlib.sha256(first).hexdigest()
@@ -113,7 +113,7 @@ def test_offline_observation_prevents_ordinary_context_dispatch(health_installat
     endpoint.online = False
     result = hosts.handle_hook(path, native(project, prompt="Recall conventions."))
     assert result["code"] == "SERVICE_UNAVAILABLE"
-    assert not any(route == "/api/context" for route, _ in calls)
+    assert not any(route == "/api/hook-context" for route, _ in calls)
     assert "return 1" not in str(result)
 
 

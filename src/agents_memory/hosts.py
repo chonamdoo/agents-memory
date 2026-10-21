@@ -92,6 +92,10 @@ RECALL_SKILL_PATHS = {
 # Below this remaining budget a request cannot complete readiness and dispatch; refusing it keeps
 # a detached hook from outliving its native event instead of starting doomed network work.
 _EVENT_REQUEST_FLOOR_SECONDS = 0.05
+# A durably spooled capture whose delivery is deferred is retried by every later hook; only a capture
+# backlog older than this, or a flush failure other than a busy service, is a delivery incident.
+CAPTURE_BACKLOG_ALERT_SECONDS = 300
+CAPTURE_DEFERRAL_CODES = frozenset({"SERVICE_UNAVAILABLE", "SERVICE_BUSY", "SERVICE_DRAINING", "DATABASE_BUSY", "QUEUE_FULL"})
 
 
 def _json(value: object) -> str:
@@ -1748,6 +1752,26 @@ def _omp_resource_target(event: dict) -> bool:
     return re.search(r"[\x00-\x1f\x7f]|%(?![0-9A-Fa-f]{2})", path) is None
 
 
+def _omp_read_target(cwd: Path, raw: str) -> Path:
+    """The file an OMP `read` path names once its view selector (`a.py:1-20`, `data.json?q=…`, `archive.zip:member`) is set aside.
+
+    A missing path whose last component still carries a selector-like `:` or `?` could be a missing file or a view
+    of one, and a `..` after the selector could climb to another file; both stay unknown rather than becoming a path
+    no required rule matches.
+    """
+    target = cwd / raw
+    if target.exists():
+        return target
+    for index in reversed([position for position, character in enumerate(raw) if character in ":?"]):
+        if index and (cwd / raw[:index]).exists():
+            if ".." in re.split(r"[\\/]", raw[index + 1:]):
+                raise DomainError("HOST_FOOTPRINT_UNKNOWN", "A `..` after the view selector leaves the target ambiguous")
+            return cwd / raw[:index]
+    if ":" in target.name or "?" in target.name:
+        raise DomainError("HOST_FOOTPRINT_UNKNOWN", "The path names neither an existing file nor a view of one")
+    return target
+
+
 def _footprint_targets(receipt: dict, event: dict, cwd: Path) -> tuple[Path, ...]:
     name = event.get("tool_name")
     inputs = event.get("tool_input")
@@ -1763,11 +1787,15 @@ def _footprint_targets(receipt: dict, event: dict, cwd: Path) -> tuple[Path, ...
     for raw in raw_paths:
         if not isinstance(raw, str) or not raw or "\x00" in raw or "://" in raw:
             raise DomainError("HOST_FOOTPRINT_UNKNOWN", "The action does not expose a local path")
-        try:
-            (cwd / raw).stat()
-        except FileNotFoundError:
-            pass
-        targets.append((cwd / raw).resolve())
+        if host == "omp" and name == "read":
+            target = _omp_read_target(cwd, raw)
+        else:
+            target = cwd / raw
+            try:
+                target.stat()
+            except FileNotFoundError:
+                pass
+        targets.append(target.resolve())
     return tuple(targets)
 
 
@@ -1964,7 +1992,7 @@ def _context(receipt: dict, query: str, paths: tuple[str, ...] | None, *, requir
         code_workspace_id=health.get("workspace_id"),
     )
     result = _service_client(receipt, "agent_token_file", 4, deadline).request(
-        "/api/required-context" if required else "/api/context", command.model_dump(mode="json"),
+        "/api/required-context" if required else "/api/hook-context", command.model_dump(mode="json"),
     )
     text, stamp, rules = result.get("context"), result.get("stamp"), result.get("required")
     if not isinstance(text, str) or not isinstance(stamp, dict) or (required and not isinstance(rules, bool)):
@@ -2106,7 +2134,7 @@ def _action_recall(receipt: dict, state: dict, paths: tuple[str, ...], workspace
         if deadline is not None:
             limit = min(limit, deadline - _ACTION_RECALL_RESERVE_SECONDS)
         result = _service_client(receipt, "agent_token_file", _ACTION_RECALL_SECONDS, limit).request(
-            "/api/context", command.model_dump(mode="json"),
+            "/api/hook-context", command.model_dump(mode="json"),
         )
         if not isinstance(result, dict):
             raise DomainError("HOST_CONTEXT_INVALID", "The service returned an invalid context receipt")
@@ -2609,7 +2637,9 @@ def handle_hook(receipt_path: Path, event: dict) -> dict:
             capture = result.get("capture")
             if isinstance(capture, dict) and (
                 capture.get("state") in {"gap", "expired", "discarded", "quarantined"}
-                or capture.get("pending") or capture.get("quarantined") or capture.get("errors")
+                or capture.get("quarantined")
+                or capture.get("oldest_pending_capture_seconds", 0) >= CAPTURE_BACKLOG_ALERT_SECONDS
+                or any(code not in CAPTURE_DEFERRAL_CODES for code in capture.get("errors") or ())
                 or (capture.get("gaps") and capture.get("gaps_scope") != "cumulative_spool_history")
             ):
                 code = capture.get("code") or "HOST_CAPTURE_DEGRADED"

@@ -19,7 +19,7 @@ PRIVATE_BODY = "synthetic_private_edit_body_not_for_hook_ipc"
 
 def covered_requests(paths):
     """Required context first, then the default action recall for the same footprint."""
-    return [{"route": "/api/required-context", "paths": paths}, {"route": "/api/context", "paths": paths}]
+    return [{"route": "/api/required-context", "paths": paths}, {"route": "/api/hook-context", "paths": paths}]
 
 
 def run_scoped_tools(
@@ -60,7 +60,7 @@ def run_scoped_tools(
                 pass
 
             def request(self, route, payload):
-                if route not in {"/api/context", "/api/required-context"}:
+                if route not in {"/api/hook-context", "/api/required-context"}:
                     raise AssertionError("unexpected endpoint")
                 requests.append({"route": route, "paths": payload["paths"]})
                 result = compose(ContextCommand.model_validate(payload), rules, (), (),
