@@ -5,9 +5,10 @@ This is the only retrieval surface the offline ranking loop may edit
 CTE in `Store.search_lexical`, which owns every integrity filter and stays frozen.
 
 Contract: the fragment continues a `WITH eligible AS (...)` query, may read only
-`eligible`, `am_entities` and the parameters $2 (query tokens), $5 (limit) and
-$6 (entity search names), and must end with a SELECT of `c.*` plus an `arms`
-text[] column from `eligible c`, ordered best first, with at most $5 rows.
+`eligible`, `am_entities`, the parameters $2 (query tokens), $5 (limit) and
+$6 (entity search names) and the read-only server_encoding setting, and must end
+with a SELECT of `c.*` plus an `arms` text[] column from `eligible c`, ordered
+best first, with at most $5 rows.
 """
 from __future__ import annotations
 
@@ -18,7 +19,8 @@ from __future__ import annotations
 # evidence never receives typo evidence). A Hangul query word that occurs in no eligible claim may
 # match a Hangul word of a pooled claim sharing at least two and at least half of its jamo trigrams;
 # it then counts as that claim word, weighted by the similarity and by the word's IDF within the
-# pool. It runs at query time, so stored tokens and every other tokenizer user are unchanged and no
+# pool, capped at the lowest IDF of the correctly spelled query tokens so a typo never outweighs
+# real exact evidence. It runs at query time, so stored tokens and every other tokenizer user are unchanged and no
 # reindex is needed, and it is bounded: words of 2-10 syllables on both sides, the first 16 query
 # words that are not bigrams cut from a longer query word, claim words within one syllable of a
 # query word's length, at most 512 of those (most shared syllables first), and only on UTF8 servers
@@ -44,6 +46,9 @@ RANKING_SQL = """, query_tokens AS MATERIALIZED (
                     * 2.2 / (1 + 1.2 * (0.25 + 0.75 * m.length / s.average_length)))::numeric, 9) AS score
                 FROM word_matches m JOIN matched_tokens t ON t.id=m.id JOIN token_frequency f ON f.token=t.token
                 CROSS JOIN corpus_stats s GROUP BY m.id, m.length, s.average_length
+            ), exact_floor AS MATERIALIZED (
+                -- A corrected typo never counts more than the least informative correctly spelled query token.
+                SELECT min(ln(1 + (s.n - f.df + 0.5) / (f.df + 0.5))) AS idf FROM token_frequency f CROSS JOIN corpus_stats s
             ), rerank_pool AS MATERIALIZED (
                 SELECT m.id, m.lexical_tokens, m.length, x.score FROM exact_scores x JOIN word_matches m ON m.id=x.id
                 ORDER BY x.score DESC, x.id LIMIT 200
@@ -99,9 +104,10 @@ RANKING_SQL = """, query_tokens AS MATERIALIZED (
                 SELECT word AS token, count(*)::float8 AS df FROM claim_words GROUP BY word
             ), fuzzy_weights AS (
                 SELECT id, sum(weight) AS weight FROM (
-                    SELECT w.id, p.query_word, max(p.similarity * ln(1 + (s.n - f.df + 0.5) / (f.df + 0.5))) AS weight
+                    SELECT w.id, p.query_word,
+                        max(p.similarity * least(ln(1 + (s.n - f.df + 0.5) / (f.df + 0.5)), e.idf)) AS weight
                     FROM claim_words w JOIN fuzzy_pairs p ON p.claim_word=w.word JOIN fuzzy_frequency f ON f.token=w.word
-                    JOIN rerank_pool m ON m.id=w.id CROSS JOIN pool_stats s
+                    JOIN rerank_pool m ON m.id=w.id CROSS JOIN pool_stats s CROSS JOIN exact_floor e
                     WHERE NOT m.lexical_tokens @> ARRAY[p.query_word::text]
                     GROUP BY w.id, p.query_word
                 ) per_query_word GROUP BY id

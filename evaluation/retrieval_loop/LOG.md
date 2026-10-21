@@ -151,3 +151,16 @@ H7b의 적대적 리뷰(승격 조건)에서 P1이 나와 승격 관문을 통�
 - H8j를 최신 main에서 다시 측정했다(3회). keep 3/3, hit 285→287, p95 130/129/128ms(baseline 128ms).
 
 **현재 keep 지점: H8j(최신 main 기준).**
+
+## H8j 적대적 리뷰(5차): P1 1건 (승격 시도는 하지 않음)
+
+- **F1(P1):** 오타 가중치를 pool 안 IDF로 계산하기 때문에, 전체에서는 흔하지만 pool 안에서는 드문 단어가 오타일 때 실제 정확 일치보다 큰 가중치를 받는다. 재현: 질의 "alpha bravo 마갑"에서 alpha·bravo를 모두 가진 claim이 상위 20 밖으로 밀렸다(원래 방식은 1위).
+- **P2:** 아주 작은 corpus의 고정 비용 약 2ms, float 합산 순서, docstring 계약에 `server_encoding`이 없음, entity 기준 20, 한 반복에 여러 변경(적응적이지만 규칙 위반은 아님), `omp.ts`가 동결 대상이 아님.
+- **확인된 사항:** 범위와 snapshot 경로 정상. 지연은 모든 시나리오에서 0.68–1.61배. 동결 digest 갱신은 main이 바꾼 5개 파일로 한정됨. results.tsv와 LOG가 일치. H8j keep은 사전 고정 규칙(3회 모두 통과)으로 판정됨.
+- **처리:** dev 기준점을 원래 baseline(`state/baseline-dev-origin.json`)으로 되돌렸다. holdout 판정 횟수는 1/3 그대로다.
+
+| # | 가설 | 결과 | 이유 |
+|---|---|---|---|
+| H8k (3회) | 원래 baseline 기준. H8j + 오타 가중치 상한 = 이번 질의에서 정확히 맞은 토큰 중 최저 IDF. docstring에 `server_encoding` 명시 | **keep (3/3)** | hit 285→287. MRR(5배) 0.608→0.782. p95 120/134/126ms(한도 160ms). G8 3.83. 무결성 통과. 리뷰 재현 사례에서 완전 일치 claim이 1위로 복귀 |
+
+**현재 keep 지점: H8k.**
