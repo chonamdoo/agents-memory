@@ -53,3 +53,12 @@
 - 남은 선택지는 사용자 결정이 필요하다.
   1. 확장 무게를 낮추는 순위 변경을 별도 사전 등록 루프로 연다(예: 원래 질의의 순위를 먼저 두고 확장은 뒤에서 채우거나, 확장 토큰에 낮은 가중치). 운영 코드가 바뀌므로 무결성 게이트와 holdout 판정을 그대로 적용한다.
   2. dense/hybrid 측정. 모델 CDN(`us.aws.cdn.hf.co`, `cas-server.xethub.hf.co`)이 막혀 아직 측정하지 못했다.
+
+## 재동결 (2026-10-21)
+
+- 확장 가중치 루프(`evaluation/weighting_loop/`)를 준비하면서 `store.py`, `application.py`, `retrieval_ranking.py`(docstring)가 바뀌었다.
+  - `query_tokens` 배관을 넣었다.
+  - `query_terms` CTE를 추가했다.
+- 원래 순위 SQL은 새 CTE를 읽지 않는다. dev L0를 다시 재 질의별 결과(hit, 첫 순위, 반환 수, decoy)가 저장된 baseline과 완전히 같음을 확인했다(`weighting_harness.py neutral`).
+- 그래서 이 루프의 `frozen.json`을 다시 동결했다. 규칙과 baseline은 그대로다.
+- holdout용 확장(`expansions/v2-holdout.json`, `v4-holdout.json`)은 확장 가중치 루프의 사전 등록에 따라 만들었다. 생성 방식은 dev와 같다(도구 제한 subagent, 정답이 겹치지 않는 묶음). 각 생성 agent는 안내문, 질의 묶음, 출력 파일 세 개 외에 아무 파일도 건드리지 않았다. 도구 호출 기록으로 검증했다.

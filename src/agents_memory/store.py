@@ -2472,13 +2472,17 @@ class Store:
 
     async def search_lexical(
         self, actor: Principal, binding_id: str, lexical_tokens: list[str], snapshot: str | None, limit: int = 20, *,
-        request_digest: str, code_workspace_id: str | None = None,
+        request_digest: str, code_workspace_id: str | None = None, query_tokens: list[str] | None = None,
     ) -> tuple[list[tuple[Claim, tuple[str, ...]]], NonmodelAdmission]:
+        # `query_tokens` are the caller's own query words; the rest of `lexical_tokens` came from expansions.
+        # The ranking may weigh the two apart. Omitted, every token counts as a query word.
         if not re.fullmatch(r"[a-f0-9]{64}", request_digest):
             raise DomainError("ADMISSION_REQUEST_INVALID", "A canonical recall request digest is required")
+        if query_tokens is None:
+            query_tokens = lexical_tokens
         if type(limit) is not int or not 1 <= limit <= 20 or len(lexical_tokens) > 2048 or any(
             not isinstance(token, str) or not token or len(token.encode()) > 1024 for token in lexical_tokens
-        ):
+        ) or not set(query_tokens) <= set(lexical_tokens):
             raise DomainError("SEARCH_LIMIT_INVALID", "The retrieval bounds are invalid")
         # The search reads one lock-free snapshot; only the admission insert queues behind writers. A deletion that
         # commits in between, before or after the insert read the journal, makes the snapshot stale, so it re-searches.
@@ -2488,7 +2492,7 @@ class Store:
             async with self._tx(lock=False, snapshot=True) as (connection, seen):
                 current = await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR))
                 found, admitted = await self._lexical_recall_inputs(
-                    connection, current, binding_id, lexical_tokens, snapshot, limit, code_workspace_id)
+                    connection, current, binding_id, lexical_tokens, snapshot, limit, code_workspace_id, query_tokens)
             try:
                 async with self._tx() as (connection, clock):
                     locked = await self._actor(connection, actor, binding_id, (Role.AGENT, Role.OPERATOR))
@@ -2508,7 +2512,7 @@ class Store:
 
     async def _lexical_recall_inputs(
         self, connection, current: Principal, binding_id: str, lexical_tokens: list[str], snapshot: str | None,
-        limit: int, code_workspace_id: str | None,
+        limit: int, code_workspace_id: str | None, query_tokens: list[str],
     ) -> tuple[list[tuple[Claim, tuple[str, ...]]], dict]:
         rows = await connection.fetch(f"""WITH eligible AS MATERIALIZED (
             SELECT c.* FROM am_claims c JOIN am_source_selections q ON q.id=c.selection_id
@@ -2521,10 +2525,11 @@ class Store:
             AND NOT EXISTS(SELECT 1 FROM am_claim_sources d JOIN am_sources s ON s.id=d.source_id WHERE d.claim_id=c.id
                 AND (s.state<>'active' OR s.body IS NULL OR s.revision<>d.source_revision OR s.binding_id<>$1 OR s.realm<>$4
                 OR (s.snapshot IS NOT NULL AND s.snapshot IS DISTINCT FROM $3)))
-        )"""
+        ), query_terms AS (SELECT $8::text[] AS tokens, $9::text[] AS search_names)"""
             + RANKING_SQL,
             binding_id, list(dict.fromkeys(lexical_tokens)), snapshot, current.realm, limit,
-            list(dict.fromkeys(_entity(token) for token in lexical_tokens)), code_workspace_id)
+            list(dict.fromkeys(_entity(token) for token in lexical_tokens)), code_workspace_id,
+            list(dict.fromkeys(query_tokens)), list(dict.fromkeys(_entity(token) for token in query_tokens)))
         claim_ids = tuple(row["id"] for row in rows)
         relations = await self._lexical_relations(
             connection, binding_id, claim_ids, snapshot,

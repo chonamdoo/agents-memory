@@ -90,9 +90,11 @@ class Application:
         }))
         if command.relevance is None:
             terms = tokens(" ".join((command.query, *command.query_expansions)))
+            searched = set(terms)
+            query_terms = [term for term in tokens(command.query) if term in searched]
             rows, admission = await self.store.search_lexical(
                 actor, binding, terms, command.snapshot, 20, request_digest=request_digest,
-                code_workspace_id=command.code_workspace_id,
+                code_workspace_id=command.code_workspace_id, query_tokens=query_terms,
             )
             candidates = [claim for claim, _ in rows]
             composed = compose(command, [rule for rule in rules if rule.required] if candidates else rules, (), ())

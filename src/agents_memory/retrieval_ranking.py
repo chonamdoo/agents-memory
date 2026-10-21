@@ -4,10 +4,13 @@ This is the only retrieval surface the offline ranking loop may edit
 (research/autoresearch-eval-loop-proposal.ko.md). It runs after the `eligible`
 CTE in `Store.search_lexical`, which owns every integrity filter and stays frozen.
 
-Contract: the fragment continues a `WITH eligible AS (...)` query, may read only
-`eligible`, `am_entities` and the parameters $2 (query tokens), $5 (limit) and
-$6 (entity search names), and must end with a SELECT of `c.*` plus an `arms`
-text[] column from `eligible c`, ordered best first, with at most $5 rows.
+Contract: the fragment continues a `WITH eligible AS (...), query_terms AS (...)` query,
+may read only `eligible`, `am_entities`, `query_terms` and the parameters $2 (all search
+tokens: query plus caller expansions), $5 (limit) and $6 (entity search names of $2), and
+must end with a SELECT of `c.*` plus an `arms` text[] column from `eligible c`, ordered best
+first, with at most $5 rows. `query_terms` is one row: `tokens` (the caller's own query
+tokens, a subset of $2) and `search_names` (their entity search names). Without
+expansions both equal $2 and $6.
 """
 from __future__ import annotations
 
