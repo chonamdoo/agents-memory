@@ -14,7 +14,7 @@ expansions both equal $2 and $6.
 """
 from __future__ import annotations
 
-EXPANSION_WEIGHT = 0.5
+EXPANSION_WEIGHT = 0.25
 
 # A claim's lexical score counts its overlap with the caller's query tokens fully and its overlap with
 # expansion-only tokens at EXPANSION_WEIGHT; entity matches are weighed the same way. Without
