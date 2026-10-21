@@ -61,5 +61,68 @@
     }
    }
   }
+ },
+ {
+  "label": "promotion 2: H8k",
+  "commit": "317c6af",
+  "passed": false,
+  "verdicts": {
+   "holdout": {
+    "delta_mean": 0.0,
+    "ci95": [
+     -0.0395,
+     0.0395
+    ],
+    "regressed_groups": 1,
+    "all": {
+     "x1": {
+      "queries": 80,
+      "gold": 82,
+      "hits": 76,
+      "recall": 0.9211,
+      "mrr": 0.6977,
+      "p50_ms": 32.58,
+      "p95_ms": 78.47
+     },
+     "x5": {
+      "queries": 80,
+      "gold": 82,
+      "hits": 75,
+      "recall": 0.9079,
+      "mrr": 0.7057,
+      "p50_ms": 56.43,
+      "p95_ms": 110.0
+     },
+     "x20": {
+      "queries": 80,
+      "gold": 82,
+      "hits": 75,
+      "recall": 0.9079,
+      "mrr": 0.7811,
+      "p50_ms": 58.9,
+      "p95_ms": 107.54
+     }
+    }
+   },
+   "policy": {
+    "delta_mean": 0.0,
+    "ci95": [
+     0.0,
+     0.0
+    ],
+    "regressed_groups": 0,
+    "all": {
+     "x1": {
+      "queries": 1062,
+      "gold": 1119,
+      "hits": 1119,
+      "recall": 1.0,
+      "mrr": 0.8467,
+      "p50_ms": 93.96,
+      "p95_ms": 124.69
+     }
+    }
+   }
+  }
  }
 ]
