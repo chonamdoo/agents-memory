@@ -138,3 +138,16 @@ H7b의 적대적 리뷰(승격 조건)에서 P1이 나와 승격 관문을 통�
 | H8j (3회) | 원래 baseline 기준. H8i + pool 안 typo IDF, 질의 길이에 맞는 pool 토큰을 한 번만 펼침 | **keep (3/3)** | hit 285→287. MRR(5배) 0.608→0.775. p95 131/125/135ms. G8 3.83. 무결성 통과. R1 시나리오에서 원래 방식의 0.97–1.93배 (5단어 368 대 238ms, 40단어 742 대 384ms, 150단어 1012 대 1007ms, 오타 16개 506 대 268ms, 2048토큰 2701 대 2782ms, 긴 단어 오타 16개 967 대 548ms) |
 
 **현재 keep 지점: H8j.**
+
+## 최신 main 반영 (2026-10-21, 사용자 요청: "메인 배포 한 번 됐어, 최신으로 다음 작업부터 테스트")
+
+- `origin/main`(fca6554, #25·#26: 잠금 없는 snapshot 읽기, hook/recall의 clock lock 해제)을 merge했다(f21a77e).
+- 충돌은 `store.py`의 `search_lexical`에서 났다. main은 검색을 `_lexical_recall_inputs`로 옮겼고, 그 안의 `eligible` CTE는 변경이 없다. main의 구조를 따르고 순위 부분만 `RANKING_SQL`로 바꿨다.
+- merge된 코드에서 무결성, 동시성, 저장소, company, relation, health, auto_recall, recall_gateway, rejection, lexical 테스트 352건이 통과했다(CI 런타임).
+- main 반영으로 바뀐 동결 파일 5개의 digest를 다시 고정했다. 사유는 main 반영이며, 루프가 수정한 파일이 아니다.
+- 원래 순위 코드로 dev baseline을 다시 측정했다. 질의별 결과는 이전 baseline과 완전히 같다. p95는 128ms이고, 지연 한도는 160ms가 된다.
+  - 원래 순위의 결과가 같으므로 holdout과 실문서 baseline(질의별 hit)도 그대로 유효하다.
+  - 원래 baseline 사본은 `state/baseline-dev-origin.json`에 보관한다(되돌릴 때 사용).
+- H8j를 최신 main에서 다시 측정했다(3회). keep 3/3, hit 285→287, p95 130/129/128ms(baseline 128ms).
+
+**현재 keep 지점: H8j(최신 main 기준).**
