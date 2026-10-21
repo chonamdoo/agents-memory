@@ -42,5 +42,54 @@
     }
    }
   }
+ },
+ {
+  "arm": "H-mini",
+  "label": "promotion 2: H-mini (hybrid, paraphrase-multilingual-MiniLM)",
+  "commit": "e626912",
+  "passed": false,
+  "verdicts": {
+   "holdout": {
+    "semantic_delta_mean": 0.6852,
+    "ci95": [
+     0.3704,
+     1.0
+    ],
+    "checks": {
+     "x1": {
+      "keyword_group_drops": [
+       "G5"
+      ],
+      "keyword_mrr_drop": 0.006
+     },
+     "x5": {
+      "keyword_group_drops": [
+       "G2"
+      ],
+      "keyword_mrr_drop": 0.0205
+     },
+     "x20": {
+      "keyword_group_drops": [
+       "G2",
+       "G5"
+      ],
+      "keyword_mrr_drop": -0.0133
+     }
+    }
+   },
+   "policy": {
+    "semantic_delta_mean": 0.05,
+    "ci95": [
+     -0.025,
+     0.125
+    ],
+    "checks": {
+     "x1": {
+      "keyword_group_drops": [],
+      "keyword_mrr_drop": 0.1925
+     }
+    }
+   }
+  }
  }
 ]
