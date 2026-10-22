@@ -365,6 +365,43 @@ async def test_private_operator_migrates_prior_schema_without_rotating_credentia
 
 
 @pytest.mark.asyncio
+async def test_previous_revision_archive_restores_after_escalation_migration(live_authority, binary_runtime):
+    store, actor, binding, settings, root = live_authority
+    runtime, keygen = binary_runtime
+    identity, recipients = age_keys(root, keygen)
+    assert "am_judge_escalations" not in ops._ARCHIVE_TABLES["0007_memory_health"]
+    assert "am_judge_escalations" in ops._ARCHIVE_TABLES[MIGRATION]
+    async with store.pool.acquire() as connection:
+        assert await connection.fetchval("SELECT version_num FROM alembic_version") == MIGRATION == "0008_judge_escalations"
+    archived = await store.capture(actor, CaptureCommand(binding_id=binding.id, idempotency_key="escalation-archive",
+        origin_key="escalation-archive", body="Synthetic archived source.", speaker="human"))
+    archive = root / "prior-0007.age"
+    await historical_encrypted_archive(store, actor, archive, recipients, runtime, MIGRATIONS.index("0007_memory_health"))
+    async with store.pool.acquire() as connection:
+        pending_id = await connection.fetchval("SELECT id FROM am_pending_judgments WHERE $1=ANY(source_ids)",
+            archived.source_id)
+        # Current-only state that references the archived table: restore preparation must clear it first.
+        await connection.execute("""INSERT INTO am_judge_escalations(pending_id,binding_id,binding_revision,scope,reason,
+                credential_id,provider,provider_revision) VALUES($1,$2,1,'item','uncertain',$3,'jev',1)""",
+            pending_id, binding.id, actor.credential_id)
+        await connection.execute("UPDATE am_pending_judgments SET escalation_generation=3 WHERE id=$1", pending_id)
+    head = store.journal.verify()["head"]
+    await store.close()
+
+    result = await restore(settings, root / "operator", archive, identity, head,
+        root / "restored-operator", settings.deployment_id, runtime)
+
+    assert result["migration_versions"] == list(MIGRATIONS[:7])
+    assert result["authority_migration_versions"] == list(MIGRATIONS)
+    await store.open()
+    async with store.pool.acquire() as connection:
+        assert await connection.fetchval("SELECT version_num FROM alembic_version") == MIGRATION
+        assert await connection.fetchval("SELECT count(*) FROM am_judge_escalations") == 0
+        assert await connection.fetchval("SELECT escalation_generation FROM am_pending_judgments WHERE id=$1",
+            pending_id) == 0
+
+
+@pytest.mark.asyncio
 async def test_private_migration_refuses_agent_credential_before_old_schema_changes(live_authority):
     from test_store_authority import historical_schema_fixture
 
@@ -421,14 +458,14 @@ def age_keys(tmp_path, keygen):
     return identity, recipients
 
 
-async def historical_encrypted_archive(store, actor, archive, recipients, runtime):
+async def historical_encrypted_archive(store, actor, archive, recipients, runtime, archived_index=1):
     from test_store_authority import historical_schema_fixture
 
     async with store.pool.acquire() as connection:
         value = await ops._metadata(store, connection, runtime, actor)
-    value["migration_version"] = MIGRATIONS[1]
-    value["migration_versions"] = list(MIGRATIONS[:2])
-    await historical_schema_fixture(store, 1)
+    value["migration_version"] = MIGRATIONS[archived_index]
+    value["migration_versions"] = list(MIGRATIONS[:archived_index + 1])
+    await historical_schema_fixture(store, archived_index)
     await store.close()
     try:
         private_write(archive, b"")
@@ -674,7 +711,8 @@ def test_known_legacy_archive_keeps_exact_old_table_scope(settings):
         entries = [f"{number}; 0 0 {kind} memory {table} memory"
             for number, (table, kind) in enumerate(
                 ((table, kind) for table in sorted(tables) for kind in ("TABLE", "TABLE DATA")), 1)]
-        if tables in (ops._ARCHIVE_TABLES["0006_agent_judged"], ops._ARCHIVE_TABLES["0007_memory_health"]):
+        if tables in (ops._ARCHIVE_TABLES["0006_agent_judged"], ops._ARCHIVE_TABLES["0007_memory_health"],
+                      ops._ARCHIVE_TABLES["0008_judge_escalations"]):
             entries.extend([
                 "900; 0 0 SEQUENCE memory am_pending_judgments_sequence_seq memory",
                 "901; 0 0 SEQUENCE SET memory am_pending_judgments_sequence_seq memory",
@@ -719,7 +757,7 @@ def test_versioned_sequence_inventory_is_exact(revision):
         "902; 0 0 SEQUENCE memory am_claims_cleanup_sequence_seq memory",
         "903; 0 0 SEQUENCE SET memory am_claims_cleanup_sequence_seq memory",
     ]
-    expected = sequence_entries if revision in {"0006_agent_judged", "0007_memory_health"} else []
+    expected = sequence_entries if revision in {"0006_agent_judged", "0007_memory_health", "0008_judge_escalations"} else []
     ops._validate_toc(
         "\n".join([*table_entries, *expected]).encode(), "memory", tables
     )
@@ -731,7 +769,7 @@ def test_versioned_sequence_inventory_is_exact(revision):
                 for index in range(len(sequence_entries))
             ],
         ]
-        if revision in {"0006_agent_judged", "0007_memory_health"}
+        if revision in {"0006_agent_judged", "0007_memory_health", "0008_judge_escalations"}
         else [
             sequence_entries,
             sequence_entries[:2],
@@ -1341,7 +1379,7 @@ async def test_dump_preflight_accepts_only_complete_revision_matched_authority(
     toc = "\n".join(f"{number}; 0 0 {kind} memory {table} memory"
         for number, (table, kind) in enumerate(
             ((table, kind) for table in sorted(tables) for kind in ("TABLE", "TABLE DATA")), 1)).encode()
-    if revision in {"0006_agent_judged", "0007_memory_health"}:
+    if revision in {"0006_agent_judged", "0007_memory_health", "0008_judge_escalations"}:
         toc += (b"\n900; 0 0 SEQUENCE memory am_pending_judgments_sequence_seq memory"
             b"\n901; 0 0 SEQUENCE SET memory am_pending_judgments_sequence_seq memory"
             b"\n902; 0 0 SEQUENCE memory am_claims_cleanup_sequence_seq memory"

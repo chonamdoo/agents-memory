@@ -31,8 +31,10 @@ from .domain import (
     EffectState,
     EvidenceSpan,
     FeedbackCommand,
+    JudgeEscalation,
     NonmodelAdmission,
     Operation,
+    PendingEscalations,
     Principal,
     Quote,
     ReflectionDraft,
@@ -105,6 +107,21 @@ _CODE_CONTEXT_SQL = """NOT EXISTS(SELECT 1 FROM am_code_links l
     JOIN am_code_observations o ON o.id=l.observation_id
     WHERE l.claim_id=c.id AND l.claim_revision=c.revision
         AND ({workspace}::text IS NULL OR o.workspace_id<>{workspace}))"""
+# An escalation still holds while the source revision and binding revision it was judged under are current.
+# Reopening an item or rebuilding a changed cleanup manifest deletes its escalations and raises the item
+# generation, so the generation needs no read-side check.
+_CURRENT_ESCALATION_SQL = """(e.source_id IS NULL OR EXISTS(SELECT 1 FROM am_sources s
+        WHERE s.id=e.source_id AND s.revision=e.source_revision))
+    AND e.binding_revision=(SELECT b.revision FROM am_bindings b WHERE b.id=e.binding_id)"""
+# Pending work the coding agent should judge now. {fence} is the effective background worker credential,
+# or NULL when no background judge can act; the worker never handles legacy revalidation.
+# The worker skips the same item escalations through Store.escalations.
+_AGENT_PENDING_SQL = """(p.state='pending' AND p.kind IN ('source_selection','cleanup','legacy_revalidation') AND (
+    p.kind='legacy_revalidation' OR {fence}::text IS NULL
+    OR NOT EXISTS(SELECT 1 FROM am_grants g JOIN am_credentials w ON w.id=g.credential_id
+        WHERE g.credential_id={fence} AND g.binding_id=p.binding_id AND w.active)
+    OR EXISTS(SELECT 1 FROM am_judge_escalations e WHERE e.pending_id=p.id AND e.scope='item'
+        AND e.credential_id={fence} AND """ + _CURRENT_ESCALATION_SQL + """)))"""
 
 
 def _id(prefix: str) -> str:
@@ -337,7 +354,7 @@ class Store:
                         "am_pending_judgments", "am_retired_jobs", "am_claim_judgments",
                         "am_rejection_evidence", "am_rejection_tokens",
                         "am_health_policies", "am_code_workspaces", "am_code_observations", "am_claim_health",
-                        "am_code_links", "am_health_events", "am_session_observations"}
+                        "am_code_links", "am_health_events", "am_session_observations", "am_judge_escalations"}
                     if names - expected:
                         raise DomainError("INITIALIZATION_SCOPE_DENIED", "The authority schema contains unrelated state", status=403)
                     clock = await connection.fetchrow("SELECT * FROM am_clock WHERE singleton")
@@ -553,6 +570,57 @@ class Store:
                 (row["byte_start"], row["byte_end"]) for row in rows
                 if row["source_id"] == source_id and row["source_revision"] == source_revision
                 and row["label"] in {"remember", "discard"} and row["coverage"] == "complete_window")
+
+    async def record_escalation(self, actor: Principal, binding_id: str, escalation: JudgeEscalation) -> bool:
+        """Hand still-pending work to the coding agent under the authenticated worker credential.
+
+        Returns False without writing when the item stopped being pending, was reopened, its health work moved
+        to another revision, or its binding moved after the worker read it: that hand-off would describe data the
+        worker never judged.
+        """
+        async with self._tx() as (connection, _):
+            current = await self._actor(connection, actor, binding_id, (Role.AGENT,))
+            if not await connection.fetchval("""SELECT EXISTS(SELECT 1 FROM am_pending_judgments p
+                    JOIN am_bindings b ON b.id=p.binding_id
+                    WHERE p.id=$1 AND p.binding_id=$2 AND p.state='pending'
+                    AND p.escalation_generation=$3 AND b.revision=$4
+                    AND ($5::bigint IS NULL OR p.health_revision=$5))""",
+                    escalation.pending_id, binding_id, escalation.pending_generation, escalation.binding_revision,
+                    escalation.health_revision):
+                return False
+            await connection.execute("""INSERT INTO am_judge_escalations(pending_id,binding_id,binding_revision,scope,
+                    source_id,source_revision,byte_start,byte_end,window_digest,manifest_digest,health_revision,
+                    health_policy_revision,reason,credential_id,provider,provider_revision)
+                VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                ON CONFLICT ON CONSTRAINT am_judge_escalation_key DO UPDATE SET
+                    binding_revision=EXCLUDED.binding_revision,source_revision=EXCLUDED.source_revision,
+                    window_digest=EXCLUDED.window_digest,manifest_digest=EXCLUDED.manifest_digest,
+                    health_revision=EXCLUDED.health_revision,
+                    health_policy_revision=EXCLUDED.health_policy_revision,reason=EXCLUDED.reason,
+                    credential_id=EXCLUDED.credential_id,provider=EXCLUDED.provider,
+                    provider_revision=EXCLUDED.provider_revision,escalated_at=clock_timestamp()""",
+                escalation.pending_id, binding_id, escalation.binding_revision, escalation.scope, escalation.source_id,
+                escalation.source_revision, escalation.byte_start, escalation.byte_end, escalation.window_digest,
+                escalation.manifest_digest, escalation.health_revision, escalation.health_policy_revision,
+                escalation.reason, current.credential_id, escalation.provider, escalation.provider_revision)
+            return True
+
+    async def escalations(self, actor: Principal, binding_id: str, pending_id: str) -> PendingEscalations:
+        """This worker credential's still-current escalations of one pending item, with the version they hold for."""
+        async with self._tx(lock=False, snapshot=True) as (connection, _):
+            current = await self._actor(connection, actor, binding_id, (Role.AGENT,))
+            version = await connection.fetchrow("""SELECT p.escalation_generation,b.revision FROM am_pending_judgments p
+                JOIN am_bindings b ON b.id=p.binding_id WHERE p.id=$1 AND p.binding_id=$2""", pending_id, binding_id)
+            if version is None:
+                raise _missing()
+            rows = await connection.fetch(f"""SELECT e.pending_id,e.binding_revision,e.scope,e.reason,e.provider,
+                    e.provider_revision,e.source_id,e.source_revision,e.byte_start,e.byte_end,e.window_digest,
+                    e.manifest_digest,e.health_revision,e.health_policy_revision
+                FROM am_judge_escalations e WHERE e.pending_id=$1 AND e.binding_id=$2 AND e.credential_id=$3
+                AND {_CURRENT_ESCALATION_SQL}""", pending_id, binding_id, current.credential_id)
+            generation = version["escalation_generation"]
+            return PendingEscalations(pending_id=pending_id, pending_generation=generation, binding_revision=version["revision"],
+                records=tuple(JudgeEscalation(**dict(row), pending_generation=generation) for row in rows))
 
     async def _credential_revocation_impact(self, connection, actor: Principal, credential_id: str) -> dict:
         target = await connection.fetchrow("SELECT * FROM am_credentials WHERE id=$1 AND realm=$2 AND principal_id=$3", credential_id, actor.realm, actor.id)
@@ -1404,6 +1472,17 @@ class Store:
         if len(sources) > 128:
             raise DomainError("MANIFEST_TOO_LARGE", "The complete claim judgment evidence exceeds its bounded manifest")
         digest = canonical_digest(manifest)
+        if pending is not None:
+            # A changed cleanup manifest is a new data version: earlier hand-offs of this item no longer apply.
+            # The version uses the item's own snapshot, so a global item read from several snapshots keeps one.
+            # The first build keeps the generation: no judgment can predate it, only records of failed builds.
+            version = canonical_digest(self._claim_manifest(claims, sources, pending["snapshot"]))
+            if pending["manifest_digest"] != version:
+                await connection.execute("""WITH changed AS (UPDATE am_pending_judgments
+                        SET manifest_digest=$2,escalation_generation=escalation_generation+(manifest_digest IS NOT NULL)::int
+                        WHERE id=$1 RETURNING id)
+                    DELETE FROM am_judge_escalations e USING changed WHERE e.pending_id=changed.id""",
+                    pending["id"], version)
         if not claims:
             if pending is not None:
                 await self._terminalize_cleanup(connection, pending["id"])
@@ -1487,24 +1566,55 @@ class Store:
             is not None
         )
 
-    async def _pending_page(self, connection, clock, binding_id, snapshot, cursor, max_bytes) -> dict:
+    async def _pending_page(self, connection, clock, binding_id, snapshot, cursor, max_bytes, *,
+                            worker_fence: str | None, representation_bytes: int, measure_json: Callable[[dict], int]) -> dict:
         if type(cursor) is not int or cursor < 0 or type(max_bytes) is not int or not 256 <= max_bytes <= 4096:
             raise DomainError("PENDING_PAGE_INVALID", "Pending inspection requires a bounded cursor and byte budget")
-        rows = await connection.fetch("""SELECT p.id,p.sequence,p.kind,p.state,p.source_ids,p.claim_ids,p.original_job_id,p.snapshot,p.health_revision
-            FROM am_pending_judgments p WHERE p.binding_id=$1 AND p.state IN ('pending','held')
+        rows = await connection.fetch(f"""SELECT p.id,p.sequence,p.kind,p.state,p.source_ids,p.claim_ids,p.original_job_id,
+                p.snapshot,p.health_revision,
+                CASE WHEN p.state<>'pending' OR p.kind NOT IN ('source_selection','cleanup','legacy_revalidation') THEN NULL
+                    WHEN {_AGENT_PENDING_SQL.format(fence="$4")} THEN 'coding_agent' ELSE 'background_judge' END AS awaiting,
+                e.reason AS escalation_reason,e.escalated_at,e.provider,e.provider_revision
+            FROM am_pending_judgments p
+            LEFT JOIN LATERAL (SELECT reason,escalated_at,provider,provider_revision FROM am_judge_escalations
+                WHERE pending_id=p.id ORDER BY escalated_at DESC LIMIT 1) e ON true
+            WHERE p.binding_id=$1 AND p.state IN ('pending','held')
             AND (p.snapshot IS NULL OR p.snapshot=$2) AND p.sequence>$3
-            ORDER BY p.sequence LIMIT 33""", binding_id, snapshot, cursor)
+            ORDER BY p.sequence LIMIT 33""", binding_id, snapshot, cursor, worker_fence)
         result = {"kind": "pending", "epoch": clock["epoch"], "items": [], "next_cursor": None, "partial": False}
         for row in rows[:32]:
-            item = dict(row)
-            if item["kind"] != "health":
-                item.pop("health_revision")
+            item = {name: row[name] for name in (
+                "id", "sequence", "kind", "state", "source_ids", "claim_ids", "original_job_id", "snapshot")}
+            if row["kind"] == "health":
+                item["health_revision"] = row["health_revision"]
+            if row["awaiting"] is not None:
+                item["awaiting"] = row["awaiting"]
+            if row["escalation_reason"] is not None:
+                item["escalation"] = {"reason": row["escalation_reason"], "escalated_at": row["escalated_at"].isoformat(),
+                                      "provider": row["provider"], "provider_revision": row["provider_revision"]}
             item["source_count"], item["claim_count"] = len(item["source_ids"]), len(item["claim_ids"])
             item["source_ids"], item["claim_ids"] = item["source_ids"][:4], item["claim_ids"][:4]
-            proposed = {**result, "items": [*result["items"], item], "next_cursor": row["sequence"], "partial": True}
-            if len(_json(proposed).encode()) > max_bytes:
+            # An item shrinks before it misses the page: first the escalation summary. Only a first item, which has
+            # no next page to move to, also drops its ID previews (the counts stay and item inspect lists every ID);
+            # `awaiting` always stays, and every pending item has an ID preview larger than `awaiting`. A first item
+            # that fits the wire budget in no shape is still returned within the raw budget: the in-process worker
+            # keeps progressing, and the MCP edge refuses that oversized result exactly where it did before.
+            compact = {name: value for name, value in item.items() if name != "escalation"}
+            minimal = {**compact, "source_ids": [], "claim_ids": []}
+            # Measure the exact page this item would end: partial and next_cursor change its size.
+            partial = len(result["items"]) + 1 < len(rows)
+            fits = []
+            for shape in (item, compact) if result["items"] else (item, compact, minimal):
+                proposed = {**result, "items": [*result["items"], shape],
+                            "next_cursor": row["sequence"] if partial else None, "partial": partial}
+                raw = len(_json(proposed).encode()) <= max_bytes
+                fits.append((shape, raw, raw and measure_json(proposed) <= representation_bytes))
+            chosen = next((shape for shape, _, wire in fits if wire), None)
+            if chosen is None and not result["items"] and fits[-1][1]:
+                chosen = minimal
+            if chosen is None:
                 break
-            result["items"].append(item)
+            result["items"].append(chosen)
         result["partial"] = len(result["items"]) < len(rows)
         result["next_cursor"] = result["items"][-1]["sequence"] if result["partial"] and result["items"] else None
         if rows and not result["items"]:
@@ -2004,7 +2114,7 @@ class Store:
         self, actor: Principal, binding_id: str, ref: str, snapshot: str | None = None, *,
         byte_start: int = 0, max_bytes: int = 4096, claim_ids: tuple[str, ...] | None = None,
         rejection_cursor: str | None = None, representation_bytes: int | None = None,
-        measure_json: Callable[[dict], int] | None = None,
+        measure_json: Callable[[dict], int] | None = None, worker_fence: str | None = None,
     ) -> dict:
         from .representation import serialized_json_bytes, stored_record_window
 
@@ -2040,7 +2150,8 @@ class Store:
                     byte_start=byte_start, max_bytes=max_bytes,
                     representation_bytes=representation_bytes, measure_json=measure_json)
             if ref == "pending":
-                return await self._pending_page(connection, clock, binding_id, snapshot, byte_start, max_bytes)
+                return await self._pending_page(connection, clock, binding_id, snapshot, byte_start, max_bytes,
+                    worker_fence=worker_fence, representation_bytes=representation_bytes, measure_json=measure_json)
             if ref == "judgment":
                 if byte_start != 0 or max_bytes != 4096:
                     raise DomainError("JUDGMENT_MANIFEST_INVALID", "Window arguments require a stored record reference")
@@ -2071,12 +2182,24 @@ class Store:
                         representation_bytes=representation_bytes, measure_json=measure_json)
                 result.update(pending_kind=row["kind"], source_ids=row["source_ids"], claim_ids=row["claim_ids"],
                     reason=row["reason"], original_job_id=row["original_job_id"])
+                windows = await connection.fetch("""SELECT source_id,byte_start,byte_end,reason FROM am_judge_escalations
+                    WHERE pending_id=$1 AND scope='window' ORDER BY source_id,byte_start LIMIT 17""", row["id"])
+                if windows:
+                    result.update(escalated_windows=[dict(window) for window in windows[:16]],
+                        escalated_windows_partial=len(windows) > 16)
                 if row["kind"] == "cleanup" and row["state"] in {"pending", "held"}:
                     result["judgment_manifest"] = await self._judgment_manifest(
                         connection, clock, current, binding_id, snapshot, row["claim_ids"], pending_id=row["id"],
                     )
                     refreshed = await connection.fetchrow("SELECT state,reason,resolved_at FROM am_pending_judgments WHERE id=$1", row["id"])
                     result.update(state=refreshed["state"], reason=refreshed["reason"])
+                # The window list is a navigation aid: it shrinks before the item exceeds the wire budget, and
+                # leaves the response in its pre-escalation shape when not even the partial marker fits.
+                while result.get("escalated_windows") and measure_json(result) > representation_bytes:
+                    result["escalated_windows"].pop()
+                    result["escalated_windows_partial"] = True
+                if "escalated_windows" in result and measure_json(result) > representation_bytes:
+                    del result["escalated_windows"], result["escalated_windows_partial"]
                 return result
             if kind == "judgment":
                 visible = await self._judgment_disclosure(connection, binding_id, row, snapshot)
@@ -3169,7 +3292,7 @@ class Store:
         await self._apply_health_deletions(connection, scrub=True)
 
     async def _reopen_source_work(
-        self, connection, source_ids: tuple[str, ...],
+        self, connection, source_ids: tuple[str, ...], freshly_withdrawn: frozenset[str] = frozenset(),
     ) -> None:
         if not source_ids:
             return
@@ -3197,15 +3320,28 @@ class Store:
         for source in rows:
             if source["id"] in withdrawn:
                 continue
+            # Reopened work carries new rejection context; the background judge gets it back, and the
+            # generation bump refuses a hand-off still in flight from before the reopen. That covers pending
+            # work whose selection was withdrawn in this call and work this call moves out of 'resolved';
+            # replaying an already applied withdrawal reopens nothing.
+            if source["id"] in freshly_withdrawn:
+                await connection.execute(
+                    """WITH reopened AS (UPDATE am_pending_judgments p SET escalation_generation=p.escalation_generation+1
+                        WHERE p.binding_id=$1 AND $2=ANY(p.source_ids)
+                        AND p.kind IN ('source_selection','legacy_revalidation') AND p.state IN ('pending','held')
+                        RETURNING p.id)
+                    DELETE FROM am_judge_escalations e USING reopened WHERE e.pending_id=reopened.id""",
+                    source["binding_id"], source["id"],
+                )
             await connection.execute(
-                """UPDATE am_pending_judgments p
+                """WITH reopened AS (UPDATE am_pending_judgments p
                 SET state=CASE WHEN p.kind='legacy_revalidation' AND EXISTS(
                     SELECT 1 FROM unnest(p.source_ids) AS input(id)
                     LEFT JOIN am_sources s ON s.id=input.id
                     WHERE s.id IS NULL OR s.state<>'active' OR s.body IS NULL
                     OR s.speaker IN ('memory','agent_note')
                 ) THEN 'held' ELSE 'pending' END,
-                resolved_at=NULL
+                resolved_at=NULL,escalation_generation=p.escalation_generation+1
                 WHERE p.binding_id=$1 AND $2=ANY(p.source_ids)
                 AND p.kind IN ('source_selection','legacy_revalidation')
                 AND p.state='resolved'
@@ -3218,7 +3354,9 @@ class Store:
                           AND q.policy_revision=$3
                           AND (q.request_snapshot IS NULL OR q.request_snapshot IS NOT DISTINCT FROM p.snapshot)
                     ),'{}'::int8multirange) @> int8range(0,
-                        (SELECT octet_length(body)::bigint FROM am_sources WHERE id=$2),'[)')""",
+                        (SELECT octet_length(body)::bigint FROM am_sources WHERE id=$2),'[)')
+                RETURNING p.id)
+                DELETE FROM am_judge_escalations e USING reopened WHERE e.pending_id=reopened.id""",
                 source["binding_id"], source["id"], selection_contract_revision(),
             )
             exists = await connection.fetchval(
@@ -3265,6 +3403,7 @@ class Store:
         artifact_floors = {token for kind, token in tokens if kind == "artifact"}
         artifacts_retracted = 0
         reopen_source_ids = set()
+        freshly_withdrawn: set[str] = set()
         if artifact_floors:
             tables = {
                 "claim": "am_claims", "relation": "am_relations", "reflection": "am_reflections",
@@ -3287,7 +3426,7 @@ class Store:
                 if ids:
                     if kind == "selection":
                         affected = await connection.fetch(
-                            """SELECT DISTINCT d.source_id
+                            """SELECT DISTINCT d.source_id,q.state<>'retracted' AS fresh
                             FROM am_source_selections q
                             JOIN am_selection_sources d ON d.selection_id=q.id
                             WHERE q.id=ANY($1::text[])
@@ -3297,6 +3436,7 @@ class Store:
                             ids,
                         )
                         reopen_source_ids.update(row["source_id"] for row in affected)
+                        freshly_withdrawn.update(row["source_id"] for row in affected if row["fresh"])
                     retracted = await connection.fetch(
                         f"""UPDATE {table} SET state='retracted'
                         WHERE id=ANY($1::text[]) AND state<>'retracted'
@@ -3387,7 +3527,7 @@ class Store:
             AND EXISTS(SELECT 1 FROM am_source_selections q WHERE q.id=o.artifact_id AND q.state='active')
             AND NOT EXISTS(SELECT 1 FROM am_claims c WHERE c.selection_id=o.artifact_id AND c.state='active' AND c.draft IS NOT NULL)""")
         await self._reopen_source_work(
-            connection, tuple(sorted(reopen_source_ids)),
+            connection, tuple(sorted(reopen_source_ids)), frozenset(freshly_withdrawn),
         )
         await self._prune_rejection_index(connection)
         if scrub:
@@ -3642,7 +3782,7 @@ class Store:
             raise DomainError("DELETION_BARRIER", "Purge intent durability is unknown; reconcile the independent journal",
                 status=503, effect=EffectState.UNKNOWN) from None
 
-    async def delivery(self, actor: Principal, binding_id: str, admissions: tuple[()], rule_versions: tuple[tuple[str, int, str], ...], snapshot: str | None = None, relation_ids: tuple[str, ...] = (), *, nonmodel_admission: NonmodelAdmission | None = None, selected_claim_ids: tuple[str, ...] = (), include_stats: bool = True) -> dict:
+    async def delivery(self, actor: Principal, binding_id: str, admissions: tuple[()], rule_versions: tuple[tuple[str, int, str], ...], snapshot: str | None = None, relation_ids: tuple[str, ...] = (), *, nonmodel_admission: NonmodelAdmission | None = None, selected_claim_ids: tuple[str, ...] = (), include_stats: bool = True, worker_fence: str | None = None) -> dict:
         if len(admissions) > 16 or len(rule_versions) > 1024 or len(relation_ids) > 128 or len(set(relation_ids)) != len(relation_ids):
             raise DomainError("MANIFEST_TOO_LARGE", "The final delivery manifest is too large")
         async with self._tx(lock=False, snapshot=True) as (connection, clock):
@@ -3680,8 +3820,12 @@ class Store:
                 # Corpus statistics cost thousands of sequential round-trips on a real corpus; a caller
                 # that reports only the stamp, on every protected action, must not pay for them.
                 return {"epoch": clock["epoch"]}
-            return {"epoch": clock["epoch"], "stats": await self._stats(connection, binding_id, clock["epoch"], snapshot,
-                code_workspace_id=workspace_id, workspace_scoped=True)}
+            stats = await self._stats(connection, binding_id, clock["epoch"], snapshot,
+                code_workspace_id=workspace_id, workspace_scoped=True)
+            stats["agent_pending"] = await connection.fetchval(f"""SELECT count(*) FROM am_pending_judgments p
+                WHERE p.binding_id=$1 AND (p.snapshot IS NULL OR p.snapshot=$2)
+                AND {_AGENT_PENDING_SQL.format(fence="$3")}""", binding_id, snapshot, worker_fence)
+            return {"epoch": clock["epoch"], "stats": stats}
 
     async def recover_after_restore(self, owner_id: str, operator_token: str, expected_head: str) -> Principal:
         if self.settings.migrator_dsn is None or self.settings.database_dsn != self.settings.migrator_dsn:
@@ -5469,7 +5613,8 @@ class Store:
             claims = tuple(RevisionRef.model_validate(item['claim']) for item in manifest['claims'])
             admission = await self._new_caller_admission(connection, clock, actor, binding_id, 'health_work',
                 canonical_digest(manifest), manifest['snapshot'], sources=sources, claims=claims, health_manifest=manifest)
-            result = {'kind': 'health_work', 'pending_id': identifier, 'binding_id': binding_id,
+            result = {'kind': 'health_work', 'pending_id': identifier, 'health_revision': manifest['pending_revision'],
+                'binding_id': binding_id,
                 'binding_revision': admission.binding_revision, 'health_manifest_digest': canonical_digest(manifest),
                 'admission': admission.model_dump(mode='json'), 'input_sources': manifest['input_sources'],
                 'input_claims': [item['claim'] for item in manifest['claims']], **bundle,

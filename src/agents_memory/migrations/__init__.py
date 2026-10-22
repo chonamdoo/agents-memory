@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from ..database import CANDIDATE_VECTOR_SQL, INSTALLED_VECTOR_SQL, require_server
 
-MIGRATIONS = ("0001_authority", "0002_directional_tombstones", "0003_origin_and_vector_compat", "0004_operation_successors", "0005_company_selection", "0006_agent_judged", "0007_memory_health")
+MIGRATIONS = ("0001_authority", "0002_directional_tombstones", "0003_origin_and_vector_compat", "0004_operation_successors", "0005_company_selection", "0006_agent_judged", "0007_memory_health", "0008_judge_escalations")
 MIGRATION = MIGRATIONS[-1]
 
 
@@ -81,6 +81,8 @@ def restore_preparation_sql(archived_revision: str, schema: str) -> str:
         f"'{MIGRATION}' THEN RAISE EXCEPTION 'Unsupported current authority migration'; END IF; END $$",
     ]
     archived_index = MIGRATIONS.index(archived_revision)
+    if archived_index < 7:
+        statements.append("DROP TABLE am_judge_escalations")
     if archived_index < 6:
         statements.extend([
             "DROP TABLE am_code_links",
