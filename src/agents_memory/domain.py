@@ -218,6 +218,58 @@ class RelevanceJudgment(TypedModel):
         return value
 
 
+class JudgeEscalation(TypedModel):
+    """A body-free fact that the background judge left pending work, or one window of it, to the coding agent.
+
+    ``pending_generation`` and ``binding_revision`` are the data version the worker read before judging.
+    """
+
+    pending_id: Handle
+    pending_generation: int = Field(ge=0)
+    binding_revision: int = Field(ge=0)
+    scope: Literal["item", "window", "health"]
+    reason: str = Field(pattern=r"^[a-z0-9_]{1,64}$")
+    provider: str = Field(pattern=r"^[a-z]{1,32}$")
+    provider_revision: int = Field(ge=0)
+    source_id: Handle | None = None
+    source_revision: int | None = Field(default=None, ge=1)
+    byte_start: int | None = Field(default=None, ge=0)
+    byte_end: int | None = Field(default=None, ge=0)
+    window_digest: str | None = Field(default=None, min_length=1, max_length=128)
+    manifest_digest: str | None = Field(default=None, min_length=1, max_length=128)
+    health_revision: int | None = Field(default=None, ge=0)
+    health_policy_revision: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def scope_carries_its_version(self) -> JudgeEscalation:
+        if (self.source_id is None) != (self.source_revision is None):
+            raise ValueError("A source escalation names the source revision it saw")
+        window = (self.byte_start, self.byte_end, self.window_digest)
+        health = (self.health_revision, self.health_policy_revision)
+        if self.scope == "window":
+            if self.source_id is None or None in window or self.byte_end < self.byte_start:
+                raise ValueError("A window escalation carries its exact source window and digest")
+        elif window != (None, None, None):
+            raise ValueError("Only a window escalation carries a window location or digest")
+        if self.scope == "health":
+            if None in health or self.source_id is not None:
+                raise ValueError("A health escalation carries the health and policy revisions only")
+        elif health != (None, None):
+            raise ValueError("Only a health escalation carries health revisions")
+        if self.scope != "item" and self.manifest_digest is not None:
+            raise ValueError("Only an item escalation carries a cleanup manifest digest")
+        return self
+
+
+class PendingEscalations(TypedModel):
+    """One pending item's current escalations and the data version they were read at."""
+
+    pending_id: Handle
+    pending_generation: int = Field(ge=0)
+    binding_revision: int = Field(ge=0)
+    records: tuple[JudgeEscalation, ...]
+
+
 class ContextCommand(TypedModel):
     binding_id: Handle | None = None
     query: str = Field(min_length=1, max_length=4096)

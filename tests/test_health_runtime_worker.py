@@ -405,6 +405,60 @@ async def test_unchanged_failed_health_is_not_repaid_and_does_not_starve_source(
     ) == []
 
 
+@pytest.mark.parametrize("failure", ["request", "response"])
+async def test_health_escalation_is_persisted_and_not_resent(world, authority, failure):
+    await health_work(world, authority)
+    peer = health_protocol_worker(world, failure)
+    await world.worker.cycle()
+    assert len(peer.health_calls) == 1
+    [pending] = await world.rows(
+        "SELECT id,health_revision FROM am_pending_judgments WHERE binding_id=$1 AND kind='health'", world.binding_id,
+    )
+    [row] = await world.rows("""SELECT pending_id,scope,reason,provider,credential_id,health_revision,health_policy_revision
+        FROM am_judge_escalations WHERE binding_id=$1""", world.binding_id)
+    assert row == {
+        "pending_id": pending["id"], "scope": "health", "reason": "health_provider_" + failure, "provider": "jev",
+        "credential_id": load_state(world.settings).credential_id, "health_revision": pending["health_revision"],
+        "health_policy_revision": 1,
+    }
+
+    restarted = health_protocol_worker(world, None)
+    await world.worker.cycle()
+
+    assert restarted.health_calls == []
+    assert await world.pending("health") == ["pending"]
+
+
+async def test_health_work_revised_after_listing_is_sent_once_at_its_new_revision(world, authority, monkeypatch):
+    await health_work(world, authority)
+    peer = health_protocol_worker(world, "response")
+    original = world.application.inspect
+
+    async def revise_after_listing(actor, ref, binding_id=None, snapshot=None, **kwargs):
+        result = await original(actor, ref, binding_id, snapshot, **kwargs)
+        if ref == "pending":
+            # Synthetic concurrent refresh: the work moves on between the page and the bundle.
+            monkeypatch.setattr(world.application, "inspect", original)
+            await world.rows("""UPDATE am_pending_judgments SET health_revision=health_revision+1
+                WHERE binding_id=$1 AND kind='health' RETURNING id""", world.binding_id)
+        return result
+
+    monkeypatch.setattr(world.application, "inspect", revise_after_listing)
+    await world.worker.cycle()
+    assert peer.health_calls == []
+    assert await world.rows("SELECT pending_id FROM am_judge_escalations WHERE binding_id=$1", world.binding_id) == []
+
+    await world.worker.cycle()
+    assert len(peer.health_calls) == 1
+    [row] = await world.rows("""SELECT e.health_revision=p.health_revision AS current FROM am_judge_escalations e
+        JOIN am_pending_judgments p ON p.id=e.pending_id WHERE e.binding_id=$1""", world.binding_id)
+    assert row["current"] is True
+    restarted = health_protocol_worker(world, None)
+    await world.worker.cycle()
+    assert restarted.health_calls == []
+
+
+
 @pytest.mark.parametrize("malformed", ["claim", "source"])
 async def test_malformed_nested_health_input_preserves_work_and_reaches_next_source(
     world, authority, monkeypatch, malformed,

@@ -11,13 +11,22 @@ from threading import Event
 import pytest
 import pytest_asyncio
 from test_jev_client import http_error
-from test_store_authority import TOKEN
+from test_store_authority import TOKEN, source_selection
 from test_store_authority import authority as authority
 
 from agents_memory import judge as judge_module
 from agents_memory.application import Application
 from agents_memory.config import Settings
-from agents_memory.domain import CaptureCommand, DomainError, Principal, Role
+from agents_memory.domain import (
+    BindingRelocation,
+    CaptureCommand,
+    ContextCommand,
+    DomainError,
+    JudgeEscalation,
+    Principal,
+    RelevanceJudgment,
+    Role,
+)
 from agents_memory.jev import JevClient, ProviderFailure, ProviderResult
 from agents_memory.judge import (
     EGRESS_POLICY_FILE,
@@ -37,6 +46,7 @@ from agents_memory.judge import (
 )
 from agents_memory.judge_worker import JudgeWorker
 from agents_memory.private_io import private_write
+from agents_memory.wire import tool_result_bytes
 
 KEY = "sk-jev-TEST-qwrtyuiopZXCVNMLKJH"
 DECISION = "We decided to pin PostgreSQL 18 for all deployments."
@@ -685,3 +695,527 @@ async def test_subscription_denial_during_cli_call_drops_the_result(world):
     assert await world.selections() == []
     assert await world.pending("source_selection") == ["pending"]
     assert worker.phase == "refused" and worker.last_error == "JUDGE_PROVIDER_FORBIDDEN"
+
+
+UNCERTAIN = "maybe we should try redis. not sure."
+
+
+async def escalations(world, binding_id=None):
+    return await world.rows("""SELECT e.pending_id,e.scope,e.reason,e.provider,e.provider_revision,e.credential_id,
+            e.source_id,e.byte_start,e.byte_end,e.window_digest,e.binding_revision,e.escalated_at
+        FROM am_judge_escalations e WHERE e.binding_id=$1 ORDER BY e.scope,e.byte_start NULLS FIRST""",
+        binding_id or world.binding_id)
+
+
+async def context(world, query="redis", *, application=None, binding_id=None, snapshot=None, **changes):
+    application = application or world.application
+    return await application.context(world.operator, ContextCommand(
+        binding_id=binding_id or world.binding_id, query=query, snapshot=snapshot, **changes))
+
+
+def restarted(world, **factories):
+    """A fresh worker process: nothing survives except the database and the judge state files."""
+    worker = JudgeWorker(world.settings, world.store, world.application,
+                         **(factories or {"client_factory": world.jev.factory}))
+    world.application.judge = worker
+    return worker
+
+
+async def test_escalation_is_persisted_with_reason_and_fence(world):
+    world.jev.remember = {"maybe": 0.5}
+    captured = await world.capture("persisted-uncertain", UNCERTAIN)
+    state = load_state(world.settings)
+
+    await world.worker.cycle()
+
+    rows = await escalations(world)
+    assert [(row["scope"], row["reason"]) for row in rows] == [("item", "uncertain"), ("window", "uncertain")]
+    for row in rows:
+        assert row["provider"] == "jev" and row["provider_revision"] == state.revision
+        assert row["credential_id"] == state.credential_id != world.operator.credential_id
+        assert row["source_id"] == captured.source_id and row["escalated_at"] is not None
+    assert rows[1]["window_digest"] and rows[1]["byte_start"] == 0
+
+    stale = await world.store.authenticate(read_worker_token(world.settings), (Role.AGENT,))
+    observed = await world.store.escalations(stale, world.binding_id, rows[0]["pending_id"])
+    await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda key, model: "jev-1.14.0")
+    with pytest.raises(DomainError) as refused:
+        await world.store.record_escalation(stale, world.binding_id, JudgeEscalation(
+            pending_id=observed.pending_id, pending_generation=observed.pending_generation,
+            binding_revision=observed.binding_revision, scope="item", reason="uncertain", provider="jev",
+            provider_revision=state.revision, source_id=captured.source_id, source_revision=1))
+    assert refused.value.code == "AUTH_DENIED"
+    assert len(await escalations(world)) == 2
+
+
+@pytest.mark.parametrize("change", ["reopen", "relocate"])
+async def test_hand_off_judged_before_a_data_change_is_not_recorded(world, authority, change):
+    world.jev.remember = {"maybe": 0.5}
+    captured = await world.capture("in-flight-" + change, UNCERTAIN)
+    worker = await world.store.authenticate(read_worker_token(world.settings), (Role.AGENT,))
+    [pending_id] = [row["id"] for row in await world.rows(
+        "SELECT id FROM am_pending_judgments WHERE binding_id=$1 AND kind='source_selection'", world.binding_id)]
+    observed = await world.store.escalations(worker, world.binding_id, pending_id)
+    if change == "reopen":
+        discarded = await world.store.record(
+            world.operator, await source_selection(authority, captured.source_id, "in-flight-discard", label="discard"))
+        await world.store.retract(world.operator, world.binding_id, discarded.artifact_id, "in-flight-withdraw")
+    else:
+        [binding] = await world.rows("UPDATE am_bindings SET locator='/synthetic/original' WHERE id=$1 RETURNING revision",
+                                     world.binding_id)
+        await world.store.relocate_binding(world.operator, BindingRelocation(binding_id=world.binding_id,
+            expected_revision=binding["revision"], expected_locator="/synthetic/original", locator="/synthetic/moved",
+            idempotency_key="in-flight-move"))
+    assert await world.pending("source_selection") == ["pending"]
+
+    recorded = await world.store.record_escalation(worker, world.binding_id, JudgeEscalation(
+        pending_id=pending_id, pending_generation=observed.pending_generation,
+        binding_revision=observed.binding_revision, scope="item", reason="uncertain", provider="jev",
+        provider_revision=load_state(world.settings).revision, source_id=captured.source_id, source_revision=1))
+
+    assert recorded is False and await escalations(world) == []
+    assert (await world.inspect("pending"))["items"][0]["awaiting"] == "background_judge"
+    await world.worker.cycle()
+    assert [row["reason"] for row in await escalations(world)] == ["uncertain", "uncertain"]
+
+
+async def test_worker_stops_an_item_whose_hand_off_went_stale(world, monkeypatch):
+    world.jev.remember = {"maybe": 0.5}
+    await world.capture("stale-windows", " ".join([UNCERTAIN] * 300))
+    [binding] = await world.rows("UPDATE am_bindings SET locator='/synthetic/original' WHERE id=$1 RETURNING revision",
+                                 world.binding_id)
+    record = world.store.record_escalation
+
+    async def relocate_before_first_hand_off(actor, binding_id, escalation):
+        # The project moves after the first window was judged but before its hand-off commits.
+        monkeypatch.setattr(world.store, "record_escalation", record)
+        await world.store.relocate_binding(world.operator, BindingRelocation(
+            binding_id=world.binding_id, expected_revision=binding["revision"],
+            expected_locator="/synthetic/original", locator="/synthetic/moved", idempotency_key="stale-move"))
+        return await record(actor, binding_id, escalation)
+
+    monkeypatch.setattr(world.store, "record_escalation", relocate_before_first_hand_off)
+    await world.worker.cycle()
+    first = len(world.jev.calls)
+    assert await escalations(world) == []
+
+    world.jev.on_call = None
+    await restarted(world).cycle()
+    second = len(world.jev.calls) - first
+    windows = [row for row in await escalations(world) if row["scope"] == "window"]
+    assert len(windows) >= 3 and second > first
+    await restarted(world).cycle()
+    assert len(world.jev.calls) == first + second
+
+
+async def test_changed_cleanup_manifest_returns_to_the_worker(world):
+    world.jev.relation = ("supersedes", 0.6)
+    older, _ = await remembered_pair(world)
+    await world.worker.cycle()
+    assert [row["reason"] for row in await escalations(world) if row["scope"] == "item"] == ["uncertain_relation"]
+
+    await world.rows("UPDATE am_claims SET valid_until=clock_timestamp()-interval '1 second' WHERE id=$1 RETURNING id",
+                     older)
+    [cleanup] = [item for item in (await world.inspect("pending"))["items"] if item["kind"] == "cleanup"]
+    await world.inspect(cleanup["id"])
+
+    assert await escalations(world) == []
+    [cleanup] = [item for item in (await world.inspect("pending"))["items"] if item["kind"] == "cleanup"]
+    assert cleanup["awaiting"] == "background_judge"
+    await restarted(world).cycle()
+    assert await world.pending("cleanup") == ["resolved"]
+
+
+async def test_cleanup_read_before_a_binding_move_is_not_handed_off(world, monkeypatch):
+    world.jev.relation = ("supersedes", 0.6)
+    await remembered_pair(world)
+    [cleanup_id] = [row["id"] for row in await world.rows(
+        "SELECT id FROM am_pending_judgments WHERE binding_id=$1 AND kind='cleanup'", world.binding_id)]
+    [binding] = await world.rows("UPDATE am_bindings SET locator='/synthetic/original' WHERE id=$1 RETURNING revision",
+                                 world.binding_id)
+    inspect = world.application.inspect
+
+    async def move_after_cleanup_inspect(actor, ref, *args, **kwargs):
+        result = await inspect(actor, ref, *args, **kwargs)
+        if ref == cleanup_id:
+            monkeypatch.setattr(world.application, "inspect", inspect)
+            await world.store.relocate_binding(world.operator, BindingRelocation(binding_id=world.binding_id,
+                expected_revision=binding["revision"], expected_locator="/synthetic/original",
+                locator="/synthetic/moved", idempotency_key="cleanup-move"))
+        return result
+
+    monkeypatch.setattr(world.application, "inspect", move_after_cleanup_inspect)
+    calls = len(world.jev.calls)
+    await world.worker.cycle()
+
+    assert len(world.jev.calls) == calls and await escalations(world) == []
+    await restarted(world).cycle()
+    assert [row["reason"] for row in await escalations(world) if row["scope"] == "item"] == ["uncertain_relation"]
+
+
+async def test_global_cleanup_keeps_one_version_across_snapshots(world):
+    await remembered_pair(world)
+    world.jev.remember, world.jev.relation = {"maybe": 0.5}, ("supersedes", 0.6)
+    await world.store.capture(world.operator, CaptureCommand(binding_id=world.binding_id, idempotency_key="branch-only",
+        origin_key="branch-only", body=UNCERTAIN, speaker="human", snapshot="branch-b"))
+    await world.worker.cycle()
+    [cleanup] = [row for row in await escalations(world) if row["reason"] == "uncertain_relation"]
+    calls = len(world.jev.calls)
+
+    for _ in range(2):
+        await restarted(world).cycle()
+
+    assert len(world.jev.calls) == calls
+    assert [row for row in await escalations(world) if row["reason"] == "uncertain_relation"] == [cleanup]
+
+
+async def test_pending_item_drops_its_escalation_summary_before_the_wire_budget(world):
+    world.jev.remember = {"maybe": 0.5}
+    await world.capture("summary-budget", UNCERTAIN)
+    await world.worker.cycle()
+    roomy = await world.inspect("pending")
+    [item] = roomy["items"]
+    assert "escalation" in item
+    limit = tool_result_bytes({**roomy, "items": [{key: value for key, value in item.items() if key != "escalation"}]}) + 8
+    application = Application(world.settings.model_copy(update={"max_mcp_response_bytes": limit}), world.store)
+
+    page = await application.inspect(world.operator, "pending", world.binding_id)
+
+    assert tool_result_bytes(roomy) > limit >= tool_result_bytes(page)
+    assert page["items"][0]["awaiting"] == "coding_agent" and "escalation" not in page["items"][0]
+
+
+@pytest.mark.parametrize("length", [323, 512])
+async def test_pending_page_shrinks_a_first_item_but_keeps_its_owner(world, length):
+    snapshot = "가" * length
+    for number in range(2):
+        await world.store.capture(world.operator, CaptureCommand(binding_id=world.binding_id,
+            idempotency_key=f"unicode-snapshot-{number}", origin_key=f"unicode-snapshot-{number}", body=DECISION,
+            speaker="human", snapshot=snapshot))
+    application = Application(world.settings.model_copy(update={"max_mcp_response_bytes": 4096}), world.store)
+
+    page = await application.inspect(world.operator, "pending", world.binding_id, snapshot)
+
+    [item] = page["items"]
+    # Every shape larger than ID-free previews misses the minimum wire budget; the owner still stays.
+    assert item["awaiting"] == "background_judge" and item["source_count"] == 1 and item["source_ids"] == []
+    assert page["partial"] is True and page["next_cursor"] == item["sequence"]
+    if length == 323:
+        assert tool_result_bytes(page) <= 4096
+    else:
+        # The snapshot alone exceeds the minimum wire budget; the in-process worker still gets its page.
+        assert tool_result_bytes(page) > 4096
+
+
+async def test_cleanup_escalation_is_left_to_the_agent_and_not_resent(world, monkeypatch):
+    world.jev.relation = ("supersedes", 0.6)
+    await remembered_pair(world)
+
+    await world.worker.cycle()
+
+    [row] = [row for row in await escalations(world) if row["reason"] == "uncertain_relation"]
+    assert row["scope"] == "item"
+    [cleanup] = [item for item in (await world.inspect("pending"))["items"] if item["kind"] == "cleanup"]
+    assert cleanup["awaiting"] == "coding_agent"
+    calls = len(world.jev.calls)
+    inspect, inspected = world.application.inspect, []
+
+    async def counting(actor, ref, *args, **kwargs):
+        inspected.append(ref)
+        return await inspect(actor, ref, *args, **kwargs)
+
+    monkeypatch.setattr(world.application, "inspect", counting)
+    await restarted(world).cycle()
+    # A handed-off cleanup costs the worker no manifest build and no cycle budget.
+    assert cleanup["id"] not in inspected
+    assert len(world.jev.calls) == calls and await world.pending("cleanup") == ["pending"]
+
+
+async def test_item_level_failure_has_one_owner(world, monkeypatch):
+    world.jev.relation = ("supersedes", 0.6)
+    await remembered_pair(world)
+
+    async def ineligible(*args, **kwargs):
+        raise DomainError("SOURCE_INELIGIBLE", "Synthetic ineligible cleanup")
+
+    monkeypatch.setattr(world.worker, "_cleanup_item", ineligible)
+    await world.worker.cycle()
+
+    [row] = await escalations(world)
+    assert (row["scope"], row["reason"]) == ("item", "item_source_ineligible")
+    [cleanup] = [item for item in (await world.inspect("pending"))["items"] if item["kind"] == "cleanup"]
+    assert cleanup["awaiting"] == "coding_agent"
+    calls = len(world.jev.calls)
+    await restarted(world).cycle()
+    assert len(world.jev.calls) == calls
+
+
+async def test_restarted_worker_does_not_resend_escalated_work(world):
+    world.jev.remember = {"maybe": 0.5}
+    await world.capture("restart-uncertain", UNCERTAIN)
+    await world.worker.cycle()
+    sent = len(world.jev.calls)
+    assert sent >= 1
+
+    await restarted(world).cycle()
+
+    assert len(world.jev.calls) == sent
+    assert await world.selections() == []
+    assert await world.pending("source_selection") == ["pending"]
+
+    await set_jev(world.settings, world.store, world.operator, KEY, verify=lambda key, model: "jev-1.14.0")
+    await restarted(world).cycle()
+    assert len(world.jev.calls) > sent
+
+
+async def test_escalation_leaves_pending_state_and_reason_unchanged(world):
+    world.jev.remember = {"maybe": 0.5}
+    await world.capture("unchanged-pending", UNCERTAIN)
+    query = "SELECT state,reason,resolved_at FROM am_pending_judgments WHERE binding_id=$1 AND kind='source_selection'"
+    before = await world.rows(query, world.binding_id)
+
+    await world.worker.cycle()
+
+    assert await escalations(world)
+    assert await world.rows(query, world.binding_id) == before == [{"state": "pending", "reason": None, "resolved_at": None}]
+
+
+async def test_context_points_to_agent_pending_judgments(world):
+    world.jev.remember = {"maybe": 0.5}
+    await world.capture("pointer-uncertain", UNCERTAIN)
+    await world.worker.cycle()
+
+    first = await context(world)
+    second = await context(world, admission_id=first["admission_id"], relevance=())
+
+    for result in (first, second):
+        pointer = result["agent_judgments"]
+        assert pointer["pending"] == 1
+        assert 'memory_inspect ref="pending"' in pointer["next"]
+        assert "source_selection" in pointer["next"] and "claim_judgment" in pointer["next"]
+    page = await world.inspect("pending")
+    [item] = [item for item in page["items"] if item["awaiting"] == "coding_agent"]
+    assert item["kind"] == "source_selection" and item["escalation"]["reason"] == "uncertain"
+
+
+async def test_context_has_no_pointer_without_agent_pending_work(world, authority):
+    world.jev.remember = {"maybe": 0.5}
+    captured = await world.capture("pointer-resolved", UNCERTAIN)
+    await world.worker.cycle()
+    assert (await context(world))["agent_judgments"]["pending"] == 1
+    await world.capture("pointer-worker-owned", "ok thanks!")
+
+    await world.store.record(world.operator, await source_selection(authority, captured.source_id, "agent-discard", label="discard"))
+
+    result = await context(world)
+    assert result["pipeline"]["pending"] == 1
+    assert "agent_judgments" not in result
+
+
+async def test_pending_page_exposes_escalation_summary_and_awaiting(world):
+    world.jev.remember = {"maybe": 0.5}
+    escalated = await world.capture("page-escalated", UNCERTAIN)
+    await world.worker.cycle()
+    later = await world.capture("page-worker-owned", CHATTER)
+    state = load_state(world.settings)
+
+    page = await world.inspect("pending")
+
+    by_source = {item["source_ids"][0]: item for item in page["items"] if item["kind"] == "source_selection"}
+    mine, theirs = by_source[escalated.source_id], by_source[later.source_id]
+    assert mine["awaiting"] == "coding_agent"
+    assert mine["escalation"]["reason"] == "uncertain" and mine["escalation"]["provider"] == "jev"
+    assert mine["escalation"]["provider_revision"] == state.revision and mine["escalation"]["escalated_at"]
+    assert "credential_id" not in json.dumps(mine["escalation"])
+    assert theirs["awaiting"] == "background_judge" and "escalation" not in theirs
+    detail = await world.inspect(mine["id"])
+    assert [(window["byte_start"], window["reason"]) for window in detail["escalated_windows"]] == [(0, "uncertain")]
+    assert detail["escalated_windows_partial"] is False
+    assert "escalated_windows" not in await world.inspect(theirs["id"])
+
+
+async def test_escalated_windows_shrink_to_the_minimum_wire_budget(world):
+    world.jev.remember = {"maybe": 0.5}
+    await world.capture("many-windows", UNCERTAIN)
+    await world.worker.cycle()
+    [window] = [row for row in await escalations(world) if row["scope"] == "window"]
+    # Synthetic history: more escalated windows than one minimum-budget item can list.
+    await world.rows("""INSERT INTO am_judge_escalations(pending_id,binding_id,binding_revision,scope,source_id,
+            source_revision,byte_start,byte_end,window_digest,reason,credential_id,provider,provider_revision)
+        SELECT pending_id,binding_id,binding_revision,scope,source_id,source_revision,n,n+1,window_digest,$2,
+            credential_id,provider,provider_revision
+        FROM am_judge_escalations, generate_series(1,20) n WHERE pending_id=$1 AND scope='window'""",
+        window["pending_id"], "instruction_injection_" + "x" * 42)
+
+    for limit in (16384, 4096):
+        application = Application(world.settings.model_copy(update={"max_mcp_response_bytes": limit}), world.store)
+        detail = await application.inspect(world.operator, window["pending_id"], world.binding_id)
+        assert tool_result_bytes(detail) <= limit and detail["escalated_windows_partial"] is True
+        assert 1 <= len(detail["escalated_windows"]) <= 16
+
+
+@pytest.mark.parametrize("provider", ["jev", "subscription"])
+async def test_jev_and_subscription_share_escalation_path(world, provider):
+    if provider == "subscription":
+        worker, _ = await subscription_worker(world)
+        world.application.judge = worker
+    else:
+        worker = world.worker
+    world.jev.remember = {"maybe": 0.5}
+    await world.capture("shared-path-" + provider, UNCERTAIN)
+    state = load_state(world.settings)
+
+    await worker.cycle()
+
+    rows = await escalations(world)
+    assert [(row["scope"], row["reason"], row["provider"]) for row in rows] == [
+        ("item", "uncertain", provider), ("window", "uncertain", provider)]
+    assert {row["credential_id"] for row in rows} == {state.credential_id}
+    sent = len(world.jev.calls)
+    if provider == "subscription":
+        again = restarted(world, client_factory=lambda *_: pytest.fail("Jev contacted"),
+                          subscription_factory=lambda *args, **kwargs: world.jev)
+    else:
+        again = restarted(world)
+    await again.cycle()
+    assert len(world.jev.calls) == sent
+    assert (await context(world))["agent_judgments"]["pending"] == 1
+
+
+async def test_context_pointer_respects_wire_budget(world):
+    world.jev.remember = {"decided": 0.95, "maybe": 0.5}
+    for number in range(3):
+        await world.capture(f"budget-claim-{number}", f"We decided rule {number}: pin PostgreSQL 18 for every deployment.")
+    await world.capture("budget-uncertain", UNCERTAIN)
+    await world.worker.cycle()
+    claims = {row["id"] for row in await world.rows(
+        "SELECT id FROM am_claims WHERE binding_id=$1 AND state='active'", world.binding_id)}
+    assert len(claims) == 3
+
+    def application(limit):
+        configured = Application(world.settings.model_copy(update={"max_mcp_response_bytes": limit}), world.store)
+        configured.judge = world.worker
+        return configured
+
+    async def responses(limit, context_bytes=2400, *, relevance_limit=None):
+        """The candidate response, then the relevance response with every claim judged irrelevant and relevant."""
+        first = await context(world, "decided PostgreSQL", application=application(limit), max_bytes=context_bytes)
+        return [first, *[await context(world, "decided PostgreSQL", application=application(relevance_limit or limit),
+            admission_id=first["admission_id"], max_bytes=context_bytes,
+            relevance=tuple(RelevanceJudgment(claim_id=claim_id, relevant=relevant, reason="Budget probe decision.")
+                            for claim_id in sorted(claims))) for relevant in (False, True)]]
+
+    # A caller on the minimum wire budget asks for a context body that fits it.
+    for limit, context_bytes in ((16384, 2400), (4096, 1024)):
+        results = await responses(limit, context_bytes)
+        for result in results:
+            assert tool_result_bytes(result) <= limit and result["agent_judgments"]["pending"] == 1
+        assert all("preview" in item for item in results[0]["candidate_manifest"])
+        assert {item["claim_id"] for item in results[0]["candidate_manifest"]} == claims
+    # A budget that holds each response only without the pointer drops the pointer and keeps everything else.
+    roomy = await responses(16384)
+    for index, result in enumerate(roomy):
+        tight = tool_result_bytes({key: value for key, value in result.items() if key != "agent_judgments"}) + 32
+        assert tool_result_bytes(result) > tight
+        squeezed = (await (responses(tight) if index == 0 else responses(16384, relevance_limit=tight)))[index]
+        assert tool_result_bytes(squeezed) <= tight and "agent_judgments" not in squeezed
+        assert squeezed.get("candidate_manifest") == result.get("candidate_manifest")
+
+
+@pytest.mark.parametrize("fence", ["agent", "refused", "paused", "credential_invalid", "retiring", "unreadable", "ungranted"])
+async def test_unusable_worker_fence_surfaces_all_pending_to_agent(world, fence):
+    target = world.binding_id
+    await world.capture("fence-default", DECISION)
+    if fence == "agent":
+        await set_egress_policy(world.settings, world.store, world.operator, jev_allowed=False)
+        await world.store.capture(world.operator, CaptureCommand(binding_id=world.binding_id, idempotency_key="fence-b",
+            origin_key="fence-b", body=DECISION, speaker="human", snapshot="branch-b"))
+    elif fence == "refused":
+        policy = load_egress_policy(world.settings)
+        private_write(judge_dir(world.settings) / EGRESS_POLICY_FILE,
+            EgressPolicy(jev_allowed=False, revision=policy.revision + 1).model_dump_json(), replace=True)
+    elif fence == "paused":
+        world.jev.failure = ProviderFailure("auth", 401)
+        await world.worker.cycle()
+        assert world.worker.phase == "paused"
+    elif fence == "retiring":
+        state = load_state(world.settings)
+        private_write(judge_dir(world.settings) / PROVIDER_FILE, state.model_copy(
+            update={"retiring_credential_ids": (state.credential_id,)}).model_dump_json(), replace=True)
+    elif fence == "credential_invalid":
+        private_write(judge_dir(world.settings) / TOKEN_FILE, "synthetic-revoked-worker-" + "x" * 40, replace=True)
+        await world.worker.cycle()
+        assert world.worker.last_error == "JUDGE_CREDENTIAL_INVALID"
+    elif fence == "unreadable":
+        private_write(judge_dir(world.settings) / PROVIDER_FILE, "{invalid", replace=True)
+    else:
+        assert (await context(world))["pipeline"]["pending"] == 1
+        assert "agent_judgments" not in await context(world)
+        added = await world.store.register_binding(world.operator, "Ungranted binding", None, "fence-ungranted")
+        world.operator = await world.store.authenticate(TOKEN)
+        await world.store.capture(world.operator, CaptureCommand(binding_id=added.id, idempotency_key="fence-new",
+            origin_key="fence-new", body=DECISION, speaker="human"))
+        target = added.id
+
+    result = await context(world, binding_id=target)
+
+    assert result["pipeline"]["pending"] == 1
+    assert result["agent_judgments"]["pending"] == 1
+    if fence == "agent":
+        assert (await context(world, snapshot="branch-b"))["agent_judgments"]["pending"] == 2
+
+
+async def test_withdrawn_window_of_handed_off_work_returns_it_to_the_worker(world):
+    world.jev.remember = {"maybe": 0.5}
+    captured = await world.capture("partial-windows", " ".join([CHATTER] * 400 + [UNCERTAIN] * 150))
+    await world.worker.cycle()
+    [discard] = await world.rows("""SELECT id FROM am_source_selections WHERE source_id=$1 AND label='discard'
+        AND state='active' ORDER BY byte_start LIMIT 1""", captured.source_id)
+    assert [row["scope"] for row in await escalations(world)][0] == "item"
+    assert await world.pending("source_selection") == ["pending"]
+    calls = len(world.jev.calls)
+
+    await world.store.retract(world.operator, world.binding_id, discard["id"], "partial-withdraw")
+
+    assert await escalations(world) == []
+    assert (await world.inspect("pending"))["items"][0]["awaiting"] == "background_judge"
+    await world.store.reconcile_journal()
+    await restarted(world).cycle()
+    assert len(world.jev.calls) > calls and [row["scope"] for row in await escalations(world)][0] == "item"
+
+
+async def test_journal_replay_keeps_hand_offs_of_already_reopened_work(world, authority):
+    world.jev.remember = {"maybe": 0.5}
+    captured = await world.capture("replay-uncertain", UNCERTAIN)
+    discarded = await world.store.record(
+        world.operator, await source_selection(authority, captured.source_id, "replay-discard", label="discard"))
+    await world.store.retract(world.operator, world.binding_id, discarded.artifact_id, "replay-withdraw")
+    await world.worker.cycle()
+    recorded = await escalations(world)
+    assert recorded
+    calls = len(world.jev.calls)
+
+    # Service start replays every journal floor, including the withdrawal that already reopened this work.
+    await world.store.reconcile_journal()
+    await restarted(world).cycle()
+
+    assert await escalations(world) == recorded and len(world.jev.calls) == calls
+
+
+async def test_reopened_source_work_returns_to_the_worker(world, authority):
+    world.jev.remember = {"maybe": 0.5}
+    captured = await world.capture("reopen-uncertain", UNCERTAIN)
+    await world.worker.cycle()
+    assert await escalations(world)
+    discarded = await world.store.record(
+        world.operator, await source_selection(authority, captured.source_id, "reopen-discard", label="discard"))
+    assert await world.pending("source_selection") == ["resolved"]
+
+    await world.store.retract(world.operator, world.binding_id, discarded.artifact_id, "reopen-withdraw")
+
+    assert await world.pending("source_selection") == ["pending"]
+    assert await escalations(world) == []
+    assert "agent_judgments" not in await context(world)
+    sent = len(world.jev.calls)
+    await restarted(world).cycle()
+    assert len(world.jev.calls) > sent

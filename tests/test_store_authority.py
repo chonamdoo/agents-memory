@@ -102,28 +102,34 @@ async def historical_schema_fixture(store: Store, archived_index: int) -> None:
             assert separator and prefix in {"am_test", "am_ops_test", "am_host_capture"}
             assert len(suffix) == 32 and all(character in "0123456789abcdef" for character in suffix)
             assert await connection.fetchval("SELECT version_num FROM alembic_version") == MIGRATION
-            assert not await connection.fetchval("SELECT EXISTS(SELECT 1 FROM am_pending_judgments WHERE kind='health')")
             await connection.execute("""
-                DROP TABLE am_code_links;
-                DROP TABLE am_health_events;
-                DROP TABLE am_session_observations;
-                DROP TABLE am_claim_health;
-                DROP TABLE am_code_observations;
-                DROP TABLE am_code_workspaces;
-                DROP TABLE am_health_policies;
-                ALTER TABLE am_feedback DROP COLUMN resolution_event_id;
-                ALTER TABLE am_feedback DROP COLUMN health_version;
-                DROP INDEX am_health_pending_key;
-                ALTER TABLE am_pending_judgments DROP COLUMN health_payload;
-                ALTER TABLE am_pending_judgments DROP COLUMN health_revision;
-                ALTER TABLE am_pending_judgments DROP COLUMN health_key;
-                ALTER TABLE am_pending_judgments DROP CONSTRAINT am_pending_judgments_kind_check;
-                ALTER TABLE am_pending_judgments ADD CONSTRAINT am_pending_judgments_kind_check
-                    CHECK(kind IN ('source_selection','cleanup','legacy_revalidation'));
-                ALTER TABLE am_admissions DROP COLUMN health_manifest;
-                ALTER TABLE am_sources DROP COLUMN health_restore_revision;
-                ALTER TABLE am_operations DROP COLUMN actor_generation;
+                DROP TABLE am_judge_escalations;
+                ALTER TABLE am_pending_judgments DROP COLUMN escalation_generation;
+                ALTER TABLE am_pending_judgments DROP COLUMN manifest_digest;
             """)
+            if archived_index < 6:
+                assert not await connection.fetchval("SELECT EXISTS(SELECT 1 FROM am_pending_judgments WHERE kind='health')")
+                await connection.execute("""
+                    DROP TABLE am_code_links;
+                    DROP TABLE am_health_events;
+                    DROP TABLE am_session_observations;
+                    DROP TABLE am_claim_health;
+                    DROP TABLE am_code_observations;
+                    DROP TABLE am_code_workspaces;
+                    DROP TABLE am_health_policies;
+                    ALTER TABLE am_feedback DROP COLUMN resolution_event_id;
+                    ALTER TABLE am_feedback DROP COLUMN health_version;
+                    DROP INDEX am_health_pending_key;
+                    ALTER TABLE am_pending_judgments DROP COLUMN health_payload;
+                    ALTER TABLE am_pending_judgments DROP COLUMN health_revision;
+                    ALTER TABLE am_pending_judgments DROP COLUMN health_key;
+                    ALTER TABLE am_pending_judgments DROP CONSTRAINT am_pending_judgments_kind_check;
+                    ALTER TABLE am_pending_judgments ADD CONSTRAINT am_pending_judgments_kind_check
+                        CHECK(kind IN ('source_selection','cleanup','legacy_revalidation'));
+                    ALTER TABLE am_admissions DROP COLUMN health_manifest;
+                    ALTER TABLE am_sources DROP COLUMN health_restore_revision;
+                    ALTER TABLE am_operations DROP COLUMN actor_generation;
+                """)
             if archived_index < 5:
                 await connection.execute("""
                     ALTER TABLE am_claims DROP COLUMN cleanup_sequence;

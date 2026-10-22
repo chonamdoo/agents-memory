@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .domain import Claim, DomainError, Role
+from .domain import Claim, DomainError, JudgeEscalation, PendingEscalations, Role
 from .health_inference import HealthInputs
 from .jev import JevClient, ProviderFailure, ProviderResult, SystemOneClient
 from .judge import (
@@ -48,7 +48,7 @@ QUESTIONS_PER_REQUEST = 64
 # Authority, credential and service-state failures end the cycle instead of skipping one item.
 CYCLE_ERRORS = frozenset({
     "SERVICE_DRAINING", "DATABASE_BUSY", "DATABASE_UNAVAILABLE", "STORE_CLOSED", "DELETION_BARRIER",
-    "AUTH_DENIED", "SCOPE_DENIED", "MIGRATION_REQUIRED",
+    "AUTH_DENIED", "SCOPE_DENIED", "MIGRATION_REQUIRED", "JUDGE_ESCALATION_UNRECORDED",
 })
 WINDOWS_PER_CYCLE = 32
 SUBJECT = "project"
@@ -226,8 +226,6 @@ class JudgeWorker:
         self._task: asyncio.Task | None = None
         self._paused_revision: int | None = None
         self._policy_revision: int | None = None
-        self._skipped: set[tuple] = set()
-        self._health_skipped: dict[tuple, tuple] = {}
         self.counts = WorkerCounts()
         self.phase = "idle"
         self.provider = "agent"
@@ -242,7 +240,6 @@ class JudgeWorker:
             "provider": self.provider, "revision": self.revision, "phase": self.phase,
             "last_error": self.last_error,
             "last_cycle_at": self.last_cycle_at.isoformat() if self.last_cycle_at else None,
-            "escalated_this_process": len(self._skipped) + len(self._health_skipped),
             "counts": dict(self.counts.__dict__),
         }
 
@@ -251,6 +248,11 @@ class JudgeWorker:
             return
         self._stop.clear()
         self._task = asyncio.create_task(self.run(), name="agents-memory-judge-worker")
+
+    def halted_at(self, revision: int) -> bool:
+        """Whether this worker stopped judging under provider revision ``revision`` until that revision changes."""
+        return self.revision == revision and (
+            self.phase in {"paused", "refused"} or self.last_error == "JUDGE_CREDENTIAL_INVALID")
 
     def notify(self) -> None:
         self._wake.set()
@@ -380,15 +382,31 @@ class JudgeWorker:
             for item in page["items"]:
                 if self._stop.is_set() or budget.windows <= 0:
                     return
-                if item["state"] != "pending" or ("pending", item["id"]) in self._skipped:
+                if item["state"] != "pending" or item["kind"] not in {"source_selection", "cleanup", "health"}:
+                    continue
+                escalated = await self.store.escalations(actor, binding_id, item["id"])
+                # An item escalation hands the item to the coding agent; the agent-pending count reads the same records.
+                # A handed-off cleanup returns to the worker when an inspect rebuilds a changed manifest.
+                if item["kind"] != "health" and any(record.scope == "item" for record in escalated.records):
                     continue
                 try:
+                    if item["kind"] == "cleanup":
+                        # The version is read before the manifest. If building the manifest or another writer moved
+                        # it meanwhile, the item waits a cycle instead of being judged under a version older than its data.
+                        # Each manifest build takes the authority lock, so it spends the cycle budget.
+                        budget.windows -= 1
+                        detail = await self.application.inspect(actor, item["id"], binding_id, snapshot)
+                        current = await self.store.escalations(actor, binding_id, item["id"])
+                        if (current.pending_generation, current.binding_revision) != (
+                                escalated.pending_generation, escalated.binding_revision):
+                            continue
+                        escalated = current
                     if item["kind"] == "source_selection":
-                        await self._source_item(actor, binding_id, snapshot, item, client, state, budget)
+                        await self._source_item(actor, binding_id, snapshot, item, client, state, budget, escalated)
                     elif item["kind"] == "cleanup":
-                        await self._cleanup_item(actor, binding_id, snapshot, item, client, state, budget)
-                    elif item["kind"] == "health":
-                        await self._health_item(actor, binding_id, snapshot, item, client, state, budget)
+                        await self._cleanup_item(actor, binding_id, snapshot, detail, client, state, budget, escalated)
+                    else:
+                        await self._health_item(actor, binding_id, snapshot, item, client, state, budget, escalated)
                 except DomainError as error:
                     if error.code in CYCLE_ERRORS:
                         raise
@@ -396,7 +414,7 @@ class JudgeWorker:
                         self.last_error = "HEALTH_PENDING_REVIEW"
                         continue
                     # A changed or ineligible item waits for the coding agent; the cycle continues.
-                    self._escalate(("pending", item["id"]), "item_" + error.code.lower())
+                    await self._escalate(actor, binding_id, state, escalated, "item", "item_" + error.code.lower())
             if not page["partial"] or page["next_cursor"] is None:
                 return
             cursor = page["next_cursor"]
@@ -447,7 +465,7 @@ class JudgeWorker:
         ):
             raise ProviderChanged("HEALTH_EGRESS_DENIED")
 
-    async def _health_item(self, actor, binding_id, snapshot, item, client, state, budget) -> None:
+    async def _health_item(self, actor, binding_id, snapshot, item, client, state, budget, escalated) -> None:
         # Health manifests carry their own Jev-only egress grant; other routes leave them to the coding agent.
         if state.provider != "jev":
             return
@@ -455,14 +473,15 @@ class JudgeWorker:
         if policy.get("enabled") is not True or policy.get("allow_jev_health") is not True:
             return
         revision = policy["revision"]
-        key = (binding_id, snapshot, item["id"])
-        version = (item["health_revision"], revision, state.revision, self._policy_revision)
-        if self._health_skipped.get(key) == version:
+        version = {"health_revision": item["health_revision"], "health_policy_revision": revision}
+        if any(record.scope == "health" and record.health_revision == item["health_revision"]
+               and record.health_policy_revision == revision for record in escalated.records):
             return
         try:
             await self._health_current(actor, binding_id, state, revision)
             bundle = await self.application.inspect(actor, f"health:item:{item['id']}", binding_id, snapshot)
-            if bundle.get("policy", {}).get("revision") != revision:
+            # The listed revision is the one escalations are checked and stamped with; newer work waits a cycle.
+            if bundle.get("policy", {}).get("revision") != revision or bundle.get("health_revision") != item["health_revision"]:
                 return
             inputs = HealthInputs.from_bundle(bundle)
 
@@ -485,28 +504,45 @@ class JudgeWorker:
         except DomainError as error:
             if error.code in CYCLE_ERRORS:
                 raise
-            self._escalate(key, "health_" + error.code.lower(), health_version=version)
+            await self._escalate(actor, binding_id, state, escalated, "health", "health_" + error.code.lower(), **version)
             self.last_error = "HEALTH_PENDING_REVIEW"
         except ProviderFailure as failure:
             if failure.kind not in {"request", "response", "redirect"}:
                 raise
-            self._escalate(key, "health_provider_" + failure.kind, health_version=version)
+            await self._escalate(actor, binding_id, state, escalated, "health", "health_provider_" + failure.kind, **version)
             self.last_error = "HEALTH_PENDING_REVIEW"
         else:
             self.counts.health_assessments_recorded += 1
 
-    def _escalate(self, key: tuple, reason: str, *, health_version: tuple | None = None) -> str:
-        if health_version is None:
-            self._skipped.add(key)
-        else:
-            self._health_skipped[key] = health_version
-        self.counts.escalated += 1
-        logger.info("Judge worker left work for the coding agent: reason=%s", reason)
-        return "escalated"
+    async def _escalate(self, actor, binding_id, state: JudgeState, escalated: PendingEscalations, scope: str,
+                        reason: str, *, release: bool = False, **location) -> bool:
+        """Durably leave work for the coding agent before moving on; an unrecorded hand-off ends the cycle.
 
-    async def _source_item(self, actor, binding_id, snapshot, item, client, state, budget) -> None:
+        Returns False when the item changed since the worker read it; the caller stops judging that item,
+        and the next cycle reads its new version. A release marks a source item whose windows were already
+        escalated, so it is not counted again.
+        """
+        escalation = JudgeEscalation(
+            pending_id=escalated.pending_id, pending_generation=escalated.pending_generation,
+            binding_revision=escalated.binding_revision, scope=scope, reason=reason, provider=state.provider,
+            provider_revision=state.revision, **location)
+        try:
+            recorded = await self.store.record_escalation(actor, binding_id, escalation)
+        except DomainError as error:
+            if error.code in CYCLE_ERRORS:
+                raise
+            raise DomainError("JUDGE_ESCALATION_UNRECORDED",
+                              f"The hand-off to the coding agent was not recorded ({error.code})", status=503) from None
+        if recorded and not release:
+            self.counts.escalated += 1
+            logger.info("Judge worker left work for the coding agent: reason=%s", reason)
+        return recorded
+
+    async def _source_item(self, actor, binding_id, snapshot, item, client, state, budget, escalated) -> None:
         detail = await self.application.inspect(actor, item["id"], binding_id, snapshot)
-        escalated = complete = False
+        reasons: set[str] = set()
+        complete = False
+        last = None
         for source_id in detail.get("source_ids", ()):
             start: int | None = 0
             while start is not None and budget.windows > 0 and not self._stop.is_set():
@@ -514,28 +550,39 @@ class JudgeWorker:
                 if window.get("admission_id") is None or "span_inventory" not in window:
                     break
                 start = window["next_byte"]
-                marker = ("window", source_id, window["source_revision"], window["byte_start"], window["byte_end"])
-                if marker in self._skipped:
-                    escalated = True
+                last = window
+                location = {"source_id": source_id, "source_revision": window["source_revision"],
+                            "byte_start": window["byte_start"], "byte_end": window["byte_end"],
+                            "window_digest": window["window_digest"]}
+                recorded = next((record.reason for record in escalated.records if record.scope == "window"
+                                 and record.window_digest == window["window_digest"]
+                                 and (record.byte_start, record.byte_end) == (window["byte_start"], window["byte_end"])), None)
+                if recorded is not None:
+                    reasons.add(recorded)
                     continue
                 decided = await self.store.decided_ranges(actor, binding_id, source_id, window["source_revision"], snapshot)
                 if any(begin <= window["byte_start"] and window["byte_end"] <= end for begin, end in decided):
                     continue
                 budget.windows -= 1
+                reason = None
                 try:
                     await self._judge_window(actor, binding_id, snapshot, window, client, state)
                 except Escalated as escalation:
-                    escalated = True
-                    self._escalate(marker, escalation.reason)
+                    reason = escalation.reason
                 except ProviderFailure as failure:
                     if failure.kind not in {"request", "response", "redirect"}:
                         raise
-                    escalated = True
-                    self._escalate(marker, "provider_" + failure.kind)
+                    reason = "provider_" + failure.kind
+                if reason is not None:
+                    if not await self._escalate(actor, binding_id, state, escalated, "window", reason, **location):
+                        return
+                    reasons.add(reason)
             complete = start is None
-        if escalated and complete:
-            # Every remaining window waits for the coding agent; stop re-inspecting it in this process.
-            self._skipped.add(("pending", item["id"]))
+        if reasons and complete and last is not None:
+            # Every remaining window waits for the coding agent: release the whole item under this credential.
+            await self._escalate(actor, binding_id, state, escalated, "item",
+                                 reasons.pop() if len(reasons) == 1 else "mixed", release=True,
+                                 source_id=last["source_id"], source_revision=last["source_revision"])
 
     async def _rejections(self, actor, binding_id, snapshot, window) -> list[dict]:
         required = list(window.get("judgment_context", {}).get("required_rejection_ids", ()))
@@ -677,13 +724,15 @@ class JudgeWorker:
             self.counts.windows_discarded += 1
         return label
 
-    async def _cleanup_item(self, actor, binding_id, snapshot, item, client, state, budget) -> None:
-        key = ("pending", item["id"])
-        budget.windows -= 1
-        detail = await self.application.inspect(actor, item["id"], binding_id, snapshot)
+    async def _cleanup_item(self, actor, binding_id, snapshot, detail, client, state, budget, escalated) -> None:
         manifest = detail.get("judgment_manifest")
         if not manifest or not manifest.get("judgment_required"):
             return
+
+        async def escalate(reason: str) -> None:
+            await self._escalate(actor, binding_id, state, escalated, "item", reason,
+                                 manifest_digest=manifest["manifest_digest"])
+
         claims = []
         for reference in manifest["claims"]:
             claim = await self.store.claim(actor, binding_id, reference["id"], snapshot)
@@ -722,7 +771,7 @@ class JudgeWorker:
             except ProviderFailure as failure:
                 if failure.kind not in {"request", "response", "redirect"}:
                     raise
-                self._escalate(key, "provider_" + failure.kind)
+                await escalate("provider_" + failure.kind)
                 return
             for number, (newer, older, options) in enumerate(pairs):
                 probabilities = answers[f"relation_{number}"]["probabilities"]
@@ -731,10 +780,10 @@ class JudgeWorker:
                     relations.append((value, {"left_id": newer.id, "right_id": older.id, "relation": name,
                         "reason": f"{judge_label(state)} judged '{name}' with p={value:.2f} ≥ {RELATION_AT:.2f}; left is the newer memory."}))
                 elif value >= RELATION_DOUBT_AT:
-                    self._escalate(key, "uncertain_relation")
+                    await escalate("uncertain_relation")
                     return
         if len(relations) > 16:
-            self._escalate(key, "too_many_relations")
+            await escalate("too_many_relations")
             return
         self._current(state)
         command = ClaimJudgmentCommand.model_validate({
@@ -751,7 +800,7 @@ class JudgeWorker:
                 await self.application.record(actor, command)
         except DomainError as error:
             if error.code in {"JUDGMENT_RELATION_INVALID", "JUDGMENT_MANIFEST_INVALID", "INPUT_INVALID"}:
-                self._escalate(key, "record_" + error.code.lower())
+                await escalate("record_" + error.code.lower())
                 return
             if error.code in {"ADMISSION_STALE", "ADMISSION_CONSUMED"}:
                 return
